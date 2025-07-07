@@ -16,6 +16,7 @@ import (
 	_ "time/tzdata"
 
 	"codnect.io/chrono"
+
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
@@ -92,7 +93,7 @@ func main() {
 	}
 
 	flacPath := "C:\\Users\\oyste\\Downloads\\Petey Pablo - Still Writing in My Diary 2nd Entry - 04 Freek-A-Leek (CD FLAC 16bit) - FLAC.flac"
-	controllers.extractMusicBrainzReleaseID(flacPath)
+	yo := controllers.extractMusicBrainzReleaseID(flacPath)
 
 	// Initialize Router
 	router := initRouter()
