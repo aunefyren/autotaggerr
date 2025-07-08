@@ -20,6 +20,7 @@ import (
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/routers"
 	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/gin-contrib/cors"
@@ -92,8 +93,65 @@ func main() {
 		logger.Log.Info("Sunday reminder task was not scheduled successfully.")
 	}
 
-	flacPath := "C:\\Users\\oyste\\Downloads\\Petey Pablo - Still Writing in My Diary 2nd Entry - 04 Freek-A-Leek (CD FLAC 16bit) - FLAC.flac"
-	yo := controllers.extractMusicBrainzReleaseID(flacPath)
+	// Get MB data from track
+	flacPath := "test/flacfile.flac"
+	mbReleaseID, err := modules.ExtractMusicBrainzReleaseID(flacPath)
+	if err != nil {
+		logger.Log.Error("failed to extract MB ID. error: " + err.Error())
+		os.Exit(1)
+	}
+	logger.Log.Error("MB release ID: " + mbReleaseID)
+
+	// Get MB data from track
+	mbTrackID, err := modules.ExtractMusicBrainzTrackID(flacPath)
+	if err != nil {
+		logger.Log.Error("failed to extract MB ID. error: " + err.Error())
+		os.Exit(1)
+	}
+	logger.Log.Error("MB track ID: " + mbTrackID)
+
+	// Get MB data from API
+	response, err := modules.QueryMusicBrainzReleaseData(mbReleaseID)
+	if err != nil {
+		logger.Log.Error("failed to query MB data. error: " + err.Error())
+		os.Exit(1)
+	}
+	logger.Log.Error("MB response: " + response.Title)
+
+	// Go through API response for information
+	for _, media := range response.Media {
+		for _, track := range media.Tracks {
+			if track.ID == mbTrackID {
+				logger.Log.Info("Release track ID found in MB response")
+				trackArtist := modules.MusicBrainzArtistsArrayToString(track.ArtistCredit)
+				logger.Log.Info(trackArtist)
+
+				releaseArtist := modules.MusicBrainzArtistsArrayToString(response.ArtistCredit)
+				releaseTime, err := modules.MusicBrainzDateStringToDateTime(response.Date)
+				releaseYear := ""
+				releaseDate := ""
+				if err == nil {
+					releaseYear = strconv.Itoa(releaseTime.Year())
+					releaseDate = releaseTime.Format("2006-01-02")
+				}
+
+				tags := map[string]string{
+					"ARTIST":      trackArtist,
+					"ALBUMARTIST": releaseArtist,
+					"GENRE":       "",
+					"DATE":        releaseDate,
+					"YEAR":        releaseYear,
+				}
+
+				// re-tag file with new information
+				err = modules.SetFlacTags(flacPath, tags)
+				if err != nil {
+					logger.Log.Error("failed to set FLAC artist tags. error: " + err.Error())
+					os.Exit(1)
+				}
+			}
+		}
+	}
 
 	// Initialize Router
 	router := initRouter()

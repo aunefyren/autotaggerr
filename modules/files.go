@@ -1,7 +1,9 @@
-package controllers
+package modules
 
 import (
 	"errors"
+	"fmt"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -11,25 +13,55 @@ import (
 )
 
 // extractMusicBrainzReleaseID extracts the MusicBrainz Album ID from either MP3 (ID3v2) or FLAC (Vorbis)
-func extractMusicBrainzReleaseID(filePath string) (string, error) {
+func ExtractMusicBrainzReleaseID(filePath string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	switch ext {
 	case ".mp3":
-		return extractFromID3v2(filePath)
+		return extractFromID3v2(filePath, "release")
 	case ".flac":
-		return extractFromFLAC(filePath)
+		return extractFromFLAC(filePath, "release")
 	default:
 		return "", errors.New("unsupported file type")
 	}
 }
 
-func extractFromID3v2(filePath string) (string, error) {
+// extractMusicBrainzReleaseID extracts the MusicBrainz Track ID from either MP3 (ID3v2) or FLAC (Vorbis)
+func ExtractMusicBrainzTrackID(filePath string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	switch ext {
+	case ".mp3":
+		return extractFromID3v2(filePath, "track")
+	case ".flac":
+		return extractFromFLAC(filePath, "track")
+	default:
+		return "", errors.New("unsupported file type")
+	}
+}
+
+func extractFromID3v2(filePath string, metadataType string) (string, error) {
+	keyName := ""
 	tagFile, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 	if err != nil {
 		return "", err
 	}
 	defer tagFile.Close()
+
+	switch metadataType {
+	case "recording":
+		keyName = "MusicBrainz Release Id"
+	case "release":
+		keyName = ""
+	case "release_group":
+		keyName = ""
+	case "track":
+		keyName = ""
+	case "artist":
+		keyName = ""
+	default:
+		return "", errors.New("unsupported media type")
+	}
 
 	for _, frame := range tagFile.GetFrames("TXXX") {
 		userFrame, ok := frame.(id3v2.UserDefinedTextFrame)
@@ -37,24 +69,40 @@ func extractFromID3v2(filePath string) (string, error) {
 			continue
 		}
 
-		if userFrame.Description == "MusicBrainz Album Id" || userFrame.Description == "MusicBrainz Release Id" {
+		if userFrame.Description == keyName {
 			return userFrame.Value, nil
 		}
 	}
 	return "", nil
 }
 
-func extractFromFLAC(filePath string) (string, error) {
+func extractFromFLAC(filePath string, metadataType string) (string, error) {
+	keyName := ""
 	stream, err := flac.ParseFile(filePath)
 	if err != nil {
 		return "", err
+	}
+
+	switch metadataType {
+	case "track":
+		keyName = "MUSICBRAINZ_RELEASETRACKID"
+	case "release":
+		keyName = "MUSICBRAINZ_ALBUMID"
+	case "release_group":
+		keyName = "MUSICBRAINZ_RELEASEGROUPID"
+	case "recording":
+		keyName = "MUSICBRAINZ_TRACKID"
+	case "artist":
+		keyName = "MUSICBRAINZ_ALBUMARTISTID"
+	default:
+		return "", errors.New("unsupported media type")
 	}
 
 	for _, block := range stream.Blocks {
 		if commentBlock, ok := block.Body.(*meta.VorbisComment); ok {
 			for _, tag := range commentBlock.Tags {
 				key := strings.ToUpper(tag[0])
-				if key == "MUSICBRAINZ_ALBUMID" {
+				if key == keyName {
 					return tag[1], nil
 				}
 			}
@@ -149,3 +197,21 @@ func writeMusicBrainzAlbumIDToFLAC(filePath string, mbid string) error {
 	return nil
 }
 */
+
+// SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
+func SetFlacTags(filePath string, tags map[string]string) error {
+	for key, value := range tags {
+		// First, remove any existing instance of this tag
+		removeCmd := exec.Command("metaflac", "--remove-tag="+key, filePath)
+		if err := removeCmd.Run(); err != nil {
+			return fmt.Errorf("failed to remove tag %s: %w", key, err)
+		}
+
+		// Then, set the new tag value
+		setCmd := exec.Command("metaflac", "--set-tag", fmt.Sprintf("%s=%s", key, value), filePath)
+		if err := setCmd.Run(); err != nil {
+			return fmt.Errorf("failed to set tag %s: %w", key, err)
+		}
+	}
+	return nil
+}

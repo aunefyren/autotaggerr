@@ -124,7 +124,6 @@ func CreateConfigFile() error {
 
 	privateKey, err := GenerateSecureKey(64)
 	if err != nil {
-		logger.Log.Info("Failed to generate private key. Error: " + err.Error())
 		fmt.Println("Failed to generate private key. Error: " + err.Error())
 		return err
 	}
@@ -132,7 +131,6 @@ func CreateConfigFile() error {
 
 	err = SaveConfig(config)
 	if err != nil {
-		logger.Log.Info("Create config file threw error trying to save the file.")
 		fmt.Println("Create config file threw error trying to save the file.")
 		return err
 	}
@@ -143,7 +141,7 @@ func CreateConfigFile() error {
 // Saves the given config struct as config.json
 func SaveConfig(config models.ConfigStruct) error {
 
-	err := os.MkdirAll("./files", os.ModePerm)
+	err := os.MkdirAll(configPath, os.ModePerm)
 	if err != nil {
 		logger.Log.Info("Failed to create directory for config. Error: " + err.Error())
 		return errors.New("Failed to create directory for config.")
