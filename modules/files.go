@@ -3,14 +3,27 @@ package modules
 import (
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 
+	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/models"
 	"github.com/bogem/id3v2"
 	"github.com/mewkiz/flac"
 	"github.com/mewkiz/flac/meta"
 )
+
+// List of allowed audio file extensions
+var supportedExtensions = map[string]bool{
+	".flac": true,
+	".mp3":  true,
+	".m4a":  false,
+	".ogg":  false,
+	".wav":  false,
+}
 
 // extractMusicBrainzReleaseID extracts the MusicBrainz Album ID from either MP3 (ID3v2) or FLAC (Vorbis)
 func ExtractMusicBrainzReleaseID(filePath string) (string, error) {
@@ -198,8 +211,29 @@ func writeMusicBrainzAlbumIDToFLAC(filePath string, mbid string) error {
 }
 */
 
+func SetFileTags(filePath string, metadata models.FileTags) error {
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	switch ext {
+	case ".mp3":
+		return errors.New("unsupported file type")
+	case ".flac":
+		return SetFlacTags(filePath, metadata)
+	default:
+		return errors.New("unsupported file type")
+	}
+}
+
 // SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
-func SetFlacTags(filePath string, tags map[string]string) error {
+func SetFlacTags(filePath string, metadata models.FileTags) error {
+	tags := map[string]string{
+		"ARTIST":      metadata.Artist,
+		"ALBUMARTIST": metadata.AlbumArtist,
+		"GENRE":       metadata.Genre,
+		"DATE":        metadata.Date,
+		"YEAR":        metadata.Year,
+	}
+
 	for key, value := range tags {
 		// First, remove any existing instance of this tag
 		removeCmd := exec.Command("metaflac", "--remove-tag="+key, filePath)
@@ -214,4 +248,84 @@ func SetFlacTags(filePath string, tags map[string]string) error {
 		}
 	}
 	return nil
+}
+
+func ProcessTrackFile(filePath string) error {
+	mbReleaseID, err := ExtractMusicBrainzReleaseID(filePath)
+	if err != nil {
+		logger.Log.Error("failed to extract MB release ID. error: " + err.Error())
+		return errors.New("failed to extract MB release ID")
+	}
+	logger.Log.Debug("MB release ID: " + mbReleaseID)
+
+	// Get MB data from track
+	mbTrackID, err := ExtractMusicBrainzTrackID(filePath)
+	if err != nil {
+		logger.Log.Error("failed to extract track MB ID. error: " + err.Error())
+		return errors.New("failed to extract track MB ID")
+	}
+	logger.Log.Debug("MB track ID: " + mbTrackID)
+
+	// Get MB data from API
+	response, err := GetMusicBrainzRelease(mbReleaseID)
+	if err != nil {
+		logger.Log.Error("failed to get MB release data. error: " + err.Error())
+		return errors.New("failed to get MB release data")
+	}
+	logger.Log.Debug("MB title response: " + response.Title)
+
+	// Go through API response for information
+	for _, media := range response.Media {
+		for _, track := range media.Tracks {
+			if track.ID == mbTrackID {
+				logger.Log.Debug("Release track ID found in MB response")
+				trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit)
+				logger.Log.Debug(trackArtist)
+
+				releaseArtist := MusicBrainzArtistsArrayToString(response.ArtistCredit)
+				releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
+				releaseYear := ""
+				releaseDate := ""
+				if err == nil {
+					releaseYear = strconv.Itoa(releaseTime.Year())
+					releaseDate = releaseTime.Format("2006-01-02")
+				}
+
+				metadata := models.FileTags{
+					Artist:      releaseArtist,
+					AlbumArtist: trackArtist,
+					Genre:       "",
+					Date:        releaseDate,
+					Year:        releaseYear,
+				}
+
+				// re-tag file with new information
+				err = SetFileTags(filePath, metadata)
+				if err != nil {
+					logger.Log.Error("failed to set FLAC artist tags. error: " + err.Error())
+					return errors.New("failed to set FLAC artist tags")
+				}
+
+				logger.Log.Info("file processed: " + filePath)
+				return nil
+			}
+		}
+	}
+
+	return errors.New("failed to tag file, track not found in release data")
+}
+
+func ScanFolderRecursive(root string) error {
+	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err // report permission errors, etc.
+		}
+		if d.IsDir() {
+			return nil // keep walking
+		}
+		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
+			ProcessTrackFile(path)
+		}
+		return nil
+	})
 }

@@ -58,15 +58,15 @@ func GetConfig() (config models.ConfigStruct, err error) {
 		logger.Log.Info("New private key set.")
 	}
 
-	if config.TreninghetenName == "" {
+	if config.AutotaggerrName == "" {
 		// Set new value
-		config.TreninghetenName = "Treningheten"
+		config.AutotaggerrName = "Autotaggerr"
 		anythingChanged = true
 	}
 
-	if config.TreninghetenEnvironment == "" {
+	if config.AutotaggerrEnvironment == "" {
 		// Set new value
-		config.TreninghetenEnvironment = "prod"
+		config.AutotaggerrEnvironment = "prod"
 		anythingChanged = true
 	}
 
@@ -76,21 +76,33 @@ func GetConfig() (config models.ConfigStruct, err error) {
 		anythingChanged = true
 	}
 
-	if config.TreninghetenPort == 0 {
+	if config.AutotaggerrPort == 0 {
 		// Set new value
-		config.TreninghetenPort = 8080
+		config.AutotaggerrPort = 8080
 		anythingChanged = true
 	}
 
-	if config.TreninghetenLogLevel == "" {
+	if config.AutotaggerrProcessCronSchedule == "" {
+		// set new value
+		config.AutotaggerrProcessCronSchedule = "0 0 18 * * 7"
+		anythingChanged = true
+	}
+
+	if config.AutotaggerrLibraries == nil {
+		// Set new value
+		config.AutotaggerrLibraries = []string{}
+		anythingChanged = true
+	}
+
+	if config.AutotaggerrLogLevel == "" {
 		level := logrus.InfoLevel
-		config.TreninghetenLogLevel = level.String()
+		config.AutotaggerrLogLevel = level.String()
 		anythingChanged = true
 	} else {
-		_, err := logrus.ParseLevel(config.TreninghetenLogLevel)
+		_, err := logrus.ParseLevel(config.AutotaggerrLogLevel)
 		if err != nil {
 			level := logrus.InfoLevel
-			config.TreninghetenLogLevel = level.String()
+			config.AutotaggerrLogLevel = level.String()
 			anythingChanged = true
 		}
 	}
@@ -103,7 +115,7 @@ func GetConfig() (config models.ConfigStruct, err error) {
 		}
 	}
 
-	config.TreninghetenVersion = autotaggerrVersionParameter
+	config.AutotaggerrVersion = autotaggerrVersionParameter
 
 	// Return config object
 	return config, nil
@@ -113,14 +125,16 @@ func GetConfig() (config models.ConfigStruct, err error) {
 func CreateConfigFile() error {
 	var config models.ConfigStruct
 
-	config.TreninghetenPort = 8080
-	config.TreninghetenName = "Treningheten"
-	config.TreninghetenEnvironment = "prod"
+	config.AutotaggerrPort = 8080
+	config.AutotaggerrName = "Autotaggerr"
+	config.AutotaggerrEnvironment = "prod"
 	config.SMTPEnabled = true
-	config.TreninghetenVersion = autotaggerrVersionParameter
+	config.AutotaggerrVersion = autotaggerrVersionParameter
+	config.AutotaggerrLibraries = []string{}
+	config.AutotaggerrProcessCronSchedule = "0 0 18 * * 7"
 
 	level := logrus.InfoLevel
-	config.TreninghetenLogLevel = level.String()
+	config.AutotaggerrLogLevel = level.String()
 
 	privateKey, err := GenerateSecureKey(64)
 	if err != nil {

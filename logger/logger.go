@@ -27,7 +27,7 @@ func InitLogger(configFile models.ConfigStruct) {
 	Log.SetOutput(mw)
 
 	// Set log level
-	level, err := logrus.ParseLevel(configFile.TreninghetenLogLevel)
+	level, err := logrus.ParseLevel(configFile.AutotaggerrLogLevel)
 	if err != nil {
 		logrus.Error("Failed to load log file: %v", err)
 		level = logrus.InfoLevel

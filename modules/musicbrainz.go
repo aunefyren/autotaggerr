@@ -6,11 +6,31 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 )
+
+var releaseCache = []models.MusicBrainzReleaseResponse{}
+
+func GetMusicBrainzRelease(mbid string) (models.MusicBrainzReleaseResponse, error) {
+	for _, release := range releaseCache {
+		if strings.EqualFold(release.ID, mbid) {
+			logger.Log.Debug("returning cached release")
+			return release, nil
+		}
+	}
+
+	release, err := QueryMusicBrainzReleaseData(mbid)
+	if err != nil {
+		logger.Log.Debug("failed to retrieve release from MB api. error: " + err.Error())
+		return release, errors.New("failed to retrieve release from MB api")
+	}
+
+	return release, err
+}
 
 func QueryMusicBrainzReleaseData(mbid string) (models.MusicBrainzReleaseResponse, error) {
 	var apiResponse models.MusicBrainzReleaseResponse
@@ -44,6 +64,8 @@ func QueryMusicBrainzReleaseData(mbid string) (models.MusicBrainzReleaseResponse
 		logger.Log.Error("failed to parse Musicbrainz API response. error: " + err.Error())
 		return apiResponse, errors.New("failed to parse Musicbrainz API response")
 	}
+
+	releaseCache = append(releaseCache, apiResponse)
 
 	return apiResponse, nil
 }

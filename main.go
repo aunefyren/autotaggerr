@@ -51,12 +51,12 @@ func main() {
 	logger.InitLogger(configFile)
 
 	// Set GIN mode
-	if configFile.TreninghetenEnvironment != "test" {
+	if configFile.AutotaggerrEnvironment != "test" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
 	// Change the config to respect flags
-	configFile, err = parseFlags(configFile)
+	configFile, filePath, err := parseFlags(configFile)
 	if err != nil {
 		logger.Log.Fatal("Failed to parse input flags. Error: " + err.Error())
 		os.Exit(1)
@@ -81,75 +81,40 @@ func main() {
 			time.Local = loc
 		}
 	}
-	logger.Log.Info("Timezone set.")
+	logger.Log.Info("timezone set")
 
 	// Create task scheduler for sunday reminders
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		logger.Log.Info("Sunday reminder task executing.")
-	}, "0 0 18 * * 7")
+		logger.Log.Info("library process task starting...")
+		for _, library := range configFile.AutotaggerrLibraries {
+			logger.Log.Info("processing: " + library)
+			modules.ScanFolderRecursive(library)
+		}
+		logger.Log.Info("library process task finished")
+	}, configFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
-		logger.Log.Info("Sunday reminder task was not scheduled successfully.")
+		logger.Log.Info("library process task was not scheduled successfully.")
 	}
 
-	// Get MB data from track
-	flacPath := "test/flacfile.flac"
-	mbReleaseID, err := modules.ExtractMusicBrainzReleaseID(flacPath)
-	if err != nil {
-		logger.Log.Error("failed to extract MB ID. error: " + err.Error())
-		os.Exit(1)
-	}
-	logger.Log.Error("MB release ID: " + mbReleaseID)
-
-	// Get MB data from track
-	mbTrackID, err := modules.ExtractMusicBrainzTrackID(flacPath)
-	if err != nil {
-		logger.Log.Error("failed to extract MB ID. error: " + err.Error())
-		os.Exit(1)
-	}
-	logger.Log.Error("MB track ID: " + mbTrackID)
-
-	// Get MB data from API
-	response, err := modules.QueryMusicBrainzReleaseData(mbReleaseID)
-	if err != nil {
-		logger.Log.Error("failed to query MB data. error: " + err.Error())
-		os.Exit(1)
-	}
-	logger.Log.Error("MB response: " + response.Title)
-
-	// Go through API response for information
-	for _, media := range response.Media {
-		for _, track := range media.Tracks {
-			if track.ID == mbTrackID {
-				logger.Log.Info("Release track ID found in MB response")
-				trackArtist := modules.MusicBrainzArtistsArrayToString(track.ArtistCredit)
-				logger.Log.Info(trackArtist)
-
-				releaseArtist := modules.MusicBrainzArtistsArrayToString(response.ArtistCredit)
-				releaseTime, err := modules.MusicBrainzDateStringToDateTime(response.Date)
-				releaseYear := ""
-				releaseDate := ""
-				if err == nil {
-					releaseYear = strconv.Itoa(releaseTime.Year())
-					releaseDate = releaseTime.Format("2006-01-02")
-				}
-
-				tags := map[string]string{
-					"ARTIST":      trackArtist,
-					"ALBUMARTIST": releaseArtist,
-					"GENRE":       "",
-					"DATE":        releaseDate,
-					"YEAR":        releaseYear,
-				}
-
-				// re-tag file with new information
-				err = modules.SetFlacTags(flacPath, tags)
-				if err != nil {
-					logger.Log.Error("failed to set FLAC artist tags. error: " + err.Error())
-					os.Exit(1)
-				}
+	if configFile.AutotaggerrProcessOnStartUp {
+		logger.Log.Info("library process task starting...")
+		for _, library := range configFile.AutotaggerrLibraries {
+			logger.Log.Info("processing: " + library)
+			err = modules.ScanFolderRecursive(library)
+			if err != nil {
+				logger.Log.Error("failed to process library. error: " + err.Error())
 			}
+		}
+		logger.Log.Info("library process task finished")
+	}
+
+	// process file path
+	if filePath != nil {
+		err = modules.ProcessTrackFile(*filePath)
+		if err != nil {
+			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
 	}
 
@@ -158,7 +123,7 @@ func main() {
 
 	logger.Log.Info("Router initialized.")
 
-	log.Fatal(router.Run(":" + strconv.Itoa(configFile.TreninghetenPort)))
+	log.Fatal(router.Run(":" + strconv.Itoa(configFile.AutotaggerrPort)))
 }
 
 func initRouter() *gin.Engine {
@@ -204,11 +169,11 @@ func initRouter() *gin.Engine {
 	return router
 }
 
-func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, error) {
+func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, error) {
 	// Define flag variables with the configuration file as default values
-	var port = flag.Int("port", configFile.TreninghetenPort, "The port Treningheten is listening on.")
-	var externalURL = flag.String("externalurl", configFile.TreninghetenExternalURL, "The URL others would use to access Treningheten.")
-	var timezone = flag.String("timezone", configFile.Timezone, "The timezone Treningheten is running in.")
+	var port = flag.Int("port", configFile.AutotaggerrPort, "The port Autotaggerr is listening on.")
+	var externalURL = flag.String("externalurl", configFile.AutotaggerrExternalURL, "The URL others would use to access Autotaggerr.")
+	var timezone = flag.String("timezone", configFile.Timezone, "The timezone Autotaggerr is running in.")
 
 	// SMTP flags
 	var smtpDisabled = flag.String("disablesmtp", "false", "Disables user verification using e-mail.")
@@ -216,19 +181,22 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, error) {
 	var smtpPort = flag.Int("smtpport", configFile.SMTPPort, "The SMTP server port.")
 	var smtpUsername = flag.String("smtpusername", configFile.SMTPUsername, "The username used to verify against the SMTP server.")
 	var smtpPassword = flag.String("smtppassword", configFile.SMTPPassword, "The password used to verify against the SMTP server.")
-	var smtpFrom = flag.String("smtpfrom", configFile.SMTPFrom, "The sender address when sending e-mail from Treningheten.")
+	var smtpFrom = flag.String("smtpfrom", configFile.SMTPFrom, "The sender address when sending e-mail from Autotaggerr.")
+
+	//file
+	var filePath = flag.String("file", "", "A single file to process")
 
 	// Parse the flags from input
 	flag.Parse()
 
 	// Respect the flag if config is empty
 	if port != nil {
-		configFile.TreninghetenPort = *port
+		configFile.AutotaggerrPort = *port
 	}
 
 	// Respect the flag if config is empty
 	if externalURL == nil {
-		configFile.TreninghetenExternalURL = *externalURL
+		configFile.AutotaggerrExternalURL = *externalURL
 	}
 
 	// Respect the flag if config is empty
@@ -268,16 +236,21 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, error) {
 		configFile.SMTPFrom = *smtpFrom
 	}
 
+	// Respect the flag if config is empty
+	if filePath != nil && *filePath == "" {
+		filePath = nil
+	}
+
 	// Failsafe, if port is 0, set to default 8080
-	if configFile.TreninghetenPort == 0 {
-		configFile.TreninghetenPort = 8080
+	if configFile.AutotaggerrPort == 0 {
+		configFile.AutotaggerrPort = 8080
 	}
 
 	// Save the new config
 	err := files.SaveConfig(configFile)
 	if err != nil {
-		return models.ConfigStruct{}, err
+		return models.ConfigStruct{}, filePath, err
 	}
 
-	return configFile, nil
+	return configFile, filePath, nil
 }
