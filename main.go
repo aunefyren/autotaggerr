@@ -87,27 +87,14 @@ func main() {
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		logger.Log.Info("library process task starting...")
-		for _, library := range configFile.AutotaggerrLibraries {
-			logger.Log.Info("processing: " + library)
-			modules.ScanFolderRecursive(library)
-		}
-		logger.Log.Info("library process task finished")
+		processLibraries(configFile.AutotaggerrLibraries)
 	}, configFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
 		logger.Log.Info("library process task was not scheduled successfully.")
 	}
 
 	if configFile.AutotaggerrProcessOnStartUp {
-		logger.Log.Info("library process task starting...")
-		for _, library := range configFile.AutotaggerrLibraries {
-			logger.Log.Info("processing: " + library)
-			err = modules.ScanFolderRecursive(library)
-			if err != nil {
-				logger.Log.Error("failed to process library. error: " + err.Error())
-			}
-		}
-		logger.Log.Info("library process task finished")
+		processLibraries(configFile.AutotaggerrLibraries)
 	}
 
 	// process file path
@@ -253,4 +240,19 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 	}
 
 	return configFile, filePath, nil
+}
+
+func processLibraries(libraries []string) {
+	logger.Log.Info("library process task starting...")
+	count := 0
+	for _, library := range libraries {
+		logger.Log.Info("processing: " + library)
+		libraryCount, err := modules.ScanFolderRecursive(library)
+		if err != nil {
+			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
+		} else {
+			count += libraryCount
+		}
+	}
+	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed")
 }

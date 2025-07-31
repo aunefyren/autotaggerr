@@ -63,26 +63,31 @@ func extractFromID3v2(filePath string, metadataType string) (string, error) {
 
 	switch metadataType {
 	case "recording":
-		keyName = "MusicBrainz Release Id"
-	case "release":
 		keyName = ""
+	case "release":
+		keyName = "MusicBrainz Release Id"
 	case "release_group":
 		keyName = ""
 	case "track":
-		keyName = ""
+		keyName = "MusicBrainz Track Id"
 	case "artist":
 		keyName = ""
 	default:
 		return "", errors.New("unsupported media type")
 	}
 
-	for _, frame := range tagFile.GetFrames("TXXX") {
+	frames := tagFile.GetFrames("TXXX")
+	logger.Log.Trace(fmt.Sprintf("mp3 frames found: %s", frames))
+
+	for _, frame := range frames {
 		userFrame, ok := frame.(id3v2.UserDefinedTextFrame)
 		if !ok {
 			continue
 		}
 
-		if userFrame.Description == keyName {
+		desc := strings.TrimSpace(strings.ToLower(userFrame.Description))
+		logger.Log.Trace(fmt.Sprintf("mp3 frame name: %s, value: %s", desc, userFrame.Value))
+		if desc == "txxx:"+strings.TrimSpace(strings.ToLower(keyName)) {
 			return userFrame.Value, nil
 		}
 	}
@@ -216,7 +221,7 @@ func SetFileTags(filePath string, metadata models.FileTags) error {
 
 	switch ext {
 	case ".mp3":
-		return errors.New("unsupported file type")
+		return SetMP3Tags(filePath, metadata)
 	case ".flac":
 		return SetFlacTags(filePath, metadata)
 	default:
@@ -232,6 +237,13 @@ func SetFlacTags(filePath string, metadata models.FileTags) error {
 		"GENRE":       metadata.Genre,
 		"DATE":        metadata.Date,
 		"YEAR":        metadata.Year,
+		"ALBUM":       metadata.Album,
+		"TITLE":       metadata.Title,
+		"TRACKNUMBER": metadata.Track,
+		"TRACKTOTAL":  metadata.TrackTotal,
+		"DISCNUMBER":  metadata.DiscNumber,
+		"DISCTOTAL":   metadata.DiscTotal,
+		"ISRC":        metadata.ISRC,
 	}
 
 	for key, value := range tags {
@@ -247,6 +259,80 @@ func SetFlacTags(filePath string, metadata models.FileTags) error {
 			return fmt.Errorf("failed to set tag %s: %w", key, err)
 		}
 	}
+	return nil
+}
+
+func SetMP3Tags(filePath string, metadata models.FileTags) error {
+	// Generate a temporary output path
+	tempOutput := filePath + ".temp.mp3"
+
+	// Construct ffmpeg command
+	args := []string{
+		"-i", filePath,
+		"-y",                 // Overwrite output
+		"-map_metadata", "0", // Copy existing metadata as base
+		"-codec", "copy", // Don't re-encode audio
+	}
+
+	// Add standard metadata fields
+	if metadata.Artist != "" {
+		args = append(args, "-metadata", fmt.Sprintf("artist=%s", metadata.Artist))
+	}
+	if metadata.AlbumArtist != "" {
+		args = append(args, "-metadata", fmt.Sprintf("album_artist=%s", metadata.AlbumArtist))
+	}
+	if metadata.Genre != "" {
+		args = append(args, "-metadata", fmt.Sprintf("genre=%s", metadata.Genre))
+	}
+	if metadata.Year != "" {
+		args = append(args, "-metadata", fmt.Sprintf("year=%s", metadata.Year))
+	}
+	if metadata.Date != "" {
+		args = append(args, "-metadata", fmt.Sprintf("date=%s", metadata.Date))
+	}
+	if metadata.Album != "" {
+		args = append(args, "-metadata", fmt.Sprintf("album=%s", metadata.Album))
+	}
+	if metadata.Title != "" {
+		args = append(args, "-metadata", fmt.Sprintf("title=%s", metadata.Title))
+	}
+	if metadata.Track != "" && metadata.TrackTotal != "" {
+		args = append(args, "-metadata", fmt.Sprintf("track=%s/%s", metadata.Track, metadata.TrackTotal))
+	} else if metadata.Track != "" {
+		args = append(args, "-metadata", fmt.Sprintf("track=%s", metadata.Track))
+	}
+	if metadata.DiscNumber != "" && metadata.DiscTotal != "" {
+		args = append(args, "-metadata", fmt.Sprintf("disc=%s/%s", metadata.DiscNumber, metadata.DiscTotal))
+	} else if metadata.DiscNumber != "" {
+		args = append(args, "-metadata", fmt.Sprintf("disc=%s", metadata.DiscNumber))
+	}
+
+	// Add custom tags using TXXX
+	if metadata.ISRC != "" {
+		args = append(args, "-metadata", fmt.Sprintf("TXXX=ISRC:%s", metadata.ISRC))
+	}
+	if metadata.TrackTotal != "" {
+		args = append(args, "-metadata", fmt.Sprintf("TXXX=TRACKTOTAL:%s", metadata.TrackTotal))
+	}
+	if metadata.DiscTotal != "" {
+		args = append(args, "-metadata", fmt.Sprintf("TXXX=DISCTOTAL:%s", metadata.DiscTotal))
+	}
+
+	args = append(args, tempOutput)
+
+	cmd := exec.Command("ffmpeg", args...)
+	cmd.Stderr = os.Stderr // for debugging
+	cmd.Stdout = os.Stdout
+
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("ffmpeg tagging failed: %w", err)
+	}
+
+	// Replace original file with the new one
+	if err := os.Rename(tempOutput, filePath); err != nil {
+		return fmt.Errorf("failed to replace original file: %w", err)
+	}
+
 	return nil
 }
 
@@ -266,6 +352,10 @@ func ProcessTrackFile(filePath string) error {
 	}
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
+	if mbTrackID == "" || mbReleaseID == "" {
+		return errors.New("MB track or release ID field empty")
+	}
+
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(mbReleaseID)
 	if err != nil {
@@ -275,7 +365,7 @@ func ProcessTrackFile(filePath string) error {
 	logger.Log.Debug("MB title response: " + response.Title)
 
 	// Go through API response for information
-	for _, media := range response.Media {
+	for mediaCount, media := range response.Media {
 		for _, track := range media.Tracks {
 			if track.ID == mbTrackID {
 				logger.Log.Debug("Release track ID found in MB response")
@@ -286,17 +376,28 @@ func ProcessTrackFile(filePath string) error {
 				releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
 				releaseYear := ""
 				releaseDate := ""
+				isrc := ""
 				if err == nil {
 					releaseYear = strconv.Itoa(releaseTime.Year())
 					releaseDate = releaseTime.Format("2006-01-02")
 				}
+				if len(track.Recording.ISRCs) > 0 {
+					isrc = track.Recording.ISRCs[0]
+				}
 
 				metadata := models.FileTags{
-					Artist:      releaseArtist,
-					AlbumArtist: trackArtist,
+					Artist:      trackArtist,
+					AlbumArtist: releaseArtist,
 					Genre:       "",
 					Date:        releaseDate,
 					Year:        releaseYear,
+					Album:       response.Title,
+					Title:       track.Title,
+					ISRC:        isrc,
+					Track:       track.Number,
+					TrackTotal:  strconv.Itoa(len(media.Tracks)),
+					DiscNumber:  strconv.Itoa(mediaCount + 1),
+					DiscTotal:   strconv.Itoa(len(response.Media)),
 				}
 
 				// re-tag file with new information
@@ -315,8 +416,9 @@ func ProcessTrackFile(filePath string) error {
 	return errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string) error {
-	return filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+func ScanFolderRecursive(root string) (int, error) {
+	counter := 0
+	return counter, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err // report permission errors, etc.
 		}
@@ -324,7 +426,12 @@ func ScanFolderRecursive(root string) error {
 			return nil // keep walking
 		}
 		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			ProcessTrackFile(path)
+			err = ProcessTrackFile(path)
+			if err != nil {
+				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
+			} else {
+				counter++
+			}
 		}
 		return nil
 	})

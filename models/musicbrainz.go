@@ -79,6 +79,7 @@ type MusicBrainzReleaseResponse struct {
 					Name           string `json:"name"`
 					Count          int    `json:"count"`
 				} `json:"genres"`
+				ISRCs            []string       `json:"isrcs"`
 				FirstReleaseDate string         `json:"first-release-date"`
 				Disambiguation   string         `json:"disambiguation"`
 				ArtistCredit     []ArtistCredit `json:"artist-credit"`

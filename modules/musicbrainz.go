@@ -67,6 +67,8 @@ func QueryMusicBrainzReleaseData(mbid string) (models.MusicBrainzReleaseResponse
 
 	releaseCache = append(releaseCache, apiResponse)
 
+	logger.Log.Trace(fmt.Sprintf("api response: %s", apiResponse))
+
 	return apiResponse, nil
 }
 
