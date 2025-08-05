@@ -28,8 +28,8 @@ RUN apt update && \
     rm -rf /var/lib/apt/lists/*
 
 # Create a user and group with the specified UID and GID
-RUN groupadd -g ${GROUP_ID} appgroup && \
-    useradd -m -u ${USER_ID} -g appgroup appuser
+RUN groupadd -g ${PGID} appgroup && \
+    useradd -m -u ${PUID} -g appgroup appuser
 
 # Copy and set permissions
 RUN chmod +x /app/autotaggerr /app/entrypoint.sh && \
