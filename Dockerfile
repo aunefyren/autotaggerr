@@ -16,6 +16,9 @@ LABEL org.opencontainers.image.source = "https://github.com/aunefyren/autotagger
 # Let UID/GID be passed in at build or run time
 ENV PUID=1000
 ENV PGID=1000
+ENV LANG=en_US.UTF-8
+ENV LANGUAGE=en_US:en
+ENV LC_ALL=en_US.UTF-8
 ARG DEBIAN_FRONTEND=noninteractive
 
 WORKDIR /app

@@ -246,6 +246,8 @@ func SetFlacTags(filePath string, metadata models.FileTags) error {
 		"ISRC":        metadata.ISRC,
 	}
 
+	logger.Log.Debug("Artist tag added: %q\n", metadata.Artist)
+
 	for key, value := range tags {
 		// First, remove any existing instance of this tag
 		removeCmd := exec.Command("metaflac", "--remove-tag="+key, filePath)
