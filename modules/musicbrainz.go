@@ -7,23 +7,53 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 )
 
-var releaseCache = []models.MusicBrainzReleaseResponse{}
+var (
+	lastQueryTime time.Time
+	queryMutex    sync.Mutex
+	rateLimit     = time.Second
+	releaseCache  = []models.MusicBrainzReleaseResponse{}
+)
 
-func GetMusicBrainzRelease(mbid string) (models.MusicBrainzReleaseResponse, error) {
-	for _, release := range releaseCache {
-		if strings.EqualFold(release.ID, mbid) {
+// RateLimit wraps any API function and ensures at least 1s between executions
+func RateLimit() error {
+	queryMutex.Lock()
+	defer queryMutex.Unlock()
+
+	now := time.Now()
+	elapsed := now.Sub(lastQueryTime)
+	if elapsed < rateLimit {
+		time.Sleep(rateLimit - elapsed)
+	}
+
+	lastQueryTime = time.Now()
+	return nil
+}
+
+func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
+	var release models.MusicBrainzReleaseResponse
+
+	for _, currentRelease := range releaseCache {
+		if strings.EqualFold(release.ID, mbID) {
 			logger.Log.Debug("returning cached release")
-			return release, nil
+			return currentRelease, nil
 		}
 	}
 
-	release, err := QueryMusicBrainzReleaseData(mbid)
+	configFile, err := files.GetConfig()
+	if err != nil {
+		logger.Log.Error("failed to get config file. error: " + err.Error())
+		return release, errors.New("failed to get config file")
+	}
+
+	release, err = QueryMusicBrainzReleaseData(mbID, configFile.AutotaggerrVersion)
 	if err != nil {
 		logger.Log.Debug("failed to retrieve release from MB api. error: " + err.Error())
 		return release, errors.New("failed to retrieve release from MB api")
@@ -32,17 +62,25 @@ func GetMusicBrainzRelease(mbid string) (models.MusicBrainzReleaseResponse, erro
 	return release, err
 }
 
-func QueryMusicBrainzReleaseData(mbid string) (models.MusicBrainzReleaseResponse, error) {
+func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models.MusicBrainzReleaseResponse, error) {
 	var apiResponse models.MusicBrainzReleaseResponse
 
-	url := fmt.Sprintf("https://musicbrainz.org/ws/2/release/%s?inc=recordings+labels+artists+genres+tags&fmt=json", mbid)
+	// rate limit the request to comply
+	err := RateLimit()
+	if err != nil {
+		logger.Log.Error("failed to rate limit. error: " + err.Error())
+		return apiResponse, errors.New("failed to rate limit")
+	}
+
+	// do API request
+	url := fmt.Sprintf("https://musicbrainz.org/ws/2/release/%s?inc=recordings+labels+artists+genres+tags&fmt=json", mbID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return apiResponse, err
 	}
 
-	// Set User-Agent to comply with MB guidelines
-	req.Header.Set("User-Agent", "MyMusicTagger/0.1 (my@email.com)")
+	// set User-Agent to comply with MB guidelines
+	req.Header.Set("User-Agent", "Autotaggerr/"+autotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
