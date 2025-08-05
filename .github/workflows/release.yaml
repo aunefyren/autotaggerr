@@ -1,0 +1,33 @@
+name: Release GO binaries
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  releases-matrix:
+    name: Release Go Binary
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # build and publish in parallel: linux/386, linux/amd64, linux/arm64, windows/386, windows/amd64, darwin/amd64, darwin/arm64
+        goos: [linux, windows]
+        goarch: ["386", amd64, arm64, arm]
+        exclude:
+          - goarch: arm64, arm
+            goos: windows
+    steps:
+    - uses: actions/checkout@v3
+    - uses: wangyoucao577/go-release-action@v1.40
+      with:
+        github_token: ${{ secrets.GIT_HUB_TOKEN }}
+        goos: ${{ matrix.goos }}
+        goarch: ${{ matrix.goarch }}
+        goversion: "1.23.0"
+        binary_name: "autotaggerr"
+        ldflags: "-s -w"
+        extra_files: README.md files controllers models utilities web Dockerfile entrypoint.sh
+        retry: 10
+        overwrite: true
+        release_name: ${{ github.ref_name }}
+        pre_command: sed -i 's/{{RELEASE_TAG}}/${{ github.event.release.tag_name }}/g' files/config.go # Replace release variable with the name of this release
