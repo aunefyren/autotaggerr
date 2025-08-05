@@ -246,7 +246,7 @@ func SetFlacTags(filePath string, metadata models.FileTags) error {
 		"ISRC":        metadata.ISRC,
 	}
 
-	logger.Log.Debug("Artist tag added: %q\n", metadata.Artist)
+	logger.Log.Debug("Artist tag added: %s", metadata.Artist)
 
 	for key, value := range tags {
 		if value == "" {
