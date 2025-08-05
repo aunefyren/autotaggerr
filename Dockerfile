@@ -11,7 +11,7 @@ RUN GO111MODULE=on CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build
 
 FROM debian:bullseye-slim as runtime
 
-LABEL org.opencontainers.image.source=https://github.com/aunefyren/autotaggerr
+LABEL org.opencontainers.image.source = "https://github.com/aunefyren/autotaggerr"
 ARG DEBIAN_FRONTEND=noninteractive
 WORKDIR /app
 
