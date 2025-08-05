@@ -249,18 +249,30 @@ func SetFlacTags(filePath string, metadata models.FileTags) error {
 	logger.Log.Debug("Artist tag added: %q\n", metadata.Artist)
 
 	for key, value := range tags {
-		// First, remove any existing instance of this tag
-		removeCmd := exec.Command("metaflac", "--remove-tag="+key, filePath)
-		if err := removeCmd.Run(); err != nil {
-			return fmt.Errorf("failed to remove tag %s: %w", key, err)
+		if value == "" {
+			continue // Skip empty fields
 		}
 
-		// Then, set the new tag value
+		// Construct environment with UTF-8 support
+		utf8Env := append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+
+		// Remove existing tag
+		removeCmd := exec.Command("metaflac", "--remove-tag="+key, filePath)
+		removeCmd.Env = utf8Env
+		if err := removeCmd.Run(); err != nil {
+			logger.Log.Error(fmt.Sprintf("failed to remove tag %s: %s", key, err.Error()))
+			return errors.New("failed to remove tag")
+		}
+
+		// Set new tag
 		setCmd := exec.Command("metaflac", "--set-tag", fmt.Sprintf("%s=%s", key, value), filePath)
+		setCmd.Env = utf8Env
 		if err := setCmd.Run(); err != nil {
-			return fmt.Errorf("failed to set tag %s: %w", key, err)
+			logger.Log.Error(fmt.Sprintf("failed to set tag %s: %s", key, err.Error()))
+			return errors.New("failed to set tag")
 		}
 	}
+
 	return nil
 }
 

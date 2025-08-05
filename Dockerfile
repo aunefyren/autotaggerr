@@ -25,10 +25,13 @@ WORKDIR /app
 
 COPY --from=builder /app .
 
-# Install dependencies
+# Install dependencies and locales
 RUN apt update && \
-    apt install -y ca-certificates curl flac ffmpeg && \
-    rm -rf /var/lib/apt/lists/*
+    apt install -y ca-certificates curl flac ffmpeg locales && \
+    sed -i '/en_US.UTF-8/s/^# //g' /etc/locale.gen && \
+    locale-gen && \
+    update-locale LANG=en_US.UTF-8 && \
+    export LANG=en_US.UTF-8
 
 # Create a user and group with the specified UID and GID
 RUN groupadd -g ${PGID} appgroup && \
