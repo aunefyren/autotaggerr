@@ -9,8 +9,8 @@ if [ -n "$port" ]; then
 fi
 
 # Add the --timezone flag if the TIMEZONE environment variable is set
-if [ -n "$timezone" ]; then
-  CMD="$CMD --timezone $timezone"
+if [ -n "$TZ" ]; then
+  CMD="$CMD --tz $timezone"
 fi
 
 # add the --file

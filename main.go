@@ -160,7 +160,7 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 	// Define flag variables with the configuration file as default values
 	var port = flag.Int("port", configFile.AutotaggerrPort, "The port Autotaggerr is listening on.")
 	var externalURL = flag.String("externalurl", configFile.AutotaggerrExternalURL, "The URL others would use to access Autotaggerr.")
-	var timezone = flag.String("timezone", configFile.Timezone, "The timezone Autotaggerr is running in.")
+	var timezone = flag.String("tz", configFile.Timezone, "The timezone Autotaggerr is running in.")
 
 	// SMTP flags
 	var smtpDisabled = flag.String("disablesmtp", "false", "Disables user verification using e-mail.")
