@@ -10,7 +10,7 @@ fi
 
 # Add the --timezone flag if the TIMEZONE environment variable is set
 if [ -n "$TZ" ]; then
-  CMD="$CMD --tz $timezone"
+  CMD="$CMD --tz $TZ"
 fi
 
 # add the --file
