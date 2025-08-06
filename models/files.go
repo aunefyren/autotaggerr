@@ -1,5 +1,7 @@
 package models
 
+import "time"
+
 type FileTags struct {
 	Artist      string `json:"artist"`
 	AlbumArtist string `json:"album_artist"`
@@ -13,4 +15,9 @@ type FileTags struct {
 	TrackTotal  string `json:"track_total"`
 	DiscNumber  string `json:"disc_number"`
 	DiscTotal   string `json:"disc_total"`
+}
+
+type CachedMusicBrainzRelease struct {
+	Release   MusicBrainzReleaseResponse `json:"release"`
+	Timestamp time.Time                  `json:"timestamp"`
 }

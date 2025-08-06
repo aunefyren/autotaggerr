@@ -246,7 +246,7 @@ func SetFlacTags(filePath string, metadata models.FileTags) error {
 		"ISRC":        metadata.ISRC,
 	}
 
-	logger.Log.Debug("Artist tag added: %s", metadata.Artist)
+	logger.Log.Debug(fmt.Sprintf("artist tag added: %s", metadata.Artist))
 
 	for key, value := range tags {
 		if value == "" {
@@ -382,9 +382,9 @@ func ProcessTrackFile(filePath string) error {
 	for mediaCount, media := range response.Media {
 		for _, track := range media.Tracks {
 			if track.ID == mbTrackID {
-				logger.Log.Debug("Release track ID found in MB response")
+				logger.Log.Debug("release track ID found in MB response")
 				trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit)
-				logger.Log.Debug(trackArtist)
+				logger.Log.Debug("track artists: " + trackArtist)
 
 				releaseArtist := MusicBrainzArtistsArrayToString(response.ArtistCredit)
 				releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)

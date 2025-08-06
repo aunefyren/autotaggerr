@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"strings"
+	"os"
 	"sync"
 	"time"
 
@@ -16,10 +16,12 @@ import (
 )
 
 var (
-	lastQueryTime time.Time
-	queryMutex    sync.Mutex
-	rateLimit     = time.Second
-	releaseCache  = []models.MusicBrainzReleaseResponse{}
+	lastQueryTime        time.Time
+	queryMutex           sync.Mutex
+	rateLimit            = time.Second
+	releaseCachePath     = "config/releases.json"
+	releaseCacheDuration = 7 * 24 * time.Hour // 1 week
+	releaseCache         = map[string]models.CachedMusicBrainzRelease{}
 )
 
 // RateLimit wraps any API function and ensures at least 1s between executions
@@ -40,10 +42,16 @@ func RateLimit() error {
 func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
 	var release models.MusicBrainzReleaseResponse
 
-	for _, currentRelease := range releaseCache {
-		if strings.EqualFold(release.ID, mbID) {
-			logger.Log.Debug("returning cached release")
-			return currentRelease, nil
+	err := loadCache()
+	if err != nil {
+		logger.Log.Error("failed to load release cache. error: " + err.Error())
+		return release, errors.New("failed to load release cache")
+	}
+
+	if cached, ok := releaseCache[mbID]; ok {
+		if time.Since(cached.Timestamp) < releaseCacheDuration {
+			logger.Log.Debug("returning cached release for ID: " + mbID)
+			return cached.Release, nil
 		}
 	}
 
@@ -103,7 +111,12 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 		return apiResponse, errors.New("failed to parse Musicbrainz API response")
 	}
 
-	releaseCache = append(releaseCache, apiResponse)
+	loadCache()
+	releaseCache[mbID] = models.CachedMusicBrainzRelease{
+		Release:   apiResponse,
+		Timestamp: time.Now(),
+	}
+	saveCache()
 
 	logger.Log.Trace(fmt.Sprintf("api response: %s", apiResponse))
 
@@ -130,4 +143,25 @@ func MusicBrainzDateStringToDateTime(dateStr string) (time.Time, error) {
 	}
 
 	return parsedTime, nil
+}
+
+func loadCache() error {
+	data, err := os.ReadFile(releaseCachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No cache yet
+		}
+		return err
+	}
+
+	return json.Unmarshal(data, &releaseCache)
+}
+
+func saveCache() error {
+	data, err := json.MarshalIndent(releaseCache, "", "  ")
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(releaseCachePath, data, 0644)
 }

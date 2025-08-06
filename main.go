@@ -31,21 +31,21 @@ func main() {
 	utilities.PrintASCII()
 
 	// Create files directory
-	newPath := filepath.Join(".", "files")
+	newPath := filepath.Join(".", "config")
 	err := os.MkdirAll(newPath, os.ModePerm)
 	if err != nil {
-		fmt.Println("Failed to create 'files' directory. Error: " + err.Error())
+		fmt.Println("failed to create 'files' directory. error: " + err.Error())
 		os.Exit(1)
 	}
-	fmt.Println("Directory 'files' valid.")
+	fmt.Println("directory 'config' valid")
 
 	// Load config file
 	configFile, err := files.GetConfig()
 	if err != nil {
-		fmt.Println("Failed to load configuration file. Error: " + err.Error())
+		fmt.Println("failed to load configuration file. error: " + err.Error())
 		os.Exit(1)
 	}
-	fmt.Println("Configuration file loaded.")
+	fmt.Println("configuration file loaded")
 
 	// Create and define file for logging
 	logger.InitLogger(configFile)
@@ -58,22 +58,22 @@ func main() {
 	// Change the config to respect flags
 	configFile, filePath, err := parseFlags(configFile)
 	if err != nil {
-		logger.Log.Fatal("Failed to parse input flags. Error: " + err.Error())
+		logger.Log.Fatal("failed to parse input flags. error: " + err.Error())
 		os.Exit(1)
 	}
-	logger.Log.Info("Flags parsed.")
+	logger.Log.Info("flags parsed")
 
 	// Set time zone from config if it is not empty
 	if configFile.Timezone != "" {
 		loc, err := time.LoadLocation(configFile.Timezone)
 		if err != nil {
-			logger.Log.Info("Failed to set time zone from config. Error: " + err.Error())
-			logger.Log.Info("Removing value...")
+			logger.Log.Info("failed to set time zone from config. error: " + err.Error())
+			logger.Log.Info("removing value...")
 
 			configFile.Timezone = ""
 			err = files.SaveConfig(configFile)
 			if err != nil {
-				logger.Log.Fatal("Failed to set new time zone in the config. Error: " + err.Error())
+				logger.Log.Fatal("failed to set new time zone in the config. error: " + err.Error())
 				os.Exit(1)
 			}
 
@@ -108,7 +108,7 @@ func main() {
 	// Initialize Router
 	router := initRouter()
 
-	logger.Log.Info("Router initialized.")
+	logger.Log.Info("router initialized.")
 
 	log.Fatal(router.Run(":" + strconv.Itoa(configFile.AutotaggerrPort)))
 }
