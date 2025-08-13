@@ -4,8 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 	"time"
+
+	"golang.org/x/text/unicode/norm"
 )
 
 func PrintASCII() {
@@ -170,4 +174,96 @@ func IntToPaddedString(number int) (paddedNumber string) {
 		paddedNumber = "0" + strconv.Itoa(number)
 	}
 	return
+}
+
+// Maps your "metadataType" to the canonical Vorbis key used by MusicBrainz.
+func MBVorbisKeyFor(metadataType string) (string, bool) {
+	switch strings.ToLower(metadataType) {
+	case "track":
+		return "MUSICBRAINZ_RELEASETRACKID", true
+	case "release":
+		return "MUSICBRAINZ_ALBUMID", true
+	case "release_group":
+		return "MUSICBRAINZ_RELEASEGROUPID", true
+	case "recording":
+		return "MUSICBRAINZ_TRACKID", true
+	case "artist":
+		return "MUSICBRAINZ_ALBUMARTISTID", true
+	default:
+		return "", false
+	}
+}
+
+func NormalizeTagValue(s string) string {
+	// Trim + NFC normalization avoids false mismatches (é vs. é, trailing spaces, etc.)
+	return norm.NFC.String(strings.TrimSpace(s))
+}
+
+// DiffFlacTags compares existing Vorbis tags (multi-valued) with desired (single-valued per key).
+// It returns only the keys that need to change.
+func DiffFlacTags(existing map[string][]string, desired map[string]string) (map[string]string, bool) {
+	changes := make(map[string]string)
+	hasChanges := false
+
+	for k, want := range desired {
+		if strings.TrimSpace(want) == "" {
+			continue
+		}
+		key := strings.ToUpper(k)
+
+		wantNorm := NormalizeTagValue(want)
+		haveNorm := canonicalizeValues(existing[key]) // handles []string
+
+		// Compare canonicalized strings
+		if wantNorm != haveNorm {
+			changes[key] = want
+			hasChanges = true
+		}
+	}
+	return changes, hasChanges
+}
+
+// canonicalizeValues normalizes, dedups, sorts, and then joins values so comparison is stable.
+// This also makes comparison order-insensitive for multi-valued tags (e.g., multiple ARTIST entries).
+func canonicalizeValues(vals []string) string {
+	if len(vals) == 0 {
+		return ""
+	}
+	tmp := make([]string, 0, len(vals))
+	seen := make(map[string]struct{})
+	for _, v := range vals {
+		n := NormalizeTagValue(v)
+		if n == "" {
+			continue
+		}
+		// case-insensitive dedup
+		key := strings.ToLower(n)
+		if _, ok := seen[key]; !ok {
+			seen[key] = struct{}{}
+			tmp = append(tmp, n)
+		}
+	}
+	if len(tmp) == 0 {
+		return ""
+	}
+	sort.Strings(tmp)
+	// Use a separator that won't appear in tags; only for comparison
+	return strings.Join(tmp, "\x1f")
+}
+
+func DiffID3Tags(existing map[string][]string, desired map[string]string) (map[string]string, bool) {
+	changes := make(map[string]string)
+	has := false
+	for k, want := range desired {
+		if strings.TrimSpace(want) == "" {
+			continue
+		}
+		wantN := NormalizeTagValue(want)
+		haveN := canonicalizeValues(existing[strings.ToUpper(k)])
+		if wantN != haveN {
+			changes[strings.ToUpper(k)] = want
+			has = true
+		}
+	}
+	return changes, has
 }

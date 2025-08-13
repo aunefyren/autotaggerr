@@ -21,3 +21,9 @@ type CachedMusicBrainzRelease struct {
 	Release   MusicBrainzReleaseResponse `json:"release"`
 	Timestamp time.Time                  `json:"timestamp"`
 }
+
+type FfprobeFormat struct {
+	Format struct {
+		Tags map[string]string `json:"tags"`
+	} `json:"format"`
+}

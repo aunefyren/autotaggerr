@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/bogem/id3v2"
 	"github.com/mewkiz/flac"
 	"github.com/mewkiz/flac/meta"
@@ -33,7 +35,7 @@ func ExtractMusicBrainzReleaseID(filePath string) (string, error) {
 	case ".mp3":
 		return extractFromID3v2(filePath, "release")
 	case ".flac":
-		return extractFromFLAC(filePath, "release")
+		return ExtractFLACTag(filePath, "", "release")
 	default:
 		return "", errors.New("unsupported file type")
 	}
@@ -47,87 +49,90 @@ func ExtractMusicBrainzTrackID(filePath string) (string, error) {
 	case ".mp3":
 		return extractFromID3v2(filePath, "track")
 	case ".flac":
-		return extractFromFLAC(filePath, "track")
+		return ExtractFLACTag(filePath, "", "track")
 	default:
 		return "", errors.New("unsupported file type")
 	}
 }
 
 func extractFromID3v2(filePath string, metadataType string) (string, error) {
-	keyName := ""
+	var keyName string
+	switch metadataType {
+	case "release":
+		keyName = "MusicBrainz Release Id"
+	case "track":
+		keyName = "MusicBrainz Track Id"
+	// add others if needed
+	default:
+		return "", errors.New("unsupported media type")
+	}
+
 	tagFile, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 	if err != nil {
 		return "", err
 	}
 	defer tagFile.Close()
 
-	switch metadataType {
-	case "recording":
-		keyName = ""
-	case "release":
-		keyName = "MusicBrainz Release Id"
-	case "release_group":
-		keyName = ""
-	case "track":
-		keyName = "MusicBrainz Track Id"
-	case "artist":
-		keyName = ""
-	default:
-		return "", errors.New("unsupported media type")
-	}
-
-	frames := tagFile.GetFrames("TXXX")
-	logger.Log.Trace(fmt.Sprintf("mp3 frames found: %s", frames))
-
-	for _, frame := range frames {
-		userFrame, ok := frame.(id3v2.UserDefinedTextFrame)
-		if !ok {
-			continue
-		}
-
-		desc := strings.TrimSpace(strings.ToLower(userFrame.Description))
-		logger.Log.Trace(fmt.Sprintf("mp3 frame name: %s, value: %s", desc, userFrame.Value))
-		if desc == "txxx:"+strings.TrimSpace(strings.ToLower(keyName)) {
-			return userFrame.Value, nil
+	for _, frame := range tagFile.GetFrames("TXXX") {
+		if uf, ok := frame.(id3v2.UserDefinedTextFrame); ok {
+			if strings.EqualFold(strings.TrimSpace(uf.Description), keyName) {
+				return strings.TrimSpace(uf.Value), nil
+			}
 		}
 	}
 	return "", nil
 }
 
-func extractFromFLAC(filePath string, metadataType string) (string, error) {
-	keyName := ""
-	stream, err := flac.ParseFile(filePath)
+// ExtractFLACTag returns the value of a Vorbis comment key (case-insensitive).
+// If key is empty, it will resolve from metadataType (e.g., "release" => MUSICBRAINZ_ALBUMID).
+func ExtractFLACTag(filePath, key, metadataType string) (string, error) {
+	if key == "" {
+		var ok bool
+		key, ok = utilities.MBVorbisKeyFor(metadataType)
+		if !ok {
+			return "", errors.New("unsupported or empty key/metadataType")
+		}
+	}
+	key = strings.ToUpper(key)
+
+	tags, err := getFlacTagsMap(filePath) // read all once
 	if err != nil {
 		return "", err
 	}
 
-	switch metadataType {
-	case "track":
-		keyName = "MUSICBRAINZ_RELEASETRACKID"
-	case "release":
-		keyName = "MUSICBRAINZ_ALBUMID"
-	case "release_group":
-		keyName = "MUSICBRAINZ_RELEASEGROUPID"
-	case "recording":
-		keyName = "MUSICBRAINZ_TRACKID"
-	case "artist":
-		keyName = "MUSICBRAINZ_ALBUMARTISTID"
-	default:
-		return "", errors.New("unsupported media type")
-	}
-
-	for _, block := range stream.Blocks {
-		if commentBlock, ok := block.Body.(*meta.VorbisComment); ok {
-			for _, tag := range commentBlock.Tags {
-				key := strings.ToUpper(tag[0])
-				if key == keyName {
-					return tag[1], nil
-				}
+	// return first non-empty match (Vorbis comments may have duplicates)
+	if vals, ok := tags[key]; ok {
+		for _, v := range vals {
+			v = utilities.NormalizeTagValue(v)
+			if v != "" {
+				return v, nil
 			}
 		}
 	}
+	return "", nil
+}
 
-	return "", nil // Not found
+// getFlacTagsMap returns all Vorbis comments as KEY -> []values (uppercased keys).
+func getFlacTagsMap(filePath string) (map[string][]string, error) {
+	stream, err := flac.ParseFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	out := make(map[string][]string)
+	for _, block := range stream.Blocks {
+		if vc, ok := block.Body.(*meta.VorbisComment); ok {
+			for _, kv := range vc.Tags {
+				if len(kv) < 2 {
+					continue
+				}
+				key := strings.ToUpper(strings.TrimSpace(kv[0]))
+				val := utilities.NormalizeTagValue(kv[1])
+				out[key] = append(out[key], val)
+			}
+		}
+	}
+	return out, nil
 }
 
 // Write MusicBrainz Album ID to an MP3 tag
@@ -216,7 +221,7 @@ func writeMusicBrainzAlbumIDToFLAC(filePath string, mbid string) error {
 }
 */
 
-func SetFileTags(filePath string, metadata models.FileTags) error {
+func SetFileTags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	switch ext {
@@ -225,13 +230,16 @@ func SetFileTags(filePath string, metadata models.FileTags) error {
 	case ".flac":
 		return SetFlacTags(filePath, metadata)
 	default:
-		return errors.New("unsupported file type")
+		return false, 0, errors.New("unsupported file type")
 	}
 }
 
 // SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
-func SetFlacTags(filePath string, metadata models.FileTags) error {
-	tags := map[string]string{
+func SetFlacTags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
+	unchanged = false
+	tagsWritten = 0
+
+	desired := map[string]string{
 		"ARTIST":      metadata.Artist,
 		"ALBUMARTIST": metadata.AlbumArtist,
 		"GENRE":       metadata.Genre,
@@ -246,135 +254,209 @@ func SetFlacTags(filePath string, metadata models.FileTags) error {
 		"ISRC":        metadata.ISRC,
 	}
 
-	logger.Log.Debug(fmt.Sprintf("artist tag added: %s", metadata.Artist))
+	existing, err := getFlacTagsMap(filePath)
+	if err != nil {
+		// Optional: keep going even if read fails, or return error
+		return unchanged, tagsWritten, err
+	}
 
-	for key, value := range tags {
-		if value == "" {
-			continue // Skip empty fields
-		}
+	changes, hasChanges := utilities.DiffFlacTags(existing, desired)
+	if !hasChanges {
+		logger.Log.Info("no tag changes needed: " + filePath)
+		return true, tagsWritten, nil
+	}
 
-		// Construct environment with UTF-8 support
-		utf8Env := append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+	utf8Env := append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
 
-		// Remove existing tag
+	for key, value := range changes {
+		// remove then set only the keys that changed
 		removeCmd := exec.Command("metaflac", "--remove-tag="+key, filePath)
 		removeCmd.Env = utf8Env
 		if err := removeCmd.Run(); err != nil {
 			logger.Log.Error(fmt.Sprintf("failed to remove tag %s: %s", key, err.Error()))
-			return errors.New("failed to remove tag")
+			return unchanged, tagsWritten, errors.New("failed to remove tag")
 		}
 
-		// Set new tag
 		setCmd := exec.Command("metaflac", "--set-tag", fmt.Sprintf("%s=%s", key, value), filePath)
 		setCmd.Env = utf8Env
 		if err := setCmd.Run(); err != nil {
 			logger.Log.Error(fmt.Sprintf("failed to set tag %s: %s", key, err.Error()))
-			return errors.New("failed to set tag")
+			return unchanged, tagsWritten, errors.New("failed to set tag")
+		} else {
+			tagsWritten++
 		}
 	}
 
-	return nil
+	return unchanged, tagsWritten, nil
 }
+func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
+	unchanged = false
+	tagsWritten = 0
 
-func SetMP3Tags(filePath string, metadata models.FileTags) error {
-	// Generate a temporary output path
-	tempOutput := filePath + ".temp.mp3"
+	desired := map[string]string{
+		"ARTIST":      metadata.Artist,
+		"ALBUMARTIST": metadata.AlbumArtist,
+		"GENRE":       metadata.Genre,
+		"DATE":        metadata.Date,
+		"YEAR":        metadata.Year,
+		"ALBUM":       metadata.Album,
+		"TITLE":       metadata.Title,
+		"TRACKNUMBER": metadata.Track,
+		"TRACKTOTAL":  metadata.TrackTotal,
+		"DISCNUMBER":  metadata.DiscNumber,
+		"DISCTOTAL":   metadata.DiscTotal,
+		"ISRC":        metadata.ISRC, // via TXXX
+	}
 
-	// Construct ffmpeg command
+	existing, err := GetMP3Tags(filePath)
+	if err != nil {
+		return false, 0, fmt.Errorf("read mp3 tags failed: %w", err)
+	}
+
+	changes, hasChanges := utilities.DiffID3Tags(existing, desired)
+	if !hasChanges {
+		return true, 0, nil // unchanged
+	}
+
+	// Build ffmpeg args; only set changed fields (plus paired composite fields)
 	args := []string{
 		"-i", filePath,
-		"-y",                 // Overwrite output
-		"-map_metadata", "0", // Copy existing metadata as base
-		"-codec", "copy", // Don't re-encode audio
+		"-y",
+		"-map_metadata", "0", // copy existing first
+		"-codec", "copy",
 	}
 
-	// Add standard metadata fields
-	if metadata.Artist != "" {
-		args = append(args, "-metadata", fmt.Sprintf("artist=%s", metadata.Artist))
-	}
-	if metadata.AlbumArtist != "" {
-		args = append(args, "-metadata", fmt.Sprintf("album_artist=%s", metadata.AlbumArtist))
-	}
-	if metadata.Genre != "" {
-		args = append(args, "-metadata", fmt.Sprintf("genre=%s", metadata.Genre))
-	}
-	if metadata.Year != "" {
-		args = append(args, "-metadata", fmt.Sprintf("year=%s", metadata.Year))
-	}
-	if metadata.Date != "" {
-		args = append(args, "-metadata", fmt.Sprintf("date=%s", metadata.Date))
-	}
-	if metadata.Album != "" {
-		args = append(args, "-metadata", fmt.Sprintf("album=%s", metadata.Album))
-	}
-	if metadata.Title != "" {
-		args = append(args, "-metadata", fmt.Sprintf("title=%s", metadata.Title))
-	}
-	if metadata.Track != "" && metadata.TrackTotal != "" {
-		args = append(args, "-metadata", fmt.Sprintf("track=%s/%s", metadata.Track, metadata.TrackTotal))
-	} else if metadata.Track != "" {
-		args = append(args, "-metadata", fmt.Sprintf("track=%s", metadata.Track))
-	}
-	if metadata.DiscNumber != "" && metadata.DiscTotal != "" {
-		args = append(args, "-metadata", fmt.Sprintf("disc=%s/%s", metadata.DiscNumber, metadata.DiscTotal))
-	} else if metadata.DiscNumber != "" {
-		args = append(args, "-metadata", fmt.Sprintf("disc=%s", metadata.DiscNumber))
+	addMeta := func(k, v string) {
+		args = append(args, "-metadata", fmt.Sprintf("%s=%s", k, v))
 	}
 
-	// Add custom tags using TXXX
-	if metadata.ISRC != "" {
-		args = append(args, "-metadata", fmt.Sprintf("TXXX=ISRC:%s", metadata.ISRC))
+	// Simple 1:1 fields
+	if _, ok := changes["ARTIST"]; ok {
+		addMeta("artist", desired["ARTIST"])
+		tagsWritten++
 	}
-	if metadata.TrackTotal != "" {
-		args = append(args, "-metadata", fmt.Sprintf("TXXX=TRACKTOTAL:%s", metadata.TrackTotal))
+	if _, ok := changes["ALBUMARTIST"]; ok {
+		addMeta("album_artist", desired["ALBUMARTIST"])
+		tagsWritten++
 	}
-	if metadata.DiscTotal != "" {
-		args = append(args, "-metadata", fmt.Sprintf("TXXX=DISCTOTAL:%s", metadata.DiscTotal))
+	if _, ok := changes["GENRE"]; ok {
+		addMeta("genre", desired["GENRE"])
+		tagsWritten++
+	}
+	// Prefer DATE over YEAR when both provided; still count each change
+	if _, ok := changes["YEAR"]; ok {
+		addMeta("year", desired["YEAR"])
+		tagsWritten++
+	}
+	if _, ok := changes["DATE"]; ok {
+		addMeta("date", desired["DATE"])
+		tagsWritten++
+	}
+	if _, ok := changes["ALBUM"]; ok {
+		addMeta("album", desired["ALBUM"])
+		tagsWritten++
+	}
+	if _, ok := changes["TITLE"]; ok {
+		addMeta("title", desired["TITLE"])
+		tagsWritten++
 	}
 
+	// Composite: track (TRACKNUMBER/TRACKTOTAL)
+	if _, nChanged := changes["TRACKNUMBER"]; nChanged || changes["TRACKTOTAL"] != "" {
+		tn := desired["TRACKNUMBER"]
+		tt := desired["TRACKTOTAL"]
+		if tn != "" && tt != "" {
+			addMeta("track", fmt.Sprintf("%s/%s", tn, tt))
+		} else if tn != "" {
+			addMeta("track", tn)
+		}
+		if nChanged {
+			tagsWritten++
+		}
+		if _, tChanged := changes["TRACKTOTAL"]; tChanged {
+			tagsWritten++
+		}
+	}
+
+	// Composite: disc (DISCNUMBER/DISCTOTAL)
+	if _, nChanged := changes["DISCNUMBER"]; nChanged || changes["DISCTOTAL"] != "" {
+		dn := desired["DISCNUMBER"]
+		dt := desired["DISCTOTAL"]
+		if dn != "" && dt != "" {
+			addMeta("disc", fmt.Sprintf("%s/%s", dn, dt))
+		} else if dn != "" {
+			addMeta("disc", dn)
+		}
+		if nChanged {
+			tagsWritten++
+		}
+		if _, tChanged := changes["DISCTOTAL"]; tChanged {
+			tagsWritten++
+		}
+	}
+
+	// Custom TXXX frames
+	if _, ok := changes["ISRC"]; ok && desired["ISRC"] != "" {
+		addMeta("TXXX=ISRC:"+desired["ISRC"], "")
+		// ffmpeg expects "TXXX=KEY:VALUE" as one value; we pass via previous call format:
+		args[len(args)-1] = fmt.Sprintf("TXXX=ISRC:%s", desired["ISRC"])
+		tagsWritten++
+	}
+	if _, ok := changes["TRACKTOTAL"]; ok && desired["TRACKTOTAL"] != "" {
+		args = append(args, "-metadata", fmt.Sprintf("TXXX=TRACKTOTAL:%s", desired["TRACKTOTAL"]))
+	}
+	if _, ok := changes["DISCTOTAL"]; ok && desired["DISCTOTAL"] != "" {
+		args = append(args, "-metadata", fmt.Sprintf("TXXX=DISCTOTAL:%s", desired["DISCTOTAL"]))
+	}
+
+	tempOutput := filePath + ".temp.mp3"
 	args = append(args, tempOutput)
 
 	cmd := exec.Command("ffmpeg", args...)
-	cmd.Stderr = os.Stderr // for debugging
+	// Ensure UTF-8 env if you’ve used that elsewhere:
+	cmd.Env = append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
+	cmd.Stderr = os.Stderr
 	cmd.Stdout = os.Stdout
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg tagging failed: %w", err)
+		return false, 0, fmt.Errorf("ffmpeg tagging failed: %w", err)
 	}
-
-	// Replace original file with the new one
 	if err := os.Rename(tempOutput, filePath); err != nil {
-		return fmt.Errorf("failed to replace original file: %w", err)
+		return false, 0, fmt.Errorf("failed to replace original file: %w", err)
 	}
 
-	return nil
+	return false, tagsWritten, nil
 }
 
-func ProcessTrackFile(filePath string) error {
+func ProcessTrackFile(filePath string) (unchanged bool, tagsWritten int, err error) {
+	unchanged = false
+	tagsWritten = 0
+
+	// get MB release data from track
 	mbReleaseID, err := ExtractMusicBrainzReleaseID(filePath)
 	if err != nil {
 		logger.Log.Error("failed to extract MB release ID. error: " + err.Error())
-		return errors.New("failed to extract MB release ID")
+		return unchanged, tagsWritten, errors.New("failed to extract MB release ID")
 	}
 	logger.Log.Debug("MB release ID: " + mbReleaseID)
 
-	// Get MB data from track
+	// get MB data from track
 	mbTrackID, err := ExtractMusicBrainzTrackID(filePath)
 	if err != nil {
 		logger.Log.Error("failed to extract track MB ID. error: " + err.Error())
-		return errors.New("failed to extract track MB ID")
+		return unchanged, tagsWritten, errors.New("failed to extract track MB ID")
 	}
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
 	if mbTrackID == "" || mbReleaseID == "" {
-		return errors.New("MB track or release ID field empty")
+		return unchanged, tagsWritten, errors.New("MB track or release ID field empty")
 	}
 
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(mbReleaseID)
 	if err != nil {
 		logger.Log.Error("failed to get MB release data. error: " + err.Error())
-		return errors.New("failed to get MB release data")
+		return unchanged, tagsWritten, errors.New("failed to get MB release data")
 	}
 	logger.Log.Debug("MB title response: " + response.Title)
 
@@ -415,24 +497,32 @@ func ProcessTrackFile(filePath string) error {
 				}
 
 				// re-tag file with new information
-				err = SetFileTags(filePath, metadata)
+				unchanged, tagsWritten, err := SetFileTags(filePath, metadata)
 				if err != nil {
 					logger.Log.Error("failed to set FLAC artist tags. error: " + err.Error())
-					return errors.New("failed to set FLAC artist tags")
+					return unchanged, tagsWritten, errors.New("failed to set FLAC artist tags")
 				}
 
-				logger.Log.Info("file processed: " + filePath)
-				return nil
+				changeString := "unchanged"
+				if !unchanged {
+					changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
+				}
+
+				logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
+				return unchanged, tagsWritten, nil
 			}
 		}
 	}
 
-	return errors.New("failed to tag file, track not found in release data")
+	return unchanged, tagsWritten, errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string) (int, error) {
-	counter := 0
-	return counter, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+func ScanFolderRecursive(root string) (counter int, unchangedFiles int, allTagsWritten int, err error) {
+	counter = 0
+	unchangedFiles = 0
+	allTagsWritten = 0
+
+	return counter, unchangedFiles, allTagsWritten, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err // report permission errors, etc.
 		}
@@ -440,13 +530,85 @@ func ScanFolderRecursive(root string) (int, error) {
 			return nil // keep walking
 		}
 		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			err = ProcessTrackFile(path)
+			unchanged, tagsWritten, err := ProcessTrackFile(path)
 			if err != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
 			} else {
 				counter++
+				if unchanged {
+					unchangedFiles++
+				} else {
+					logger.Log.Trace("file changed: " + path)
+				}
+				allTagsWritten += tagsWritten
 			}
 		}
 		return nil
 	})
+}
+
+func GetMP3Tags(filePath string) (map[string][]string, error) {
+	cmd := exec.Command("ffprobe",
+		"-v", "quiet",
+		"-print_format", "json",
+		"-show_format",
+		filePath,
+	)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("ffprobe failed: %w", err)
+	}
+	var fp models.FfprobeFormat
+	if err := json.Unmarshal(out, &fp); err != nil {
+		return nil, fmt.Errorf("ffprobe parse failed: %w", err)
+	}
+	res := make(map[string][]string)
+	for k, v := range fp.Format.Tags {
+		key := strings.ToLower(strings.TrimSpace(k))
+		val := utilities.NormalizeTagValue(v)
+
+		switch key {
+		case "artist":
+			res["ARTIST"] = append(res["ARTIST"], val)
+		case "album_artist":
+			res["ALBUMARTIST"] = append(res["ALBUMARTIST"], val)
+		case "genre":
+			res["GENRE"] = append(res["GENRE"], val)
+		case "date":
+			res["DATE"] = append(res["DATE"], val)
+		case "year":
+			res["YEAR"] = append(res["YEAR"], val)
+		case "album":
+			res["ALBUM"] = append(res["ALBUM"], val)
+		case "title":
+			res["TITLE"] = append(res["TITLE"], val)
+		case "track":
+			// e.g. "3/12" or "3"
+			parts := strings.SplitN(val, "/", 2)
+			if len(parts) >= 1 {
+				res["TRACKNUMBER"] = append(res["TRACKNUMBER"], utilities.NormalizeTagValue(parts[0]))
+			}
+			if len(parts) == 2 {
+				res["TRACKTOTAL"] = append(res["TRACKTOTAL"], utilities.NormalizeTagValue(parts[1]))
+			}
+		case "disc":
+			parts := strings.SplitN(val, "/", 2)
+			if len(parts) >= 1 {
+				res["DISCNUMBER"] = append(res["DISCNUMBER"], utilities.NormalizeTagValue(parts[0]))
+			}
+			if len(parts) == 2 {
+				res["DISCTOTAL"] = append(res["DISCTOTAL"], utilities.NormalizeTagValue(parts[1]))
+			}
+		default:
+			// Handle TXXX:* custom frames (e.g., TXXX:ISRC)
+			if strings.HasPrefix(strings.ToUpper(key), "TXXX:") {
+				custom := strings.ToUpper(strings.TrimPrefix(key, "TXXX:"))
+				switch custom {
+				case "ISRC", "TRACKTOTAL", "DISCTOTAL":
+					res[custom] = append(res[custom], val)
+				}
+			}
+		}
+	}
+	return res, nil
 }

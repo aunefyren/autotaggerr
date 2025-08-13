@@ -99,7 +99,7 @@ func main() {
 
 	// process file path
 	if filePath != nil {
-		err = modules.ProcessTrackFile(*filePath)
+		_, _, err := modules.ProcessTrackFile(*filePath)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
@@ -245,14 +245,23 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 func processLibraries(libraries []string) {
 	logger.Log.Info("library process task starting...")
 	count := 0
+	allUnchangedFiles := 0
+	allTagsWritten := 0
+
 	for _, library := range libraries {
 		logger.Log.Info("processing: " + library)
-		libraryCount, err := modules.ScanFolderRecursive(library)
+		libraryCount, unchangedFiles, tagsWritten, err := modules.ScanFolderRecursive(library)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
 		} else {
 			count += libraryCount
+			allUnchangedFiles += unchangedFiles
+			allTagsWritten += tagsWritten
+
 		}
 	}
-	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed")
+
+	filesChanged := count - allUnchangedFiles
+
+	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
 }
