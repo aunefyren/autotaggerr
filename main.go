@@ -247,21 +247,22 @@ func processLibraries(libraries []string) {
 	count := 0
 	allUnchangedFiles := 0
 	allTagsWritten := 0
+	allErrorFiles := 0
 
 	for _, library := range libraries {
 		logger.Log.Info("processing: " + library)
-		libraryCount, unchangedFiles, tagsWritten, err := modules.ScanFolderRecursive(library)
+		libraryCount, unchangedFiles, tagsWritten, errorFiles, err := modules.ScanFolderRecursive(library)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
 		} else {
 			count += libraryCount
 			allUnchangedFiles += unchangedFiles
 			allTagsWritten += tagsWritten
-
+			allErrorFiles += errorFiles
 		}
 	}
 
 	filesChanged := count - allUnchangedFiles
 
-	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
+	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(allErrorFiles) + " files not processed because of errors. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
 }

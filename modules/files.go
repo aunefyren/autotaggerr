@@ -517,12 +517,13 @@ func ProcessTrackFile(filePath string) (unchanged bool, tagsWritten int, err err
 	return unchanged, tagsWritten, errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string) (counter int, unchangedFiles int, allTagsWritten int, err error) {
+func ScanFolderRecursive(root string) (counter int, unchangedFiles int, allTagsWritten int, errorFiles int, err error) {
 	counter = 0
 	unchangedFiles = 0
 	allTagsWritten = 0
+	errorFiles = 0
 
-	return counter, unchangedFiles, allTagsWritten, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	return counter, unchangedFiles, allTagsWritten, errorFiles, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err // report permission errors, etc.
 		}
@@ -533,6 +534,7 @@ func ScanFolderRecursive(root string) (counter int, unchangedFiles int, allTagsW
 			unchanged, tagsWritten, err := ProcessTrackFile(path)
 			if err != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
+				errorFiles++
 			} else {
 				counter++
 				if unchanged {
