@@ -449,6 +449,13 @@ func ProcessTrackFile(filePath string) (unchanged bool, tagsWritten int, err err
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
 	if mbTrackID == "" || mbReleaseID == "" {
+		logger.Log.Info("MB track or release ID field empty. Trying Lidarr...")
+
+		lidarrClient := NewLidarrClient("", "")
+		ResolveMBReleaseIDFromLidarr(lidarrClient, filePath, "?")
+	}
+
+	if mbTrackID == "" || mbReleaseID == "" {
 		return unchanged, tagsWritten, errors.New("MB track or release ID field empty")
 	}
 
@@ -613,4 +620,31 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 		}
 	}
 	return res, nil
+}
+
+// ResolveMBReleaseIDFromLidarr uses the on-disk path + Lidarr to get the MB release ID.
+func ResolveMBReleaseIDFromLidarr(cli *LidarrClient, trackPath, libraryRoot string) (string, error) {
+	// Derive the artist folder (/root/<Artist>)
+	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(trackPath, libraryRoot)
+	if err != nil {
+		return "", err
+	}
+
+	artistFolder := filepath.Join(libraryRoot, artistName)
+	artist, err := cli.FindArtistByPath(artistFolder)
+	if err != nil {
+		return "", err
+	}
+
+	tf, err := cli.FindTrackFileByPath(artist.Id, trackPath)
+	if err != nil {
+		return "", err
+	}
+
+	mbid, err := cli.GetMonitoredAlbumMBID(artist.Id, tf.AlbumID)
+	if err != nil {
+		return "", err
+	}
+
+	return mbid, nil
 }

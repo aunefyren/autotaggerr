@@ -3,6 +3,8 @@ package utilities
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -266,4 +268,27 @@ func DiffID3Tags(existing map[string][]string, desired map[string]string) (map[s
 		}
 	}
 	return changes, has
+}
+
+// ExtractArtistNameFromTrackFilePath("/music/Artist/Album/file.flac", "/music") => "Artist"
+func ExtractArtistNameFromTrackFilePath(trackPath, libraryRoot string) (string, error) {
+	clean := filepath.Clean(trackPath)
+	root := filepath.Clean(libraryRoot)
+
+	rel, err := filepath.Rel(root, clean)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "..") {
+		return "", fmt.Errorf("path %q not under library root %q", trackPath, libraryRoot)
+	}
+	parts := strings.Split(rel, string(os.PathSeparator))
+	if len(parts) < 2 {
+		return "", fmt.Errorf("could not find artist folder in %q", rel)
+	}
+	return parts[0], nil
+}
+
+// Normalize a path for matching across OSes (case-insensitive, forward slashes)
+func normPath(s string) string {
+	s = filepath.Clean(s)
+	s = filepath.ToSlash(s)
+	return strings.ToLower(s)
 }
