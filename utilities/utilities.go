@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -270,25 +271,71 @@ func DiffID3Tags(existing map[string][]string, desired map[string]string) (map[s
 	return changes, has
 }
 
-// ExtractArtistNameFromTrackFilePath("/music/Artist/Album/file.flac", "/music") => "Artist"
-func ExtractArtistNameFromTrackFilePath(trackPath, libraryRoot string) (string, error) {
+// picks the artist folder name assuming the correct path structure
+func ExtractArtistNameFromTrackFilePath(trackPath string) (string, error) {
 	clean := filepath.Clean(trackPath)
-	root := filepath.Clean(libraryRoot)
+	parts := strings.Split(clean, string(os.PathSeparator))
 
-	rel, err := filepath.Rel(root, clean)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("path %q not under library root %q", trackPath, libraryRoot)
+	if len(parts) < 3 {
+		return "", fmt.Errorf("path %q does not contain artist/album/track structure", trackPath)
 	}
-	parts := strings.Split(rel, string(os.PathSeparator))
-	if len(parts) < 2 {
-		return "", fmt.Errorf("could not find artist folder in %q", rel)
+
+	// Artist is the 3rd element from the end
+	artist := parts[len(parts)-3]
+	if artist == "" {
+		return "", fmt.Errorf("empty artist name in path %q", trackPath)
 	}
-	return parts[0], nil
+
+	return artist, nil
 }
 
-// Normalize a path for matching across OSes (case-insensitive, forward slashes)
-func normPath(s string) string {
+// picks the album folder name assuming the correct path structure
+func ExtractAlbumNameFromTrackFilePath(trackPath string) (string, error) {
+	clean := filepath.Clean(trackPath)
+
+	dir := filepath.Dir(clean)
+	if dir == "." || dir == string(os.PathSeparator) {
+		return "", fmt.Errorf("no album dir in %q", trackPath)
+	}
+
+	album := filepath.Base(dir)
+	if album == "" {
+		return "", fmt.Errorf("empty album dir in %q", trackPath)
+	}
+
+	return album, nil
+}
+
+// picks the track file name assuming the correct path structure
+func ExtractTrackFileName(trackPath string) (string, error) {
+	clean := filepath.Clean(trackPath)
+
+	base := filepath.Base(clean)
+	if base == "" || base == "." || base == string(os.PathSeparator) {
+		return "", fmt.Errorf("invalid track file in %q", trackPath)
+	}
+
+	return base, nil
+}
+
+// normalize a path for matching across OSes (case-insensitive, forward slashes)
+func NormPath(s string) string {
 	s = filepath.Clean(s)
 	s = filepath.ToSlash(s)
 	return strings.ToLower(s)
+}
+
+// canonicalize for robust matching (trim, NFC, lower)
+func Canon(s string) string {
+	return strings.ToLower(norm.NFC.String(strings.TrimSpace(s)))
+}
+
+func BaseOfPathAny(p string) string {
+	return path.Base(filepath.ToSlash(p)) // use forward slash rules
+}
+
+func BaseDirOfPathAny(p string) string {
+	slashed := filepath.ToSlash(p)
+	dir := path.Dir(slashed)
+	return path.Base(dir)
 }

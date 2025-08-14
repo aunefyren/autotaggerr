@@ -428,7 +428,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	return false, tagsWritten, nil
 }
 
-func ProcessTrackFile(filePath string) (unchanged bool, tagsWritten int, err error) {
+func ProcessTrackFile(filePath string, lidarrClient *LidarrClient) (unchanged bool, tagsWritten int, err error) {
 	unchanged = false
 	tagsWritten = 0
 
@@ -448,11 +448,16 @@ func ProcessTrackFile(filePath string) (unchanged bool, tagsWritten int, err err
 	}
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
-	if mbTrackID == "" || mbReleaseID == "" {
+	if (mbTrackID == "" || mbReleaseID == "") && lidarrClient != nil {
 		logger.Log.Info("MB track or release ID field empty. Trying Lidarr...")
+		mbReleaseID, mbTrackID, err = ResolveMBReleaseAndTrackIDFromLidarr(lidarrClient, filePath)
+		if err != nil {
+			logger.Log.Error("failed to retrieve track MB ID from Lidarr. error: " + err.Error())
+			return unchanged, tagsWritten, errors.New("failed to retrieve track MB ID from Lidarr")
+		}
 
-		lidarrClient := NewLidarrClient("", "")
-		ResolveMBReleaseIDFromLidarr(lidarrClient, filePath, "?")
+		logger.Log.Trace("MB release ID: " + mbReleaseID)
+		logger.Log.Trace("MB track ID: " + mbTrackID)
 	}
 
 	if mbTrackID == "" || mbReleaseID == "" {
@@ -524,7 +529,7 @@ func ProcessTrackFile(filePath string) (unchanged bool, tagsWritten int, err err
 	return unchanged, tagsWritten, errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string) (counter int, unchangedFiles int, allTagsWritten int, errorFiles int, err error) {
+func ScanFolderRecursive(root string, lidarrClient *LidarrClient) (counter int, unchangedFiles int, allTagsWritten int, errorFiles int, err error) {
 	counter = 0
 	unchangedFiles = 0
 	allTagsWritten = 0
@@ -538,7 +543,7 @@ func ScanFolderRecursive(root string) (counter int, unchangedFiles int, allTagsW
 			return nil // keep walking
 		}
 		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			unchanged, tagsWritten, err := ProcessTrackFile(path)
+			unchanged, tagsWritten, err := ProcessTrackFile(path, lidarrClient)
 			if err != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
 				errorFiles++
@@ -622,29 +627,45 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 	return res, nil
 }
 
-// ResolveMBReleaseIDFromLidarr uses the on-disk path + Lidarr to get the MB release ID.
-func ResolveMBReleaseIDFromLidarr(cli *LidarrClient, trackPath, libraryRoot string) (string, error) {
-	// Derive the artist folder (/root/<Artist>)
-	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(trackPath, libraryRoot)
+// try to retrieve the MB release from Lidarr
+func ResolveMBReleaseAndTrackIDFromLidarr(cli *LidarrClient, trackPath string) (string, string, error) {
+	mbTrackID := ""
+	mbReleaseID := ""
+
+	// derive the artist from the path folder
+	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(trackPath)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	artistFolder := filepath.Join(libraryRoot, artistName)
-	artist, err := cli.FindArtistByPath(artistFolder)
+	artist, err := cli.FindArtistByName(artistName)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	tf, err := cli.FindTrackFileByPath(artist.Id, trackPath)
+	tf, err := cli.FindTrackFileByPath(artist.ID, trackPath)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	mbid, err := cli.GetMonitoredAlbumMBID(artist.Id, tf.AlbumID)
+	logger.Log.Trace("Lidarr track file: ")
+	logger.Log.Trace(tf)
+
+	tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 
-	return mbid, nil
+	for _, track := range tracks {
+		if track.TrackFileID == tf.ID {
+			mbTrackID = track.ForeignTrackID
+		}
+	}
+
+	mbReleaseID, err = cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
+	if err != nil {
+		return "", "", err
+	}
+
+	return mbReleaseID, mbTrackID, nil
 }

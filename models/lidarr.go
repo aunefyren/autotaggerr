@@ -1,25 +1,33 @@
 package models
 
 type LidarrArtist struct {
-	Id   int64  `json:"id"`
+	ID   int64  `json:"id"`
 	Name string `json:"artistName"` // Lidarr uses artistName
 	Path string `json:"path"`
 }
 
 type LidarrTrackFile struct {
-	Id      int64  `json:"id"`
-	Path    string `json:"path"`
-	AlbumID int64  `json:"albumId"`
+	ID       int64  `json:"id"`
+	Path     string `json:"path"`
+	AlbumID  int64  `json:"albumId"`
+	ArtistID int64  `json:"artistId"`
+}
+
+type LidarrTrack struct {
+	ID             int64  `json:"id"`
+	Title          string `json:"title"`
+	ForeignTrackID string `json:"foreignTrackId"` // MusicBrainz Track ID
+	TrackFileID    int64  `json:"trackFileId"`
 }
 
 type LidarrAlbum struct {
-	Id       int64            `json:"id"`
-	ArtistId int64            `json:"artistId"`
+	ID       int64            `json:"id"`
+	ArtistID int64            `json:"artistId"`
 	Releases []LidarrAlbumRel `json:"releases"`
 }
 
 type LidarrAlbumRel struct {
-	Id               int64  `json:"id"`
+	ID               int64  `json:"id"`
 	Monitored        bool   `json:"monitored"`
-	ForeignReleaseId string `json:"foreignReleaseId"` // MB release ID
+	ForeignReleaseID string `json:"foreignReleaseId"` // MB release ID
 }
