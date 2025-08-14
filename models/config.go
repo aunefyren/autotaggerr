@@ -22,4 +22,6 @@ type ConfigStruct struct {
 	LidarrBaseURL                  string   `json:"lidarr_base_url"`
 	LidarrAPIKey                   string   `json:"lidarr_api_key"`
 	LidarrHeaderCookie             string   `json:"lidarr_header_cookie"`
+	PlexBaseURL                    string   `json:"plex_base_url"`
+	PlexToken                      string   `json:"plex_token"`
 }
