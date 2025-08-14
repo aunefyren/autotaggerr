@@ -27,6 +27,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var (
+	lidarrClient *modules.LidarrClient
+)
+
 func main() {
 	utilities.PrintASCII()
 
@@ -83,23 +87,28 @@ func main() {
 	}
 	logger.Log.Info("timezone set")
 
+	// configure Lidarr client
+	if configFile.LidarrBaseURL != "" && configFile.LidarrAPIKey != "" {
+		lidarrClient = modules.NewLidarrClient(configFile.LidarrBaseURL, configFile.LidarrAPIKey, &configFile.LidarrHeaderCookie)
+	}
+
 	// Create task scheduler for sunday reminders
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		processLibraries(configFile.AutotaggerrLibraries)
+		processLibraries(configFile.AutotaggerrLibraries, lidarrClient)
 	}, configFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
 		logger.Log.Info("library process task was not scheduled successfully.")
 	}
 
 	if configFile.AutotaggerrProcessOnStartUp {
-		processLibraries(configFile.AutotaggerrLibraries)
+		processLibraries(configFile.AutotaggerrLibraries, lidarrClient)
 	}
 
 	// process file path
 	if filePath != nil {
-		_, _, err := modules.ProcessTrackFile(*filePath)
+		_, _, err := modules.ProcessTrackFile(*filePath, lidarrClient)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
@@ -242,7 +251,7 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 	return configFile, filePath, nil
 }
 
-func processLibraries(libraries []string) {
+func processLibraries(libraries []string, lidarrClient *modules.LidarrClient) {
 	logger.Log.Info("library process task starting...")
 	count := 0
 	allUnchangedFiles := 0
@@ -251,7 +260,7 @@ func processLibraries(libraries []string) {
 
 	for _, library := range libraries {
 		logger.Log.Info("processing: " + library)
-		libraryCount, unchangedFiles, tagsWritten, errorFiles, err := modules.ScanFolderRecursive(library)
+		libraryCount, unchangedFiles, tagsWritten, errorFiles, err := modules.ScanFolderRecursive(library, lidarrClient)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
 		} else {

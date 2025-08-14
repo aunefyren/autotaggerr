@@ -19,4 +19,7 @@ type ConfigStruct struct {
 	SMTPUsername                   string   `json:"smtp_username"`
 	SMTPPassword                   string   `json:"smtp_password"`
 	SMTPFrom                       string   `json:"smtp_from"`
+	LidarrBaseURL                  string   `json:"lidarr_base_url"`
+	LidarrAPIKey                   string   `json:"lidarr_api_key"`
+	LidarrHeaderCookie             string   `json:"lidarr_header_cookie"`
 }

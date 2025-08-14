@@ -3,6 +3,9 @@ package utilities
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -266,4 +269,73 @@ func DiffID3Tags(existing map[string][]string, desired map[string]string) (map[s
 		}
 	}
 	return changes, has
+}
+
+// picks the artist folder name assuming the correct path structure
+func ExtractArtistNameFromTrackFilePath(trackPath string) (string, error) {
+	clean := filepath.Clean(trackPath)
+	parts := strings.Split(clean, string(os.PathSeparator))
+
+	if len(parts) < 3 {
+		return "", fmt.Errorf("path %q does not contain artist/album/track structure", trackPath)
+	}
+
+	// Artist is the 3rd element from the end
+	artist := parts[len(parts)-3]
+	if artist == "" {
+		return "", fmt.Errorf("empty artist name in path %q", trackPath)
+	}
+
+	return artist, nil
+}
+
+// picks the album folder name assuming the correct path structure
+func ExtractAlbumNameFromTrackFilePath(trackPath string) (string, error) {
+	clean := filepath.Clean(trackPath)
+
+	dir := filepath.Dir(clean)
+	if dir == "." || dir == string(os.PathSeparator) {
+		return "", fmt.Errorf("no album dir in %q", trackPath)
+	}
+
+	album := filepath.Base(dir)
+	if album == "" {
+		return "", fmt.Errorf("empty album dir in %q", trackPath)
+	}
+
+	return album, nil
+}
+
+// picks the track file name assuming the correct path structure
+func ExtractTrackFileName(trackPath string) (string, error) {
+	clean := filepath.Clean(trackPath)
+
+	base := filepath.Base(clean)
+	if base == "" || base == "." || base == string(os.PathSeparator) {
+		return "", fmt.Errorf("invalid track file in %q", trackPath)
+	}
+
+	return base, nil
+}
+
+// normalize a path for matching across OSes (case-insensitive, forward slashes)
+func NormPath(s string) string {
+	s = filepath.Clean(s)
+	s = filepath.ToSlash(s)
+	return strings.ToLower(s)
+}
+
+// canonicalize for robust matching (trim, NFC, lower)
+func Canon(s string) string {
+	return strings.ToLower(norm.NFC.String(strings.TrimSpace(s)))
+}
+
+func BaseOfPathAny(p string) string {
+	return path.Base(filepath.ToSlash(p)) // use forward slash rules
+}
+
+func BaseDirOfPathAny(p string) string {
+	slashed := filepath.ToSlash(p)
+	dir := path.Dir(slashed)
+	return path.Base(dir)
 }

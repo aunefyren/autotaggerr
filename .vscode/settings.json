@@ -3,8 +3,12 @@
         "Autotaggerr",
         "ffprobe",
         "FLAC",
+        "ID",
         "ISRC",
+        "Lidarr",
+        "MB",
         "MusicBrainz",
+        "trackfile",
         "Vorbis"
     ]
 }
