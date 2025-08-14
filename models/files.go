@@ -22,6 +22,21 @@ type CachedMusicBrainzRelease struct {
 	Timestamp time.Time                  `json:"timestamp"`
 }
 
+type CachedLidarrArtistRelease struct {
+	Artist    LidarrArtist `json:"artist"`
+	Timestamp time.Time    `json:"timestamp"`
+}
+
+type CachedLidarrAlbumRelease struct {
+	Album     LidarrAlbum `json:"album"`
+	Timestamp time.Time   `json:"timestamp"`
+}
+
+type CachedLidarrTracksRelease struct {
+	Tracks    []LidarrTrack `json:"track"`
+	Timestamp time.Time     `json:"timestamp"`
+}
+
 type FfprobeFormat struct {
 	Format struct {
 		Tags map[string]string `json:"tags"`

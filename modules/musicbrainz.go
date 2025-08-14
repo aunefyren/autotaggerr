@@ -16,12 +16,12 @@ import (
 )
 
 var (
-	lastQueryTime        time.Time
-	queryMutex           sync.Mutex
-	rateLimit            = time.Second
-	releaseCachePath     = "config/releases.json"
-	releaseCacheDuration = 7 * 24 * time.Hour // 1 week
-	releaseCache         = map[string]models.CachedMusicBrainzRelease{}
+	lastQueryTime                   time.Time
+	queryMutex                      sync.Mutex
+	rateLimit                       = time.Second
+	musicbrainzReleaseCachePath     = "config/mb_releases.json"
+	musicbrainzReleaseCacheDuration = 7 * 24 * time.Hour // 1 week
+	musicbrainzReleaseCache         = map[string]models.CachedMusicBrainzRelease{}
 )
 
 // RateLimit wraps any API function and ensures at least 1s between executions
@@ -42,14 +42,14 @@ func RateLimit() error {
 func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
 	var release models.MusicBrainzReleaseResponse
 
-	err := loadCache()
+	err := musicbrainzLoadCache()
 	if err != nil {
 		logger.Log.Error("failed to load release cache. error: " + err.Error())
 		return release, errors.New("failed to load release cache")
 	}
 
-	if cached, ok := releaseCache[mbID]; ok {
-		if time.Since(cached.Timestamp) < releaseCacheDuration {
+	if cached, ok := musicbrainzReleaseCache[mbID]; ok {
+		if time.Since(cached.Timestamp) < musicbrainzReleaseCacheDuration {
 			logger.Log.Debug("returning cached release for ID: " + mbID)
 			return cached.Release, nil
 		}
@@ -111,12 +111,12 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 		return apiResponse, errors.New("failed to parse Musicbrainz API response")
 	}
 
-	loadCache()
-	releaseCache[mbID] = models.CachedMusicBrainzRelease{
+	musicbrainzLoadCache()
+	musicbrainzReleaseCache[mbID] = models.CachedMusicBrainzRelease{
 		Release:   apiResponse,
 		Timestamp: time.Now(),
 	}
-	saveCache()
+	musicbrainzSaveCache()
 
 	logger.Log.Trace(fmt.Sprintf("api response: %s", apiResponse))
 
@@ -145,8 +145,8 @@ func MusicBrainzDateStringToDateTime(dateStr string) (time.Time, error) {
 	return parsedTime, nil
 }
 
-func loadCache() error {
-	data, err := os.ReadFile(releaseCachePath)
+func musicbrainzLoadCache() error {
+	data, err := os.ReadFile(musicbrainzReleaseCachePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil // No cache yet
@@ -154,14 +154,14 @@ func loadCache() error {
 		return err
 	}
 
-	return json.Unmarshal(data, &releaseCache)
+	return json.Unmarshal(data, &musicbrainzReleaseCache)
 }
 
-func saveCache() error {
-	data, err := json.MarshalIndent(releaseCache, "", "  ")
+func musicbrainzSaveCache() error {
+	data, err := json.MarshalIndent(musicbrainzReleaseCache, "", "  ")
 	if err != nil {
 		return err
 	}
 
-	return os.WriteFile(releaseCachePath, data, 0644)
+	return os.WriteFile(musicbrainzReleaseCachePath, data, 0644)
 }
