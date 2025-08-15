@@ -29,6 +29,7 @@ import (
 
 var (
 	lidarrClient *modules.LidarrClient
+	plexClient   *modules.PlexClient
 )
 
 func main() {
@@ -90,6 +91,11 @@ func main() {
 	// configure Lidarr client
 	if configFile.LidarrBaseURL != "" && configFile.LidarrAPIKey != "" {
 		lidarrClient = modules.NewLidarrClient(configFile.LidarrBaseURL, configFile.LidarrAPIKey, &configFile.LidarrHeaderCookie)
+	}
+
+	// configure Plex client
+	if configFile.PlexBaseURL != "" && configFile.PlexToken != "" {
+		plexClient = modules.NewPlexClient(configFile.PlexBaseURL, configFile.PlexToken)
 	}
 
 	// Create task scheduler for sunday reminders

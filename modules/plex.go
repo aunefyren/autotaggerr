@@ -1,90 +1,131 @@
 package modules
 
 import (
-	"encoding/json"
+	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
+	"golang.org/x/text/unicode/norm"
 )
 
-// must be local in the file
 type PlexClient struct {
-	BaseURL   string
-	Token     string
-	HTTP      *http.Client
-	RateLimit func(func() error) error // optional: your 1 rps limiter
+	BaseURL string
+	Token   string
+	HTTP    *http.Client
 }
 
-// create new Plex client
 func NewPlexClient(baseURL, token string) *PlexClient {
 	return &PlexClient{
 		BaseURL: strings.TrimRight(baseURL, "/"),
 		Token:   token,
-		HTTP:    &http.Client{Timeout: 15 * time.Second},
+		HTTP:    &http.Client{Timeout: 10 * time.Second},
 	}
 }
 
-func (c *PlexClient) findMusicSectionForPath(plexBaseURL, token, albumDir string) (string, error) {
-	req, _ := http.NewRequest("GET", plexBaseURL+"/library/sections?X-Plex-Token="+token, nil)
-	res, err := c.HTTP.Do(req)
+func (p *PlexClient) get(path string, dst any) error {
+	u := p.BaseURL + path
+	if strings.Contains(path, "?") {
+		u += "&"
+	} else {
+		u += "?"
+	}
+	u += "X-Plex-Token=" + url.QueryEscape(p.Token)
+
+	req, _ := http.NewRequest("GET", u, nil)
+	req.Header.Set("Accept", "application/xml")
+	resp, err := p.HTTP.Do(req)
 	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("plex %s -> %d: %s", path, resp.StatusCode, strings.TrimSpace(string(b)))
+	}
+	return xml.NewDecoder(resp.Body).Decode(dst)
+}
+
+func (p *PlexClient) put(path string) error {
+	u := p.BaseURL + path
+	if strings.Contains(path, "?") {
+		u += "&"
+	} else {
+		u += "?"
+	}
+	u += "X-Plex-Token=" + url.QueryEscape(p.Token)
+
+	req, _ := http.NewRequest("PUT", u, nil)
+	resp, err := p.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != 200 {
+		return fmt.Errorf("plex refresh -> %d", resp.StatusCode)
+	}
+	return nil
+}
+
+// find first music section (type="artist")
+func (p *PlexClient) FindMusicSectionID() (string, error) {
+	var mc models.PlexMediaContainer
+	if err := p.get("/library/sections", &mc); err != nil {
 		return "", err
 	}
-	defer res.Body.Close()
-
-	var sections models.PlexSections
-	if err := json.NewDecoder(res.Body).Decode(&sections); err != nil {
-		return "", fmt.Errorf("decode sections: %w", err)
-	}
-	albumDirN := strings.ToLower(filepath.ToSlash(filepath.Clean(albumDir)))
-
-	// choose the *music* section (type == "artist") whose Location is a prefix of albumDir
-	for _, dir := range sections.MediaContainer.Directory {
-		if strings.ToLower(dir.Type) != "artist" { // music library
-			continue
-		}
-		for _, loc := range dir.Location {
-			prefix := strings.ToLower(filepath.ToSlash(filepath.Clean(loc.Path)))
-			if strings.HasPrefix(albumDirN, prefix) {
-				return dir.Key, nil // sectionId
-			}
+	for _, d := range mc.Directory {
+		if strings.EqualFold(d.Type, "artist") {
+			return d.Key, nil
 		}
 	}
-
-	return "", fmt.Errorf("no Plex music section contains %q", albumDir)
+	return "", errors.New("no music section found (type=artist)")
 }
 
-func (c *PlexClient) RefreshAlbumByPath(plexBaseURL, token, albumDir string) error {
-	sectionId, err := c.findMusicSectionForPath(plexBaseURL, token, albumDir)
-	if err != nil {
-		return err
+func canon(s string) string {
+	return strings.ToLower(norm.NFC.String(strings.TrimSpace(s)))
+}
+
+func (p *PlexClient) FindArtistKey(sectionID, artistName string) (string, error) {
+	var mc models.PlexMediaContainer
+	path := fmt.Sprintf("/library/sections/%s/all?type=8&title=%s",
+		sectionID, url.QueryEscape(artistName))
+	if err := p.get(path, &mc); err != nil {
+		return "", err
 	}
 
-	q := url.Values{}
-	q.Set("path", albumDir) // absolute path, as Plex sees it
-	q.Set("X-Plex-Token", token)
-
-	req, _ := http.NewRequest("GET",
-		fmt.Sprintf("%s/library/sections/%s/refresh?%s", plexBaseURL, sectionId, q.Encode()),
-		nil,
-	)
-
-	res, err := c.HTTP.Do(req)
-	if err != nil {
-		return err
+	want := canon(artistName)
+	for _, d := range mc.Directory {
+		if d.Type == "artist" && canon(d.Title) == want {
+			return d.Key, nil
+		}
 	}
-	defer res.Body.Close()
+	return "", fmt.Errorf("artist not found: %s", artistName)
+}
 
-	if res.StatusCode/100 != 2 {
-		b, _ := io.ReadAll(res.Body)
-		return fmt.Errorf("plex refresh failed: %s - %s", res.Status, strings.TrimSpace(string(b)))
+func (p *PlexClient) FindAlbumKeyByArtist(artistKey, albumTitle string, year int) (string, error) {
+	var mc models.PlexMediaContainer
+	path := fmt.Sprintf("/library/metadata/%s/children", url.PathEscape(artistKey))
+	if err := p.get(path, &mc); err != nil {
+		return "", err
 	}
 
-	return nil
+	want := canon(albumTitle)
+	for _, d := range mc.Directory {
+		if d.Type != "album" {
+			continue
+		}
+		if canon(d.Title) == want && (year == 0 || d.Year == year) {
+			return d.Key, nil
+		}
+	}
+	return "", fmt.Errorf("album not found: %s (%d)", albumTitle, year)
+}
+
+func (p *PlexClient) RefreshAlbum(albumKey string) error {
+	return p.put(fmt.Sprintf("/library/metadata/%s/refresh?force=1", url.PathEscape(albumKey)))
 }

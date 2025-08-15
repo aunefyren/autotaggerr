@@ -1,15 +1,13 @@
 package models
 
-type PlexSection struct {
-	Key      string `json:"key"`
-	Type     string `json:"type"` // "artist" for music sections
-	Location []struct {
-		Path string `json:"path"`
-	} `json:"Location"`
+type PlexMediaContainer struct {
+	Directory []PlexDirectory `xml:"Directory"`
 }
 
-type PlexSections struct {
-	MediaContainer struct {
-		Directory []PlexSection `json:"Directory"`
-	} `json:"MediaContainer"`
+type PlexDirectory struct {
+	Key         string `xml:"key,attr"`
+	Title       string `xml:"title,attr"`
+	Type        string `xml:"type,attr"`        // "artist", "album"
+	ParentTitle string `xml:"parentTitle,attr"` // album->artist
+	Year        int    `xml:"year,attr"`
 }
