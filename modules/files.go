@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
@@ -428,15 +429,16 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	return false, tagsWritten, nil
 }
 
-func ProcessTrackFile(filePath string, lidarrClient *LidarrClient) (unchanged bool, tagsWritten int, err error) {
+func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string) (unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefresh map[string]string, err error) {
 	unchanged = false
 	tagsWritten = 0
+	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
 
 	// get MB release data from track
 	mbReleaseID, err := ExtractMusicBrainzReleaseID(filePath)
 	if err != nil {
 		logger.Log.Error("failed to extract MB release ID. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to extract MB release ID")
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract MB release ID")
 	}
 	logger.Log.Debug("MB release ID: " + mbReleaseID)
 
@@ -444,7 +446,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient) (unchanged bo
 	mbTrackID, err := ExtractMusicBrainzTrackID(filePath)
 	if err != nil {
 		logger.Log.Error("failed to extract track MB ID. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to extract track MB ID")
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track MB ID")
 	}
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
@@ -453,7 +455,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient) (unchanged bo
 		mbReleaseID, mbTrackID, err = ResolveMBReleaseAndTrackIDFromLidarr(lidarrClient, filePath)
 		if err != nil {
 			logger.Log.Error("failed to retrieve track MB ID from Lidarr. error: " + err.Error())
-			return unchanged, tagsWritten, errors.New("failed to retrieve track MB ID from Lidarr")
+			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to retrieve track MB ID from Lidarr")
 		}
 
 		logger.Log.Trace("MB release ID: " + mbReleaseID)
@@ -461,14 +463,14 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient) (unchanged bo
 	}
 
 	if mbTrackID == "" || mbReleaseID == "" {
-		return unchanged, tagsWritten, errors.New("MB track or release ID field empty")
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("MB track or release ID field empty")
 	}
 
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(mbReleaseID)
 	if err != nil {
 		logger.Log.Error("failed to get MB release data. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to get MB release data")
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to get MB release data")
 	}
 	logger.Log.Debug("MB title response: " + response.Title)
 
@@ -511,8 +513,10 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient) (unchanged bo
 				// re-tag file with new information
 				unchanged, tagsWritten, err := SetFileTags(filePath, metadata)
 				if err != nil {
-					logger.Log.Error("failed to set FLAC artist tags. error: " + err.Error())
-					return unchanged, tagsWritten, errors.New("failed to set FLAC artist tags")
+					logger.Log.Error("failed to set file tags. error: " + err.Error())
+					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to set FLAC artist tags")
+				} else {
+					logger.Log.Debug("file tagged")
 				}
 
 				changeString := "unchanged"
@@ -520,30 +524,91 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient) (unchanged bo
 					changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
 				}
 
+				err = PlexLoadAlbumKeyCache()
+				if err != nil {
+					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err
+				}
+
+				albumKey := ""
+				if cached, ok := plexAlbumKeyCache[response.Title]; ok {
+					logger.Log.Trace("cached entry found")
+					if time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
+						logger.Log.Debug("returning cached album key for album: " + response.Title)
+						albumKey = cached.AlbumKey
+					}
+				} else {
+					sectionID, err := plexClient.FindMusicSectionID()
+					if err != nil {
+						logger.Log.Error("failed to find Plex music section ID. error: " + err.Error())
+						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex music section ID")
+					}
+
+					artistKey, err := plexClient.FindArtistKey(sectionID, releaseArtist)
+					if err != nil {
+						logger.Log.Error("failed to find Plex artist key. error: " + err.Error())
+						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex artist key")
+					}
+
+					year := 0
+					yearInt, err := strconv.Atoi(releaseYear)
+					if err == nil {
+						year = yearInt
+					}
+
+					logger.Log.Trace(artistKey + " - " + response.Title)
+
+					albumKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, response.Title, year, track.Title)
+					if err != nil {
+						logger.Log.Error("failed to find Plex album key. error: " + err.Error())
+						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex album key")
+					} else {
+						logger.Log.Trace(albumKey)
+					}
+
+					// add album key to cache
+					plexAlbumKeyCache[response.Title] = models.PlexAlbumKeyCache{
+						AlbumKey:  albumKey,
+						Timestamp: time.Now(),
+					}
+
+					// save new cache
+					err = PlexSaveAlbumKeyCache()
+					if err != nil {
+						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err
+					}
+				}
+
+				if !unchanged && tagsWritten > 0 {
+					albumsWhoNeedMetadataRefresh[response.Title] = albumKey
+				}
+
 				logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
-				return unchanged, tagsWritten, nil
+				return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, nil
 			}
 		}
 	}
 
-	return unchanged, tagsWritten, errors.New("failed to tag file, track not found in release data")
+	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string, lidarrClient *LidarrClient) (counter int, unchangedFiles int, allTagsWritten int, errorFiles int, err error) {
+func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string) (counter int, unchangedFiles int, allTagsWritten int, errorFiles int, albumsWhoNeedMetadataRefresh map[string]string, err error) {
 	counter = 0
 	unchangedFiles = 0
 	allTagsWritten = 0
 	errorFiles = 0
 
-	return counter, unchangedFiles, allTagsWritten, errorFiles, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err // report permission errors, etc.
 		}
 		if d.IsDir() {
 			return nil // keep walking
 		}
+		unchanged := false
+		tagsWritten := 0
+
 		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			unchanged, tagsWritten, err := ProcessTrackFile(path, lidarrClient)
+			unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFile(path, lidarrClient, plexClient, albumsWhoNeedMetadataRefreshSoFar)
 			if err != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
 				errorFiles++

@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -327,4 +328,47 @@ func LidarrSaveTracksCache() error {
 	}
 
 	return os.WriteFile(lidarrTracksCachePath, data, 0644)
+}
+
+// HealthCheck hits a cheap endpoint and checks auth.
+// Uses /api/v1/system/status (we only care that it decodes / returns 200).
+func (c *LidarrClient) HealthCheck() (health bool, err error) {
+	health = false
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// decode into a loose map to avoid tight coupling to fields
+	var status map[string]any
+
+	// wrap existing getJSON with context timeout if you like
+	reqPath := "/api/v1/system/status"
+	// quick context-aware version of getJSON:
+	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+reqPath, nil)
+	if err != nil {
+		return health, err
+	}
+	req.Header.Set("X-Api-Key", c.APIKey)
+	req.Header.Set("Accept", "application/json")
+
+	if c.Cookie != nil {
+		req.Header.Set("Cookie", *c.Cookie)
+	}
+
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return health, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		logger.Log.Error("failed to ping Lidarr. response: " + string(b))
+		return health, err
+	}
+	// optional: verify JSON parses
+	_ = json.NewDecoder(resp.Body).Decode(&status)
+	logger.Log.Debug("managed to ping Lidarr")
+
+	return true, err
 }

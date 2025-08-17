@@ -37,6 +37,11 @@ type CachedLidarrTracksRelease struct {
 	Timestamp time.Time     `json:"timestamp"`
 }
 
+type PlexAlbumKeyCache struct {
+	AlbumKey  string    `json:"album_key"`
+	Timestamp time.Time `json:"timestamp"`
+}
+
 type FfprobeFormat struct {
 	Format struct {
 		Tags map[string]string `json:"tags"`
