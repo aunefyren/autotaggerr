@@ -21,7 +21,7 @@ import (
 )
 
 var (
-	plexAlbumKeyCachePath     = "config/lidarr_artists.json"
+	plexAlbumKeyCachePath     = "config/plex_album_keys.json"
 	plexAlbumKeyCacheDuration = time.Hour // 1 hour
 	plexAlbumKeyCache         = map[string]models.PlexAlbumKeyCache{}
 )
