@@ -29,6 +29,7 @@ import (
 
 var (
 	lidarrClient *modules.LidarrClient
+	plexClient   *modules.PlexClient
 )
 
 func main() {
@@ -90,27 +91,55 @@ func main() {
 	// configure Lidarr client
 	if configFile.LidarrBaseURL != "" && configFile.LidarrAPIKey != "" {
 		lidarrClient = modules.NewLidarrClient(configFile.LidarrBaseURL, configFile.LidarrAPIKey, &configFile.LidarrHeaderCookie)
+		health, err := lidarrClient.HealthCheck()
+		if err != nil {
+			logger.Log.Error("failed to health check Lidarr. error: " + err.Error())
+		} else if !health {
+			logger.Log.Error("Lidarr connection is unhealthy")
+		} else {
+			logger.Log.Info("Lidarr connection is healthy")
+		}
+	}
+
+	// configure Plex client
+	if configFile.PlexBaseURL != "" && configFile.PlexToken != "" {
+		plexClient = modules.NewPlexClient(configFile.PlexBaseURL, configFile.PlexToken)
+		health, err := plexClient.HealthCheck()
+		if err != nil {
+			logger.Log.Error("failed to health check Plex. error: " + err.Error())
+		} else if !health {
+			logger.Log.Error("Plex connection is unhealthy")
+		} else {
+			logger.Log.Info("Plex connection is healthy")
+		}
 	}
 
 	// Create task scheduler for sunday reminders
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		processLibraries(configFile.AutotaggerrLibraries, lidarrClient)
+		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient)
 	}, configFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
 		logger.Log.Info("library process task was not scheduled successfully.")
 	}
 
 	if configFile.AutotaggerrProcessOnStartUp {
-		processLibraries(configFile.AutotaggerrLibraries, lidarrClient)
+		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient)
 	}
 
 	// process file path
 	if filePath != nil {
-		_, _, err := modules.ProcessTrackFile(*filePath, lidarrClient)
+		albums := map[string]string{}
+		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
+		}
+		for albumName, albumKey := range albums {
+			if err := plexClient.RefreshAlbum(albumKey); err != nil {
+				logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
+			}
+			logger.Log.Debug("triggered Plex refresh for album: " + albumName)
 		}
 	}
 
@@ -251,16 +280,19 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 	return configFile, filePath, nil
 }
 
-func processLibraries(libraries []string, lidarrClient *modules.LidarrClient) {
+func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, plexClient *modules.PlexClient) {
 	logger.Log.Info("library process task starting...")
+	startTime := time.Now()
 	count := 0
 	allUnchangedFiles := 0
 	allTagsWritten := 0
 	allErrorFiles := 0
+	allAlbumsWhoNeedMetadataRefresh := map[string]string{}
 
 	for _, library := range libraries {
+		albumsWhoNeedMetadataRefresh := allAlbumsWhoNeedMetadataRefresh
 		logger.Log.Info("processing: " + library)
-		libraryCount, unchangedFiles, tagsWritten, errorFiles, err := modules.ScanFolderRecursive(library, lidarrClient)
+		libraryCount, unchangedFiles, tagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err := modules.ScanFolderRecursive(library, lidarrClient, plexClient, albumsWhoNeedMetadataRefresh)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
 		} else {
@@ -268,10 +300,21 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient) {
 			allUnchangedFiles += unchangedFiles
 			allTagsWritten += tagsWritten
 			allErrorFiles += errorFiles
+			allAlbumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefresh
 		}
 	}
 
+	for albumName, albumKey := range allAlbumsWhoNeedMetadataRefresh {
+		if err := plexClient.RefreshAlbum(albumKey); err != nil {
+			logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
+		}
+		logger.Log.Debug("triggered Plex refresh for album: " + albumName)
+	}
+
+	endTime := time.Now()
+	durationTime := endTime.Sub(startTime)
 	filesChanged := count - allUnchangedFiles
 
 	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(allErrorFiles) + " files not processed because of errors. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
+	logger.Log.Info("process took: " + durationTime.String())
 }
