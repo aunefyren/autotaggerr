@@ -524,62 +524,65 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
 				}
 
-				err = PlexLoadAlbumKeyCache()
-				if err != nil {
-					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err
-				}
-
-				albumKey := ""
-				if cached, ok := plexAlbumKeyCache[response.Title]; ok {
-					logger.Log.Trace("cached entry found")
-					if time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
-						logger.Log.Debug("returning cached album key for album: " + response.Title)
-						albumKey = cached.AlbumKey
-					}
-				} else {
-					sectionID, err := plexClient.FindMusicSectionID()
-					if err != nil {
-						logger.Log.Error("failed to find Plex music section ID. error: " + err.Error())
-						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex music section ID")
-					}
-
-					artistKey, err := plexClient.FindArtistKey(sectionID, releaseArtist)
-					if err != nil {
-						logger.Log.Error("failed to find Plex artist key. error: " + err.Error())
-						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex artist key")
-					}
-
-					year := 0
-					yearInt, err := strconv.Atoi(releaseYear)
-					if err == nil {
-						year = yearInt
-					}
-
-					logger.Log.Trace(artistKey + " - " + response.Title)
-
-					albumKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, response.Title, year, track.Title)
-					if err != nil {
-						logger.Log.Error("failed to find Plex album key. error: " + err.Error())
-						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex album key")
-					} else {
-						logger.Log.Trace(albumKey)
-					}
-
-					// add album key to cache
-					plexAlbumKeyCache[response.Title] = models.PlexAlbumKeyCache{
-						AlbumKey:  albumKey,
-						Timestamp: time.Now(),
-					}
-
-					// save new cache
-					err = PlexSaveAlbumKeyCache()
+				if plexClient != nil {
+					err = PlexLoadAlbumKeyCache()
 					if err != nil {
 						return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err
 					}
-				}
 
-				if !unchanged && tagsWritten > 0 {
-					albumsWhoNeedMetadataRefresh[response.Title] = albumKey
+					albumKey := ""
+					if cached, ok := plexAlbumKeyCache[response.Title]; ok {
+						logger.Log.Trace("cached entry found")
+						if time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
+							logger.Log.Debug("returning cached album key for album: " + response.Title)
+							albumKey = cached.AlbumKey
+						}
+					} else {
+						sectionID, err := plexClient.FindMusicSectionID()
+						if err != nil {
+							logger.Log.Error("failed to find Plex music section ID. error: " + err.Error())
+							return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex music section ID")
+						}
+
+						artistKey, err := plexClient.FindArtistKey(sectionID, releaseArtist)
+						if err != nil {
+							logger.Log.Error("failed to find Plex artist key. error: " + err.Error())
+							return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex artist key")
+						}
+
+						year := 0
+						yearInt, err := strconv.Atoi(releaseYear)
+						if err == nil {
+							year = yearInt
+						}
+
+						logger.Log.Trace(artistKey + " - " + response.Title)
+
+						albumKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, response.Title, year, track.Title)
+						if err != nil {
+							logger.Log.Error("failed to find Plex album key. error: " + err.Error())
+							return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex album key")
+						} else {
+							logger.Log.Trace(albumKey)
+						}
+
+						// add album key to cache
+						plexAlbumKeyCache[response.Title] = models.PlexAlbumKeyCache{
+							AlbumKey:  albumKey,
+							Timestamp: time.Now(),
+						}
+
+						// save new cache
+						err = PlexSaveAlbumKeyCache()
+						if err != nil {
+							return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err
+						}
+					}
+
+					if !unchanged && tagsWritten > 0 {
+						albumsWhoNeedMetadataRefresh[response.Title] = albumKey
+					}
+
 				}
 
 				logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")

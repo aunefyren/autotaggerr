@@ -282,6 +282,7 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 
 func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, plexClient *modules.PlexClient) {
 	logger.Log.Info("library process task starting...")
+	startTime := time.Now()
 	count := 0
 	allUnchangedFiles := 0
 	allTagsWritten := 0
@@ -310,7 +311,10 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 		logger.Log.Debug("triggered Plex refresh for album: " + albumName)
 	}
 
+	endTime := time.Now()
+	durationTime := endTime.Sub(startTime)
 	filesChanged := count - allUnchangedFiles
 
 	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(allErrorFiles) + " files not processed because of errors. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
+	logger.Log.Info("process took: " + durationTime.String())
 }
