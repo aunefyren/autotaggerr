@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -124,14 +125,19 @@ func main() {
 		logger.Log.Info("library process task was not scheduled successfully.")
 	}
 
-	if configFile.AutotaggerrProcessOnStartUp {
+	// start library process if no file is configured and the feature is enabled
+	if configFile.AutotaggerrProcessOnStartUp && filePath == nil {
 		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient)
 	}
 
 	// process file path
 	if filePath != nil {
 		albums := map[string]string{}
-		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums)
+		parentDir := path.Dir(utilities.NormPath(*filePath))
+		grandparentDir := path.Dir(parentDir)
+		rootDir := path.Dir(grandparentDir)
+
+		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, rootDir)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}

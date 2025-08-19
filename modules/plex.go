@@ -139,7 +139,7 @@ func normalizeAlbumKey(key string) string {
 
 // Search a section for album (type=9) first; if nothing, search track (type=10).
 // Returns the album ratingKey path ("/library/metadata/<id>") suitable for refresh.
-func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle string, year int, trackTitle string) (string, error) {
+func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle string, trackTitle string) (string, error) {
 	// 1) Album search (type=9)
 	{
 		q := fmt.Sprintf(
@@ -148,14 +148,12 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 			url.QueryEscape(albumTitle),
 			url.QueryEscape(artistName),
 		)
-		if year > 0 {
-			q += "&year=" + strconv.Itoa(year)
-		}
 
 		var mc models.PlexMediaContainer
 		if err := p.get(q, &mc); err != nil {
 			return "", err
 		}
+		logger.Log.Trace(mc)
 
 		wantAlbum := utilities.Canon(albumTitle)
 		wantArtist := utilities.Canon(artistName)
@@ -166,8 +164,7 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 				continue
 			}
 			if utilities.Canon(d.Title) == wantAlbum &&
-				utilities.Canon(d.ParentTitle) == wantArtist &&
-				(year == 0 || d.Year == year) {
+				utilities.Canon(d.ParentTitle) == wantArtist {
 
 				return normalizeAlbumKey(d.Key), nil
 			}
@@ -185,24 +182,22 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 		if trackTitle != "" {
 			q += "&title=" + url.QueryEscape(trackTitle)
 		}
-		if year > 0 {
-			q += "&year=" + strconv.Itoa(year)
-		}
 
 		var mc models.PlexMediaContainer
 		if err := p.get(q, &mc); err != nil {
 			return "", err
 		}
+		logger.Log.Trace(mc)
 
 		wantAlbum := utilities.Canon(albumTitle)
 		wantArtist := utilities.Canon(artistName)
 		wantTrack := utilities.Canon(trackTitle)
 
 		for _, t := range mc.Track {
+			logger.Log.Trace(t)
 			if utilities.Canon(t.GrandparentTitle) == wantArtist &&
 				utilities.Canon(t.ParentTitle) == wantAlbum &&
-				(trackTitle == "" || utilities.Canon(t.Title) == wantTrack) &&
-				(year == 0 || t.Year == year) {
+				(trackTitle == "" || utilities.Canon(t.Title) == wantTrack) {
 
 				// Prefer ParentKey; fallback to ParentRatingKey if needed
 				if t.ParentKey != "" {
@@ -215,8 +210,8 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 		}
 	}
 
-	return "", fmt.Errorf("album/single not found in section: artist=%q album=%q year=%d track=%q",
-		artistName, albumTitle, year, trackTitle)
+	return "", fmt.Errorf("album/single not found in section: artist=%q album=%q track=%q section=%s",
+		artistName, albumTitle, trackTitle, sectionID)
 }
 
 // RefreshAlbum triggers a metadata refresh on an album (ratingKey path like "/library/metadata/196905").

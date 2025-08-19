@@ -131,14 +131,14 @@ func (c *LidarrClient) FindArtistByName(artistName string) (*models.LidarrArtist
 // retrieves the Lidarr track object from a Lidarr artist ID and track file path
 // retrieves the Lidarr track object from a Lidarr artist ID and track file path
 // Matches on (album folder, file basename) only — ignores the rest of the path.
-func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string) (*models.LidarrTrackFile, error) {
+func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string, rootDir string) (*models.LidarrTrackFile, error) {
 	var files []models.LidarrTrackFile
 	if err := c.getJSON(fmt.Sprintf("/api/v1/trackfile?artistId=%d", artistID), &files); err != nil {
 		return nil, err
 	}
 
 	// get album name from file path
-	targetAlbum, err := utilities.ExtractAlbumNameFromTrackFilePath(fullTrackPath)
+	targetAlbum, err := utilities.ExtractAlbumNameFromTrackFilePath(rootDir, fullTrackPath)
 	if err != nil {
 		return nil, err
 	}
