@@ -12,7 +12,7 @@ This tool is for a specific niche, but feel free to use it if it fits your use c
 
 PlexAmp/Plex is a lot smoother with good metadata attached. I have already selected a Musicbrainz release when it got imported into Lidarr, I just need to apply all the data from there. Here is the desired result:
 
-![Demo video](https://github.com/aunefyren/autotaggerr/raw/main/.github/assets/demo.gif)
+![Demo video](https://raw.githubusercontent.com/aunefyren/autotaggerr/refs/heads/main/.github/assets/demo.gif)
 
 There are solutions that try to fix this, like a Beets plugin that can run on top of Lidarr. I found this solution very confusing to set up, and it seemed to rely on auto-matching metadata, which I did not like.
 
