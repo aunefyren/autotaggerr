@@ -498,7 +498,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 				}
 				if releaseArtist == "" && len(response.ArtistCredit) > 0 {
 					releaseArtist = response.ArtistCredit[0].Name
-				} else {
+				} else if releaseArtist == "" {
 					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to determine album artist")
 				}
 

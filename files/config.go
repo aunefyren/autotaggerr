@@ -15,7 +15,7 @@ import (
 )
 
 var autotaggerrVersionParameter = "{{RELEASE_TAG}}"
-var configPath, _ = filepath.Abs("./config")
+var configPath, _ = filepath.Abs("./config/")
 var configFile = filepath.Join(configPath, "config.json")
 
 func GetConfig() (config models.ConfigStruct, err error) {
@@ -55,7 +55,7 @@ func GetConfig() (config models.ConfigStruct, err error) {
 		}
 		config.PrivateKey = newKey
 		anythingChanged = true
-		logger.Log.Info("New private key set.")
+		fmt.Println("New private key set.")
 	}
 
 	if config.AutotaggerrName == "" {
