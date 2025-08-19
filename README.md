@@ -1,6 +1,20 @@
 # 🎵 Autotaggerr 🎵
 
-**Autotaggerr** is an automated music tagging utility that enriches your audio library with detailed metadata from [MusicBrainz](https://musicbrainz.org/). It identifies tracks based on their MusicBrainz Release ID (used by tools like [Lidarr](https://lidarr.audio/)) and fills in missing metadata — including album artist, release date, genre, track numbers, and more.
+**Autotaggerr** is an automated music tagging utility that enriches your Lidarr managed audio library with detailed metadata from [MusicBrainz](https://musicbrainz.org/). It identifies tracks based on their MusicBrainz Release ID (used by tools like [Lidarr](https://lidarr.audio/)), or by talking to Lidarr through API, and fills in missing metadata — including album artist, release date, genre, track numbers, and more. It can automatically refresh the album in Plex afterward.
+
+> Built for automation of large libraries!
+
+---
+
+## Context
+
+This tool is for a specific niche, but feel free to use it if it fits your use case. I use PlexAmp as a music player, and Lidarr as a music catalog tool. Lidarr does this well for the most part, except for the metadata. They do not tag all the data available from Musicbrainz, and based on my dialogue with them, they have no intention of fixing this. Solution: I'll tag the files myself.
+
+PlexAmp/Plex is a lot smoother with good metadata attached. I have already selected a Musicbrainz release when it got imported into Lidarr, I just need to apply all the data from there. Here is the desired result:
+
+[Demo video](https://github.com/aunefyren/autotaggerr/raw/main/.github/assets/demo.mp4)
+
+There are solutions that try to fix this, like a Beets plugin that can run on top of Lidarr. I found this solution very confusing to set up, and it seemed to rely on auto-matching metadata, which I did not like.
 
 > Built for automation of large libraries!
 
@@ -36,6 +50,19 @@
    - FLAC → via `metaflac`
    - MP3 → via `ffmpeg`
 5. Optionally logs and caches results to avoid re-fetching metadata.
+
+---
+
+## 🛠️ Caveats
+
+1. Plex does not support multi-artist albums. So even if the metadata should have multiple artist as the album artist, we tag just the primary one
+2. Autotaggerr can at times utilize the path of the file to determine what metadata is correct. Therefore, you must use this structure `/music-library-root/[ARTIST]/[ALBUM] ([YEAR])/[OPTIONAL MEDIA FOLDER]/[TRACKS])`
+3. Autotaggerr will first look for the Musicbrainz release/track ID within the file tags. If none are found, a Lidarr client must be configured for fallback. This is necessary for MP3 files as Lidarr does not tag these IDs on MP3s
+4.  Lidarr tends to overwrite tags for some reason. Go to Lidarr -> Settings -> Metadata:
+    - Set `Tag Audio Files with Metadata` to `For new downloads only`
+    - Set `Scrub Existing Tags` to unchecked
+5. Plex must be set up to respect local metadata:
+    - Library -> Manage library -> Edit -> Advanced -> Check `Prefer local metadata`
 
 ---
 

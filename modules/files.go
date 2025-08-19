@@ -496,8 +496,10 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 						break
 					}
 				}
-				if releaseArtist == "" {
-					releaseArtist = MusicBrainzArtistsArrayToString(response.ArtistCredit)
+				if releaseArtist == "" && len(response.ArtistCredit) > 0 {
+					releaseArtist = response.ArtistCredit[0].Name
+				} else {
+					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to determine album artist")
 				}
 
 				releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
