@@ -11,7 +11,7 @@ RUN go mod download
 COPY . .
 
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -trimpath -ldflags="-s -w" -o /app/autotaggerr ./cmd/autotaggerr
+    go build -trimpath -ldflags="-s -w" -o /app/autotaggerr .
 
 # ---------- Runtime ----------
 FROM alpine:3.20
