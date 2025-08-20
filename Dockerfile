@@ -20,6 +20,7 @@ WORKDIR /app
 RUN apk add --no-cache ffmpeg flac ca-certificates tzdata
 COPY --from=builder /app/autotaggerr /app/autotaggerr
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
+COPY --from=builder /app/web/ /app/web/
 RUN addgroup -g ${PGID} appgroup && \
     adduser -D -u ${PUID} -G appgroup appuser && \
     chmod +x /app/autotaggerr /app/entrypoint.sh && \
