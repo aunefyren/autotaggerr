@@ -474,13 +474,6 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	}
 	logger.Log.Debug("MB title response: " + response.Title)
 
-	// approx artist name
-	approxArtistName, err := utilities.ExtractArtistNameFromTrackFilePath(rootDir, filePath)
-	if err != nil {
-		logger.Log.Error("failed to artist name from file path. error: " + err.Error())
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to artist name from file path")
-	}
-
 	// Go through API response for information
 	for mediaCount, media := range response.Media {
 		for _, track := range media.Tracks {
@@ -490,12 +483,6 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 				logger.Log.Debug("track artists: " + trackArtist)
 
 				releaseArtist := ""
-				for _, releaseCredit := range response.ArtistCredit {
-					if strings.EqualFold(releaseCredit.Artist.Name, approxArtistName) {
-						releaseArtist = releaseCredit.Artist.Name
-						break
-					}
-				}
 				if releaseArtist == "" && len(response.ArtistCredit) > 0 {
 					releaseArtist = response.ArtistCredit[0].Name
 				} else if releaseArtist == "" {
