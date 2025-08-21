@@ -314,7 +314,7 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 		if err := plexClient.RefreshAlbum(albumKey); err != nil {
 			logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
 		}
-		logger.Log.Debug("triggered Plex refresh for album: " + albumName)
+		logger.Log.Info("triggered Plex refresh for album: " + albumName)
 	}
 
 	endTime := time.Now()

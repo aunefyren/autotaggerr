@@ -64,41 +64,14 @@ type MusicBrainzReleaseResponse struct {
 	} `json:"release-events"`
 	Packaging any `json:"packaging"`
 	Media     []struct {
-		TrackOffset int    `json:"track-offset"`
-		ID          string `json:"id"`
-		Position    int    `json:"position"`
-		TrackCount  int    `json:"track-count"`
-		Title       string `json:"title"`
-		FormatID    string `json:"format-id"`
-		Format      string `json:"format"`
-		Tracks      []struct {
-			Recording struct {
-				Genres []struct {
-					Disambiguation string `json:"disambiguation"`
-					ID             string `json:"id"`
-					Name           string `json:"name"`
-					Count          int    `json:"count"`
-				} `json:"genres"`
-				ISRCs            []string       `json:"isrcs"`
-				FirstReleaseDate string         `json:"first-release-date"`
-				Disambiguation   string         `json:"disambiguation"`
-				ArtistCredit     []ArtistCredit `json:"artist-credit"`
-				Video            bool           `json:"video"`
-				Length           int            `json:"length"`
-				Title            string         `json:"title"`
-				ID               string         `json:"id"`
-				Tags             []struct {
-					Name  string `json:"name"`
-					Count int    `json:"count"`
-				} `json:"tags"`
-			} `json:"recording"`
-			Number       string         `json:"number"`
-			ArtistCredit []ArtistCredit `json:"artist-credit"`
-			Position     int            `json:"position"`
-			ID           string         `json:"id"`
-			Length       int            `json:"length"`
-			Title        string         `json:"title"`
-		} `json:"tracks"`
+		TrackOffset int     `json:"track-offset"`
+		ID          string  `json:"id"`
+		Position    int     `json:"position"`
+		TrackCount  int     `json:"track-count"`
+		Title       string  `json:"title"`
+		FormatID    string  `json:"format-id"`
+		Format      string  `json:"format"`
+		Tracks      []Track `json:"tracks"`
 	} `json:"media"`
 	Date               string `json:"date"`
 	PackagingID        any    `json:"packaging-id"`
@@ -108,6 +81,35 @@ type MusicBrainzReleaseResponse struct {
 		Script   string `json:"script"`
 	} `json:"text-representation"`
 	Barcode string `json:"barcode"`
+}
+
+type Track struct {
+	Recording struct {
+		Genres []struct {
+			Disambiguation string `json:"disambiguation"`
+			ID             string `json:"id"`
+			Name           string `json:"name"`
+			Count          int    `json:"count"`
+		} `json:"genres"`
+		ISRCs            []string       `json:"isrcs"`
+		FirstReleaseDate string         `json:"first-release-date"`
+		Disambiguation   string         `json:"disambiguation"`
+		ArtistCredit     []ArtistCredit `json:"artist-credit"`
+		Video            bool           `json:"video"`
+		Length           int            `json:"length"`
+		Title            string         `json:"title"`
+		ID               string         `json:"id"`
+		Tags             []struct {
+			Name  string `json:"name"`
+			Count int    `json:"count"`
+		} `json:"tags"`
+	} `json:"recording"`
+	Number       string         `json:"number"`
+	ArtistCredit []ArtistCredit `json:"artist-credit"`
+	Position     int            `json:"position"`
+	ID           string         `json:"id"`
+	Length       int            `json:"length"`
+	Title        string         `json:"title"`
 }
 
 type Artist struct {
