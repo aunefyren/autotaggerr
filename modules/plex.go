@@ -143,9 +143,8 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 	// 1) Album search (type=9)
 	{
 		q := fmt.Sprintf(
-			"/library/sections/%s/all?type=9&title=%s&artist.title=%s",
+			"/library/sections/%s/all?type=9&artist.title=%s",
 			url.PathEscape(sectionID),
-			url.QueryEscape(albumTitle),
 			url.QueryEscape(artistName),
 		)
 
@@ -159,12 +158,10 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 		wantArtist := utilities.Canon(artistName)
 
 		for _, d := range mc.Directory {
-			// Albums come back here
-			if d.Type != "album" {
-				continue
-			}
-			if utilities.Canon(d.Title) == wantAlbum &&
-				utilities.Canon(d.ParentTitle) == wantArtist {
+			logger.Log.Trace("looping over title: " + d.Title)
+			logger.Log.Trace("looping over parent title: " + d.Title)
+			if utilities.EqLoose(utilities.Canon(d.Title), wantAlbum) &&
+				utilities.EqLoose(utilities.Canon(d.ParentTitle), wantArtist) {
 
 				return normalizeAlbumKey(d.Key), nil
 			}
@@ -174,10 +171,9 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 	// 2) Track search fallback (type=10) – useful for odd cases / singles
 	{
 		q := fmt.Sprintf(
-			"/library/sections/%s/all?type=10&artist.title=%s&album.title=%s",
+			"/library/sections/%s/all?type=10&artist.title=%s",
 			url.PathEscape(sectionID),
 			url.QueryEscape(artistName),
-			url.QueryEscape(albumTitle),
 		)
 		if trackTitle != "" {
 			q += "&title=" + url.QueryEscape(trackTitle)
@@ -195,9 +191,9 @@ func (p *PlexClient) ResolveAlbumKeyInSection(sectionID, artistName, albumTitle 
 
 		for _, t := range mc.Track {
 			logger.Log.Trace(t)
-			if utilities.Canon(t.GrandparentTitle) == wantArtist &&
-				utilities.Canon(t.ParentTitle) == wantAlbum &&
-				(trackTitle == "" || utilities.Canon(t.Title) == wantTrack) {
+			if utilities.EqLoose(utilities.Canon(t.GrandparentTitle), wantArtist) &&
+				utilities.EqLoose(utilities.Canon(t.ParentTitle), wantAlbum) &&
+				(trackTitle == "" || utilities.EqLoose(utilities.Canon(t.Title), wantTrack)) {
 
 				// Prefer ParentKey; fallback to ParentRatingKey if needed
 				if t.ParentKey != "" {

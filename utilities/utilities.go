@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"golang.org/x/text/unicode/norm"
@@ -382,3 +384,64 @@ func BaseDirOfPathAny(p string) string {
 	dir := path.Dir(slashed)
 	return path.Base(dir)
 }
+
+var (
+	spaceRe = regexp.MustCompile(`\s+`)
+	// Map typographic look-alikes to plain ASCII
+	smartReplacer = strings.NewReplacer(
+		// apostrophes / primes
+		"’", "'", "‘", "'", "‛", "'", "ʻ", "'", "ʹ", "'", "ˈ", "'",
+		// quotes
+		"“", `"`, "”", `"`, "„", `"`, "‟", `"`,
+		// dashes / hyphens / minus / non-breaking hyphen
+		"–", "-", "—", "-", "−", "-", "‐", "-", "\u2011", "-",
+		// ellipsis
+		"…", "...",
+		// weird spaces
+		"\u00A0", " ", "\u2009", " ", "\u200A", " ", "\u200B", "",
+	)
+)
+
+// removeDiacritics turns é → e, å → a, etc.
+func removeDiacritics(s string) string {
+	// NFD separates base + diacritic; then drop Mn (non-spacing mark)
+	decomp := norm.NFD.String(s)
+	b := make([]rune, 0, utf8.RuneCountInString(decomp))
+	for _, r := range decomp {
+		if unicode.Is(unicode.Mn, r) {
+			continue
+		}
+		b = append(b, r)
+	}
+	return string(b)
+}
+
+// stripPunct keeps letters/numbers/spaces only
+func stripPunct(s string) string {
+	b := make([]rune, 0, len(s))
+	for _, r := range s {
+		if unicode.IsLetter(r) || unicode.IsNumber(r) || unicode.IsSpace(r) {
+			b = append(b, r)
+		}
+	}
+	return string(b)
+}
+
+// CanonLoose normalizes strings so "Schindler’s" == "Schindler's"
+func CanonLoose(s string) string {
+	s = strings.TrimSpace(s)
+	// unify typography
+	s = smartReplacer.Replace(s)
+	// unify accents
+	s = removeDiacritics(s)
+	// optional: neutralize punctuation differences entirely
+	s = stripPunct(s)
+	// collapse whitespace
+	s = spaceRe.ReplaceAllString(s, " ")
+	// case-fold
+	s = strings.ToLower(s)
+	return s
+}
+
+// Equality helper
+func EqLoose(a, b string) bool { return CanonLoose(a) == CanonLoose(b) }
