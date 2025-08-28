@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -161,17 +162,20 @@ func writeMusicBrainzAlbumIDToID3v2(mp3Path, mbid string) error {
 	return nil
 }
 
-func SetFileTags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
-	ext := strings.ToLower(filepath.Ext(filePath))
+func SetFileTags(filePath string, mbReleaseID string) (unchanged bool, tagsWritten int, err error) {
+	ctx := context.Background()
 
-	switch ext {
-	case ".mp3":
-		return SetMP3Tags(filePath, metadata)
-	case ".flac":
-		return SetFlacTags(filePath, metadata)
-	default:
-		return false, 0, errors.New("unsupported file type")
+	parentDir := filepath.Dir(filePath)
+
+	err = RunPicardTag(ctx, parentDir, mbReleaseID,
+		func(f string, a ...any) { logger.Log.Infof(f, a...) },
+	)
+	if err != nil {
+		logger.Log.Error("tagging via Picard failed: " + err.Error())
+
+		//runBeets(ctx, filePath)
 	}
+	return
 }
 
 // SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
@@ -493,8 +497,10 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					DiscTotal:    strconv.Itoa(len(response.Media)),
 				}
 
+				metadata.Album = "fef"
+
 				// re-tag file with new information
-				unchanged, tagsWritten, err := SetFileTags(filePath, metadata)
+				unchanged, tagsWritten, err := SetFileTags(filePath, mbReleaseID)
 				if err != nil {
 					logger.Log.Error("failed to set file tags. error: " + err.Error())
 					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to set FLAC artist tags")
