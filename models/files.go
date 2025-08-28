@@ -3,18 +3,20 @@ package models
 import "time"
 
 type FileTags struct {
-	Artist      string `json:"artist"`
-	AlbumArtist string `json:"album_artist"`
-	Genre       string `json:"genre"`
-	Date        string `json:"date"`
-	Year        string `json:"year"`
-	Album       string `json:"album"`
-	Title       string `json:"string"`
-	ISRC        string `json:"isrc"`
-	Track       string `json:"track"`
-	TrackTotal  string `json:"track_total"`
-	DiscNumber  string `json:"disc_number"`
-	DiscTotal   string `json:"disc_total"`
+	Artist       string `json:"artist"`
+	AlbumArtist  string `json:"album_artist"`
+	Genre        string `json:"genre"`
+	OriginalDate string `json:"original_date"`
+	OriginalYear string `json:"original_year"`
+	ReleaseDate  string `json:"release_date"`
+	ReleaseYear  string `json:"release_year"`
+	Album        string `json:"album"`
+	Title        string `json:"title"`
+	ISRC         string `json:"isrc"`
+	Track        string `json:"track"`
+	TrackTotal   string `json:"track_total"`
+	DiscNumber   string `json:"disc_number"`
+	DiscTotal    string `json:"disc_total"`
 }
 
 type CachedMusicBrainzRelease struct {

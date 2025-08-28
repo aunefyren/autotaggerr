@@ -180,18 +180,20 @@ func SetFlacTags(filePath string, metadata models.FileTags) (unchanged bool, tag
 	tagsWritten = 0
 
 	desired := map[string]string{
-		"ARTIST":      metadata.Artist,
-		"ALBUMARTIST": metadata.AlbumArtist,
-		"GENRE":       metadata.Genre,
-		"DATE":        metadata.Date,
-		"YEAR":        metadata.Year,
-		"ALBUM":       metadata.Album,
-		"TITLE":       metadata.Title,
-		"TRACKNUMBER": metadata.Track,
-		"TRACKTOTAL":  metadata.TrackTotal,
-		"DISCNUMBER":  metadata.DiscNumber,
-		"DISCTOTAL":   metadata.DiscTotal,
-		"ISRC":        metadata.ISRC,
+		"ARTIST":       metadata.Artist,
+		"ALBUMARTIST":  metadata.AlbumArtist,
+		"GENRE":        metadata.Genre,
+		"DATE":         metadata.ReleaseDate,
+		"YEAR":         metadata.ReleaseYear,
+		"ORIGINALDATE": metadata.OriginalDate,
+		"RELEASEDATE":  metadata.ReleaseDate,
+		"ALBUM":        metadata.Album,
+		"TITLE":        metadata.Title,
+		"TRACKNUMBER":  metadata.Track,
+		"TRACKTOTAL":   metadata.TrackTotal,
+		"DISCNUMBER":   metadata.DiscNumber,
+		"DISCTOTAL":    metadata.DiscTotal,
+		"ISRC":         metadata.ISRC,
 	}
 
 	existing, err := getFlacTagsMap(filePath)
@@ -229,6 +231,7 @@ func SetFlacTags(filePath string, metadata models.FileTags) (unchanged bool, tag
 
 	return unchanged, tagsWritten, nil
 }
+
 func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
 	unchanged = false
 	tagsWritten = 0
@@ -237,15 +240,21 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		"ARTIST":      metadata.Artist,
 		"ALBUMARTIST": metadata.AlbumArtist,
 		"GENRE":       metadata.Genre,
-		"DATE":        metadata.Date,
-		"YEAR":        metadata.Year,
 		"ALBUM":       metadata.Album,
 		"TITLE":       metadata.Title,
 		"TRACKNUMBER": metadata.Track,
 		"TRACKTOTAL":  metadata.TrackTotal,
 		"DISCNUMBER":  metadata.DiscNumber,
 		"DISCTOTAL":   metadata.DiscTotal,
-		"ISRC":        metadata.ISRC, // via TXXX
+		"ISRC":        metadata.ISRC,
+
+		// Release
+		"DATE": metadata.ReleaseDate, // maps to TDRC
+		"YEAR": metadata.ReleaseYear, // maps to TYER
+
+		// Original release
+		"ORIGINALDATE": metadata.OriginalDate, // maps to TDOR
+		"ORIGINALYEAR": metadata.OriginalYear, // maps toTORY (and TXXX backup)
 	}
 
 	existing, err := GetMP3Tags(filePath)
@@ -262,8 +271,10 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	args := []string{
 		"-i", filePath,
 		"-y",
-		"-map_metadata", "0", // copy existing first
+		"-map_metadata", "0",
 		"-codec", "copy",
+		"-write_id3v1", "1", // legacy fallback
+		"-id3v2_version", "4", // prefer v2.4 (gives TDOR/TDRC)
 	}
 
 	addMeta := func(k, v string) {
@@ -283,15 +294,31 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		addMeta("genre", desired["GENRE"])
 		tagsWritten++
 	}
-	// Prefer DATE over YEAR when both provided; still count each change
-	if _, ok := changes["YEAR"]; ok {
-		addMeta("year", desired["YEAR"])
-		tagsWritten++
-	}
+
+	// Release date/year
 	if _, ok := changes["DATE"]; ok {
 		addMeta("date", desired["DATE"])
 		tagsWritten++
 	}
+	if _, ok := changes["YEAR"]; ok {
+		addMeta("year", desired["YEAR"])
+		tagsWritten++
+	}
+
+	// Original release date/year
+	if _, ok := changes["ORIGINALDATE"]; ok {
+		// v2.4 TDOR
+		addMeta("originaldate", desired["ORIGINALDATE"])
+		tagsWritten++
+	}
+	if _, ok := changes["ORIGINALYEAR"]; ok {
+		// Explicit TORY for compatibility (v2.3 style)
+		args = append(args, "-metadata", fmt.Sprintf("TORY=%s", desired["ORIGINALYEAR"]))
+		// TXXX backup
+		args = append(args, "-metadata", fmt.Sprintf("TXXX=ORIGINALYEAR:%s", desired["ORIGINALYEAR"]))
+		tagsWritten++
+	}
+
 	if _, ok := changes["ALBUM"]; ok {
 		addMeta("album", desired["ALBUM"])
 		tagsWritten++
@@ -431,28 +458,39 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 				releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
 				releaseYear := ""
 				releaseDate := ""
-				isrc := ""
 				if err == nil {
 					releaseYear = strconv.Itoa(releaseTime.Year())
 					releaseDate = releaseTime.Format("2006-01-02")
 				}
+
+				releaseGroupTime, err := MusicBrainzDateStringToDateTime(response.ReleaseGroup.FirstReleaseDate)
+				releaseGroupYear := ""
+				releaseGroupDate := ""
+				if err == nil {
+					releaseGroupYear = strconv.Itoa(releaseGroupTime.Year())
+					releaseGroupDate = releaseGroupTime.Format("2006-01-02")
+				}
+
+				isrc := ""
 				if len(track.Recording.ISRCs) > 0 {
 					isrc = track.Recording.ISRCs[0]
 				}
 
 				metadata := models.FileTags{
-					Artist:      trackArtist,
-					AlbumArtist: releaseArtist,
-					Genre:       "",
-					Date:        releaseDate,
-					Year:        releaseYear,
-					Album:       response.Title,
-					Title:       track.Title,
-					ISRC:        isrc,
-					Track:       track.Number,
-					TrackTotal:  strconv.Itoa(len(media.Tracks)),
-					DiscNumber:  strconv.Itoa(mediaCount + 1),
-					DiscTotal:   strconv.Itoa(len(response.Media)),
+					Artist:       trackArtist,
+					AlbumArtist:  releaseArtist,
+					Genre:        "",
+					OriginalDate: releaseGroupDate,
+					OriginalYear: releaseGroupYear,
+					ReleaseDate:  releaseDate,
+					ReleaseYear:  releaseYear,
+					Album:        response.Title,
+					Title:        track.Title,
+					ISRC:         isrc,
+					Track:        track.Number,
+					TrackTotal:   strconv.Itoa(len(media.Tracks)),
+					DiscNumber:   strconv.Itoa(mediaCount + 1),
+					DiscTotal:    strconv.Itoa(len(response.Media)),
 				}
 
 				// re-tag file with new information
@@ -548,10 +586,14 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 			res["ALBUMARTIST"] = append(res["ALBUMARTIST"], val)
 		case "genre":
 			res["GENRE"] = append(res["GENRE"], val)
-		case "date":
+		case "date", "tdrc":
 			res["DATE"] = append(res["DATE"], val)
-		case "year":
+		case "year", "tyer":
 			res["YEAR"] = append(res["YEAR"], val)
+		case "originaldate", "tdor":
+			res["ORIGINALDATE"] = append(res["ORIGINALDATE"], val)
+		case "tory", "originalyear", "original_year":
+			res["ORIGINALYEAR"] = append(res["ORIGINALYEAR"], val)
 		case "album":
 			res["ALBUM"] = append(res["ALBUM"], val)
 		case "title":

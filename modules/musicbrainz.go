@@ -81,7 +81,7 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	}
 
 	// do API request
-	url := fmt.Sprintf("https://musicbrainz.org/ws/2/release/%s?inc=recordings+labels+artists+genres+tags&fmt=json", mbID)
+	url := fmt.Sprintf("https://musicbrainz.org/ws/2/release/%s?inc=recordings+labels+artists+genres+tags+release-groups&fmt=json", mbID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return apiResponse, err

@@ -48,6 +48,7 @@ type MusicBrainzReleaseResponse struct {
 	StatusID       string         `json:"status-id"`
 	ID             string         `json:"id"`
 	ArtistCredit   []ArtistCredit `json:"artist-credit"`
+	ReleaseGroup   ReleaseGroup   `json:"release-group"`
 	Country        string         `json:"country"`
 	Asin           string         `json:"asin"`
 	ReleaseEvents  []struct {
@@ -136,4 +137,38 @@ type ArtistCredit struct {
 	Joinphrase string `json:"joinphrase"`
 	Artist     Artist `json:"artist"`
 	Name       string `json:"name"`
+}
+
+type ReleaseGroup struct {
+	SecondaryTypeIds []interface{} `json:"secondary-type-ids"`
+	FirstReleaseDate string        `json:"first-release-date"`
+	Disambiguation   string        `json:"disambiguation"`
+	SecondaryTypes   []interface{} `json:"secondary-types"`
+	Genres           []struct {
+		Count          int    `json:"count"`
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		Disambiguation string `json:"disambiguation"`
+	} `json:"genres"`
+	PrimaryType string `json:"primary-type"`
+	Tags        []struct {
+		Count int    `json:"count"`
+		Name  string `json:"name"`
+	} `json:"tags"`
+	PrimaryTypeID string `json:"primary-type-id"`
+	ArtistCredit  []struct {
+		Name   string `json:"name"`
+		Artist struct {
+			Name           string `json:"name"`
+			SortName       string `json:"sort-name"`
+			ID             string `json:"id"`
+			TypeID         string `json:"type-id"`
+			Country        string `json:"country"`
+			Disambiguation string `json:"disambiguation"`
+			Type           string `json:"type"`
+		} `json:"artist"`
+		Joinphrase string `json:"joinphrase"`
+	} `json:"artist-credit"`
+	Title string `json:"title"`
+	ID    string `json:"id"`
 }
