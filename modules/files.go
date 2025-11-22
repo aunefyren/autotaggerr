@@ -205,7 +205,7 @@ func SetFlacTags(filePath string, metadata models.FileTags) (unchanged bool, tag
 
 	changes, hasChanges := utilities.DiffFlacTags(existing, desired)
 	if !hasChanges {
-		logger.Log.Info("no tag changes needed: " + filePath)
+		logger.Log.Debug("no tag changes needed: " + filePath)
 		return true, tagsWritten, nil
 	}
 
