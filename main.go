@@ -292,7 +292,7 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 	count := 0
 	allUnchangedFiles := 0
 	allTagsWritten := 0
-	allErrorFiles := 0
+	allErrorFiles := []string{}
 	allAlbumsWhoNeedMetadataRefresh := map[string]string{}
 
 	for _, library := range libraries {
@@ -305,7 +305,7 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 			count += libraryCount
 			allUnchangedFiles += unchangedFiles
 			allTagsWritten += tagsWritten
-			allErrorFiles += errorFiles
+			allErrorFiles = append(allErrorFiles, errorFiles...)
 			allAlbumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefresh
 		}
 	}
@@ -321,6 +321,14 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 	durationTime := endTime.Sub(startTime)
 	filesChanged := count - allUnchangedFiles
 
-	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(allErrorFiles) + " files not processed because of errors. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
+	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(len(allErrorFiles)) + " files not processed because of errors. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
+
+	if len(allErrorFiles) > 0 {
+		logger.Log.Info("files that failed to be processed: ")
+		for _, filePath := range allErrorFiles {
+			logger.Log.Info("failed file: " + filePath)
+		}
+	}
+
 	logger.Log.Info("process took: " + durationTime.String())
 }
