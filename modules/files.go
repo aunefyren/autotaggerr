@@ -539,12 +539,12 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string) (counter int, unchangedFiles int, allTagsWritten int, errorFiles int, albumsWhoNeedMetadataRefresh map[string]string, err error) {
+func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string) (counter int, unchangedFiles int, allTagsWritten int, errorFiles []string, albumsWhoNeedMetadataRefresh map[string]string, err error) {
 	originalRoot := root
 	counter = 0
 	unchangedFiles = 0
 	allTagsWritten = 0
-	errorFiles = 0
+	errorFiles = []string{}
 
 	return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -560,7 +560,7 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 			unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFile(path, lidarrClient, plexClient, albumsWhoNeedMetadataRefreshSoFar, originalRoot)
 			if err != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
-				errorFiles++
+				errorFiles = append(errorFiles, path)
 			} else {
 				counter++
 				if unchanged {
