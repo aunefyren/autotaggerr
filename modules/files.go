@@ -161,21 +161,21 @@ func writeMusicBrainzAlbumIDToID3v2(mp3Path, mbid string) error {
 	return nil
 }
 
-func SetFileTags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
+func SetFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	switch ext {
 	case ".mp3":
 		return SetMP3Tags(filePath, metadata)
 	case ".flac":
-		return SetFlacTags(filePath, metadata)
+		return SetFlacTags(filePath, metadata, configFile)
 	default:
 		return false, 0, errors.New("unsupported file type")
 	}
 }
 
 // SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
-func SetFlacTags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
+func SetFlacTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
 	unchanged = false
 	tagsWritten = 0
 
@@ -202,7 +202,7 @@ func SetFlacTags(filePath string, metadata models.FileTags) (unchanged bool, tag
 		return unchanged, tagsWritten, err
 	}
 
-	changes, hasChanges := utilities.DiffFlacTags(existing, desired)
+	changes, hasChanges := utilities.DiffFlacTags(existing, desired, configFile)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes needed: " + filePath)
 		return true, tagsWritten, nil
@@ -445,8 +445,12 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		for _, track := range media.Tracks {
 			if track.ID == mbTrackID {
 				logger.Log.Debug("release track ID found in MB response")
-				trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
-				logger.Log.Debug("track artists: " + trackArtist)
+
+				trackArtist := ""
+				if !configFile.AutotaggerrIgnoreRedundantContributingArtists || len(track.ArtistCredit) > 1 {
+					trackArtist = MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
+				}
+				logger.Log.Trace("track artists: " + trackArtist)
 
 				// determine release artist
 				releaseArtist := ""
@@ -501,12 +505,12 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 				}
 
 				// re-tag file with new information
-				unchanged, tagsWritten, err := SetFileTags(filePath, metadata)
+				unchanged, tagsWritten, err := SetFileTags(filePath, metadata, configFile)
 				if err != nil {
 					logger.Log.Error("failed to set file tags. error: " + err.Error())
 					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to set FLAC artist tags")
 				} else {
-					logger.Log.Debug("file tagged")
+					logger.Log.Debug("file tagger finished")
 				}
 
 				changeString := "unchanged"
