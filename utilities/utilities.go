@@ -15,6 +15,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/models"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -207,12 +208,13 @@ func NormalizeTagValue(s string) string {
 
 // DiffFlacTags compares existing Vorbis tags (multi-valued) with desired (single-valued per key).
 // It returns only the keys that need to change.
-func DiffFlacTags(existing map[string][]string, desired map[string]string) (map[string]string, bool) {
+func DiffFlacTags(existing map[string][]string, desired map[string]string, configFile models.ConfigStruct) (map[string]string, bool) {
 	changes := make(map[string]string)
 	hasChanges := false
 
 	for k, want := range desired {
-		if strings.TrimSpace(want) == "" {
+		// this decides if Autotaggerr should remove values
+		if strings.TrimSpace(want) == "" && !configFile.AutotaggerrRemoveValues {
 			continue
 		}
 		key := strings.ToUpper(k)

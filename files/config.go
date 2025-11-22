@@ -142,6 +142,9 @@ func CreateConfigFile() error {
 	config.AutotaggerrCustomArtistDelimiter = " & "
 	config.AutotaggerrUseCurrentArtistName = true
 	config.AutotaggerrUseCustomArtistDelimiter = true
+	config.AutotaggerrCustomArtistDelimiterCommas = true
+	config.AutotaggerrIgnoreRedundantContributingArtists = true
+	config.AutotaggerrRemoveValues = false
 
 	level := logrus.InfoLevel
 	config.AutotaggerrLogLevel = level.String()
