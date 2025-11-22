@@ -123,10 +123,27 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	return apiResponse, nil
 }
 
-func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit) string {
+func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit, configFile models.ConfigStruct) string {
 	artistString := ""
-	for _, feature := range artists {
-		artistString += feature.Name + feature.Joinphrase
+	for index, feature := range artists {
+		logger.Log.Trace("processing featuring artist: " + feature.Artist.Name)
+
+		// choose join phrase based on settings
+		joinPhrase := configFile.AutotaggerrCustomArtistDelimiter
+		if !configFile.AutotaggerrUseCustomArtistDelimiter {
+			joinPhrase = feature.Joinphrase
+		} else if index+1 >= len(artists) {
+			joinPhrase = ""
+		}
+
+		logger.Log.Trace("feature join phrase to use: " + joinPhrase)
+
+		// either use original release artist name or current name
+		if configFile.AutotaggerrUseCurrentArtistName {
+			artistString += feature.Artist.Name + joinPhrase
+		} else {
+			artistString += feature.Name + joinPhrase
+		}
 	}
 
 	return artistString

@@ -23,7 +23,7 @@ func GetConfig() (config models.ConfigStruct, err error) {
 
 	// Create config.json if it doesn't exist
 	if _, err := os.Stat(configFile); errors.Is(err, os.ErrNotExist) {
-		fmt.Println("Config file does not exist. Creating...")
+		fmt.Println("config file does not exist. creating...")
 
 		err := CreateConfigFile()
 		if err != nil {
@@ -33,7 +33,7 @@ func GetConfig() (config models.ConfigStruct, err error) {
 
 	file, err := os.Open(configFile)
 	if err != nil {
-		fmt.Println("Get config file threw error trying to open the file.")
+		fmt.Println("get config file threw error trying to open the file")
 		return config, err
 	}
 	defer file.Close()
@@ -41,7 +41,7 @@ func GetConfig() (config models.ConfigStruct, err error) {
 
 	err = decoder.Decode(&config)
 	if err != nil {
-		fmt.Println("Get config file threw error trying to parse the file.")
+		fmt.Println("get config file threw error trying to parse the file")
 		return config, err
 	}
 
@@ -51,11 +51,11 @@ func GetConfig() (config models.ConfigStruct, err error) {
 		// Set new value
 		newKey, err := GenerateSecureKey(64)
 		if err != nil {
-			return config, errors.New("Failed to generate secure key. Error: " + err.Error())
+			return config, errors.New("failed to generate secure key. error: " + err.Error())
 		}
 		config.PrivateKey = newKey
 		anythingChanged = true
-		fmt.Println("New private key set.")
+		fmt.Println("new private key set")
 	}
 
 	if config.AutotaggerrName == "" {
@@ -88,6 +88,12 @@ func GetConfig() (config models.ConfigStruct, err error) {
 		anythingChanged = true
 	}
 
+	if config.AutotaggerrCustomArtistDelimiter == "" {
+		// set new value
+		config.AutotaggerrCustomArtistDelimiter = " & "
+		anythingChanged = true
+	}
+
 	if config.AutotaggerrLibraries == nil {
 		// Set new value
 		config.AutotaggerrLibraries = []string{}
@@ -109,6 +115,7 @@ func GetConfig() (config models.ConfigStruct, err error) {
 
 	if anythingChanged {
 		// Save new version of config json
+		fmt.Println("saving new config file version")
 		err = SaveConfig(config)
 		if err != nil {
 			return config, err
@@ -132,6 +139,9 @@ func CreateConfigFile() error {
 	config.AutotaggerrVersion = autotaggerrVersionParameter
 	config.AutotaggerrLibraries = []string{}
 	config.AutotaggerrProcessCronSchedule = "0 0 18 * * 7"
+	config.AutotaggerrCustomArtistDelimiter = " & "
+	config.AutotaggerrUseCurrentArtistName = true
+	config.AutotaggerrUseCustomArtistDelimiter = true
 
 	level := logrus.InfoLevel
 	config.AutotaggerrLogLevel = level.String()
@@ -161,17 +171,17 @@ func SaveConfig(config models.ConfigStruct) error {
 		return errors.New("Failed to create directory for config.")
 	}
 
-	file, err := json.MarshalIndent(config, "", "	")
+	file, err := os.OpenFile(configFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
 		return err
 	}
+	defer file.Close()
 
-	err = os.WriteFile(configFile, file, 0644)
-	if err != nil {
-		return err
-	}
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "\t")
+	encoder.SetEscapeHTML(false) // disable &/< > escaping
 
-	return nil
+	return encoder.Encode(config)
 }
 
 func GetPrivateKey(epoch int) []byte {
