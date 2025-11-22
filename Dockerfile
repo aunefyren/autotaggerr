@@ -1,5 +1,5 @@
 # ---------- Build ----------
-FROM golang:1.23.4-alpine AS builder
+FROM golang:1.24.0-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /app
