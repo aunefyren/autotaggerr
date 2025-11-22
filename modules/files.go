@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/utilities"
@@ -400,6 +401,14 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	tagsWritten = 0
 	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
 
+	// Load config file
+	configFile, err := files.GetConfig()
+	if err != nil {
+		fmt.Println("failed to load configuration file. error: " + err.Error())
+		os.Exit(1)
+	}
+	fmt.Println("configuration file loaded")
+
 	// get MB release data from track
 	mbReleaseID, err := ExtractMusicBrainzReleaseID(filePath)
 	if err != nil {
@@ -445,12 +454,19 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		for _, track := range media.Tracks {
 			if track.ID == mbTrackID {
 				logger.Log.Debug("release track ID found in MB response")
-				trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit)
+				trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
 				logger.Log.Debug("track artists: " + trackArtist)
 
+				// determine release artist
 				releaseArtist := ""
 				if releaseArtist == "" && len(response.ArtistCredit) > 0 {
-					releaseArtist = response.ArtistCredit[0].Name
+					if configFile.AutotaggerrUseCurrentArtistName {
+						// use current artist name if configured
+						releaseArtist = response.ArtistCredit[0].Artist.Name
+					} else {
+						// use original release artist name if configured
+						releaseArtist = response.ArtistCredit[0].Name
+					}
 				} else if releaseArtist == "" {
 					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to determine album artist")
 				}
