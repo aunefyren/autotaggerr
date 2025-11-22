@@ -11,7 +11,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/utilities"
@@ -396,18 +395,10 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	return false, tagsWritten, nil
 }
 
-func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, rootDir string) (unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefresh map[string]string, err error) {
+func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefresh map[string]string, err error) {
 	unchanged = false
 	tagsWritten = 0
 	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
-
-	// Load config file
-	configFile, err := files.GetConfig()
-	if err != nil {
-		fmt.Println("failed to load configuration file. error: " + err.Error())
-		os.Exit(1)
-	}
-	fmt.Println("configuration file loaded")
 
 	// get MB release data from track
 	mbReleaseID, err := ExtractMusicBrainzReleaseID(filePath)
@@ -539,7 +530,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string) (counter int, unchangedFiles int, allTagsWritten int, errorFiles []string, albumsWhoNeedMetadataRefresh map[string]string, err error) {
+func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, configFile models.ConfigStruct) (counter int, unchangedFiles int, allTagsWritten int, errorFiles []string, albumsWhoNeedMetadataRefresh map[string]string, err error) {
 	originalRoot := root
 	counter = 0
 	unchangedFiles = 0
@@ -557,7 +548,7 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 		tagsWritten := 0
 
 		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFile(path, lidarrClient, plexClient, albumsWhoNeedMetadataRefreshSoFar, originalRoot)
+			unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFile(path, lidarrClient, plexClient, albumsWhoNeedMetadataRefreshSoFar, originalRoot, configFile)
 			if err != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
 				errorFiles = append(errorFiles, path)

@@ -119,7 +119,7 @@ func main() {
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient)
+		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient, configFile)
 	}, configFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
 		logger.Log.Info("library process task was not scheduled successfully.")
@@ -127,7 +127,7 @@ func main() {
 
 	// start library process if no file is configured and the feature is enabled
 	if configFile.AutotaggerrProcessOnStartUp && filePath == nil {
-		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient)
+		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient, configFile)
 	}
 
 	// process file path
@@ -137,7 +137,7 @@ func main() {
 		grandparentDir := path.Dir(parentDir)
 		rootDir := path.Dir(grandparentDir)
 
-		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, rootDir)
+		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, rootDir, configFile)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
@@ -286,7 +286,7 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 	return configFile, filePath, nil
 }
 
-func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, plexClient *modules.PlexClient) {
+func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, plexClient *modules.PlexClient, configFile models.ConfigStruct) {
 	logger.Log.Info("library process task starting...")
 	startTime := time.Now()
 	count := 0
@@ -298,7 +298,7 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 	for _, library := range libraries {
 		albumsWhoNeedMetadataRefresh := allAlbumsWhoNeedMetadataRefresh
 		logger.Log.Info("processing: " + library)
-		libraryCount, unchangedFiles, tagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err := modules.ScanFolderRecursive(library, lidarrClient, plexClient, albumsWhoNeedMetadataRefresh)
+		libraryCount, unchangedFiles, tagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err := modules.ScanFolderRecursive(library, lidarrClient, plexClient, albumsWhoNeedMetadataRefresh, configFile)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
 		} else {
