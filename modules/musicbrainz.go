@@ -111,12 +111,22 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 		return apiResponse, errors.New("failed to parse Musicbrainz API response")
 	}
 
-	musicbrainzLoadCache()
+	err = musicbrainzLoadCache()
+	if err != nil {
+		logger.Log.Error("failed to load Musicbrainz cache. error: " + err.Error())
+		return apiResponse, errors.New("failed to load Musicbrainz cache")
+	}
+
 	musicbrainzReleaseCache[mbID] = models.CachedMusicBrainzRelease{
 		Release:   apiResponse,
 		Timestamp: time.Now(),
 	}
-	musicbrainzSaveCache()
+
+	err = musicbrainzSaveCache()
+	if err != nil {
+		logger.Log.Error("failed to save Musicbrainz cache. error: " + err.Error())
+		return apiResponse, errors.New("failed to save Musicbrainz cache")
+	}
 
 	logger.Log.Trace(fmt.Sprintf("api response: %s", apiResponse))
 
