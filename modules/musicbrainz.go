@@ -42,12 +42,6 @@ func RateLimit() error {
 func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
 	var release models.MusicBrainzReleaseResponse
 
-	err := musicbrainzLoadCache()
-	if err != nil {
-		logger.Log.Error("failed to load release cache. error: " + err.Error())
-		return release, errors.New("failed to load release cache")
-	}
-
 	if cached, ok := musicbrainzReleaseCache[mbID]; ok {
 		if time.Since(cached.Timestamp) < musicbrainzReleaseCacheDuration {
 			logger.Log.Debug("returning cached release for ID: " + mbID)
@@ -111,21 +105,21 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 		return apiResponse, errors.New("failed to parse Musicbrainz API response")
 	}
 
-	err = musicbrainzLoadCache()
-	if err != nil {
-		logger.Log.Error("failed to load Musicbrainz cache. error: " + err.Error())
-		return apiResponse, errors.New("failed to load Musicbrainz cache")
-	}
-
 	musicbrainzReleaseCache[mbID] = models.CachedMusicBrainzRelease{
 		Release:   apiResponse,
 		Timestamp: time.Now(),
 	}
 
-	err = musicbrainzSaveCache()
+	err = MusicbrainzSaveCache()
 	if err != nil {
 		logger.Log.Error("failed to save Musicbrainz cache. error: " + err.Error())
 		return apiResponse, errors.New("failed to save Musicbrainz cache")
+	}
+
+	err = MusicbrainzLoadCache()
+	if err != nil {
+		logger.Log.Error("failed to load Musicbrainz cache. error: " + err.Error())
+		return apiResponse, errors.New("failed to load Musicbrainz cache")
 	}
 
 	logger.Log.Trace(fmt.Sprintf("api response: %s", apiResponse))
@@ -174,7 +168,7 @@ func MusicBrainzDateStringToDateTime(dateStr string) (time.Time, error) {
 	return parsedTime, nil
 }
 
-func musicbrainzLoadCache() error {
+func MusicbrainzLoadCache() error {
 	data, err := os.ReadFile(musicbrainzReleaseCachePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -186,7 +180,7 @@ func musicbrainzLoadCache() error {
 	return json.Unmarshal(data, &musicbrainzReleaseCache)
 }
 
-func musicbrainzSaveCache() error {
+func MusicbrainzSaveCache() error {
 	data, err := json.MarshalIndent(musicbrainzReleaseCache, "", "  ")
 	if err != nil {
 		return err
