@@ -132,9 +132,9 @@ func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit, configFile m
 		joinPhrase := configFile.AutotaggerrCustomArtistDelimiter
 		if !configFile.AutotaggerrUseCustomArtistDelimiter {
 			joinPhrase = feature.Joinphrase
-		} else if index+1 >= len(artists) {
+		} else if index+1 == len(artists) {
 			joinPhrase = ""
-		} else if index+1 == len(artists)-1 && configFile.AutotaggerrCustomArtistDelimiterCommas {
+		} else if len(artists) > 2 && index+1 < len(artists)-1 && configFile.AutotaggerrCustomArtistDelimiterCommas {
 			joinPhrase = ", "
 		}
 

@@ -417,11 +417,13 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
 	if (mbTrackID == "" || mbReleaseID == "") && lidarrClient != nil {
-		logger.Log.Info("MB track or release ID field empty. Trying Lidarr...")
+		logger.Log.Debug("MB track or release ID field empty. trying Lidarr...")
 		mbReleaseID, mbTrackID, err = ResolveMBReleaseAndTrackIDFromLidarr(lidarrClient, filePath, rootDir)
 		if err != nil {
 			logger.Log.Error("failed to retrieve track MB ID from Lidarr. error: " + err.Error())
 			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to retrieve track MB ID from Lidarr")
+		} else {
+			logger.Log.Debug("Lidarr fallback successful")
 		}
 
 		logger.Log.Trace("MB release ID: " + mbReleaseID)
@@ -534,25 +536,55 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to tag file, track not found in release data")
 }
 
-func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, configFile models.ConfigStruct) (counter int, unchangedFiles int, allTagsWritten int, errorFiles []string, albumsWhoNeedMetadataRefresh map[string]string, err error) {
+func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, configFile models.ConfigStruct) (
+	counter int,
+	unchangedFiles int,
+	allTagsWritten int,
+	errorFiles []string,
+	albumsWhoNeedMetadataRefresh map[string]string,
+	err error,
+) {
 	originalRoot := root
 	counter = 0
 	unchangedFiles = 0
 	allTagsWritten = 0
 	errorFiles = []string{}
 
-	return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+	// first pass, count total supported files
+	totalFiles := 0
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && supportedExtensions[strings.ToLower(filepath.Ext(path))] {
+			totalFiles++
+		}
+		return nil
+	})
+
+	if totalFiles == 0 {
+		logger.Log.Info("no supported files found in: " + root)
+		return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefreshSoFar, nil
+	}
+
+	logger.Log.Info(fmt.Sprintf("found %d supported files. starting processing...", totalFiles))
+
+	// track progress thresholds (10%, 20%, ... 100%)
+	nextProgress := 10
+
+	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
+
+	// second pass, actual processing
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
-			return err // report permission errors, etc.
+			return err
 		}
 		if d.IsDir() {
-			return nil // keep walking
+			return nil
 		}
+
 		unchanged := false
 		tagsWritten := 0
 
 		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFile(path, lidarrClient, plexClient, albumsWhoNeedMetadataRefreshSoFar, originalRoot, configFile)
+			unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFile(path, lidarrClient, plexClient, albumsWhoNeedMetadataRefresh, originalRoot, configFile)
 			if err != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
 				errorFiles = append(errorFiles, path)
@@ -560,14 +592,21 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 				counter++
 				if unchanged {
 					unchangedFiles++
-				} else {
-					logger.Log.Trace("file changed: " + path)
 				}
 				allTagsWritten += tagsWritten
+
+				// print intervals
+				progress := (counter * 100) / totalFiles
+				if progress >= nextProgress {
+					logger.Log.Info(fmt.Sprintf("progress: %d%% (%d/%d files)", progress, counter, totalFiles))
+					nextProgress += 10
+				}
 			}
 		}
 		return nil
 	})
+
+	return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err
 }
 
 func GetMP3Tags(filePath string) (map[string][]string, error) {
