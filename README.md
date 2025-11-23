@@ -1,6 +1,6 @@
 # 🎵 Autotaggerr 🎵
 
-**Autotaggerr** is an automated music tagging utility that enriches your Lidarr managed audio library with detailed metadata from [MusicBrainz](https://musicbrainz.org/). It identifies tracks based on their MusicBrainz Release ID (used by tools like [Lidarr](https://lidarr.audio/)), or by talking to Lidarr through API, and fills in missing metadata — including track artists, release date, genre, track numbers, and more. It can automatically refresh the metadata in Plex afterward.
+**Autotaggerr** is an automated music tagging utility that enriches your Lidarr managed audio library with detailed metadata from [MusicBrainz](https://musicbrainz.org/). It identifies tracks based on their MusicBrainz Release ID (used by tools like [Lidarr](https://lidarr.audio/)), or by talking to Lidarr through API. it then fills in missing metadata, including: track artists, release date, genre, track numbers, and more. It can automatically refresh the metadata in Plex afterward.
 
 > Built for automation of large libraries!
 
