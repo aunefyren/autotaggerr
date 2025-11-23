@@ -550,6 +550,13 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 	allTagsWritten = 0
 	errorFiles = []string{}
 
+	// load cache into memory
+	err = MusicbrainzLoadCache()
+	if err != nil {
+		logger.Log.Error("failed to load release cache. error: " + err.Error())
+		return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefreshSoFar, errors.New("failed to load release cache")
+	}
+
 	// first pass, count total supported files
 	totalFiles := 0
 	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {

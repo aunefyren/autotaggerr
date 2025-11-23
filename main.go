@@ -137,6 +137,12 @@ func main() {
 		grandparentDir := path.Dir(parentDir)
 		rootDir := path.Dir(grandparentDir)
 
+		// load cache into memory
+		err = modules.MusicbrainzLoadCache()
+		if err != nil {
+			logger.Log.Error("failed to load release cache. error: " + err.Error())
+		}
+
 		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, rootDir, configFile)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
