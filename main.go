@@ -297,7 +297,7 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 
 	for _, library := range libraries {
 		albumsWhoNeedMetadataRefresh := allAlbumsWhoNeedMetadataRefresh
-		logger.Log.Info("processing: " + library)
+		logger.Log.Info("processing library: " + library)
 		libraryCount, unchangedFiles, tagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err := modules.ScanFolderRecursive(library, lidarrClient, plexClient, albumsWhoNeedMetadataRefresh, configFile)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
@@ -307,6 +307,7 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 			allTagsWritten += tagsWritten
 			allErrorFiles = append(allErrorFiles, errorFiles...)
 			allAlbumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefresh
+			logger.Log.Info("processed library: " + library)
 		}
 	}
 
@@ -324,10 +325,11 @@ func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, pl
 	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(len(allErrorFiles)) + " files not processed because of errors. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
 
 	if len(allErrorFiles) > 0 {
-		logger.Log.Info("files that failed to be processed: ")
+		logString := "files that failed to be processed: "
 		for _, filePath := range allErrorFiles {
-			logger.Log.Info("failed file: " + filePath)
+			logString += "\n" + filePath
 		}
+		logger.Log.Warn(logString)
 	}
 
 	logger.Log.Info("process took: " + durationTime.String())
