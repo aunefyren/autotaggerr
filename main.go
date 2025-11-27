@@ -122,7 +122,7 @@ func main() {
 		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient, configFile)
 	}, configFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
-		logger.Log.Info("library process task was not scheduled successfully.")
+		logger.Log.Error("library process task was not scheduled successfully.")
 	}
 
 	// start library process if no file is configured and the feature is enabled
