@@ -49,13 +49,7 @@ func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, erro
 		}
 	}
 
-	configFile, err := files.GetConfig()
-	if err != nil {
-		logger.Log.Error("failed to get config file. error: " + err.Error())
-		return release, errors.New("failed to get config file")
-	}
-
-	release, err = QueryMusicBrainzReleaseData(mbID, configFile.AutotaggerrVersion)
+	release, err := QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
 	if err != nil {
 		logger.Log.Debug("failed to retrieve release from MB api. error: " + err.Error())
 		return release, errors.New("failed to retrieve release from MB api")

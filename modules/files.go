@@ -513,7 +513,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 				metadata := models.FileTags{
 					Artist:       trackArtist,
 					AlbumArtist:  releaseArtist,
-					AlbumType:    ReleaseGroupToAlbumType(response.ReleaseGroup),
+					AlbumType:    ReleaseToAlbumType(response),
 					OriginalDate: releaseGroupDate,
 					OriginalYear: releaseGroupYear,
 					ReleaseDate:  releaseDate,
@@ -814,31 +814,36 @@ func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRe
 	return
 }
 
-func ReleaseGroupToAlbumType(release models.ReleaseGroup) string {
-	switch strings.ToLower(release.PrimaryType) {
+func ReleaseToAlbumType(release models.MusicBrainzReleaseResponse) string {
+	if strings.Contains(strings.ToLower(release.Title), "remix") || strings.Contains(strings.ToLower(release.Disambiguation), "remix") {
+		return "album;remix"
+	}
+
+	if len(release.ReleaseGroup.SecondaryTypes) == 0 {
+		return strings.ToLower(release.ReleaseGroup.PrimaryType)
+	}
+
+	primarySecondary := release.ReleaseGroup.SecondaryTypes[0]
+	switch strings.ToLower(primarySecondary) {
+	case "soundtrack":
+		return "album;soundtrack"
+	case "compilation":
+		return "album;compilation"
+	case "remix":
+		return "album;remix"
+	case "live":
+		return "album;live"
+	case "demo":
+		return "album;demo"
+	}
+
+	switch strings.ToLower(release.ReleaseGroup.PrimaryType) {
+	case "album":
+		return "album"
 	case "ep":
 		return "ep"
 	case "single":
 		return "single"
-	case "album":
-		if len(release.SecondaryTypes) == 0 {
-			return "album"
-		}
-		primarySecondary := release.SecondaryTypes[0]
-		switch strings.ToLower(primarySecondary) {
-		case "soundtrack":
-			return "album;soundtrack"
-		case "compilation":
-			return "album;compilation"
-		case "remix":
-			return "album;remix"
-		case "live":
-			return "album;live"
-		case "demo":
-			return "album;demo"
-		default:
-			return "album"
-		}
 	}
 
 	return ""

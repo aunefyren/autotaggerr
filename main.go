@@ -46,7 +46,7 @@ func main() {
 	fmt.Println("directory 'config' valid")
 
 	// Load config file
-	configFile, err := files.GetConfig()
+	err = files.LoadConfig()
 	if err != nil {
 		fmt.Println("failed to load configuration file. error: " + err.Error())
 		os.Exit(1)
@@ -54,30 +54,39 @@ func main() {
 	fmt.Println("configuration file loaded")
 
 	// Create and define file for logging
-	logger.InitLogger(configFile)
+	logger.InitLogger(files.ConfigFile)
+
+	logger.Log.Info("running Autotaggerr version: " + files.ConfigFile.AutotaggerrVersion)
 
 	// Set GIN mode
-	if configFile.AutotaggerrEnvironment != "test" {
+	if files.ConfigFile.AutotaggerrEnvironment != "test" {
 		gin.SetMode(gin.ReleaseMode)
 	}
 
 	// Change the config to respect flags
-	configFile, filePath, err := parseFlags(configFile)
+	var filePath *string
+	files.ConfigFile, filePath, err = parseFlags(files.ConfigFile)
 	if err != nil {
 		logger.Log.Fatal("failed to parse input flags. error: " + err.Error())
 		os.Exit(1)
 	}
 	logger.Log.Info("flags parsed")
 
+	err = files.SaveConfig()
+	if err != nil {
+		logger.Log.Fatal("failed to save new config. error: " + err.Error())
+		os.Exit(1)
+	}
+
 	// Set time zone from config if it is not empty
-	if configFile.Timezone != "" {
-		loc, err := time.LoadLocation(configFile.Timezone)
+	if files.ConfigFile.Timezone != "" {
+		loc, err := time.LoadLocation(files.ConfigFile.Timezone)
 		if err != nil {
 			logger.Log.Info("failed to set time zone from config. error: " + err.Error())
 			logger.Log.Info("removing value...")
 
-			configFile.Timezone = ""
-			err = files.SaveConfig(configFile)
+			files.ConfigFile.Timezone = ""
+			err = files.SaveConfig()
 			if err != nil {
 				logger.Log.Fatal("failed to set new time zone in the config. error: " + err.Error())
 				os.Exit(1)
@@ -90,8 +99,8 @@ func main() {
 	logger.Log.Info("timezone set")
 
 	// configure Lidarr client
-	if configFile.LidarrBaseURL != "" && configFile.LidarrAPIKey != "" {
-		lidarrClient = modules.NewLidarrClient(configFile.LidarrBaseURL, configFile.LidarrAPIKey, &configFile.LidarrHeaderCookie)
+	if files.ConfigFile.LidarrBaseURL != "" && files.ConfigFile.LidarrAPIKey != "" {
+		lidarrClient = modules.NewLidarrClient(files.ConfigFile.LidarrBaseURL, files.ConfigFile.LidarrAPIKey, &files.ConfigFile.LidarrHeaderCookie)
 		health, err := lidarrClient.HealthCheck()
 		if err != nil {
 			logger.Log.Error("failed to health check Lidarr. error: " + err.Error())
@@ -103,8 +112,8 @@ func main() {
 	}
 
 	// configure Plex client
-	if configFile.PlexBaseURL != "" && configFile.PlexToken != "" {
-		plexClient = modules.NewPlexClient(configFile.PlexBaseURL, configFile.PlexToken)
+	if files.ConfigFile.PlexBaseURL != "" && files.ConfigFile.PlexToken != "" {
+		plexClient = modules.NewPlexClient(files.ConfigFile.PlexBaseURL, files.ConfigFile.PlexToken)
 		health, err := plexClient.HealthCheck()
 		if err != nil {
 			logger.Log.Error("failed to health check Plex. error: " + err.Error())
@@ -119,15 +128,15 @@ func main() {
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient, configFile)
-	}, configFile.AutotaggerrProcessCronSchedule)
+		processLibraries(files.ConfigFile.AutotaggerrLibraries, lidarrClient, plexClient, files.ConfigFile)
+	}, files.ConfigFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
 		logger.Log.Error("library process task was not scheduled successfully.")
 	}
 
 	// start library process if no file is configured and the feature is enabled
-	if configFile.AutotaggerrProcessOnStartUp && filePath == nil {
-		processLibraries(configFile.AutotaggerrLibraries, lidarrClient, plexClient, configFile)
+	if files.ConfigFile.AutotaggerrProcessOnStartUp && filePath == nil {
+		processLibraries(files.ConfigFile.AutotaggerrLibraries, lidarrClient, plexClient, files.ConfigFile)
 	}
 
 	// process file path
@@ -143,7 +152,7 @@ func main() {
 			logger.Log.Error("failed to load release cache. error: " + err.Error())
 		}
 
-		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, rootDir, configFile)
+		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, rootDir, files.ConfigFile)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
@@ -158,9 +167,9 @@ func main() {
 	// Initialize Router
 	router := initRouter()
 
-	logger.Log.Info("router initialized.")
+	logger.Log.Info("router initialized. starting Autotaggerr at http://*:" + strconv.Itoa(files.ConfigFile.AutotaggerrPort))
 
-	log.Fatal(router.Run(":" + strconv.Itoa(configFile.AutotaggerrPort)))
+	log.Fatal(router.Run(":" + strconv.Itoa(files.ConfigFile.AutotaggerrPort)))
 }
 
 func initRouter() *gin.Engine {
@@ -281,12 +290,6 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 	// Failsafe, if port is 0, set to default 8080
 	if configFile.AutotaggerrPort == 0 {
 		configFile.AutotaggerrPort = 8080
-	}
-
-	// Save the new config
-	err := files.SaveConfig(configFile)
-	if err != nil {
-		return models.ConfigStruct{}, filePath, err
 	}
 
 	return configFile, filePath, nil
