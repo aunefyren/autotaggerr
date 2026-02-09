@@ -179,15 +179,21 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 	unchanged = false
 	tagsWritten = 0
 
+	genreString := ""
+	if len(metadata.Genres) > 0 {
+		genreString = metadata.Genres[0]
+	}
+
 	desired := map[string]string{
 		"ARTIST":       metadata.Artist,
 		"ALBUMARTIST":  metadata.AlbumArtist,
-		"GENRE":        metadata.Genre,
+		"GENRE":        genreString,
 		"DATE":         metadata.ReleaseDate,
 		"YEAR":         metadata.ReleaseYear,
 		"ORIGINALDATE": metadata.OriginalDate,
 		"RELEASEDATE":  metadata.ReleaseDate,
 		"ALBUM":        metadata.Album,
+		"RELEASETYPE":  metadata.AlbumType,
 		"TITLE":        metadata.Title,
 		"TRACKNUMBER":  metadata.Track,
 		"TRACKTOTAL":   metadata.TrackTotal,
@@ -236,10 +242,18 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	unchanged = false
 	tagsWritten = 0
 
+	genreString := ""
+	for index, genre := range metadata.Genres {
+		if index != 0 {
+			genreString += ";"
+		}
+		genreString += genre
+	}
+
 	desired := map[string]string{
 		"ARTIST":      metadata.Artist,
 		"ALBUMARTIST": metadata.AlbumArtist,
-		"GENRE":       metadata.Genre,
+		"GENRE":       genreString,
 		"ALBUM":       metadata.Album,
 		"TITLE":       metadata.Title,
 		"TRACKNUMBER": metadata.Track,
@@ -255,6 +269,9 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		// Original release
 		"ORIGINALDATE": metadata.OriginalDate, // maps to TDOR
 		"ORIGINALYEAR": metadata.OriginalYear, // maps toTORY (and TXXX backup)
+
+		// MUSICBRAINZ
+		"MUSICBRAINZ_ALBUMTYPE": metadata.AlbumType,
 	}
 
 	existing, err := GetMP3Tags(filePath)
@@ -325,6 +342,10 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	}
 	if _, ok := changes["TITLE"]; ok {
 		addMeta("title", desired["TITLE"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ_ALBUMTYPE"]; ok {
+		addMeta("musicbrainz_albumtype", desired["MUSICBRAINZ_ALBUMTYPE"])
 		tagsWritten++
 	}
 
@@ -492,7 +513,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 				metadata := models.FileTags{
 					Artist:       trackArtist,
 					AlbumArtist:  releaseArtist,
-					Genre:        "",
+					AlbumType:    ReleaseGroupToAlbumType(response.ReleaseGroup),
 					OriginalDate: releaseGroupDate,
 					OriginalYear: releaseGroupYear,
 					ReleaseDate:  releaseDate,
@@ -504,6 +525,10 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					TrackTotal:   strconv.Itoa(len(media.Tracks)),
 					DiscNumber:   strconv.Itoa(mediaCount + 1),
 					DiscTotal:    strconv.Itoa(len(response.Media)),
+				}
+
+				for _, genre := range response.ReleaseGroup.Genres {
+					metadata.Genres = append(metadata.Genres, genre.Name)
 				}
 
 				// re-tag file with new information
@@ -672,6 +697,8 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 			if len(parts) == 2 {
 				res["DISCTOTAL"] = append(res["DISCTOTAL"], utilities.NormalizeTagValue(parts[1]))
 			}
+		case "musicbrainz_albumtype":
+			res["MUSICBRAINZ_ALBUMTYPE"] = append(res["MUSICBRAINZ_ALBUMTYPE"], val)
 		default:
 			// Handle TXXX:* custom frames (e.g., TXXX:ISRC)
 			if strings.HasPrefix(strings.ToUpper(key), "TXXX:") {
@@ -785,4 +812,34 @@ func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRe
 	}
 
 	return
+}
+
+func ReleaseGroupToAlbumType(release models.ReleaseGroup) string {
+	switch strings.ToLower(release.PrimaryType) {
+	case "ep":
+		return "ep"
+	case "single":
+		return "single"
+	case "album":
+		if len(release.SecondaryTypes) == 0 {
+			return "album"
+		}
+		primarySecondary := release.SecondaryTypes[0]
+		switch strings.ToLower(primarySecondary) {
+		case "soundtrack":
+			return "album;soundtrack"
+		case "compilation":
+			return "album;compilation"
+		case "remix":
+			return "album;remix"
+		case "live":
+			return "album;live"
+		case "demo":
+			return "album;demo"
+		default:
+			return "album"
+		}
+	}
+
+	return ""
 }

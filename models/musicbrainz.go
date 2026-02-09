@@ -143,7 +143,7 @@ type ReleaseGroup struct {
 	SecondaryTypeIds []interface{} `json:"secondary-type-ids"`
 	FirstReleaseDate string        `json:"first-release-date"`
 	Disambiguation   string        `json:"disambiguation"`
-	SecondaryTypes   []interface{} `json:"secondary-types"`
+	SecondaryTypes   []string      `json:"secondary-types"`
 	Genres           []struct {
 		Count          int    `json:"count"`
 		ID             string `json:"id"`
