@@ -10,6 +10,8 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"strconv"
 	"time"
@@ -26,6 +28,16 @@ import (
 	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
+)
+
+// jobMu ensures only one scheduled job runs at a time, so the two cron jobs
+// cannot overlap each other even if their schedules fire simultaneously.
+var jobMu sync.Mutex
+
+// Per-job running flags prevent the same job from being queued twice while a
+// previous run is still in progress. CompareAndSwap makes this check atomic.
+var (
+	libraryScanRunning atomic.Bool
 )
 
 var (
@@ -136,7 +148,7 @@ func main() {
 
 	// start library process if no file is configured and the feature is enabled
 	if files.ConfigFile.AutotaggerrProcessOnStartUp && filePath == nil {
-		processLibraries(files.ConfigFile.AutotaggerrLibraries, lidarrClient, plexClient, files.ConfigFile)
+		go processLibraries(files.ConfigFile.AutotaggerrLibraries, lidarrClient, plexClient, files.ConfigFile)
 	}
 
 	// process file path
@@ -296,6 +308,15 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 }
 
 func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, plexClient *modules.PlexClient, configFile models.ConfigStruct) {
+	if !libraryScanRunning.CompareAndSwap(false, true) {
+		logger.Log.Warn("library scan skipped: previous run still in progress")
+		return
+	}
+	defer libraryScanRunning.Store(false)
+
+	jobMu.Lock()
+	defer jobMu.Unlock()
+
 	logger.Log.Info("library process task starting...")
 	startTime := time.Now()
 	count := 0
