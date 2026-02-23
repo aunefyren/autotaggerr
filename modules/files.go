@@ -70,6 +70,20 @@ func ExtractMusicBrainzRecordingID(filePath string) (string, error) {
 	}
 }
 
+// extractMusicBrainzReleaseID extracts the track titlle from either MP3 (ID3v2) or FLAC (Vorbis)
+func ExtractTrackTitle(filePath string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	switch ext {
+	case ".mp3":
+		return extractFromID3v2(filePath, "title")
+	case ".flac":
+		return ExtractFLACTag(filePath, "title", "")
+	default:
+		return "", errors.New("unsupported file type")
+	}
+}
+
 func extractFromID3v2(filePath string, metadataType string) (string, error) {
 	var keyName string
 	switch metadataType {
@@ -81,9 +95,11 @@ func extractFromID3v2(filePath string, metadataType string) (string, error) {
 		keyName = "MusicBrainz Release Track Id"
 	case "recording":
 		keyName = "MusicBrainz Recording Id"
+	case "title":
+		keyName = "title"
 	// add others if needed
 	default:
-		return "", errors.New("unsupported media type")
+		return "", errors.New("unsupported tag name for media type")
 	}
 
 	tagFile, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
@@ -92,6 +108,18 @@ func extractFromID3v2(filePath string, metadataType string) (string, error) {
 	}
 	defer tagFile.Close()
 
+	// simple tags
+	switch keyName {
+	case "title":
+		for _, frame := range tagFile.GetFrames("TIT2") {
+			if tf, ok := frame.(id3v2.TextFrame); ok {
+				return strings.TrimSpace(tf.Text), nil
+			}
+		}
+		return "", nil
+	}
+
+	// check for TXXX tags
 	for _, frame := range tagFile.GetFrames("TXXX") {
 		if uf, ok := frame.(id3v2.UserDefinedTextFrame); ok {
 			if strings.EqualFold(strings.TrimSpace(uf.Description), keyName) {
@@ -227,7 +255,7 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		"MUSICBRAINZ_ALBUMARTISTID":  metadata.MBAlbumArtistID,
 		"MUSICBRAINZ_RELEASEGROUPID": metadata.MBReleaseGroupID,
 		"MUSICBRAINZ_RELEASETRACKID": metadata.MBReleaseTrackID,
-		"MUSICBRAINZ_RECORDINGID":    metadata.MBRecordingID,
+		"MUSICBRAINZ_TRACKID":        metadata.MBRecordingID,
 		"SCRIPT":                     metadata.Script,
 		"LABEL":                      metadata.RecordLabel,
 		"MEDIA":                      metadata.Media,
@@ -576,12 +604,20 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
 	// get MB data from track
+	trackTitle, err := ExtractTrackTitle(filePath)
+	if err != nil {
+		logger.Log.Error("failed to extract track title. error: " + err.Error())
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track title")
+	}
+	logger.Log.Debug("track title: " + trackTitle)
+
+	// get MB data from track
 	mbRecordingID, err := ExtractMusicBrainzRecordingID(filePath)
 	if err != nil {
 		logger.Log.Error("failed to extract recording MB ID. error: " + err.Error())
 		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract recording MB ID")
 	}
-	logger.Log.Debug("MB recording ID: " + mbTrackID)
+	logger.Log.Debug("MB recording ID: " + mbRecordingID)
 
 	if (mbTrackID == "" || mbReleaseID == "") && lidarrClient != nil {
 		logger.Log.Debug("MB track or release ID field empty. trying Lidarr...")
@@ -612,10 +648,12 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	// Go through API response for information
 	for mediaCount, media := range response.Media {
 		for _, track := range media.Tracks {
-			if track.ID == mbTrackID || track.Recording.ID == mbRecordingID {
+			if track.ID == mbTrackID || track.Recording.ID == mbRecordingID || strings.EqualFold(track.Title, trackTitle) {
 				if track.ID == mbTrackID {
 					logger.Log.Debug("release track ID found in MB response")
-				} else if track.ID != mbTrackID || track.Recording.ID == mbRecordingID {
+				} else if track.ID != mbTrackID && strings.EqualFold(track.Title, trackTitle) {
+					logger.Log.Debug("release track ID not found in MB response, but titles match")
+				} else if track.ID != mbTrackID && track.Recording.ID == mbRecordingID {
 					logger.Log.Debug("release track ID not found in MB response, but recording was")
 				}
 
