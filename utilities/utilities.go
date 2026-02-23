@@ -387,6 +387,16 @@ func BaseDirOfPathAny(p string) string {
 	return path.Base(dir)
 }
 
+func GrandfatherDirOfPathAny(p string) string {
+	slashed := filepath.ToSlash(p)
+	// 1) directory containing the file
+	parent := path.Dir(slashed)
+	// 2) directory containing the parent
+	grandparent := path.Dir(parent)
+	// 3) base name of that directory
+	return path.Base(grandparent)
+}
+
 var (
 	spaceRe = regexp.MustCompile(`\s+`)
 	// Map typographic look-alikes to plain ASCII

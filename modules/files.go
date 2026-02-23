@@ -56,13 +56,31 @@ func ExtractMusicBrainzTrackID(filePath string) (string, error) {
 	}
 }
 
+// extractMusicBrainzReleaseID extracts the MusicBrainz Recording ID from either MP3 (ID3v2) or FLAC (Vorbis)
+func ExtractMusicBrainzRecordingID(filePath string) (string, error) {
+	ext := strings.ToLower(filepath.Ext(filePath))
+
+	switch ext {
+	case ".mp3":
+		return extractFromID3v2(filePath, "recording")
+	case ".flac":
+		return ExtractFLACTag(filePath, "", "recording")
+	default:
+		return "", errors.New("unsupported file type")
+	}
+}
+
 func extractFromID3v2(filePath string, metadataType string) (string, error) {
 	var keyName string
 	switch metadataType {
 	case "release":
-		keyName = "MusicBrainz Release Id"
+		keyName = "MusicBrainz Album Id"
+	case "release_group":
+		keyName = "MusicBrainz Release Group Id"
 	case "track":
-		keyName = "MusicBrainz Track Id"
+		keyName = "MusicBrainz Release Track Id"
+	case "recording":
+		keyName = "MusicBrainz Recording Id"
 	// add others if needed
 	default:
 		return "", errors.New("unsupported media type")
@@ -185,21 +203,35 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 	}
 
 	desired := map[string]string{
-		"ARTIST":       metadata.Artist,
-		"ALBUMARTIST":  metadata.AlbumArtist,
-		"GENRE":        genreString,
-		"DATE":         metadata.ReleaseDate,
-		"YEAR":         metadata.ReleaseYear,
-		"ORIGINALDATE": metadata.OriginalDate,
-		"RELEASEDATE":  metadata.ReleaseDate,
-		"ALBUM":        metadata.Album,
-		"RELEASETYPE":  metadata.AlbumType,
-		"TITLE":        metadata.Title,
-		"TRACKNUMBER":  metadata.Track,
-		"TRACKTOTAL":   metadata.TrackTotal,
-		"DISCNUMBER":   metadata.DiscNumber,
-		"DISCTOTAL":    metadata.DiscTotal,
-		"ISRC":         metadata.ISRC,
+		"ARTIST":                     metadata.Artist,
+		"ARTISTS":                    metadata.ArtistSemicolon,
+		"ALBUMARTIST":                metadata.AlbumArtist,
+		"GENRE":                      genreString,
+		"DATE":                       metadata.ReleaseDate,
+		"YEAR":                       metadata.ReleaseYear,
+		"ORIGINALDATE":               metadata.OriginalDate,
+		"ORIGINALYEAR":               metadata.OriginalYear,
+		"RELEASEDATE":                metadata.ReleaseDate,
+		"ALBUM":                      metadata.Album,
+		"TITLE":                      metadata.Title,
+		"TRACKNUMBER":                metadata.Track,
+		"TRACKTOTAL":                 metadata.TrackTotal,
+		"DISCNUMBER":                 metadata.DiscNumber,
+		"DISCTOTAL":                  metadata.DiscTotal,
+		"ISRC":                       metadata.ISRC,
+		"RELEASESTATUS":              metadata.MBAlbumStatus,
+		"RELEASETYPE":                metadata.MBAlbumType,
+		"RELEASECOUNTRY":             metadata.MBAlbumReleaseCountry,
+		"MUSICBRAINZ_ALBUMID":        metadata.MBAlbumID,
+		"MUSICBRAINZ_ARTISTID":       metadata.MBArtistID,
+		"MUSICBRAINZ_ALBUMARTISTID":  metadata.MBAlbumArtistID,
+		"MUSICBRAINZ_RELEASEGROUPID": metadata.MBReleaseGroupID,
+		"MUSICBRAINZ_RELEASETRACKID": metadata.MBReleaseTrackID,
+		"MUSICBRAINZ_RECORDINGID":    metadata.MBRecordingID,
+		"SCRIPT":                     metadata.Script,
+		"LABEL":                      metadata.RecordLabel,
+		"MEDIA":                      metadata.Media,
+		"BARCODE":                    metadata.Barcode,
 	}
 
 	existing, err := getFlacTagsMap(filePath)
@@ -252,36 +284,61 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 
 	desired := map[string]string{
 		"ARTIST":      metadata.Artist,
+		"ARTISTS":     metadata.ArtistSemicolon,
 		"ALBUMARTIST": metadata.AlbumArtist,
 		"GENRE":       genreString,
 		"ALBUM":       metadata.Album,
 		"TITLE":       metadata.Title,
 		"TRACKNUMBER": metadata.Track,
-		"TRACKTOTAL":  metadata.TrackTotal,
 		"DISCNUMBER":  metadata.DiscNumber,
+
+		/* to be added later
+		"TRACKTOTAL":  metadata.TrackTotal,
 		"DISCTOTAL":   metadata.DiscTotal,
 		"ISRC":        metadata.ISRC,
+		*/
+
+		"SCRIPT":    metadata.Script,
+		"TMED":      metadata.Media,
+		"publisher": metadata.RecordLabel,
 
 		// Release
 		"DATE": metadata.ReleaseDate, // maps to TDRC
 		"YEAR": metadata.ReleaseYear, // maps to TYER
 
 		// Original release
-		"ORIGINALDATE": metadata.OriginalDate, // maps to TDOR
-		"ORIGINALYEAR": metadata.OriginalYear, // maps toTORY (and TXXX backup)
+		"TDOR":         metadata.OriginalDate, // maps to TDOR
+		"originaldate": metadata.OriginalDate,
+		"originalyear": metadata.OriginalYear,
 
 		// MUSICBRAINZ
-		"MUSICBRAINZ_ALBUMTYPE": metadata.AlbumType,
+		"MusicBrainz Album Status":          metadata.MBAlbumStatus,
+		"MusicBrainz Album Type":            metadata.MBAlbumType,
+		"MusicBrainz Album Release Country": metadata.MBAlbumReleaseCountry,
+		"MusicBrainz Album Id":              metadata.MBAlbumID,
+		"MusicBrainz Artist Id":             metadata.MBArtistID,
+		"MusicBrainz Album Artist Id":       metadata.MBAlbumArtistID,
+		"MusicBrainz Release Group Id":      metadata.MBReleaseGroupID,
+		"MusicBrainz Release Track Id":      metadata.MBReleaseTrackID,
+		"MusicBrainz Track Id":              metadata.MBRecordingID,
 	}
+
+	logger.Log.Debug(desired)
 
 	existing, err := GetMP3Tags(filePath)
 	if err != nil {
 		return false, 0, fmt.Errorf("read mp3 tags failed: %w", err)
 	}
 
+	logger.Log.Debug(existing)
+
 	changes, hasChanges := utilities.DiffID3Tags(existing, desired)
 	if !hasChanges {
+		logger.Log.Debug("no tag changes, returning")
 		return true, 0, nil // unchanged
+	} else {
+		logger.Log.Debug("found tag changes")
+		logger.Log.Debug(changes)
 	}
 
 	// Build ffmpeg args; only set changed fields (plus paired composite fields)
@@ -300,52 +357,126 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 
 	// Simple 1:1 fields
 	if _, ok := changes["ARTIST"]; ok {
+		logger.Log.Trace("adding ARTIST")
 		addMeta("artist", desired["ARTIST"])
 		tagsWritten++
 	}
+	if _, ok := changes["ARTISTS"]; ok && desired["ARTISTS"] != "" {
+		logger.Log.Trace("adding ARTISTS")
+		addMeta("ARTISTS", desired["ARTISTS"])
+		tagsWritten++
+	}
 	if _, ok := changes["ALBUMARTIST"]; ok {
+		logger.Log.Trace("adding ALBUMARTIST")
 		addMeta("album_artist", desired["ALBUMARTIST"])
 		tagsWritten++
 	}
 	if _, ok := changes["GENRE"]; ok {
+		logger.Log.Trace("adding GENRE")
 		addMeta("genre", desired["GENRE"])
 		tagsWritten++
 	}
 
 	// Release date/year
 	if _, ok := changes["DATE"]; ok {
+		logger.Log.Trace("adding DATE")
 		addMeta("date", desired["DATE"])
 		tagsWritten++
 	}
 	if _, ok := changes["YEAR"]; ok {
+		logger.Log.Trace("adding YEAR")
 		addMeta("year", desired["YEAR"])
 		tagsWritten++
 	}
 
 	// Original release date/year
-	if _, ok := changes["ORIGINALDATE"]; ok {
-		// v2.4 TDOR
-		addMeta("originaldate", desired["ORIGINALDATE"])
+	if _, ok := changes["TDOR"]; ok && desired["TDOR"] != "" {
+		logger.Log.Trace("adding TDOR")
+		addMeta("TDOR", desired["TDOR"])
 		tagsWritten++
 	}
-	if _, ok := changes["ORIGINALYEAR"]; ok {
-		// Explicit TORY for compatibility (v2.3 style)
-		args = append(args, "-metadata", fmt.Sprintf("TORY=%s", desired["ORIGINALYEAR"]))
-		// TXXX backup
-		args = append(args, "-metadata", fmt.Sprintf("TXXX=ORIGINALYEAR:%s", desired["ORIGINALYEAR"]))
+	if _, ok := changes["ORIGINALDATE"]; ok && desired["originaldate"] != "" {
+		logger.Log.Trace("adding originaldate")
+		addMeta("originaldate", desired["originaldate"])
+		tagsWritten++
+	}
+	if _, ok := changes["ORIGINALYEAR"]; ok && desired["originalyear"] != "" {
+		logger.Log.Trace("adding originalyear")
+		addMeta("originalyear", desired["originalyear"])
 		tagsWritten++
 	}
 
+	// additional
 	if _, ok := changes["ALBUM"]; ok {
+		logger.Log.Trace("adding ALBUM")
 		addMeta("album", desired["ALBUM"])
 		tagsWritten++
 	}
 	if _, ok := changes["TITLE"]; ok {
+		logger.Log.Trace("adding TITLE")
 		addMeta("title", desired["TITLE"])
 		tagsWritten++
 	}
-	if _, ok := changes["MUSICBRAINZ_ALBUMTYPE"]; ok {
-		addMeta("musicbrainz_albumtype", desired["MUSICBRAINZ_ALBUMTYPE"])
+	if _, ok := changes["SCRIPT"]; ok {
+		logger.Log.Trace("adding SCRIPT")
+		addMeta("SCRIPT", desired["SCRIPT"])
+		tagsWritten++
+	}
+	if _, ok := changes["TMED"]; ok {
+		logger.Log.Trace("adding TMED")
+		addMeta("TMED", desired["TMED"])
+		tagsWritten++
+	}
+	if _, ok := changes["PUBLISHER"]; ok {
+		logger.Log.Trace("adding publisher")
+		addMeta("publisher", desired["publisher"])
+		tagsWritten++
+	}
+
+	// MusicBrainz tags
+	if _, ok := changes["MUSICBRAINZ ALBUM STATUS"]; ok {
+		logger.Log.Trace("adding MusicBrainz Album Status")
+		addMeta("MusicBrainz Album Status", desired["MusicBrainz Album Status"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ ALBUM TYPE"]; ok {
+		logger.Log.Trace("adding MusicBrainz Album Type")
+		addMeta("MusicBrainz Album Type", desired["MusicBrainz Album Type"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ ALBUM RELEASE COUNTRY"]; ok {
+		logger.Log.Trace("adding MusicBrainz Album Release Country")
+		addMeta("MusicBrainz Album Release Country", desired["MusicBrainz Album Release Country"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ ALBUM ID"]; ok {
+		logger.Log.Trace("adding MusicBrainz Album Id")
+		addMeta("MusicBrainz Album Id", desired["MusicBrainz Album Id"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ ARTIST ID"]; ok {
+		logger.Log.Tracef("adding MusicBrainz Artist Id, have %s, want %s", existing["MusicBrainz Artist Id"], desired["MusicBrainz Artist Id"])
+		addMeta("MusicBrainz Artist Id", desired["MusicBrainz Artist Id"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ ALBUM ARTIST ID"]; ok {
+		logger.Log.Trace("adding MusicBrainz Album Artist Id")
+		addMeta("MusicBrainz Album Artist Id", desired["MusicBrainz Album Artist Id"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ RELEASE GROUP ID"]; ok {
+		logger.Log.Trace("adding MusicBrainz Release Group Id")
+		addMeta("MusicBrainz Release Group Id", desired["MusicBrainz Release Group Id"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ RELEASE TRACK ID"]; ok {
+		logger.Log.Trace("adding MusicBrainz Release Track Id")
+		addMeta("MusicBrainz Release Track Id", desired["MusicBrainz Release Track Id"])
+		tagsWritten++
+	}
+	if _, ok := changes["MUSICBRAINZ TRACK ID"]; ok {
+		logger.Log.Trace("adding MusicBrainz Track Id")
+		addMeta("MusicBrainz Track Id", desired["MusicBrainz Track Id"])
 		tagsWritten++
 	}
 
@@ -354,8 +485,10 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		tn := desired["TRACKNUMBER"]
 		tt := desired["TRACKTOTAL"]
 		if tn != "" && tt != "" {
+			logger.Log.Trace("adding track")
 			addMeta("track", fmt.Sprintf("%s/%s", tn, tt))
 		} else if tn != "" {
+			logger.Log.Trace("adding track")
 			addMeta("track", tn)
 		}
 		if nChanged {
@@ -371,8 +504,10 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		dn := desired["DISCNUMBER"]
 		dt := desired["DISCTOTAL"]
 		if dn != "" && dt != "" {
+			logger.Log.Trace("adding disc")
 			addMeta("disc", fmt.Sprintf("%s/%s", dn, dt))
 		} else if dn != "" {
+			logger.Log.Trace("adding disc")
 			addMeta("disc", dn)
 		}
 		if nChanged {
@@ -385,15 +520,18 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 
 	// Custom TXXX frames
 	if _, ok := changes["ISRC"]; ok && desired["ISRC"] != "" {
+		logger.Log.Trace("adding ISRC")
 		addMeta("TXXX=ISRC:"+desired["ISRC"], "")
 		// ffmpeg expects "TXXX=KEY:VALUE" as one value; we pass via previous call format:
 		args[len(args)-1] = fmt.Sprintf("TXXX=ISRC:%s", desired["ISRC"])
 		tagsWritten++
 	}
 	if _, ok := changes["TRACKTOTAL"]; ok && desired["TRACKTOTAL"] != "" {
+		logger.Log.Trace("adding TRACKTOTAL")
 		args = append(args, "-metadata", fmt.Sprintf("TXXX=TRACKTOTAL:%s", desired["TRACKTOTAL"]))
 	}
 	if _, ok := changes["DISCTOTAL"]; ok && desired["DISCTOTAL"] != "" {
+		logger.Log.Trace("adding DISCTOTAL")
 		args = append(args, "-metadata", fmt.Sprintf("TXXX=DISCTOTAL:%s", desired["DISCTOTAL"]))
 	}
 
@@ -437,6 +575,14 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	}
 	logger.Log.Debug("MB track ID: " + mbTrackID)
 
+	// get MB data from track
+	mbRecordingID, err := ExtractMusicBrainzRecordingID(filePath)
+	if err != nil {
+		logger.Log.Error("failed to extract recording MB ID. error: " + err.Error())
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract recording MB ID")
+	}
+	logger.Log.Debug("MB recording ID: " + mbTrackID)
+
 	if (mbTrackID == "" || mbReleaseID == "") && lidarrClient != nil {
 		logger.Log.Debug("MB track or release ID field empty. trying Lidarr...")
 		mbReleaseID, mbTrackID, err = ResolveMBReleaseAndTrackIDFromLidarr(lidarrClient, filePath, rootDir)
@@ -466,14 +612,26 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	// Go through API response for information
 	for mediaCount, media := range response.Media {
 		for _, track := range media.Tracks {
-			if track.ID == mbTrackID {
-				logger.Log.Debug("release track ID found in MB response")
+			if track.ID == mbTrackID || track.Recording.ID == mbRecordingID {
+				if track.ID == mbTrackID {
+					logger.Log.Debug("release track ID found in MB response")
+				} else if track.ID != mbTrackID || track.Recording.ID == mbRecordingID {
+					logger.Log.Debug("release track ID not found in MB response, but recording was")
+				}
 
 				trackArtist := ""
 				if !configFile.AutotaggerrIgnoreRedundantContributingArtists || len(track.ArtistCredit) > 1 {
 					trackArtist = MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
 				}
 				logger.Log.Trace("track artists: " + trackArtist)
+
+				trackArtistSemiColon := ""
+				for index, artistCredit := range track.ArtistCredit {
+					if index != 0 {
+						trackArtistSemiColon += "; "
+					}
+					trackArtistSemiColon += artistCredit.Artist.Name
+				}
 
 				// determine release artist
 				releaseArtist := ""
@@ -487,6 +645,22 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					}
 				} else if releaseArtist == "" {
 					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to determine album artist")
+				}
+
+				releaseArtistID := ""
+				for index, artist := range track.ArtistCredit {
+					if index != 0 {
+						releaseArtistID += "; "
+					}
+					releaseArtistID += artist.Artist.ID
+				}
+
+				releaseGroupArtistID := ""
+				for index, artist := range response.ArtistCredit {
+					if index != 0 {
+						releaseGroupArtistID += "; "
+					}
+					releaseGroupArtistID += artist.Artist.ID
 				}
 
 				releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
@@ -505,26 +679,52 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					releaseGroupDate = releaseGroupTime.Format("2006-01-02")
 				}
 
-				isrc := ""
-				if len(track.Recording.ISRCs) > 0 {
-					isrc = track.Recording.ISRCs[0]
+				isrcString := ""
+				for index, isrc := range track.Recording.ISRCs {
+					if index != 0 {
+						isrcString += "; "
+					}
+					isrcString += isrc
+				}
+
+				recordLabelString := ""
+				if len(response.LabelInfo) > 0 {
+					for index, recordLabel := range response.LabelInfo {
+						if index != 0 {
+							recordLabelString += "; "
+						}
+						recordLabelString += recordLabel.Label.Name
+					}
 				}
 
 				metadata := models.FileTags{
-					Artist:       trackArtist,
-					AlbumArtist:  releaseArtist,
-					AlbumType:    ReleaseToAlbumType(response),
-					OriginalDate: releaseGroupDate,
-					OriginalYear: releaseGroupYear,
-					ReleaseDate:  releaseDate,
-					ReleaseYear:  releaseYear,
-					Album:        response.Title,
-					Title:        track.Title,
-					ISRC:         isrc,
-					Track:        track.Number,
-					TrackTotal:   strconv.Itoa(len(media.Tracks)),
-					DiscNumber:   strconv.Itoa(mediaCount + 1),
-					DiscTotal:    strconv.Itoa(len(response.Media)),
+					Artist:                trackArtist,
+					ArtistSemicolon:       trackArtistSemiColon,
+					AlbumArtist:           releaseArtist,
+					OriginalDate:          releaseGroupDate,
+					OriginalYear:          releaseGroupYear,
+					ReleaseDate:           releaseDate,
+					ReleaseYear:           releaseYear,
+					Album:                 response.Title,
+					Title:                 track.Title,
+					ISRC:                  isrcString,
+					Track:                 track.Number,
+					TrackTotal:            strconv.Itoa(len(media.Tracks)),
+					DiscNumber:            strconv.Itoa(mediaCount + 1),
+					DiscTotal:             strconv.Itoa(len(response.Media)),
+					MBAlbumStatus:         strings.ToLower(response.Status),
+					MBAlbumType:           ReleaseToAlbumType(response),
+					MBAlbumReleaseCountry: response.Country,
+					MBAlbumID:             mbReleaseID,
+					MBArtistID:            releaseArtistID,
+					MBAlbumArtistID:       releaseGroupArtistID,
+					MBReleaseGroupID:      response.ReleaseGroup.ID,
+					MBReleaseTrackID:      track.ID,
+					MBRecordingID:         track.Recording.ID,
+					Script:                response.TextRepresentation.Script,
+					RecordLabel:           recordLabelString,
+					Media:                 media.Format,
+					Barcode:               response.Barcode,
 				}
 
 				for _, genre := range response.ReleaseGroup.Genres {
@@ -672,7 +872,7 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 			res["DATE"] = append(res["DATE"], val)
 		case "year", "tyer":
 			res["YEAR"] = append(res["YEAR"], val)
-		case "originaldate", "tdor":
+		case "originaldate":
 			res["ORIGINALDATE"] = append(res["ORIGINALDATE"], val)
 		case "tory", "originalyear", "original_year":
 			res["ORIGINALYEAR"] = append(res["ORIGINALYEAR"], val)
@@ -697,15 +897,50 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 			if len(parts) == 2 {
 				res["DISCTOTAL"] = append(res["DISCTOTAL"], utilities.NormalizeTagValue(parts[1]))
 			}
-		case "musicbrainz_albumtype":
-			res["MUSICBRAINZ_ALBUMTYPE"] = append(res["MUSICBRAINZ_ALBUMTYPE"], val)
+		case "script":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "artists":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "tdor":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "tmed":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "publisher":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz release group id":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz album type":
+			res["MUSICBRAINZ ALBUM TYPE"] = append(res["MUSICBRAINZ ALBUM TYPE"], val)
+		case "musicbrainz album release country":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz album status":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz album id":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz artist id":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz track id":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz album artist id":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
+		case "musicbrainz release track id":
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
 		default:
+			logger.Log.Debugf("reading MP3 tag: key %s, val %s", key, val)
 			// Handle TXXX:* custom frames (e.g., TXXX:ISRC)
-			if strings.HasPrefix(strings.ToUpper(key), "TXXX:") {
-				custom := strings.ToUpper(strings.TrimPrefix(key, "TXXX:"))
-				switch custom {
-				case "ISRC", "TRACKTOTAL", "DISCTOTAL":
-					res[custom] = append(res[custom], val)
+			if strings.HasPrefix(strings.ToUpper(key), "TXXX") {
+				txxxSplit := strings.Split(val, ";")
+
+				for _, txxxEntry := range txxxSplit {
+					txxxEntrySplit := strings.Split(txxxEntry, ":")
+					if len(txxxEntrySplit) == 2 {
+						custom := strings.ToUpper(strings.TrimSpace(txxxEntrySplit[0]))
+						customValue := strings.ToUpper(strings.TrimSpace(txxxEntrySplit[1]))
+						switch custom {
+						case "ISRC", "TRACKTOTAL", "DISCTOTAL":
+							res[custom] = append(res[custom], customValue)
+						}
+					}
 				}
 			}
 		}
@@ -816,7 +1051,7 @@ func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRe
 
 func ReleaseToAlbumType(release models.MusicBrainzReleaseResponse) string {
 	if strings.Contains(strings.ToLower(release.Title), "remix") || strings.Contains(strings.ToLower(release.Disambiguation), "remix") {
-		return "album;remix"
+		return "album; remix"
 	}
 
 	if len(release.ReleaseGroup.SecondaryTypes) == 0 {
@@ -826,15 +1061,15 @@ func ReleaseToAlbumType(release models.MusicBrainzReleaseResponse) string {
 	primarySecondary := release.ReleaseGroup.SecondaryTypes[0]
 	switch strings.ToLower(primarySecondary) {
 	case "soundtrack":
-		return "album;soundtrack"
+		return "album; soundtrack"
 	case "compilation":
-		return "album;compilation"
+		return "album; compilation"
 	case "remix":
-		return "album;remix"
+		return "album; remix"
 	case "live":
-		return "album;live"
+		return "album; live"
 	case "demo":
-		return "album;demo"
+		return "album; demo"
 	}
 
 	switch strings.ToLower(release.ReleaseGroup.PrimaryType) {

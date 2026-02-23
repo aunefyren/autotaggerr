@@ -158,14 +158,17 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 	var match *models.LidarrTrackFile
 	for i := range files {
 		// get album and track name and clean them
-		fAlbum := utilities.Canon(utilities.BaseDirOfPathAny(files[i].Path))
+		// sometimes there are media folder, so unsure what is album name
+		logger.Log.Trace(files[i].Path)
+		fAlbumOrMedia := utilities.Canon(utilities.BaseDirOfPathAny(files[i].Path))
+		fAlbumOrArtist := utilities.Canon(utilities.GrandfatherDirOfPathAny(files[i].Path))
 		fFile := utilities.Canon(utilities.BaseOfPathAny(files[i].Path))
 
 		// log comparing
-		logger.Log.Trace("compare album=" + fAlbum + " file=" + fFile + " against target")
+		logger.Log.Trace("compare album=" + fAlbumOrArtist + "/" + fAlbumOrMedia + " file=" + fFile + " against target")
 
 		// find match
-		if fAlbum == tAlbum && fFile == tFile {
+		if (fAlbumOrMedia == tAlbum || fAlbumOrArtist == tAlbum) && fFile == tFile {
 			match = &files[i]
 			break
 		}
