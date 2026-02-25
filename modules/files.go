@@ -609,12 +609,12 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		logger.Log.Debug("trying to get metadata details from Lidarr...")
 		lidarrTrackObject, err := ResolveMetadataDetailsFromLidarr(lidarrClient, filePath, rootDir)
 		if err != nil {
-			logger.Log.Error("failed to retrieve track MB ID from Lidarr. error: " + err.Error())
-			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to retrieve track MB ID from Lidarr")
+			logger.Log.Errorf("failed to retrieve track details from Lidarr for '%s'. error: %s", filePath, err.Error())
+			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New(fmt.Sprintf("failed to retrieve track details from Lidarr for '%s'", filePath))
 		} else if lidarrTrackObject == nil {
-			logger.Log.Warn("Lidarr successfully executed, but found nothing")
+			logger.Log.Warnf("Lidarr successfully executed, but found nothing for %s", filePath)
 		} else {
-			logger.Log.Debug("Lidarr successfully executed")
+			logger.Log.Debugf("Lidarr successfully executed for %s", filePath)
 		}
 
 		if lidarrTrackObject != nil {
