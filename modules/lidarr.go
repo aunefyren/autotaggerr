@@ -176,17 +176,17 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 
 	// return error if no match
 	if match == nil {
-		return nil, fmt.Errorf("trackfile not found by album+file; album=%q file=%q", targetAlbum, targetFile)
+		logger.Log.Errorf("trackfile not found by album+file; album=%q file=%q", targetAlbum, targetFile)
 	}
 
 	return match, nil
 }
 
 // retrieves the Lidarr album object from a Lidarr artist ID and album ID
-func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (string, error) {
+func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, error) {
 	err := LidarrLoadAlbumsCache()
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
 	if cached, ok := lidarrAlbumsCache[strconv.FormatInt(albumID, 10)]; ok {
@@ -195,7 +195,7 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (string, e
 			for _, r := range cached.Album.Releases {
 				if r.Monitored && r.ForeignReleaseID != "" {
 					logger.Log.Debug("returning cached album release: " + strconv.FormatInt(albumID, 10))
-					return r.ForeignReleaseID, nil
+					return &r.ForeignReleaseID, nil
 				}
 			}
 		}
@@ -205,7 +205,7 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (string, e
 	var albums []models.LidarrAlbum
 	q := fmt.Sprintf("/api/v1/album?artistId=%d&albumIds=%d&includeAllArtistAlbums=true", artistID, albumID)
 	if err := c.getJSON(q, &albums); err != nil {
-		return "", err
+		return nil, err
 	}
 
 	for _, a := range albums {
@@ -218,7 +218,7 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (string, e
 		// save new cache
 		err = LidarrSaveAlbumsCache()
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 
 		if a.ID != albumID {
@@ -226,12 +226,13 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (string, e
 		}
 		for _, r := range a.Releases {
 			if r.Monitored && r.ForeignReleaseID != "" {
-				return r.ForeignReleaseID, nil
+				return &r.ForeignReleaseID, nil
 			}
 		}
 	}
 
-	return "", fmt.Errorf("no monitored release with MB ID for album %d", albumID)
+	logger.Log.Errorf("no monitored release with MB ID for album %d", albumID)
+	return nil, nil
 }
 
 func (c *LidarrClient) GetTracksByAlbumAndArtistID(artistID int64, albumID int64) ([]models.LidarrTrack, error) {
@@ -253,6 +254,11 @@ func (c *LidarrClient) GetTracksByAlbumAndArtistID(artistID int64, albumID int64
 	var t []models.LidarrTrack
 	if err := c.getJSON(fmt.Sprintf("/api/v1/track?artistId=%d&albumId=%d", artistID, albumID), &t); err != nil {
 		return nil, err
+	}
+
+	if t == nil {
+		logger.Log.Error("no Lidarr tracks found for album and artist ID")
+		return nil, nil
 	}
 
 	// add tracks to cache
