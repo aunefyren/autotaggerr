@@ -225,6 +225,12 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 	unchanged = false
 	tagsWritten = 0
 
+	filePath, err = utilities.NormalizePathForExternalTool(filePath)
+	if err != nil {
+		logger.Log.Error("failed to normalize path. error: " + err.Error())
+		return unchanged, tagsWritten, errors.New("failed to normalize path")
+	}
+
 	genreString := ""
 	if len(metadata.Genres) > 0 {
 		genreString = metadata.Genres[0]
@@ -301,6 +307,12 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
 	unchanged = false
 	tagsWritten = 0
+
+	filePath, err = utilities.NormalizePathForExternalTool(filePath)
+	if err != nil {
+		logger.Log.Error("failed to normalize path. error: " + err.Error())
+		return unchanged, tagsWritten, errors.New("failed to normalize path")
+	}
 
 	genreString := ""
 	for index, genre := range metadata.Genres {
@@ -586,42 +598,16 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	unchanged = false
 	tagsWritten = 0
 	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
+	mbReleaseID := ""
+	mbTrackID := ""
+	mbRecordingID := ""
+	trackTitle := ""
 
-	// get MB release data from track
-	mbReleaseID, err := ExtractMusicBrainzReleaseID(filePath)
-	if err != nil {
-		logger.Log.Error("failed to extract MB release ID. error: " + err.Error())
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract MB release ID")
-	}
-	logger.Log.Debug("MB release ID: " + mbReleaseID)
+	logger.Log.Debugf("processing track file: %s", filePath)
 
-	// get MB data from track
-	mbTrackID, err := ExtractMusicBrainzTrackID(filePath)
-	if err != nil {
-		logger.Log.Error("failed to extract track MB ID. error: " + err.Error())
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track MB ID")
-	}
-	logger.Log.Debug("MB track ID: " + mbTrackID)
-
-	// get MB data from track
-	trackTitle, err := ExtractTrackTitle(filePath)
-	if err != nil {
-		logger.Log.Error("failed to extract track title. error: " + err.Error())
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track title")
-	}
-	logger.Log.Debug("track title: " + trackTitle)
-
-	// get MB data from track
-	mbRecordingID, err := ExtractMusicBrainzRecordingID(filePath)
-	if err != nil {
-		logger.Log.Error("failed to extract recording MB ID. error: " + err.Error())
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract recording MB ID")
-	}
-	logger.Log.Debug("MB recording ID: " + mbRecordingID)
-
-	if (mbTrackID == "" || mbReleaseID == "") && lidarrClient != nil {
-		logger.Log.Debug("MB track or release ID field empty. trying Lidarr...")
-		mbReleaseID, mbTrackID, err = ResolveMBReleaseAndTrackIDFromLidarr(lidarrClient, filePath, rootDir)
+	if lidarrClient != nil {
+		logger.Log.Debug("trying to get metadata details from Lidarr...")
+		lidarrTrackObject, err := ResolveMetadataDetailsFromLidarr(lidarrClient, filePath, rootDir)
 		if err != nil {
 			logger.Log.Error("failed to retrieve track MB ID from Lidarr. error: " + err.Error())
 			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to retrieve track MB ID from Lidarr")
@@ -629,9 +615,46 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 			logger.Log.Debug("Lidarr fallback successful")
 		}
 
-		logger.Log.Trace("MB release ID: " + mbReleaseID)
-		logger.Log.Trace("MB track ID: " + mbTrackID)
+		mbReleaseID = lidarrTrackObject.MBReleaseID
+		mbTrackID = lidarrTrackObject.MBTrackID
+		mbRecordingID = lidarrTrackObject.MBRecordingID
+		trackTitle = lidarrTrackObject.TrackTitle
 	}
+
+	if mbTrackID == "" || mbReleaseID == "" {
+		// get MB release data from track
+		mbReleaseID, err = ExtractMusicBrainzReleaseID(filePath)
+		if err != nil {
+			logger.Log.Error("failed to extract MB release ID. error: " + err.Error())
+			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract MB release ID")
+		}
+
+		// get MB data from track
+		mbTrackID, err = ExtractMusicBrainzTrackID(filePath)
+		if err != nil {
+			logger.Log.Error("failed to extract track MB ID. error: " + err.Error())
+			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track MB ID")
+		}
+
+		// get MB data from track
+		mbRecordingID, err = ExtractMusicBrainzRecordingID(filePath)
+		if err != nil {
+			logger.Log.Error("failed to extract recording MB ID. error: " + err.Error())
+			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract recording MB ID")
+		}
+
+		// get track title from track
+		trackTitle, err = ExtractTrackTitle(filePath)
+		if err != nil {
+			logger.Log.Error("failed to extract track title. error: " + err.Error())
+			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track title")
+		}
+	}
+
+	logger.Log.Debug("MB release ID: " + mbReleaseID)
+	logger.Log.Debug("MB track ID: " + mbTrackID)
+	logger.Log.Debug("track title: " + trackTitle)
+	logger.Log.Debug("MB recording ID: " + mbRecordingID)
 
 	if mbTrackID == "" || mbReleaseID == "" {
 		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("MB track or release ID field empty")
@@ -796,7 +819,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		}
 	}
 
-	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to tag file, track not found in release data")
+	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New(fmt.Sprintf("failed to tag file, track not found in release data for '%s'", response.ID))
 }
 
 func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, configFile models.ConfigStruct) (
@@ -987,24 +1010,23 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 }
 
 // try to retrieve the MB release from Lidarr
-func ResolveMBReleaseAndTrackIDFromLidarr(cli *LidarrClient, trackPath string, rootDir string) (string, string, error) {
-	mbTrackID := ""
-	mbReleaseID := ""
+func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootDir string) (models.LidarrTrackMetadataDetails, error) {
+	lidarrTrackMetadataDetails := models.LidarrTrackMetadataDetails{}
 
 	// derive the artist from the path folder
 	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(rootDir, trackPath)
 	if err != nil {
-		return "", "", err
+		return lidarrTrackMetadataDetails, err
 	}
 
 	artist, err := cli.FindArtistByName(artistName)
 	if err != nil {
-		return "", "", err
+		return lidarrTrackMetadataDetails, err
 	}
 
 	tf, err := cli.FindTrackFileByPath(artist.ID, trackPath, rootDir)
 	if err != nil {
-		return "", "", err
+		return lidarrTrackMetadataDetails, err
 	}
 
 	logger.Log.Trace("Lidarr track file: ")
@@ -1012,21 +1034,23 @@ func ResolveMBReleaseAndTrackIDFromLidarr(cli *LidarrClient, trackPath string, r
 
 	tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
 	if err != nil {
-		return "", "", err
+		return lidarrTrackMetadataDetails, err
 	}
 
 	for _, track := range tracks {
 		if track.TrackFileID == tf.ID {
-			mbTrackID = track.ForeignTrackID
+			lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
+			lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
+			lidarrTrackMetadataDetails.TrackTitle = track.Title
 		}
 	}
 
-	mbReleaseID, err = cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
+	lidarrTrackMetadataDetails.MBReleaseID, err = cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
 	if err != nil {
-		return "", "", err
+		return lidarrTrackMetadataDetails, err
 	}
 
-	return mbReleaseID, mbTrackID, nil
+	return lidarrTrackMetadataDetails, nil
 }
 
 func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefreshInput map[string]string, plexClient PlexClient, albumTitle string, releaseArtist string, trackTitle string) (albumsWhoNeedMetadataRefresh map[string]string, err error) {

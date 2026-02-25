@@ -14,10 +14,11 @@ type LidarrTrackFile struct {
 }
 
 type LidarrTrack struct {
-	ID             int64  `json:"id"`
-	Title          string `json:"title"`
-	ForeignTrackID string `json:"foreignTrackId"` // MusicBrainz Track ID
-	TrackFileID    int64  `json:"trackFileId"`
+	ID                 int64  `json:"id"`
+	Title              string `json:"title"`
+	ForeignTrackID     string `json:"foreignTrackId"`     // MusicBrainz Track ID
+	ForeignRecordingID string `json:"foreignRecordingId"` // MusicBrainz Recording ID
+	TrackFileID        int64  `json:"trackFileId"`
 }
 
 type LidarrAlbum struct {
@@ -30,4 +31,11 @@ type LidarrAlbumRel struct {
 	ID               int64  `json:"id"`
 	Monitored        bool   `json:"monitored"`
 	ForeignReleaseID string `json:"foreignReleaseId"` // MB release ID
+}
+
+type LidarrTrackMetadataDetails struct {
+	MBRecordingID string `json:"mb_recording_id"`
+	MBTrackID     string `json:"mb_track_id"`
+	TrackTitle    string `json:"track_title"`
+	MBReleaseID   string `json:"mb_release_id"`
 }

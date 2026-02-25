@@ -51,7 +51,7 @@ func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, erro
 
 	release, err := QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
 	if err != nil {
-		logger.Log.Debug("failed to retrieve release from MB api. error: " + err.Error())
+		logger.Log.Debugf("failed to retrieve release '%s' from MB api. error: %s", mbID, err.Error())
 		return release, errors.New("failed to retrieve release from MB api")
 	}
 
@@ -72,7 +72,8 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	url := fmt.Sprintf("https://musicbrainz.org/ws/2/release/%s?inc=recordings+labels+artists+genres+tags+release-groups+isrcs&fmt=json", mbID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return apiResponse, err
+		logger.Log.Error("failed to create new request. error: " + err.Error())
+		return apiResponse, errors.New("failed to create new request")
 	}
 
 	// set User-Agent to comply with MB guidelines
@@ -80,7 +81,8 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return apiResponse, err
+		logger.Log.Error("failed to perform API request. error: " + err.Error())
+		return apiResponse, errors.New("failed to perform API request")
 	}
 	defer resp.Body.Close()
 
@@ -90,7 +92,8 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return apiResponse, err
+		logger.Log.Error("failed to read response body. error: " + err.Error())
+		return apiResponse, errors.New("failed to read response body")
 	}
 
 	err = json.Unmarshal(body, &apiResponse)
