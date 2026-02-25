@@ -9,6 +9,7 @@ require (
 	github.com/gin-gonic/gin v1.11.0
 	github.com/mewkiz/flac v1.0.13
 	github.com/sirupsen/logrus v1.9.4
+	golang.org/x/sys v0.41.0
 	golang.org/x/text v0.34.0
 )
 
@@ -45,6 +46,5 @@ require (
 	go.uber.org/mock v0.6.0 // indirect
 	golang.org/x/arch v0.24.0 // indirect
 	golang.org/x/net v0.50.0 // indirect
-	golang.org/x/sys v0.41.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 )
