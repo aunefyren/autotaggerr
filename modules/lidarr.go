@@ -176,7 +176,7 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 
 	// return error if no match
 	if match == nil {
-		logger.Log.Errorf("trackfile not found by album+file; album=%q file=%q", targetAlbum, targetFile)
+		logger.Log.Warnf("trackfile not found by album+file; album=%q file=%q", targetAlbum, targetFile)
 	}
 
 	return match, nil
