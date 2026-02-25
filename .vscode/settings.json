@@ -14,5 +14,10 @@
         "trackfile",
         "TXXX",
         "Vorbis"
+    ],
+     "gopls": {
+    "build.buildFlags": [
+      "-tags=windows"
     ]
+  }
 }

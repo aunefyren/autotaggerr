@@ -3,17 +3,13 @@
 package utilities
 
 import (
-	"runtime"
 	"syscall"
 
 	"golang.org/x/sys/windows"
 )
 
 func NormalizePathForExternalTool(p string) (string, error) {
-	if runtime.GOOS == "windows" {
-		return toShortPath(p)
-	}
-	return p, nil
+	return toShortPath(p)
 }
 
 func toShortPath(path string) (string, error) {
