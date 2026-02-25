@@ -7,18 +7,15 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
-	"runtime"
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 	"time"
 	"unicode"
 	"unicode/utf8"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
-	"golang.org/x/sys/windows"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -460,25 +457,3 @@ func CanonLoose(s string) string {
 
 // Equality helper
 func EqLoose(a, b string) bool { return CanonLoose(a) == CanonLoose(b) }
-
-func NormalizePathForExternalTool(p string) (string, error) {
-	if runtime.GOOS == "windows" {
-		return toShortPath(p)
-	}
-	return p, nil
-}
-
-func toShortPath(path string) (string, error) {
-	p, err := syscall.UTF16PtrFromString(path)
-	if err != nil {
-		return "", err
-	}
-
-	buf := make([]uint16, syscall.MAX_PATH)
-	n, err := windows.GetShortPathName(p, &buf[0], uint32(len(buf)))
-	if err != nil {
-		return "", err
-	}
-
-	return syscall.UTF16ToString(buf[:n]), nil
-}
