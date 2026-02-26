@@ -308,6 +308,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	unchanged = false
 	tagsWritten = 0
 
+	originalFilePath := filePath
 	filePath, err = utilities.NormalizePathForExternalTool(filePath)
 	if err != nil {
 		logger.Log.Error("failed to normalize path. error: " + err.Error())
@@ -360,7 +361,6 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		"MusicBrainz Album Artist Id":       metadata.MBAlbumArtistID,
 		"MusicBrainz Release Group Id":      metadata.MBReleaseGroupID,
 		"MusicBrainz Release Track Id":      metadata.MBReleaseTrackID,
-		"MusicBrainz Track Id":              metadata.MBRecordingID,
 	}
 
 	logger.Log.Debug(desired)
@@ -514,11 +514,6 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		addMeta("MusicBrainz Release Track Id", desired["MusicBrainz Release Track Id"])
 		tagsWritten++
 	}
-	if _, ok := changes["MUSICBRAINZ TRACK ID"]; ok {
-		logger.Log.Trace("adding MusicBrainz Track Id")
-		addMeta("MusicBrainz Track Id", desired["MusicBrainz Track Id"])
-		tagsWritten++
-	}
 
 	// Composite: track (TRACKNUMBER/TRACKTOTAL)
 	if _, nChanged := changes["TRACKNUMBER"]; nChanged || changes["TRACKTOTAL"] != "" {
@@ -587,7 +582,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	if err := cmd.Run(); err != nil {
 		return false, 0, fmt.Errorf("ffmpeg tagging failed: %w", err)
 	}
-	if err := os.Rename(tempOutput, filePath); err != nil {
+	if err := os.Rename(tempOutput, originalFilePath); err != nil {
 		return false, 0, fmt.Errorf("failed to replace original file: %w", err)
 	}
 
@@ -695,7 +690,11 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					if index != 0 {
 						trackArtistSemiColon += "; "
 					}
-					trackArtistSemiColon += artistCredit.Artist.Name
+					if configFile.AutotaggerrUseCurrentArtistName {
+						trackArtistSemiColon += artistCredit.Artist.Name
+					} else {
+						trackArtistSemiColon += artistCredit.Name
+					}
 				}
 
 				// determine release artist
@@ -773,7 +772,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					Album:                 response.Title,
 					Title:                 track.Title,
 					ISRC:                  isrcString,
-					Track:                 track.Number,
+					Track:                 strconv.Itoa(track.Position),
 					TrackTotal:            strconv.Itoa(len(media.Tracks)),
 					DiscNumber:            strconv.Itoa(mediaCount + 1),
 					DiscTotal:             strconv.Itoa(len(response.Media)),
@@ -975,7 +974,7 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 		case "musicbrainz release group id":
 			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
 		case "musicbrainz album type":
-			res["MUSICBRAINZ ALBUM TYPE"] = append(res["MUSICBRAINZ ALBUM TYPE"], val)
+			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
 		case "musicbrainz album release country":
 			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
 		case "musicbrainz album status":
@@ -983,8 +982,6 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 		case "musicbrainz album id":
 			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
 		case "musicbrainz artist id":
-			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
-		case "musicbrainz track id":
 			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
 		case "musicbrainz album artist id":
 			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
