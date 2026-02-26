@@ -98,6 +98,7 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		"TRACKTOTAL":                 metadata.TrackTotal,
 		"DISCNUMBER":                 metadata.DiscNumber,
 		"DISCTOTAL":                  metadata.DiscTotal,
+		"TOTALDISCS":                 metadata.DiscTotal,
 		"ISRC":                       metadata.ISRC,
 		"RELEASESTATUS":              metadata.MBAlbumStatus,
 		"RELEASETYPE":                metadata.MBAlbumType,
@@ -112,6 +113,8 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		"LABEL":                      metadata.RecordLabel,
 		"MEDIA":                      metadata.Media,
 		"BARCODE":                    metadata.Barcode,
+		"CATALOGNUMBER":              metadata.CatalogNumber,
+		"ASIN":                       metadata.ASIN,
 	}
 
 	existing, err := getFlacTagsMap(filePath)

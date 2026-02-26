@@ -327,12 +327,17 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 				}
 
 				recordLabelString := ""
+				catalogString := ""
 				if len(response.LabelInfo) > 0 {
 					for index, recordLabel := range response.LabelInfo {
-						if index != 0 {
+						if index != 0 && recordLabel.Label.Name != "" {
 							recordLabelString += "; "
 						}
+						if index != 0 && recordLabel.CatalogNumber != "" {
+							catalogString += "; "
+						}
 						recordLabelString += recordLabel.Label.Name
+						catalogString += recordLabel.CatalogNumber
 					}
 				}
 
@@ -364,6 +369,8 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					RecordLabel:           recordLabelString,
 					Media:                 media.Format,
 					Barcode:               response.Barcode,
+					ASIN:                  "",
+					CatalogNumber:         catalogString,
 				}
 
 				for _, genre := range response.ReleaseGroup.Genres {
