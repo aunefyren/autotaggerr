@@ -104,6 +104,7 @@ func (c *LidarrClient) FindArtistByName(artistName string) (*models.LidarrArtist
 	}
 
 	want := strings.ToLower(strings.TrimSpace(artistName))
+	logger.Log.Debugf("we want artist: %s", want)
 
 	for i := range artists {
 		// add artist to cache
@@ -120,7 +121,9 @@ func (c *LidarrClient) FindArtistByName(artistName string) (*models.LidarrArtist
 
 		// Extract last folder from Lidarr's stored path
 		lidarrArtistFolder := filepath.Base(utilities.NormPath(artists[i].Path))
-		if strings.ToLower(lidarrArtistFolder) == want {
+		logger.Log.Debugf("comparing artist folder: %s, original path: %s", lidarrArtistFolder, artists[i].Path)
+
+		if strings.EqualFold(lidarrArtistFolder, want) {
 			return &artists[i], nil
 		}
 	}
