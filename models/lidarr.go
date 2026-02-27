@@ -1,9 +1,10 @@
 package models
 
 type LidarrArtist struct {
-	ID   int64  `json:"id"`
-	Name string `json:"artistName"` // Lidarr uses artistName
-	Path string `json:"path"`
+	ID              int64  `json:"id"`
+	ForeignArtistID string `json:"foreignArtistId"`
+	Name            string `json:"artistName"` // Lidarr uses artistName
+	Path            string `json:"path"`
 }
 
 type LidarrTrackFile struct {

@@ -81,18 +81,31 @@ func (c *LidarrClient) getJSON(pathWithQuery string, dst any) error {
 }
 
 // FindArtistByName searches the Lidarr artist list for one whose folder name matches artistName.
-func (c *LidarrClient) FindArtistByName(artistName string) (*models.LidarrArtist, error) {
+func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtist, error) {
 	err := LidarrLoadArtistsCache()
 	if err != nil {
 		return nil, err
 	}
 
-	if cached, ok := lidarrArtistsCache[artistName]; ok {
-		logger.Log.Trace("cached Lidarr artist entry found")
-		if time.Since(cached.Timestamp) < lidarrArtistsCacheDuration {
-			logger.Log.Debug("returning cached release for artist: " + artistName)
-			return &cached.Artist, nil
+	foundCachedArtist := []models.LidarrArtist{}
+	anyExpired := false
+	for _, cachedArtist := range lidarrArtistsCache {
+		if strings.EqualFold(cachedArtist.Artist.Name, artistName) {
+			logger.Log.Trace("cached Lidarr artist entry found")
+			if time.Since(cachedArtist.Timestamp) < lidarrArtistsCacheDuration {
+				anyExpired = true
+				break
+			} else {
+				foundCachedArtist = append(foundCachedArtist, cachedArtist.Artist)
+			}
 		}
+	}
+
+	if anyExpired {
+		logger.Log.Debug("One or more Lidarr artist entries expired, retrieving new data...")
+	} else if len(foundCachedArtist) > 0 {
+		logger.Log.Debug("returning cached Lidarr artist(s)")
+		return foundCachedArtist, nil
 	}
 
 	logger.Log.Debug("cached artist not found for: " + artistName)
@@ -106,9 +119,10 @@ func (c *LidarrClient) FindArtistByName(artistName string) (*models.LidarrArtist
 	want := strings.ToLower(strings.TrimSpace(artistName))
 	logger.Log.Debugf("we want artist: %s", want)
 
+	validArtists := []models.LidarrArtist{}
 	for i := range artists {
 		// add artist to cache
-		lidarrArtistsCache[artists[i].Name] = models.CachedLidarrArtistRelease{
+		lidarrArtistsCache[strconv.FormatInt(artists[i].ID, 10)] = models.CachedLidarrArtistRelease{
 			Artist:    artists[i],
 			Timestamp: time.Now(),
 		}
@@ -124,8 +138,15 @@ func (c *LidarrClient) FindArtistByName(artistName string) (*models.LidarrArtist
 		logger.Log.Debugf("comparing artist folder: %s, original path: %s", lidarrArtistFolder, artists[i].Path)
 
 		if strings.EqualFold(lidarrArtistFolder, want) {
-			return &artists[i], nil
+			validArtists = append(validArtists, artists[i])
 		}
+	}
+
+	if len(validArtists) == 1 {
+		return validArtists, nil
+	} else if len(validArtists) > 1 {
+		logger.Log.Warnf("multiple artists found in Lidarr by that name %s", artistName)
+		return validArtists, nil
 	}
 
 	return nil, fmt.Errorf("artist %q not found in Lidarr", artistName)
@@ -138,6 +159,10 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 	var files []models.LidarrTrackFile
 	if err := c.getJSON(fmt.Sprintf("/api/v1/trackfile?artistId=%d", artistID), &files); err != nil {
 		return nil, err
+	}
+	if len(files) < 1 {
+		logger.Log.Error("no Lidarr track files found for artist ID: %s", artistID)
+		return nil, nil
 	}
 
 	// get album name from file path
