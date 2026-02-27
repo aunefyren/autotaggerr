@@ -31,7 +31,7 @@ type FileTags struct {
 	RecordLabel           string   `json:"record_label"`
 	Media                 string   `json:"media"`
 	Barcode               string   `json:"barcode"`
-	ASIN                  string   `json:"barcode"`
+	ASIN                  string   `json:"asin"`
 	CatalogNumber         string   `json:"catalog_number"`
 }
 

@@ -18,13 +18,15 @@ type LidarrTrack struct {
 	Title              string `json:"title"`
 	ForeignTrackID     string `json:"foreignTrackId"`     // MusicBrainz Track ID
 	ForeignRecordingID string `json:"foreignRecordingId"` // MusicBrainz Recording ID
-	TrackFileID        int64  `json:"trackFileId"`
+	TrackFileID        *int64 `json:"trackFileId"`
 }
 
 type LidarrAlbum struct {
-	ID       int64            `json:"id"`
-	ArtistID int64            `json:"artistId"`
-	Releases []LidarrAlbumRel `json:"releases"`
+	ID             int64            `json:"id"`
+	Title          string           `json:"title"`
+	ForeignAlbumID string           `json:"foreignAlbumId"`
+	ArtistID       int64            `json:"artistId"`
+	Releases       []LidarrAlbumRel `json:"releases"`
 }
 
 type LidarrAlbumRel struct {

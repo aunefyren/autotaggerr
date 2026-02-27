@@ -63,20 +63,11 @@ type MusicBrainzReleaseResponse struct {
 		} `json:"area"`
 		Date string `json:"date"`
 	} `json:"release-events"`
-	Packaging any `json:"packaging"`
-	Media     []struct {
-		TrackOffset int     `json:"track-offset"`
-		ID          string  `json:"id"`
-		Position    int     `json:"position"`
-		TrackCount  int     `json:"track-count"`
-		Title       string  `json:"title"`
-		FormatID    string  `json:"format-id"`
-		Format      string  `json:"format"`
-		Tracks      []Track `json:"tracks"`
-	} `json:"media"`
-	Date               string `json:"date"`
-	PackagingID        any    `json:"packaging-id"`
-	Status             string `json:"status"`
+	Packaging          any                `json:"packaging"`
+	Media              []MusicBrainzMedia `json:"media"`
+	Date               string             `json:"date"`
+	PackagingID        any                `json:"packaging-id"`
+	Status             string             `json:"status"`
 	TextRepresentation struct {
 		Language string `json:"language"`
 		Script   string `json:"script"`
@@ -171,4 +162,15 @@ type ReleaseGroup struct {
 	} `json:"artist-credit"`
 	Title string `json:"title"`
 	ID    string `json:"id"`
+}
+
+type MusicBrainzMedia struct {
+	TrackOffset int     `json:"track-offset"`
+	ID          string  `json:"id"`
+	Position    int     `json:"position"`
+	TrackCount  int     `json:"track-count"`
+	Title       string  `json:"title"`
+	FormatID    string  `json:"format-id"`
+	Format      string  `json:"format"`
+	Tracks      []Track `json:"tracks"`
 }

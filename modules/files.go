@@ -180,7 +180,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		lidarrTrackObject, err := ResolveMetadataDetailsFromLidarr(lidarrClient, filePath, rootDir)
 		if err != nil {
 			logger.Log.Errorf("failed to retrieve track details from Lidarr for '%s'. error: %s", filePath, err.Error())
-			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New(fmt.Sprintf("failed to retrieve track details from Lidarr for '%s'", filePath))
+			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, fmt.Errorf("failed to retrieve track details from Lidarr for '%s'", filePath)
 		} else if lidarrTrackObject == nil {
 			logger.Log.Warnf("Lidarr successfully executed, but found nothing for %s", filePath)
 		} else {
@@ -243,168 +243,194 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	logger.Log.Debug("MB title response: " + response.Title)
 
 	// Go through API response for information
-	for mediaCount, media := range response.Media {
+	for _, media := range response.Media {
 		for _, track := range media.Tracks {
-			if track.ID == mbTrackID || track.Recording.ID == mbRecordingID || strings.EqualFold(track.Title, trackTitle) {
-				if track.ID == mbTrackID {
-					logger.Log.Debug("release track ID found in MB response")
-				} else if track.ID != mbTrackID && strings.EqualFold(track.Title, trackTitle) {
-					logger.Log.Debug("release track ID not found in MB response, but titles match")
-				} else if track.ID != mbTrackID && track.Recording.ID == mbRecordingID {
-					logger.Log.Debug("release track ID not found in MB response, but recording was")
-				}
-
-				trackArtist := ""
-				if !configFile.AutotaggerrIgnoreRedundantContributingArtists || len(track.ArtistCredit) > 1 {
-					trackArtist = MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
-				}
-				logger.Log.Trace("track artists: " + trackArtist)
-
-				trackArtistSemiColon := ""
-				for index, artistCredit := range track.ArtistCredit {
-					if index != 0 {
-						trackArtistSemiColon += "; "
-					}
-					if configFile.AutotaggerrUseCurrentArtistName {
-						trackArtistSemiColon += artistCredit.Artist.Name
-					} else {
-						trackArtistSemiColon += artistCredit.Name
-					}
-				}
-
-				// determine release artist
-				releaseArtist := ""
-				if releaseArtist == "" && len(response.ArtistCredit) > 0 {
-					if configFile.AutotaggerrUseCurrentArtistName {
-						// use current artist name if configured
-						releaseArtist = response.ArtistCredit[0].Artist.Name
-					} else {
-						// use original release artist name if configured
-						releaseArtist = response.ArtistCredit[0].Name
-					}
-				} else if releaseArtist == "" {
-					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to determine album artist")
-				}
-
-				releaseArtistID := ""
-				for index, artist := range track.ArtistCredit {
-					if index != 0 {
-						releaseArtistID += "; "
-					}
-					releaseArtistID += artist.Artist.ID
-				}
-
-				releaseGroupArtistID := ""
-				for index, artist := range response.ArtistCredit {
-					if index != 0 {
-						releaseGroupArtistID += "; "
-					}
-					releaseGroupArtistID += artist.Artist.ID
-				}
-
-				releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
-				releaseYear := ""
-				releaseDate := ""
-				if err == nil {
-					releaseYear = strconv.Itoa(releaseTime.Year())
-					releaseDate = releaseTime.Format("2006-01-02")
-				}
-
-				releaseGroupTime, err := MusicBrainzDateStringToDateTime(response.ReleaseGroup.FirstReleaseDate)
-				releaseGroupYear := ""
-				releaseGroupDate := ""
-				if err == nil {
-					releaseGroupYear = strconv.Itoa(releaseGroupTime.Year())
-					releaseGroupDate = releaseGroupTime.Format("2006-01-02")
-				}
-
-				isrcString := ""
-				for index, isrc := range track.Recording.ISRCs {
-					if index != 0 {
-						isrcString += "; "
-					}
-					isrcString += isrc
-				}
-
-				recordLabelString := ""
-				catalogString := ""
-				if len(response.LabelInfo) > 0 {
-					for index, recordLabel := range response.LabelInfo {
-						if index != 0 && recordLabel.Label.Name != "" {
-							recordLabelString += "; "
-						}
-						if index != 0 && recordLabel.CatalogNumber != "" {
-							catalogString += "; "
-						}
-						recordLabelString += recordLabel.Label.Name
-						catalogString += recordLabel.CatalogNumber
-					}
-				}
-
-				metadata := models.FileTags{
-					Artist:                trackArtist,
-					ArtistSemicolon:       trackArtistSemiColon,
-					AlbumArtist:           releaseArtist,
-					OriginalDate:          releaseGroupDate,
-					OriginalYear:          releaseGroupYear,
-					ReleaseDate:           releaseDate,
-					ReleaseYear:           releaseYear,
-					Album:                 response.Title,
-					Title:                 track.Title,
-					ISRC:                  isrcString,
-					Track:                 strconv.Itoa(track.Position),
-					TrackTotal:            strconv.Itoa(len(media.Tracks)),
-					DiscNumber:            strconv.Itoa(mediaCount + 1),
-					DiscTotal:             strconv.Itoa(len(response.Media)),
-					MBAlbumStatus:         strings.ToLower(response.Status),
-					MBAlbumType:           ReleaseToAlbumType(response),
-					MBAlbumReleaseCountry: response.Country,
-					MBAlbumID:             mbReleaseID,
-					MBArtistID:            releaseArtistID,
-					MBAlbumArtistID:       releaseGroupArtistID,
-					MBReleaseGroupID:      response.ReleaseGroup.ID,
-					MBReleaseTrackID:      track.ID,
-					MBRecordingID:         track.Recording.ID,
-					Script:                response.TextRepresentation.Script,
-					RecordLabel:           recordLabelString,
-					Media:                 media.Format,
-					Barcode:               response.Barcode,
-					ASIN:                  "",
-					CatalogNumber:         catalogString,
-				}
-
-				for _, genre := range response.ReleaseGroup.Genres {
-					metadata.Genres = append(metadata.Genres, genre.Name)
-				}
-
-				// re-tag file with new information
-				unchanged, tagsWritten, err := SetFileTags(filePath, metadata, configFile)
-				if err != nil {
-					logger.Log.Error("failed to set file tags. error: " + err.Error())
-					return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to set FLAC artist tags")
-				} else {
-					logger.Log.Debug("file tagger finished")
-				}
-
-				changeString := "unchanged"
-				if !unchanged {
-					changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
-				}
-
-				if plexClient != nil && !unchanged {
-					albumsWhoNeedMetadataRefresh, err = PlexRefreshForFile(unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, *plexClient, response.Title, releaseArtist, track.Title)
-					if err != nil {
-						logger.Log.Warn("failed to prepare Plex refresh for album. error: " + err.Error())
-					}
-				}
-
-				logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
-				return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, nil
+			if track.ID == mbTrackID {
+				logger.Log.Debug("release track ID found in MB response")
+				unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFileAfterMatch(
+					filePath,
+					lidarrClient,
+					plexClient,
+					albumsWhoNeedMetadataRefresh,
+					rootDir,
+					configFile,
+					track,
+					media,
+					response)
+				return
 			}
 		}
 	}
 
-	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New(fmt.Sprintf("failed to tag file, track not found in release data for '%s'", response.ID))
+	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", mbTrackID, mbReleaseID, trackTitle, response.ID)
+	logger.Log.Warn("Lidarr metadata data could be outdated")
+	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
+}
+
+func ProcessTrackFileAfterMatch(
+	filePath string,
+	lidarrClient *LidarrClient,
+	plexClient *PlexClient,
+	albumsWhoNeedMetadataRefreshSoFar map[string]string,
+	rootDir string, configFile models.ConfigStruct,
+	track models.Track,
+	media models.MusicBrainzMedia,
+	response models.MusicBrainzReleaseResponse,
+) (
+	unchanged bool,
+	tagsWritten int,
+	albumsWhoNeedMetadataRefresh map[string]string,
+	err error,
+) {
+	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
+
+	trackArtist := ""
+	if !configFile.AutotaggerrIgnoreRedundantContributingArtists || len(track.ArtistCredit) > 1 {
+		trackArtist = MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
+	}
+	logger.Log.Trace("track artists: " + trackArtist)
+
+	trackArtistSemiColon := ""
+	for index, artistCredit := range track.ArtistCredit {
+		if index != 0 {
+			trackArtistSemiColon += "; "
+		}
+		if configFile.AutotaggerrUseCurrentArtistName {
+			trackArtistSemiColon += artistCredit.Artist.Name
+		} else {
+			trackArtistSemiColon += artistCredit.Name
+		}
+	}
+
+	// determine release artist
+	releaseArtist := ""
+	if releaseArtist == "" && len(response.ArtistCredit) > 0 {
+		if configFile.AutotaggerrUseCurrentArtistName {
+			// use current artist name if configured
+			releaseArtist = response.ArtistCredit[0].Artist.Name
+		} else {
+			// use original release artist name if configured
+			releaseArtist = response.ArtistCredit[0].Name
+		}
+	} else if releaseArtist == "" {
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to determine album artist")
+	}
+
+	releaseArtistID := ""
+	for index, artist := range track.ArtistCredit {
+		if index != 0 {
+			releaseArtistID += "; "
+		}
+		releaseArtistID += artist.Artist.ID
+	}
+
+	releaseGroupArtistID := ""
+	for index, artist := range response.ArtistCredit {
+		if index != 0 {
+			releaseGroupArtistID += "; "
+		}
+		releaseGroupArtistID += artist.Artist.ID
+	}
+
+	releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
+	releaseYear := ""
+	releaseDate := ""
+	if err == nil {
+		releaseYear = strconv.Itoa(releaseTime.Year())
+		releaseDate = releaseTime.Format("2006-01-02")
+	}
+
+	releaseGroupTime, err := MusicBrainzDateStringToDateTime(response.ReleaseGroup.FirstReleaseDate)
+	releaseGroupYear := ""
+	releaseGroupDate := ""
+	if err == nil {
+		releaseGroupYear = strconv.Itoa(releaseGroupTime.Year())
+		releaseGroupDate = releaseGroupTime.Format("2006-01-02")
+	}
+
+	isrcString := ""
+	for index, isrc := range track.Recording.ISRCs {
+		if index != 0 {
+			isrcString += "; "
+		}
+		isrcString += isrc
+	}
+
+	recordLabelString := ""
+	catalogString := ""
+	if len(response.LabelInfo) > 0 {
+		for index, recordLabel := range response.LabelInfo {
+			if index != 0 && recordLabel.Label.Name != "" {
+				recordLabelString += "; "
+			}
+			if index != 0 && recordLabel.CatalogNumber != "" {
+				catalogString += "; "
+			}
+			recordLabelString += recordLabel.Label.Name
+			catalogString += recordLabel.CatalogNumber
+		}
+	}
+
+	metadata := models.FileTags{
+		Artist:                trackArtist,
+		ArtistSemicolon:       trackArtistSemiColon,
+		AlbumArtist:           releaseArtist,
+		OriginalDate:          releaseGroupDate,
+		OriginalYear:          releaseGroupYear,
+		ReleaseDate:           releaseDate,
+		ReleaseYear:           releaseYear,
+		Album:                 response.Title,
+		Title:                 track.Title,
+		ISRC:                  isrcString,
+		Track:                 strconv.Itoa(track.Position),
+		TrackTotal:            strconv.Itoa(len(media.Tracks)),
+		DiscNumber:            strconv.Itoa(media.Position),
+		DiscTotal:             strconv.Itoa(len(response.Media)),
+		MBAlbumStatus:         strings.ToLower(response.Status),
+		MBAlbumType:           ReleaseToAlbumType(response),
+		MBAlbumReleaseCountry: response.Country,
+		MBAlbumID:             response.ID,
+		MBArtistID:            releaseArtistID,
+		MBAlbumArtistID:       releaseGroupArtistID,
+		MBReleaseGroupID:      response.ReleaseGroup.ID,
+		MBReleaseTrackID:      track.ID,
+		MBRecordingID:         track.Recording.ID,
+		Script:                response.TextRepresentation.Script,
+		RecordLabel:           recordLabelString,
+		Media:                 media.Format,
+		Barcode:               response.Barcode,
+		ASIN:                  "",
+		CatalogNumber:         catalogString,
+	}
+
+	for _, genre := range response.ReleaseGroup.Genres {
+		metadata.Genres = append(metadata.Genres, genre.Name)
+	}
+
+	// re-tag file with new information
+	unchanged, tagsWritten, err = SetFileTags(filePath, metadata, configFile)
+	if err != nil {
+		logger.Log.Error("failed to set file tags. error: " + err.Error())
+		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to set FLAC artist tags")
+	} else {
+		logger.Log.Debug("file tagger finished")
+	}
+
+	changeString := "unchanged"
+	if !unchanged {
+		changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
+	}
+
+	if plexClient != nil && !unchanged {
+		albumsWhoNeedMetadataRefresh, err = PlexRefreshForFile(unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, *plexClient, response.Title, releaseArtist, track.Title)
+		if err != nil {
+			logger.Log.Warn("failed to prepare Plex refresh for album. error: " + err.Error())
+		}
+	}
+
+	logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
+	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, nil
+
 }
 
 func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, configFile models.ConfigStruct) (
@@ -496,6 +522,7 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 	if err != nil {
 		return nil, err
 	}
+	logger.Log.Debugf("artist name found: %s", artistName)
 
 	artist, err := cli.FindArtistByName(artistName)
 	if err != nil {
@@ -510,8 +537,7 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 		return nil, nil
 	}
 
-	logger.Log.Trace("Lidarr track file: ")
-	logger.Log.Trace(tf)
+	logger.Log.Tracef("Lidarr track file found: %s", tf.ID)
 
 	tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
 	if err != nil {
@@ -523,7 +549,8 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 
 	found := false
 	for _, track := range tracks {
-		if track.TrackFileID == tf.ID {
+		if track.TrackFileID != nil && track.TrackFileID == &tf.ID {
+			logger.Log.Tracef("Lidarr track found: %s", track.ID)
 			lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
 			lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
 			lidarrTrackMetadataDetails.TrackTitle = track.Title

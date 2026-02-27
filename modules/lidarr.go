@@ -88,7 +88,7 @@ func (c *LidarrClient) FindArtistByName(artistName string) (*models.LidarrArtist
 	}
 
 	if cached, ok := lidarrArtistsCache[artistName]; ok {
-		logger.Log.Trace("cached entry found")
+		logger.Log.Trace("cached Lidarr artist entry found")
 		if time.Since(cached.Timestamp) < lidarrArtistsCacheDuration {
 			logger.Log.Debug("returning cached release for artist: " + artistName)
 			return &cached.Artist, nil
