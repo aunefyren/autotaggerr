@@ -537,7 +537,7 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 		return nil, nil
 	}
 
-	logger.Log.Tracef("Lidarr track file found: %s", tf.ID)
+	logger.Log.Tracef("Lidarr track file found: %d", tf.ID)
 
 	tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
 	if err != nil {
@@ -545,11 +545,14 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 	} else if tracks == nil {
 		logger.Log.Warn("tracks not found in Lidarr by album and artist")
 		return nil, nil
+	} else if len(tracks) < 1 {
+		logger.Log.Warn("tracks list found in Lidarr by album and artist is empty")
 	}
 
 	found := false
 	for _, track := range tracks {
-		if track.TrackFileID != nil && track.TrackFileID == &tf.ID {
+		logger.Log.Tracef("comparing track ID %d, file ID %d", track.ID, *track.TrackFileID)
+		if track.TrackFileID != nil && *track.TrackFileID == tf.ID {
 			logger.Log.Tracef("Lidarr track found: %s", track.ID)
 			lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
 			lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
@@ -588,7 +591,7 @@ func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRe
 
 	albumKey := ""
 	if cached, ok := plexAlbumKeyCache[albumTitle]; ok {
-		logger.Log.Trace("cached entry found")
+		logger.Log.Trace("cached entry for Plex Album key found")
 		if time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
 			logger.Log.Debug("returning cached album key for album: " + albumTitle)
 			albumKey = cached.AlbumKey

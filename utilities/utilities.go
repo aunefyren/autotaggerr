@@ -276,46 +276,70 @@ func DiffID3Tags(existing map[string][]string, desired map[string]string) (map[s
 	return changes, has
 }
 
-// internal helper: split relative parts from root -> track
-func relParts(root, trackPath string) ([]string, error) {
+func SplitPathIntoMediaStrings(root, trackPath string) (artist, album string, containers []string, track string, err error) {
 	root = filepath.Clean(root)
 	trackPath = filepath.Clean(trackPath)
 
 	rel, err := filepath.Rel(root, trackPath)
 	if err != nil {
-		return nil, fmt.Errorf("cannot make %q relative to %q: %w", trackPath, root, err)
+		return "", "", nil, "", fmt.Errorf("cannot make %q relative to %q: %w", trackPath, root, err)
 	}
 
 	logger.Log.Trace("root path: " + root)
 	logger.Log.Trace("track path: " + trackPath)
 
-	// Guard against paths outside root (..)
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, "..") {
-		return nil, fmt.Errorf("path %q is not under root %q", trackPath, root)
+	// Guard against paths outside root
+	if rel == "." || strings.HasPrefix(rel, "..") {
+		return "", "", nil, "", fmt.Errorf("path %q is not under root %q", trackPath, root)
 	}
+
 	parts := strings.Split(rel, string(os.PathSeparator))
-	// must end with a filename (track)
 	if len(parts) < 3 {
-		return nil, fmt.Errorf("relative path %q too short; need artist/album/track (or artist/album/media/track)", rel)
+		return "", "", nil, "", fmt.Errorf(
+			"relative path %q too short; expected artist/album/(...)/track",
+			rel,
+		)
 	}
-	// Very light sanity check: last part looks like a file (has an extension)
-	if filepath.Ext(parts[len(parts)-1]) == "" {
-		return nil, fmt.Errorf("last segment %q is not a file (no extension) in %q", parts[len(parts)-1], rel)
+
+	track = parts[len(parts)-1]
+	if filepath.Ext(track) == "" {
+		return "", "", nil, "", fmt.Errorf(
+			"last segment %q is not a file (no extension) in %q",
+			track, rel,
+		)
 	}
-	// Normalize segments for consistency (trim + NFC)
-	for i := range parts {
-		parts[i] = norm.NFC.String(strings.TrimSpace(parts[i]))
+
+	artist = parts[0]
+	album = parts[1]
+
+	if len(parts) > 3 {
+		containers = parts[2 : len(parts)-1]
+	} else {
+		containers = nil
 	}
-	return parts, nil
+
+	// Normalize everything
+	normalize := func(s string) string {
+		return norm.NFC.String(strings.TrimSpace(s))
+	}
+
+	artist = normalize(artist)
+	album = normalize(album)
+	track = normalize(track)
+	for i := range containers {
+		containers[i] = normalize(containers[i])
+	}
+
+	return artist, album, containers, track, nil
 }
 
 // picks the artist folder name from /root/artist/album[/media]/track
 func ExtractArtistNameFromTrackFilePath(root string, trackPath string) (string, error) {
-	parts, err := relParts(root, trackPath)
+	artist, _, _, _, err := SplitPathIntoMediaStrings(root, trackPath)
 	if err != nil {
 		return "", err
 	}
-	artist := parts[0]
+
 	if artist == "" {
 		return "", fmt.Errorf("empty artist segment in %q", trackPath)
 	}
@@ -324,11 +348,11 @@ func ExtractArtistNameFromTrackFilePath(root string, trackPath string) (string, 
 
 // picks the album folder name from /root/artist/album[/media]/track
 func ExtractAlbumNameFromTrackFilePath(root string, trackPath string) (string, error) {
-	parts, err := relParts(root, trackPath)
+	_, album, _, _, err := SplitPathIntoMediaStrings(root, trackPath)
 	if err != nil {
 		return "", err
 	}
-	album := parts[1]
+
 	if album == "" {
 		return "", fmt.Errorf("empty album segment in %q", trackPath)
 	}
@@ -337,20 +361,20 @@ func ExtractAlbumNameFromTrackFilePath(root string, trackPath string) (string, e
 
 // picks the media subdir (CD 01 / Vinyl 1 / Disc 2...) if present; returns "" if not present
 func ExtractMediaNameFromTrackFilePath(root string, trackPath string) (string, error) {
-	parts, err := relParts(root, trackPath)
+	_, _, containers, _, err := SplitPathIntoMediaStrings(root, trackPath)
 	if err != nil {
 		return "", err
 	}
 	// /root/artist/album/track        -> len(parts)==3 (no media)
 	// /root/artist/album/media/track  -> len(parts)>=4 (media is parts[2])
-	if len(parts) >= 4 {
-		media := parts[2]
+	if len(containers) == 1 {
+		media := containers[0]
 		if media == "" {
 			return "", fmt.Errorf("empty media segment in %q", trackPath)
 		}
 		return media, nil
 	}
-	return "", nil // no media directory
+	return "", nil // none or many media directories
 }
 
 // picks the track file name assuming the correct path structure

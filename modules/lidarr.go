@@ -193,7 +193,7 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 	}
 
 	if cached, ok := lidarrAlbumsCache[strconv.FormatInt(albumID, 10)]; ok {
-		logger.Log.Trace("cached entry found for album")
+		logger.Log.Trace("cached entry found for Lidarr album")
 		if time.Since(cached.Timestamp) < lidarrAlbumsCacheDuration {
 			for _, r := range cached.Album.Releases {
 				if r.Monitored && r.ForeignReleaseID != "" {
@@ -245,7 +245,7 @@ func (c *LidarrClient) GetTracksByAlbumAndArtistID(artistID int64, albumID int64
 	}
 
 	if cached, ok := lidarrTracksCache[strconv.FormatInt(albumID, 10)]; ok {
-		logger.Log.Trace("cached entry found")
+		logger.Log.Trace("cached entry found for Lidarr track")
 		if time.Since(cached.Timestamp) < lidarrTracksCacheDuration {
 			logger.Log.Debug("returning cached tracks for album: " + strconv.FormatInt(albumID, 10))
 			return cached.Tracks, nil

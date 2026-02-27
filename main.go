@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -77,7 +76,8 @@ func main() {
 
 	// Change the config to respect flags
 	var filePath *string
-	files.ConfigFile, filePath, err = parseFlags(files.ConfigFile)
+	var fileRootPath *string
+	files.ConfigFile, filePath, fileRootPath, err = parseFlags(files.ConfigFile)
 	if err != nil {
 		logger.Log.Fatal("failed to parse input flags. error: " + err.Error())
 		os.Exit(1)
@@ -152,11 +152,8 @@ func main() {
 	}
 
 	// process file path
-	if filePath != nil {
+	if filePath != nil && fileRootPath != nil {
 		albums := map[string]string{}
-		parentDir := path.Dir(utilities.NormPath(*filePath))
-		grandparentDir := path.Dir(parentDir)
-		rootDir := path.Dir(grandparentDir)
 
 		// load cache into memory
 		err = modules.MusicbrainzLoadCache()
@@ -164,7 +161,7 @@ func main() {
 			logger.Log.Error("failed to load release cache. error: " + err.Error())
 		}
 
-		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, rootDir, files.ConfigFile)
+		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, *fileRootPath, files.ConfigFile)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
@@ -227,7 +224,7 @@ func initRouter() *gin.Engine {
 	return router
 }
 
-func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, error) {
+func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, *string, error) {
 	// Define flag variables with the configuration file as default values
 	var port = flag.Int("port", configFile.AutotaggerrPort, "The port Autotaggerr is listening on.")
 	var externalURL = flag.String("externalurl", configFile.AutotaggerrExternalURL, "The URL others would use to access Autotaggerr.")
@@ -243,6 +240,7 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 
 	//file
 	var filePath = flag.String("file", "", "A single file to process")
+	var fileRootPath = flag.String("fileRoot", "", "What directory is the root of the file, the folder containing the artist folder")
 
 	// Parse the flags from input
 	flag.Parse()
@@ -295,8 +293,9 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 	}
 
 	// Respect the flag if config is empty
-	if filePath != nil && *filePath == "" {
+	if filePath != nil && *filePath == "" && fileRootPath != nil && *fileRootPath == "" {
 		filePath = nil
+		fileRootPath = nil
 	}
 
 	// Failsafe, if port is 0, set to default 8080
@@ -304,7 +303,7 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, e
 		configFile.AutotaggerrPort = 8080
 	}
 
-	return configFile, filePath, nil
+	return configFile, filePath, fileRootPath, nil
 }
 
 func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, plexClient *modules.PlexClient, configFile models.ConfigStruct) {
