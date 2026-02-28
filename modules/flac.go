@@ -115,6 +115,8 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		"BARCODE":                    metadata.Barcode,
 		"CATALOGNUMBER":              metadata.CatalogNumber,
 		"ASIN":                       metadata.ASIN,
+		"COMPOSER":                   metadata.Composer,
+		"AUTHOR":                     metadata.Author,
 	}
 
 	existing, err := getFlacTagsMap(filePath)

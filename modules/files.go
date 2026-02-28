@@ -327,6 +327,8 @@ func ProcessTrackFileAfterMatch(
 		Barcode:               response.Barcode,
 		ASIN:                  "",
 		CatalogNumber:         catalogString,
+		Author:                "",
+		Composer:              "",
 	}
 
 	for _, genre := range response.ReleaseGroup.Genres {

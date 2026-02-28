@@ -33,6 +33,8 @@ type FileTags struct {
 	Barcode               string   `json:"barcode"`
 	ASIN                  string   `json:"asin"`
 	CatalogNumber         string   `json:"catalog_number"`
+	Composer              string   `json:"composer"`
+	Author                string   `json:"author"`
 }
 
 type CachedMusicBrainzRelease struct {
