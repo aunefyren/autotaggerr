@@ -329,3 +329,61 @@ func PlexSaveAlbumKeyCache() error {
 
 	return os.WriteFile(plexAlbumKeyCachePath, data, 0644)
 }
+
+func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefreshInput map[string]string, plexClient PlexClient, albumTitle string, releaseArtist string, trackTitle string) (albumsWhoNeedMetadataRefresh map[string]string, err error) {
+	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshInput
+
+	err = PlexLoadAlbumKeyCache()
+	if err != nil {
+		return albumsWhoNeedMetadataRefresh, err
+	}
+
+	albumKey := ""
+	if cached, ok := plexAlbumKeyCache[albumTitle]; ok {
+		logger.Log.Trace("cached entry for Plex Album key found")
+		if time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
+			logger.Log.Debug("returning cached album key for album: " + albumTitle)
+			albumKey = cached.AlbumKey
+		}
+	} else {
+		sectionID, err := plexClient.FindMusicSectionID()
+		if err != nil {
+			logger.Log.Error("failed to find Plex music section ID. error: " + err.Error())
+			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex music section ID")
+		}
+
+		artistKey, err := plexClient.FindArtistKey(sectionID, releaseArtist)
+		if err != nil {
+			logger.Log.Error("failed to find Plex artist key for '" + releaseArtist + "'. error: " + err.Error())
+			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex artist key for '" + releaseArtist + "'")
+		}
+
+		logger.Log.Trace(artistKey + " - " + albumTitle)
+
+		albumKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, albumTitle, trackTitle)
+		if err != nil {
+			logger.Log.Error("failed to find Plex album key. error: " + err.Error())
+			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex album key")
+		} else {
+			logger.Log.Trace(albumKey)
+		}
+
+		// add album key to cache
+		plexAlbumKeyCache[albumTitle] = models.PlexAlbumKeyCache{
+			AlbumKey:  albumKey,
+			Timestamp: time.Now(),
+		}
+
+		// save new cache
+		err = PlexSaveAlbumKeyCache()
+		if err != nil {
+			return albumsWhoNeedMetadataRefresh, err
+		}
+	}
+
+	if !unchanged && tagsWritten > 0 {
+		albumsWhoNeedMetadataRefresh[albumTitle] = albumKey
+	}
+
+	return
+}

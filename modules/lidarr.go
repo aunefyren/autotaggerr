@@ -409,3 +409,79 @@ func (c *LidarrClient) HealthCheck() (health bool, err error) {
 
 	return true, err
 }
+
+// try to retrieve the MB release from Lidarr
+func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootDir string) (*models.LidarrTrackMetadataDetails, error) {
+	// derive the artist from the path folder
+	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(rootDir, trackPath)
+	if err != nil {
+		return nil, err
+	}
+	logger.Log.Debugf("artist name found: %s", artistName)
+
+	artists, err := cli.FindArtistByName(artistName)
+	if err != nil {
+		return nil, err
+	} else if len(artists) > 1 {
+		logger.Log.Warnf("%d artists found by that name, checking all and returning first match", len(artists))
+	}
+
+	for _, artist := range artists {
+		logger.Log.Debugf("checking for artist: %s (%d)", artist.Name, artist.ID)
+		lidarrTrackMetadataDetails := models.LidarrTrackMetadataDetails{}
+
+		tf, err := cli.FindTrackFileByPath(artist.ID, trackPath, rootDir)
+		if err != nil {
+			return nil, err
+		} else if tf == nil {
+			logger.Log.Warn("tracks not found in Lidarr by file path")
+			continue
+		}
+
+		logger.Log.Tracef("Lidarr track file found: %d", tf.ID)
+
+		tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
+		if err != nil {
+			return &lidarrTrackMetadataDetails, err
+		} else if tracks == nil {
+			logger.Log.Warn("tracks not found in Lidarr by album and artist")
+			continue
+		} else if len(tracks) < 1 {
+			logger.Log.Warn("tracks list found in Lidarr by album and artist is empty")
+		}
+
+		found := false
+		for _, track := range tracks {
+			logger.Log.Tracef("comparing track ID %d, file ID %d", track.ID, *track.TrackFileID)
+			if track.TrackFileID != nil && *track.TrackFileID == tf.ID {
+				logger.Log.Tracef("Lidarr track found: %d", track.ID)
+				lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
+				lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
+				lidarrTrackMetadataDetails.TrackTitle = track.Title
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			logger.Log.Warn("track not found in tracks returned by Lidarr")
+			continue
+		}
+
+		mbReleaseID, err := cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
+		if err != nil {
+			return &lidarrTrackMetadataDetails, err
+		} else if mbReleaseID == nil {
+			logger.Log.Warn("MusicBrainz Release ID not found in Lidarr by album ID")
+			continue
+		}
+
+		lidarrTrackMetadataDetails.MBReleaseID = *mbReleaseID
+
+		logger.Log.Debug("found Lidarr details")
+		return &lidarrTrackMetadataDetails, nil
+	}
+
+	logger.Log.Warn("no artists in Lidarr had the matching tracks for file")
+	return nil, nil
+}

@@ -7,12 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
-	"github.com/aunefyren/autotaggerr/utilities"
-	"github.com/bogem/id3v2"
 )
 
 // List of allowed audio file extensions
@@ -78,77 +75,6 @@ func ExtractTrackTitle(filePath string) (string, error) {
 	default:
 		return "", errors.New("unsupported file type")
 	}
-}
-
-func extractFromID3v2(filePath string, metadataType string) (string, error) {
-	var keyName string
-	switch metadataType {
-	case "release":
-		keyName = "MusicBrainz Album Id"
-	case "release_group":
-		keyName = "MusicBrainz Release Group Id"
-	case "track":
-		keyName = "MusicBrainz Release Track Id"
-	case "recording":
-		keyName = "MusicBrainz Recording Id"
-	case "title":
-		keyName = "title"
-	// add others if needed
-	default:
-		return "", errors.New("unsupported tag name for media type")
-	}
-
-	tagFile, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
-	if err != nil {
-		return "", err
-	}
-	defer tagFile.Close()
-
-	// simple tags
-	switch keyName {
-	case "title":
-		for _, frame := range tagFile.GetFrames("TIT2") {
-			if tf, ok := frame.(id3v2.TextFrame); ok {
-				return strings.TrimSpace(tf.Text), nil
-			}
-		}
-		return "", nil
-	}
-
-	// check for TXXX tags
-	for _, frame := range tagFile.GetFrames("TXXX") {
-		if uf, ok := frame.(id3v2.UserDefinedTextFrame); ok {
-			if strings.EqualFold(strings.TrimSpace(uf.Description), keyName) {
-				return strings.TrimSpace(uf.Value), nil
-			}
-		}
-	}
-	return "", nil
-}
-
-// Write MusicBrainz Album ID to an MP3 tag
-func writeMusicBrainzAlbumIDToID3v2(mp3Path, mbid string) error {
-	tagFile, err := id3v2.Open(mp3Path, id3v2.Options{Parse: true})
-	if err != nil {
-		return err
-	}
-	defer tagFile.Close()
-
-	// Create UserDefinedTextFrame
-	udtf := id3v2.UserDefinedTextFrame{
-		Description: "MusicBrainz Album Id",
-		Value:       mbid,
-	}
-
-	// Add or overwrite the frame
-	tagFile.AddFrame(tagFile.CommonID("UserDefinedText"), udtf)
-
-	// Save changes
-	if err := tagFile.Save(); err != nil {
-		return err
-	}
-
-	return nil
 }
 
 func SetFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
@@ -511,140 +437,6 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 	})
 
 	return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err
-}
-
-// try to retrieve the MB release from Lidarr
-func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootDir string) (*models.LidarrTrackMetadataDetails, error) {
-	// derive the artist from the path folder
-	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(rootDir, trackPath)
-	if err != nil {
-		return nil, err
-	}
-	logger.Log.Debugf("artist name found: %s", artistName)
-
-	artists, err := cli.FindArtistByName(artistName)
-	if err != nil {
-		return nil, err
-	} else if len(artists) > 1 {
-		logger.Log.Warnf("%d artists found by that name, checking all and returning first match", len(artists))
-	}
-
-	for _, artist := range artists {
-		logger.Log.Debugf("checking for artist: %s (%d)", artist.Name, artist.ID)
-		lidarrTrackMetadataDetails := models.LidarrTrackMetadataDetails{}
-
-		tf, err := cli.FindTrackFileByPath(artist.ID, trackPath, rootDir)
-		if err != nil {
-			return nil, err
-		} else if tf == nil {
-			logger.Log.Warn("tracks not found in Lidarr by file path")
-			continue
-		}
-
-		logger.Log.Tracef("Lidarr track file found: %d", tf.ID)
-
-		tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
-		if err != nil {
-			return &lidarrTrackMetadataDetails, err
-		} else if tracks == nil {
-			logger.Log.Warn("tracks not found in Lidarr by album and artist")
-			continue
-		} else if len(tracks) < 1 {
-			logger.Log.Warn("tracks list found in Lidarr by album and artist is empty")
-		}
-
-		found := false
-		for _, track := range tracks {
-			logger.Log.Tracef("comparing track ID %d, file ID %d", track.ID, *track.TrackFileID)
-			if track.TrackFileID != nil && *track.TrackFileID == tf.ID {
-				logger.Log.Tracef("Lidarr track found: %d", track.ID)
-				lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
-				lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
-				lidarrTrackMetadataDetails.TrackTitle = track.Title
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			logger.Log.Warn("track not found in tracks returned by Lidarr")
-			continue
-		}
-
-		mbReleaseID, err := cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
-		if err != nil {
-			return &lidarrTrackMetadataDetails, err
-		} else if mbReleaseID == nil {
-			logger.Log.Warn("MusicBrainz Release ID not found in Lidarr by album ID")
-			continue
-		}
-
-		lidarrTrackMetadataDetails.MBReleaseID = *mbReleaseID
-
-		logger.Log.Debug("found Lidarr details")
-		return &lidarrTrackMetadataDetails, nil
-	}
-
-	logger.Log.Warn("no artists in Lidarr had the matching tracks for file")
-	return nil, nil
-}
-
-func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefreshInput map[string]string, plexClient PlexClient, albumTitle string, releaseArtist string, trackTitle string) (albumsWhoNeedMetadataRefresh map[string]string, err error) {
-	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshInput
-
-	err = PlexLoadAlbumKeyCache()
-	if err != nil {
-		return albumsWhoNeedMetadataRefresh, err
-	}
-
-	albumKey := ""
-	if cached, ok := plexAlbumKeyCache[albumTitle]; ok {
-		logger.Log.Trace("cached entry for Plex Album key found")
-		if time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
-			logger.Log.Debug("returning cached album key for album: " + albumTitle)
-			albumKey = cached.AlbumKey
-		}
-	} else {
-		sectionID, err := plexClient.FindMusicSectionID()
-		if err != nil {
-			logger.Log.Error("failed to find Plex music section ID. error: " + err.Error())
-			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex music section ID")
-		}
-
-		artistKey, err := plexClient.FindArtistKey(sectionID, releaseArtist)
-		if err != nil {
-			logger.Log.Error("failed to find Plex artist key for '" + releaseArtist + "'. error: " + err.Error())
-			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex artist key for '" + releaseArtist + "'")
-		}
-
-		logger.Log.Trace(artistKey + " - " + albumTitle)
-
-		albumKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, albumTitle, trackTitle)
-		if err != nil {
-			logger.Log.Error("failed to find Plex album key. error: " + err.Error())
-			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex album key")
-		} else {
-			logger.Log.Trace(albumKey)
-		}
-
-		// add album key to cache
-		plexAlbumKeyCache[albumTitle] = models.PlexAlbumKeyCache{
-			AlbumKey:  albumKey,
-			Timestamp: time.Now(),
-		}
-
-		// save new cache
-		err = PlexSaveAlbumKeyCache()
-		if err != nil {
-			return albumsWhoNeedMetadataRefresh, err
-		}
-	}
-
-	if !unchanged && tagsWritten > 0 {
-		albumsWhoNeedMetadataRefresh[albumTitle] = albumKey
-	}
-
-	return
 }
 
 func ReleaseToAlbumType(release models.MusicBrainzReleaseResponse) string {

@@ -11,6 +11,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/utilities"
+	"github.com/bogem/id3v2"
 )
 
 func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
@@ -401,4 +402,50 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 		}
 	}
 	return res, nil
+}
+
+func extractFromID3v2(filePath string, metadataType string) (string, error) {
+	var keyName string
+	switch metadataType {
+	case "release":
+		keyName = "MusicBrainz Album Id"
+	case "release_group":
+		keyName = "MusicBrainz Release Group Id"
+	case "track":
+		keyName = "MusicBrainz Release Track Id"
+	case "recording":
+		keyName = "MusicBrainz Recording Id"
+	case "title":
+		keyName = "title"
+	// add others if needed
+	default:
+		return "", errors.New("unsupported tag name for media type")
+	}
+
+	tagFile, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
+	if err != nil {
+		return "", err
+	}
+	defer tagFile.Close()
+
+	// simple tags
+	switch keyName {
+	case "title":
+		for _, frame := range tagFile.GetFrames("TIT2") {
+			if tf, ok := frame.(id3v2.TextFrame); ok {
+				return strings.TrimSpace(tf.Text), nil
+			}
+		}
+		return "", nil
+	}
+
+	// check for TXXX tags
+	for _, frame := range tagFile.GetFrames("TXXX") {
+		if uf, ok := frame.(id3v2.UserDefinedTextFrame); ok {
+			if strings.EqualFold(strings.TrimSpace(uf.Description), keyName) {
+				return strings.TrimSpace(uf.Value), nil
+			}
+		}
+	}
+	return "", nil
 }
