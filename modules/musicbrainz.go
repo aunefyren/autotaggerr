@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -68,11 +69,19 @@ func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, erro
 
 	release, err := QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
 	if err != nil {
-		logger.Log.Debugf("failed to retrieve release '%s' from MB api. error: %s", mbID, err.Error())
-		return release, errors.New("failed to retrieve release from MB api")
+		// propagate the real cause (HTTP status / transport / parse) instead of a
+		// generic message, so the file-level log can tell them apart
+		return release, err
 	}
 
-	return release, err
+	return release, nil
+}
+
+// readBodySnippet reads a small, bounded portion of an error response body so it
+// can be included in an error message without risking a huge/streaming read.
+func readBodySnippet(r io.Reader) string {
+	b, _ := io.ReadAll(io.LimitReader(r, 512))
+	return strings.TrimSpace(string(b))
 }
 
 func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models.MusicBrainzReleaseResponse, error) {
@@ -98,25 +107,33 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		logger.Log.Error("failed to perform API request. error: " + err.Error())
-		return apiResponse, errors.New("failed to perform API request")
+		// transport failure (DNS, timeout, connection reset) — usually transient
+		return apiResponse, fmt.Errorf("MusicBrainz request failed for release %q (transport error, likely transient): %w", mbID, err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
-		return apiResponse, fmt.Errorf("MusicBrainz API returned status: %s", resp.Status)
+	if resp.StatusCode != http.StatusOK {
+		snippet := readBodySnippet(resp.Body)
+		switch resp.StatusCode {
+		case http.StatusNotFound, http.StatusGone:
+			// The release ID does not exist on MusicBrainz — usually a stale/merged
+			// ID that Lidarr is still holding on to.
+			return apiResponse, fmt.Errorf("release %q not found on MusicBrainz (HTTP %d) — the Lidarr-assigned MB ID may be stale or merged: %s", mbID, resp.StatusCode, snippet)
+		case http.StatusServiceUnavailable, http.StatusTooManyRequests:
+			return apiResponse, fmt.Errorf("MusicBrainz throttled/unavailable for release %q (HTTP %d, transient — retry later): %s", mbID, resp.StatusCode, snippet)
+		default:
+			return apiResponse, fmt.Errorf("MusicBrainz returned HTTP %d for release %q: %s", resp.StatusCode, mbID, snippet)
+		}
 	}
 
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		logger.Log.Error("failed to read response body. error: " + err.Error())
-		return apiResponse, errors.New("failed to read response body")
+		return apiResponse, fmt.Errorf("failed to read MusicBrainz response body for release %q: %w", mbID, err)
 	}
 
 	err = json.Unmarshal(body, &apiResponse)
 	if err != nil {
-		logger.Log.Error("failed to parse Musicbrainz API response. error: " + err.Error())
-		return apiResponse, errors.New("failed to parse Musicbrainz API response")
+		return apiResponse, fmt.Errorf("failed to parse MusicBrainz response for release %q: %w", mbID, err)
 	}
 
 	now := time.Now()

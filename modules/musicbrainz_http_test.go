@@ -112,7 +112,33 @@ func TestGetMusicBrainzReleaseHTTPError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	})
 
-	if _, err := GetMusicBrainzRelease("rel-3"); err == nil {
-		t.Error("expected error on HTTP 500, got nil")
+	_, err := GetMusicBrainzRelease("rel-3")
+	if err == nil {
+		t.Fatal("expected error on HTTP 500, got nil")
+	}
+	// the real status must survive to the caller, not be replaced by a generic message
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("error %q should mention the HTTP status", err.Error())
+	}
+}
+
+// TestGetMusicBrainzReleaseNotFound covers the "stale Lidarr MB ID" case: a 404
+// must produce a clearly distinguishable, actionable error.
+func TestGetMusicBrainzReleaseNotFound(t *testing.T) {
+	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"error":"Not Found"}`))
+	})
+
+	_, err := GetMusicBrainzRelease("gone-id")
+	if err == nil {
+		t.Fatal("expected error on HTTP 404, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "not found") || !strings.Contains(msg, "stale") {
+		t.Errorf("404 error %q should flag a not-found / stale MB ID", msg)
+	}
+	if !strings.Contains(msg, "gone-id") {
+		t.Errorf("404 error %q should name the release ID", msg)
 	}
 }

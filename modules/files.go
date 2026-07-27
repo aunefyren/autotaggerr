@@ -204,8 +204,9 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(mbReleaseID)
 	if err != nil {
-		logger.Log.Error("failed to get MB release data. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to get MB release data")
+		// wrap the cause; the scan/single-file caller logs this together with the
+		// file path, so no separate log line is needed here
+		return unchanged, tagsWritten, fmt.Errorf("failed to get MB release data: %w", err)
 	}
 	logger.Log.Debug("MB title response: " + response.Title)
 
