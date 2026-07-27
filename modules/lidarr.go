@@ -257,7 +257,9 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 	lidarrAlbumsCacheMu.RLock()
 	cached, ok := lidarrAlbumsCache[albumKey]
 	lidarrAlbumsCacheMu.RUnlock()
-	if ok {
+	// Guard on Album.ID: only trust a cache entry that actually holds the album we
+	// asked for (defends against any legacy poisoned entries — see below).
+	if ok && cached.Album.ID == albumID {
 		logger.Log.Trace("cached entry found for Lidarr album")
 		if time.Since(cached.Timestamp) < lidarrAlbumsCacheDuration {
 			for _, r := range cached.Album.Releases {
@@ -270,22 +272,28 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 		logger.Log.Trace("cached entry not found for album release")
 	}
 
+	// includeAllArtistAlbums=true returns every album for the artist, so each must
+	// be cached under ITS OWN id. Previously they were all written under the
+	// requested albumKey, which transiently poisoned that key with other albums and
+	// — under concurrency — made a parallel lookup return the wrong release.
 	var albums []models.LidarrAlbum
 	q := fmt.Sprintf("/api/v1/album?artistId=%d&albumIds=%d&includeAllArtistAlbums=true", artistID, albumID)
 	if err := c.getJSON(q, &albums); err != nil {
 		return nil, err
 	}
 
+	lidarrAlbumsCacheMu.Lock()
+	now := time.Now()
 	for _, a := range albums {
-		// add artist to cache
-		lidarrAlbumsCacheMu.Lock()
-		lidarrAlbumsCache[albumKey] = models.CachedLidarrAlbumRelease{
+		lidarrAlbumsCache[strconv.FormatInt(a.ID, 10)] = models.CachedLidarrAlbumRelease{
 			Album:     a,
-			Timestamp: time.Now(),
+			Timestamp: now,
 		}
-		lidarrAlbumsCacheMu.Unlock()
-		markCacheDirty(cacheNameLidarrAlbums)
+	}
+	lidarrAlbumsCacheMu.Unlock()
+	markCacheDirty(cacheNameLidarrAlbums)
 
+	for _, a := range albums {
 		if a.ID != albumID {
 			continue
 		}

@@ -227,6 +227,53 @@ func TestLidarrGetMonitoredAlbumMBID(t *testing.T) {
 	}
 }
 
+// TestGetMonitoredAlbumMBIDNoCrossContamination reproduces the poisoning bug:
+// the album endpoint (includeAllArtistAlbums=true) returns several of the artist's
+// albums, and each must be cached under its own id — asking for one album must
+// never return another album's release, even on the subsequent cache-hit path.
+func TestGetMonitoredAlbumMBIDNoCrossContamination(t *testing.T) {
+	resetLidarrCaches()
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/album": []models.LidarrAlbum{
+			{ID: 100, Title: "Other Soundtrack", Releases: []models.LidarrAlbumRel{
+				{Monitored: true, ForeignReleaseID: "rel-other"},
+			}},
+			{ID: 49719, Title: "Planet Earth II", Releases: []models.LidarrAlbumRel{
+				{Monitored: true, ForeignReleaseID: "rel-pe2"},
+			}},
+			{ID: 200, Title: "Third Soundtrack", Releases: []models.LidarrAlbumRel{
+				{Monitored: true, ForeignReleaseID: "rel-third"},
+			}},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	// Request the middle album; must get ITS release, not a sibling's.
+	mbid, err := client.GetMonitoredAlbumMBID(7, 49719)
+	if err != nil || mbid == nil {
+		t.Fatalf("GetMonitoredAlbumMBID: %v, %v", mbid, err)
+	}
+	if *mbid != "rel-pe2" {
+		t.Fatalf("release = %q, want rel-pe2", *mbid)
+	}
+
+	// Cache-hit path must still return the correct release (not a poisoned sibling).
+	mbid2, err := client.GetMonitoredAlbumMBID(7, 49719)
+	if err != nil || mbid2 == nil || *mbid2 != "rel-pe2" {
+		t.Fatalf("cached release = %v (%v), want rel-pe2", mbid2, err)
+	}
+
+	// A sibling album from the same response must resolve to its own release,
+	// served from the cache the first call warmed (no extra HTTP hit).
+	mbid3, err := client.GetMonitoredAlbumMBID(7, 200)
+	if err != nil || mbid3 == nil || *mbid3 != "rel-third" {
+		t.Fatalf("sibling release = %v (%v), want rel-third", mbid3, err)
+	}
+	if n := mock.hitCount("/api/v1/album"); n != 1 {
+		t.Errorf("/api/v1/album hit %d times, want 1 (siblings warmed into cache)", n)
+	}
+}
+
 // TestResolveMetadataDetailsFromLidarr exercises the full resolution chain
 // (artist -> trackfile -> track -> monitored release) against a mock Lidarr — the
 // core of the per-file pipeline.
