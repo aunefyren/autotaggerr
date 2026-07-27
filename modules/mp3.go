@@ -382,21 +382,22 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 			res[strings.ToUpper(key)] = append(res[strings.ToUpper(key)], val)
 		default:
 			logger.Log.Debugf("reading MP3 tag: key %s, val %s", key, val)
-			// Handle TXXX:* custom frames (e.g., TXXX:ISRC)
+			// Handle TXXX:* custom frames (e.g., TXXX:ISRC). We pack these as a
+			// single "KEY:value" string, so split on the FIRST colon only — the
+			// value itself may contain the separators we use for multi-value tags
+			// (e.g. a "; "-joined ISRC list). Splitting on ";"/all colons truncated
+			// multi-value ISRCs to their first entry, so those tracks never matched
+			// the desired tags and were rewritten on every scan.
 			if strings.HasPrefix(strings.ToUpper(key), "TXXX") {
-				txxxSplit := strings.Split(val, ";")
-
-				for _, txxxEntry := range txxxSplit {
-					txxxEntrySplit := strings.Split(txxxEntry, ":")
-					if len(txxxEntrySplit) == 2 {
-						// Upper-case the key (it must match the res map keys /
-						// case labels) but preserve the value's original case.
-						custom := strings.ToUpper(strings.TrimSpace(txxxEntrySplit[0]))
-						customValue := utilities.NormalizeTagValue(txxxEntrySplit[1])
-						switch custom {
-						case "ISRC", "TRACKTOTAL", "DISCTOTAL":
-							res[custom] = append(res[custom], customValue)
-						}
+				kv := strings.SplitN(val, ":", 2)
+				if len(kv) == 2 {
+					// Upper-case the key (it must match the res map keys /
+					// case labels) but preserve the value's original case.
+					custom := strings.ToUpper(strings.TrimSpace(kv[0]))
+					customValue := utilities.NormalizeTagValue(kv[1])
+					switch custom {
+					case "ISRC", "TRACKTOTAL", "DISCTOTAL":
+						res[custom] = append(res[custom], customValue)
 					}
 				}
 			}

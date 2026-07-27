@@ -170,3 +170,38 @@ func TestMP3IdempotentWrite(t *testing.T) {
 		t.Errorf("second identical write should be a no-op, got unchanged=%v written=%d", unchanged, written)
 	}
 }
+
+// TestMP3MultiISRCIdempotent guards a round-trip bug where a "; "-joined ISRC
+// (tracks with more than one ISRC, common on singles/features) was written into a
+// single frame but read back as only its first value, so the diff never converged
+// and the file was re-tagged on every scan. The ISRC must survive read-back intact.
+func TestMP3MultiISRCIdempotent(t *testing.T) {
+	requireTool(t, "ffprobe")
+	path := synthAudio(t, ".mp3")
+	meta := models.FileTags{
+		Artist: "Kendrick Lamar",
+		Album:  "The Heart Pt. 3 (Will You Let It Die?)",
+		Title:  "The Heart Pt. 3 (Will You Let It Die?)",
+		ISRC:   "USUM72108711; USUM72108712",
+	}
+
+	if _, _, err := SetMP3Tags(path, meta); err != nil {
+		t.Fatalf("first SetMP3Tags: %v", err)
+	}
+
+	tags, err := GetMP3Tags(path)
+	if err != nil {
+		t.Fatalf("GetMP3Tags: %v", err)
+	}
+	if got := firstTag(tags, "ISRC"); got != meta.ISRC {
+		t.Errorf("ISRC did not round-trip: got %q, want %q", got, meta.ISRC)
+	}
+
+	unchanged, written, err := SetMP3Tags(path, meta)
+	if err != nil {
+		t.Fatalf("second SetMP3Tags: %v", err)
+	}
+	if !unchanged || written != 0 {
+		t.Errorf("multi-ISRC second write should be a no-op, got unchanged=%v written=%d", unchanged, written)
+	}
+}

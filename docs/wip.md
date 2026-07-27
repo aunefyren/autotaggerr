@@ -19,6 +19,15 @@ current — add items as they come up, and move them to a feature doc or delete 
 
 ## Recently fixed
 
+- **MP3 tracks with multiple ISRCs were re-tagged on every scan.** ISRC is packed into one
+  `TXXX=ISRC:<value>` frame, but `GetMP3Tags` decoded it by splitting the frame value on `;`
+  *before* the `KEY:value` split — so a `"; "`-joined multi-ISRC string (common on singles and
+  featured tracks) read back as only its first value. Desired never equaled read-back, so the
+  diff never converged and the file was rewritten every run (visible as "N files / N tags", one
+  ISRC tag per file — reproduced live on *The Heart Pt. 3*). Fixed the decoder to split on the
+  *first colon only* (`SplitN(val, ":", 2)`) so the full multi-value string survives; the on-disk
+  format is unchanged, so existing files converge immediately with no migration write. Regression
+  test: `TestMP3MultiISRCIdempotent`.
 - **Plex album-key was never populated on a cache miss.** In `PlexRefreshForFile`, the resolved
   album key was assigned to a shadowed inner variable (`albumKey, err := ...` inside the `else`),
   so the outer `albumKey` stayed empty and the album was queued for refresh with an empty key
