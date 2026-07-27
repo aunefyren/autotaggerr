@@ -17,9 +17,12 @@ import (
 )
 
 var (
-	lastQueryTime                   time.Time
-	queryMutex                      sync.Mutex
-	rateLimit                       = time.Second
+	lastQueryTime time.Time
+	queryMutex    sync.Mutex
+	rateLimit     = time.Second
+	// musicbrainzBaseURL is the API root; a package var so tests can point it at a
+	// local httptest server instead of the live service.
+	musicbrainzBaseURL              = "https://musicbrainz.org/ws/2"
 	musicbrainzReleaseCachePath     = "config/mb_releases.json"
 	musicbrainzReleaseCacheDuration = 7 * 24 * time.Hour // 1 week (base TTL)
 	musicbrainzReleaseCacheJitter   = 7 * 24 * time.Hour // up to +1 week of jitter (7-14 days total)
@@ -83,7 +86,7 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	}
 
 	// do API request
-	url := fmt.Sprintf("https://musicbrainz.org/ws/2/release/%s?inc=recordings+labels+artists+genres+tags+release-groups+isrcs&fmt=json", mbID)
+	url := fmt.Sprintf("%s/release/%s?inc=recordings+labels+artists+genres+tags+release-groups+isrcs&fmt=json", musicbrainzBaseURL, mbID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		logger.Log.Error("failed to create new request. error: " + err.Error())
