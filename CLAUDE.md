@@ -24,11 +24,16 @@ via a one-shot flag invocation.
 go build -o autotaggerr .          # build the binary (module: github.com/aunefyren/autotaggerr)
 go run .                           # run locally (needs ./config to be writable)
 go vet ./...                       # static checks
+go test -race ./...                # run the test suite (race-enabled)
 go run . --file "/music/Artist/Album (2020)/01 Track.flac" --fileRoot "/music"  # process one file and exit
 ```
 
-There are no unit tests in the repo. CI (`.github/workflows/go.yml`) only verifies the code
-compiles against Go 1.23/1.24/1.25 — it does not run `go test`. Go 1.25 is the module target.
+The repo has a growing test suite (`modules/`, `utilities/`). CI (`.github/workflows/go.yml`)
+runs `gofmt` → `go build` → `go vet` → `go test -race` with coverage; it installs `flac`/`ffmpeg`
+so the audio fixture tests run there too. Go 1.25 is the module target.
+
+**Git is owned by the human.** Do not stage, commit, push, branch, or otherwise touch git state
+— the maintainer handles all version control. Make and verify changes in the working tree only.
 
 **External binaries are required at runtime** (bundled in the Docker image, must be on PATH otherwise):
 - `metaflac` (from FLAC) — reads/writes Vorbis comments on `.flac` files

@@ -4,7 +4,211 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
+
+	"github.com/aunefyren/autotaggerr/models"
 )
+
+// newPlexServer starts a mock Plex server with a custom handler and returns a
+// client pointed at it.
+func newPlexServer(t *testing.T, h http.Handler) *PlexClient {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return NewPlexClient(srv.URL, "tok")
+}
+
+func resetPlexCache() {
+	plexAlbumKeyCacheMu.Lock()
+	plexAlbumKeyCache = map[string]models.PlexAlbumKeyCache{}
+	plexAlbumKeyCacheMu.Unlock()
+}
+
+func TestNormalizeAlbumKey(t *testing.T) {
+	tests := map[string]string{
+		"/library/metadata/196905":          "/library/metadata/196905",
+		"/library/metadata/196905/children": "/library/metadata/196905",
+		"  /library/metadata/1/children  ":  "/library/metadata/1",
+	}
+	for in, want := range tests {
+		if got := normalizeAlbumKey(in); got != want {
+			t.Errorf("normalizeAlbumKey(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestNormalizeArtistChildrenPath(t *testing.T) {
+	ok := map[string]string{
+		"/library/metadata/900":          "/library/metadata/900/children",
+		"/library/metadata/900/children": "/library/metadata/900/children",
+		"900":                            "/library/metadata/900/children",
+	}
+	for in, want := range ok {
+		got, err := normalizeArtistChildrenPath(in)
+		if err != nil || got != want {
+			t.Errorf("normalizeArtistChildrenPath(%q) = (%q, %v), want (%q, nil)", in, got, err, want)
+		}
+	}
+	for _, bad := range []string{"", "   ", "not-a-key"} {
+		if _, err := normalizeArtistChildrenPath(bad); err == nil {
+			t.Errorf("normalizeArtistChildrenPath(%q) expected error", bad)
+		}
+	}
+}
+
+func TestResolveAlbumKeyInSectionAlbumMatch(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/library/sections/5/all", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("type") == "9" {
+			_, _ = w.Write([]byte(`<MediaContainer><Directory key="/library/metadata/777/children" title="The Blueprint" parentTitle="Jay-Z" type="album"/></MediaContainer>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<MediaContainer></MediaContainer>`))
+	})
+	client := newPlexServer(t, mux)
+
+	key, err := client.ResolveAlbumKeyInSection("5", "Jay-Z", "The Blueprint", "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "/library/metadata/777" {
+		t.Errorf("album key = %q, want /library/metadata/777", key)
+	}
+}
+
+// The album search returns nothing; resolution should fall back to the track
+// search (type=10) and derive the album key from the track's ParentKey.
+func TestResolveAlbumKeyInSectionTrackFallback(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/library/sections/5/all", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("type") == "10" {
+			_, _ = w.Write([]byte(`<MediaContainer><Track title="99 Problems" parentTitle="The Black Album" grandparentTitle="Jay-Z" parentKey="/library/metadata/888"/></MediaContainer>`))
+			return
+		}
+		_, _ = w.Write([]byte(`<MediaContainer></MediaContainer>`)) // type=9 empty
+	})
+	client := newPlexServer(t, mux)
+
+	key, err := client.ResolveAlbumKeyInSection("5", "Jay-Z", "The Black Album", "99 Problems")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "/library/metadata/888" {
+		t.Errorf("album key = %q, want /library/metadata/888", key)
+	}
+}
+
+func TestResolveAlbumKeyInSectionNotFound(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/library/sections/5/all", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<MediaContainer></MediaContainer>`))
+	})
+	client := newPlexServer(t, mux)
+
+	if _, err := client.ResolveAlbumKeyInSection("5", "Jay-Z", "Nope", "Nope"); err == nil {
+		t.Error("expected error when album/track not found")
+	}
+}
+
+func TestRefreshAlbum(t *testing.T) {
+	var hit bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/library/metadata/196905/refresh", func(w http.ResponseWriter, r *http.Request) {
+		hit = true
+		if r.URL.Query().Get("force") != "1" {
+			t.Errorf("refresh missing force=1")
+		}
+		w.WriteHeader(http.StatusOK)
+	})
+	client := newPlexServer(t, mux)
+
+	if err := client.RefreshAlbum("/library/metadata/196905/children"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !hit {
+		t.Error("refresh endpoint was not called")
+	}
+}
+
+// plexRefreshMux serves the endpoints PlexRefreshForFile needs on a cache miss.
+func plexRefreshMux(t *testing.T, artistFound bool) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/library/sections", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`<MediaContainer><Directory key="5" title="Music" type="artist"/></MediaContainer>`))
+	})
+	mux.HandleFunc("/library/sections/5/all", func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Query().Get("type") {
+		case "8": // artist search
+			if artistFound {
+				_, _ = w.Write([]byte(`<MediaContainer><Directory key="/library/metadata/900" title="Jay-Z" type="artist"/></MediaContainer>`))
+			} else {
+				_, _ = w.Write([]byte(`<MediaContainer></MediaContainer>`))
+			}
+		case "9": // album search
+			_, _ = w.Write([]byte(`<MediaContainer><Directory key="/library/metadata/777" title="The Blueprint" parentTitle="Jay-Z" type="album"/></MediaContainer>`))
+		default:
+			_, _ = w.Write([]byte(`<MediaContainer></MediaContainer>`))
+		}
+	})
+	return mux
+}
+
+func TestPlexRefreshForFileMissSuccess(t *testing.T) {
+	resetPlexCache()
+	client := newPlexServer(t, plexRefreshMux(t, true))
+	set := NewAlbumRefreshSet(nil)
+
+	err := PlexRefreshForFile(false, 1, set, *client, "The Blueprint", "Jay-Z", "Izzo")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := set.Snapshot()["The Blueprint"]; got != "/library/metadata/777" {
+		t.Errorf("refresh set album key = %q, want /library/metadata/777", got)
+	}
+	// the resolved key should now be cached
+	plexAlbumKeyCacheMu.RLock()
+	_, cached := plexAlbumKeyCache["The Blueprint"]
+	plexAlbumKeyCacheMu.RUnlock()
+	if !cached {
+		t.Error("album key was not cached after resolution")
+	}
+}
+
+func TestPlexRefreshForFileCacheHit(t *testing.T) {
+	resetPlexCache()
+	plexAlbumKeyCacheMu.Lock()
+	plexAlbumKeyCache["The Blueprint"] = models.PlexAlbumKeyCache{AlbumKey: "/library/metadata/777", Timestamp: time.Now()}
+	plexAlbumKeyCacheMu.Unlock()
+
+	// Any HTTP call would be a bug on the cache-hit path.
+	client := newPlexServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("unexpected HTTP call on cache hit: %s", r.URL)
+	}))
+	set := NewAlbumRefreshSet(nil)
+
+	if err := PlexRefreshForFile(false, 1, set, *client, "The Blueprint", "Jay-Z", "Izzo"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := set.Snapshot()["The Blueprint"]; got != "/library/metadata/777" {
+		t.Errorf("refresh set album key = %q, want cached value", got)
+	}
+}
+
+// A missing Plex artist must return a wrapped, non-fatal error and must NOT add
+// the album to the refresh set.
+func TestPlexRefreshForFileMissingArtist(t *testing.T) {
+	resetPlexCache()
+	client := newPlexServer(t, plexRefreshMux(t, false))
+	set := NewAlbumRefreshSet(nil)
+
+	err := PlexRefreshForFile(false, 1, set, *client, "The Blueprint", "Jay-Z", "Izzo")
+	if err == nil {
+		t.Fatal("expected error for missing artist")
+	}
+	if _, ok := set.Snapshot()["The Blueprint"]; ok {
+		t.Error("album should not be queued for refresh when artist lookup fails")
+	}
+}
 
 // newPlexMock serves canned XML per path and asserts the Plex token is attached.
 func newPlexMock(t *testing.T, routes map[string]string) *httptest.Server {

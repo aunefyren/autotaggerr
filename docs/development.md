@@ -22,9 +22,16 @@ go run . --file "<path>" --fileRoot "<library-root>"   # one-shot single-file pr
 ## CI gates (`.github/workflows/go.yml`)
 
 Every push/PR runs, in order: `gofmt` check → `go build` → `go vet` → `go test` with race +
-coverage. **`gofmt` and `go vet` are hard gates** — keep both clean or CI goes red. Commit
+coverage. The workflow installs `flac` + `ffmpeg` so the audio fixture tests run in CI too.
+**`gofmt` and `go vet` are hard gates** — keep both clean or CI goes red. Commit
 files with LF endings (`.gitattributes` normalizes to LF; the working tree may show CRLF on
 Windows/WSL, which is fine — git stores LF).
+
+## Git ownership
+
+**The maintainer handles all git operations** — staging, commits, branches, pushes, PRs. When
+working in this repo (including as an AI assistant), make and verify changes in the working tree
+only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-control state.
 
 ## Code conventions
 

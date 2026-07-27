@@ -137,6 +137,75 @@ func TestLidarrFindTrackFileByPath(t *testing.T) {
 	}
 }
 
+// TestLidarrFindTrackFileByPathMediaFolder covers the layout with an extra media
+// subdir (…/Album (2020)/CD1/track), where the album is the *grandparent* of the
+// file rather than its immediate parent.
+func TestLidarrFindTrackFileByPathMediaFolder(t *testing.T) {
+	resetLidarrCaches()
+	root := filepath.Join("/", "music")
+	trackPath := filepath.Join(root, "Pink Floyd", "The Wall (1979)", "CD1", "01 In the Flesh.flac")
+
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/trackfile": []models.LidarrTrackFile{
+			{ID: 100, AlbumID: 42, ArtistID: 2, Path: "/data/music/Pink Floyd/The Wall (1979)/CD1/01 In the Flesh.flac"},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	tf, err := client.FindTrackFileByPath(2, trackPath, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tf == nil || tf.ID != 100 {
+		t.Fatalf("expected trackfile 100 via media-folder match, got %+v", tf)
+	}
+}
+
+func TestLidarrFindTrackFileByPathNoMatch(t *testing.T) {
+	resetLidarrCaches()
+	root := filepath.Join("/", "music")
+	trackPath := filepath.Join(root, "Pink Floyd", "The Wall (1979)", "01 In the Flesh.flac")
+
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/trackfile": []models.LidarrTrackFile{
+			{ID: 100, AlbumID: 42, ArtistID: 2, Path: "/data/music/Pink Floyd/Wish You Were Here (1975)/03 Have a Cigar.flac"},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	// No matching trackfile -> (nil, nil): not an error, just no match.
+	tf, err := client.FindTrackFileByPath(2, trackPath, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tf != nil {
+		t.Errorf("expected no match (nil), got %+v", tf)
+	}
+}
+
+func TestLidarrGetTracksByAlbumAndArtistIDCaches(t *testing.T) {
+	resetLidarrCaches()
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/track": []models.LidarrTrack{
+			{ID: 500, Title: "In the Flesh?", ForeignTrackID: "mbtrack-1", TrackFileID: i64ptr(100)},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	for i := 0; i < 3; i++ {
+		tracks, err := client.GetTracksByAlbumAndArtistID(2, 42)
+		if err != nil {
+			t.Fatalf("call %d error: %v", i, err)
+		}
+		if len(tracks) != 1 || tracks[0].ID != 500 {
+			t.Fatalf("call %d tracks = %+v", i, tracks)
+		}
+	}
+	if n := mock.hitCount("/api/v1/track"); n != 1 {
+		t.Errorf("/api/v1/track hit %d times, want 1 (cached after first)", n)
+	}
+}
+
 func TestLidarrGetMonitoredAlbumMBID(t *testing.T) {
 	resetLidarrCaches()
 	mock := newLidarrMock(t, map[string]any{

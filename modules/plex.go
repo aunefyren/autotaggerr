@@ -65,27 +65,6 @@ func (p *PlexClient) get(path string, dst any) error {
 	return xml.NewDecoder(resp.Body).Decode(dst)
 }
 
-func (p *PlexClient) put(path string) error {
-	u := p.BaseURL + path
-	if strings.Contains(path, "?") {
-		u += "&"
-	} else {
-		u += "?"
-	}
-	u += "X-Plex-Token=" + url.QueryEscape(p.Token)
-
-	req, _ := http.NewRequest("PUT", u, nil)
-	resp, err := p.HTTP.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != 200 {
-		return fmt.Errorf("plex refresh -> %d", resp.StatusCode)
-	}
-	return nil
-}
-
 // find first music section (type="artist")
 func (p *PlexClient) FindMusicSectionID() (string, error) {
 	var mc models.PlexMediaContainer
