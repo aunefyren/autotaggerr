@@ -108,9 +108,21 @@ func (p *PlexClient) FindArtistKey(sectionID, artistName string) (string, error)
 		return "", err
 	}
 
+	// Exact (normalized) match first for precision.
 	want := utilities.Canon(artistName)
 	for _, d := range mc.Directory {
 		if d.Type == "artist" && utilities.Canon(d.Title) == want {
+			return d.Key, nil
+		}
+	}
+
+	// Fall back to loose matching so typographic differences still match Plex's
+	// stored title — e.g. Plex holds "Jay‑Z" with a non-breaking hyphen/en-dash
+	// while our tag has an ASCII "Jay-Z", or curly vs straight apostrophes. This
+	// mirrors the tolerance ResolveAlbumKeyInSection already uses.
+	for _, d := range mc.Directory {
+		if d.Type == "artist" && utilities.EqLoose(d.Title, artistName) {
+			logger.Log.Debugf("Plex artist matched loosely: %q ~= %q", d.Title, artistName)
 			return d.Key, nil
 		}
 	}
@@ -352,24 +364,24 @@ func PlexRefreshForFile(unchanged bool, tagsWritten int, refreshSet *AlbumRefres
 			albumKey = cached.AlbumKey
 		}
 	} else {
+		// Failures here are non-fatal: the file's tags were already written; we just
+		// can't queue a Plex refresh for it. Return the wrapped cause without logging
+		// — the caller logs it once at Warn level with the album context.
 		sectionID, err := plexClient.FindMusicSectionID()
 		if err != nil {
-			logger.Log.Error("failed to find Plex music section ID. error: " + err.Error())
-			return errors.New("failed to find Plex music section ID")
+			return fmt.Errorf("find Plex music section: %w", err)
 		}
 
 		artistKey, err := plexClient.FindArtistKey(sectionID, releaseArtist)
 		if err != nil {
-			logger.Log.Error("failed to find Plex artist key for '" + releaseArtist + "'. error: " + err.Error())
-			return errors.New("failed to find Plex artist key for '" + releaseArtist + "'")
+			return fmt.Errorf("find Plex artist %q: %w", releaseArtist, err)
 		}
 
 		logger.Log.Trace(artistKey + " - " + albumTitle)
 
 		resolvedKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, albumTitle, trackTitle)
 		if err != nil {
-			logger.Log.Error("failed to find Plex album key. error: " + err.Error())
-			return errors.New("failed to find Plex album key")
+			return fmt.Errorf("resolve Plex album key for %q: %w", albumTitle, err)
 		}
 		albumKey = resolvedKey
 		logger.Log.Trace(albumKey)

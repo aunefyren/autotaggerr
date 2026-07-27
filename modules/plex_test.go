@@ -73,6 +73,27 @@ func TestPlexFindArtistKey(t *testing.T) {
 	}
 }
 
+// TestPlexFindArtistKeyLooseDash covers the real-world case where Plex stores the
+// artist with a non-ASCII dash (here a non-breaking hyphen, U+2011) while our tag
+// uses a plain "-". Strict matching missed this and spammed "artist not found".
+func TestPlexFindArtistKeyLooseDash(t *testing.T) {
+	srv := newPlexMock(t, map[string]string{
+		// "Jay‑Z" — non-breaking hyphen, not an ASCII '-'
+		"/library/sections/5/all": "<MediaContainer>" +
+			`<Directory key="/library/metadata/42" title="Jay‑Z" type="artist"/>` +
+			"</MediaContainer>",
+	})
+	client := NewPlexClient(srv.URL, "tok")
+
+	key, err := client.FindArtistKey("5", "Jay-Z") // ASCII hyphen
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if key != "/library/metadata/42" {
+		t.Errorf("artist key = %q, want /library/metadata/42", key)
+	}
+}
+
 func TestPlexFindArtistKeyNotFound(t *testing.T) {
 	srv := newPlexMock(t, map[string]string{
 		"/library/sections/5/all": `<MediaContainer>
