@@ -36,11 +36,12 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string]string {
 		"TRACKNUMBER": metadata.Track,
 		"DISCNUMBER":  metadata.DiscNumber,
 
-		/* to be added later
-		"TRACKTOTAL":  metadata.TrackTotal,
-		"DISCTOTAL":   metadata.DiscTotal,
-		"ISRC":        metadata.ISRC,
-		*/
+		// Totals ride along in the composite TRCK/TPOS frames ("3/12", "1/2")
+		// built below — the standard ID3 representation, which ffprobe reads back.
+		"TRACKTOTAL": metadata.TrackTotal,
+		"DISCTOTAL":  metadata.DiscTotal,
+		// ISRC is written as a TXXX:ISRC frame (see below) and decoded by GetMP3Tags.
+		"ISRC": metadata.ISRC,
 
 		"SCRIPT":    metadata.Script,
 		"TMED":      metadata.Media,
@@ -270,21 +271,12 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		}
 	}
 
-	// Custom TXXX frames
+	// Custom TXXX frames. ffmpeg stores an unknown metadata key as a TXXX frame, so
+	// we encode "ISRC:<value>"; GetMP3Tags decodes it back into the ISRC key.
 	if _, ok := changes["ISRC"]; ok && desired["ISRC"] != "" {
 		logger.Log.Trace("adding ISRC")
-		addMeta("TXXX=ISRC:"+desired["ISRC"], "")
-		// ffmpeg expects "TXXX=KEY:VALUE" as one value; we pass via previous call format:
-		args[len(args)-1] = fmt.Sprintf("TXXX=ISRC:%s", desired["ISRC"])
+		args = append(args, "-metadata", "TXXX=ISRC:"+desired["ISRC"])
 		tagsWritten++
-	}
-	if _, ok := changes["TRACKTOTAL"]; ok && desired["TRACKTOTAL"] != "" {
-		logger.Log.Trace("adding TRACKTOTAL")
-		args = append(args, "-metadata", fmt.Sprintf("TXXX=TRACKTOTAL:%s", desired["TRACKTOTAL"]))
-	}
-	if _, ok := changes["DISCTOTAL"]; ok && desired["DISCTOTAL"] != "" {
-		logger.Log.Trace("adding DISCTOTAL")
-		args = append(args, "-metadata", fmt.Sprintf("TXXX=DISCTOTAL:%s", desired["DISCTOTAL"]))
 	}
 
 	tempOutput := filePath + ".temp.mp3"
@@ -397,8 +389,10 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 				for _, txxxEntry := range txxxSplit {
 					txxxEntrySplit := strings.Split(txxxEntry, ":")
 					if len(txxxEntrySplit) == 2 {
+						// Upper-case the key (it must match the res map keys /
+						// case labels) but preserve the value's original case.
 						custom := strings.ToUpper(strings.TrimSpace(txxxEntrySplit[0]))
-						customValue := strings.ToUpper(strings.TrimSpace(txxxEntrySplit[1]))
+						customValue := utilities.NormalizeTagValue(txxxEntrySplit[1])
 						switch custom {
 						case "ISRC", "TRACKTOTAL", "DISCTOTAL":
 							res[custom] = append(res[custom], customValue)
