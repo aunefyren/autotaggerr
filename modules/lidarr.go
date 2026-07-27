@@ -97,25 +97,21 @@ func (c *LidarrClient) getJSON(pathWithQuery string, dst any) error {
 
 // FindArtistByName searches the Lidarr artist list for one whose folder name matches artistName.
 func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtist, error) {
+	// Return any fresh cached artist(s) matching the name; only fall through to
+	// the API when nothing fresh is cached. (Previously inverted: a fresh entry
+	// forced a refetch and a stale entry was served — so /api/v1/artist was hit on
+	// essentially every file, a real drag on full-library scans.)
 	foundCachedArtist := []models.LidarrArtist{}
-	anyExpired := false
 	lidarrArtistsCacheMu.RLock()
 	for _, cachedArtist := range lidarrArtistsCache {
-		if strings.EqualFold(cachedArtist.Artist.Name, artistName) {
-			logger.Log.Trace("cached Lidarr artist entry found")
-			if time.Since(cachedArtist.Timestamp) < lidarrArtistsCacheDuration {
-				anyExpired = true
-				break
-			} else {
-				foundCachedArtist = append(foundCachedArtist, cachedArtist.Artist)
-			}
+		if strings.EqualFold(cachedArtist.Artist.Name, artistName) &&
+			time.Since(cachedArtist.Timestamp) < lidarrArtistsCacheDuration {
+			foundCachedArtist = append(foundCachedArtist, cachedArtist.Artist)
 		}
 	}
 	lidarrArtistsCacheMu.RUnlock()
 
-	if anyExpired {
-		logger.Log.Debug("One or more Lidarr artist entries expired, retrieving new data...")
-	} else if len(foundCachedArtist) > 0 {
+	if len(foundCachedArtist) > 0 {
 		logger.Log.Debug("returning cached Lidarr artist(s)")
 		return foundCachedArtist, nil
 	}
