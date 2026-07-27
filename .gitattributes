@@ -1,2 +1,19 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalize all text files to LF in the repo, and check them out as LF on every
+# platform (Windows included). One line-ending everywhere = no CRLF/LF churn.
+* text=auto eol=lf
+
+# Shell scripts MUST be LF — a CRLF entrypoint.sh breaks the shebang inside the
+# Linux Docker container.
+*.sh    text eol=lf
+
+# Windows-only scripts stay CRLF (none today, but future-proofed).
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+
+# Treat these as binary so Git never touches their bytes.
+*.exe   binary
+*.gif   binary
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.ico   binary

@@ -14,16 +14,14 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /app/autotaggerr .
 
 # ---------- Runtime ----------
-FROM alpine:3.20
+FROM alpine:3.21
 ENV PUID=1000 PGID=1000 LANG=C.UTF-8 LC_ALL=C.UTF-8
 WORKDIR /app
-RUN apk add --no-cache ffmpeg flac ca-certificates tzdata
+RUN apk add --no-cache ffmpeg flac ca-certificates tzdata su-exec
 COPY --from=builder /app/autotaggerr /app/autotaggerr
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /app/web/ /app/web/
-RUN addgroup -g ${PGID} appgroup && \
-    adduser -D -u ${PUID} -G appgroup appuser && \
-    chmod +x /app/autotaggerr /app/entrypoint.sh && \
-    chown -R appuser:appgroup /app
-USER appuser
+RUN chmod +x /app/autotaggerr /app/entrypoint.sh
+# Starts as root so the entrypoint can align the runtime user with PUID/PGID and
+# fix ownership of the mounted config volume before dropping privileges.
 ENTRYPOINT ["/app/entrypoint.sh"]

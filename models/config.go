@@ -13,6 +13,7 @@ type ConfigStruct struct {
 	AutotaggerrLibraries                          []string `json:"autotaggerr_libraries"`
 	AutotaggerrProcessOnStartUp                   bool     `json:"autotaggerr_process_on_start_up"`
 	AutotaggerrProcessCronSchedule                string   `json:"autotaggerr_process_cron_schedule"`
+	AutotaggerrProcessConcurrency                 int      `json:"autotaggerr_process_concurrency"`
 	AutotaggerrUseCurrentArtistName               bool     `json:"autotaggerr_use_current_artist_name"`
 	AutotaggerrIgnoreRedundantContributingArtists bool     `json:"autotaggerr_ignore_redundant_contributing_artists"`
 	AutotaggerrUseCustomArtistDelimiter           bool     `json:"autotaggerr_use_custom_artist_delimiter"`

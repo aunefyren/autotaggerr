@@ -40,6 +40,10 @@ type FileTags struct {
 type CachedMusicBrainzRelease struct {
 	Release   MusicBrainzReleaseResponse `json:"release"`
 	Timestamp time.Time                  `json:"timestamp"`
+	// ExpiresAt is set at write time with a jittered TTL so that entries
+	// fetched together during one scan do not all expire in the same window.
+	// A zero value is treated as already expired (self-healing migration).
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 type CachedLidarrArtistRelease struct {
@@ -55,6 +59,11 @@ type CachedLidarrAlbumRelease struct {
 type CachedLidarrTracksRelease struct {
 	Tracks    []LidarrTrack `json:"track"`
 	Timestamp time.Time     `json:"timestamp"`
+}
+
+type CachedLidarrTrackFilesRelease struct {
+	TrackFiles []LidarrTrackFile `json:"track_files"`
+	Timestamp  time.Time         `json:"timestamp"`
 }
 
 type PlexAlbumKeyCache struct {

@@ -14,11 +14,13 @@ jobs:
         goos: [linux, windows]
         goarch: ["386", amd64, arm64, arm]
         exclude:
-          - goarch: arm64, arm
-            goos: windows
+          - goos: windows
+            goarch: arm64
+          - goos: windows
+            goarch: arm
     steps:
-    - uses: actions/checkout@v3
-    - uses: wangyoucao577/go-release-action@v1.40
+    - uses: actions/checkout@v4
+    - uses: wangyoucao577/go-release-action@v1.53
       with:
         github_token: ${{ secrets.GIT_HUB_TOKEN }}
         goos: ${{ matrix.goos }}
@@ -26,7 +28,7 @@ jobs:
         goversion: "1.25.0"
         binary_name: "autotaggerr"
         ldflags: "-s -w"
-        extra_files: README.md files controllers models utilities web Dockerfile entrypoint.sh
+        extra_files: README.md files logger models modules routers utilities web Dockerfile entrypoint.sh
         retry: 10
         overwrite: true
         release_name: ${{ github.ref_name }}

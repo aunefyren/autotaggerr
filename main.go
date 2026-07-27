@@ -136,6 +136,10 @@ func main() {
 		}
 	}
 
+	// load all on-disk caches into memory once; the per-file path works purely
+	// in-memory from here on (see modules/cache.go)
+	modules.LoadAllCaches()
+
 	// Create task scheduler for sunday reminders
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
@@ -153,19 +157,16 @@ func main() {
 
 	// process file path
 	if filePath != nil && fileRootPath != nil {
-		albums := map[string]string{}
+		refreshSet := modules.NewAlbumRefreshSet(nil)
 
-		// load cache into memory
-		err = modules.MusicbrainzLoadCache()
-		if err != nil {
-			logger.Log.Error("failed to load release cache. error: " + err.Error())
-		}
-
-		_, _, albums, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, albums, *fileRootPath, files.ConfigFile)
+		_, _, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, refreshSet, *fileRootPath, files.ConfigFile)
 		if err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
-		for albumName, albumKey := range albums {
+
+		// persist any cache changes made while processing this file (writes are batched)
+		modules.FlushCaches()
+		for albumName, albumKey := range refreshSet.Snapshot() {
 			if err := plexClient.RefreshAlbum(albumKey); err != nil {
 				logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
 			}
@@ -229,6 +230,7 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, *
 	var port = flag.Int("port", configFile.AutotaggerrPort, "The port Autotaggerr is listening on.")
 	var externalURL = flag.String("externalurl", configFile.AutotaggerrExternalURL, "The URL others would use to access Autotaggerr.")
 	var timezone = flag.String("tz", configFile.Timezone, "The timezone Autotaggerr is running in.")
+	var concurrency = flag.Int("concurrency", configFile.AutotaggerrProcessConcurrency, "Number of files processed in parallel per library scan.")
 
 	// SMTP flags
 	var smtpDisabled = flag.String("disablesmtp", "false", "Disables user verification using e-mail.")
@@ -245,55 +247,56 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, *
 	// Parse the flags from input
 	flag.Parse()
 
-	// Respect the flag if config is empty
-	if port != nil {
+	// Track which flags were actually provided on the command line, so we only
+	// override config values that the user explicitly set instead of clobbering
+	// the whole config on every startup.
+	provided := map[string]bool{}
+	flag.Visit(func(f *flag.Flag) { provided[f.Name] = true })
+
+	if provided["port"] {
 		configFile.AutotaggerrPort = *port
 	}
 
-	// Respect the flag if config is empty
-	if externalURL == nil {
+	if provided["externalurl"] {
 		configFile.AutotaggerrExternalURL = *externalURL
 	}
 
-	// Respect the flag if config is empty
-	if timezone == nil {
+	if provided["tz"] {
 		configFile.Timezone = *timezone
 	}
 
-	// Respect the flag if string is true
-	if smtpDisabled != nil && strings.ToLower(*smtpDisabled) == "true" {
-		configFile.SMTPEnabled = false
-	} else {
-		configFile.SMTPEnabled = true
+	if provided["concurrency"] {
+		configFile.AutotaggerrProcessConcurrency = *concurrency
 	}
 
-	// Respect the flag if config is empty
-	if smtpHost != nil {
+	// Respect the flag only if it was passed; "true" disables SMTP.
+	if provided["disablesmtp"] {
+		configFile.SMTPEnabled = strings.ToLower(*smtpDisabled) != "true"
+	}
+
+	if provided["smtphost"] {
 		configFile.SMTPHost = *smtpHost
 	}
 
-	// Respect the flag if config is empty
-	if smtpPort != nil {
+	if provided["smtpport"] {
 		configFile.SMTPPort = *smtpPort
 	}
 
-	// Respect the flag if config is empty
-	if smtpUsername != nil {
+	if provided["smtpusername"] {
 		configFile.SMTPUsername = *smtpUsername
 	}
 
-	// Respect the flag if config is empty
-	if smtpPassword != nil {
+	if provided["smtppassword"] {
 		configFile.SMTPPassword = *smtpPassword
 	}
 
-	// Respect the flag if config is empty
-	if smtpFrom != nil {
+	if provided["smtpfrom"] {
 		configFile.SMTPFrom = *smtpFrom
 	}
 
-	// Respect the flag if config is empty
-	if filePath != nil && *filePath == "" && fileRootPath != nil && *fileRootPath == "" {
+	// Only treat single-file processing as requested when both flags are set to
+	// a non-empty value; otherwise return nil so the service runs normally.
+	if !provided["file"] || *filePath == "" || !provided["fileRoot"] || *fileRootPath == "" {
 		filePath = nil
 		fileRootPath = nil
 	}

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -18,16 +19,30 @@ import (
 )
 
 var (
-	lidarrArtistsCachePath     = "config/lidarr_artists.json"
-	lidarrArtistsCacheDuration = time.Hour // 1 hour
-	lidarrArtistsCache         = map[string]models.CachedLidarrArtistRelease{}
-	lidarrAlbumsCachePath      = "config/lidarr_albums.json"
-	lidarrAlbumsCacheDuration  = time.Hour // 1 hour
-	lidarrAlbumsCache          = map[string]models.CachedLidarrAlbumRelease{}
-	lidarrTracksCachePath      = "config/lidarr_tracks.json"
-	lidarrTracksCacheDuration  = time.Hour // 1 hour
-	lidarrTracksCache          = map[string]models.CachedLidarrTracksRelease{}
+	lidarrArtistsCachePath        = "config/lidarr_artists.json"
+	lidarrArtistsCacheDuration    = time.Hour // 1 hour
+	lidarrArtistsCache            = map[string]models.CachedLidarrArtistRelease{}
+	lidarrArtistsCacheMu          sync.RWMutex
+	lidarrAlbumsCachePath         = "config/lidarr_albums.json"
+	lidarrAlbumsCacheDuration     = time.Hour // 1 hour
+	lidarrAlbumsCache             = map[string]models.CachedLidarrAlbumRelease{}
+	lidarrAlbumsCacheMu           sync.RWMutex
+	lidarrTracksCachePath         = "config/lidarr_tracks.json"
+	lidarrTracksCacheDuration     = time.Hour // 1 hour
+	lidarrTracksCache             = map[string]models.CachedLidarrTracksRelease{}
+	lidarrTracksCacheMu           sync.RWMutex
+	lidarrTrackFilesCachePath     = "config/lidarr_trackfiles.json"
+	lidarrTrackFilesCacheDuration = time.Hour // 1 hour
+	lidarrTrackFilesCache         = map[string]models.CachedLidarrTrackFilesRelease{}
+	lidarrTrackFilesCacheMu       sync.RWMutex
 )
+
+func init() {
+	registerCache(cacheNameLidarrArtists, LidarrSaveArtistsCache)
+	registerCache(cacheNameLidarrAlbums, LidarrSaveAlbumsCache)
+	registerCache(cacheNameLidarrTracks, LidarrSaveTracksCache)
+	registerCache(cacheNameLidarrTrackFiles, LidarrSaveTrackFilesCache)
+}
 
 // must be local in the file
 type LidarrClient struct {
@@ -82,13 +97,9 @@ func (c *LidarrClient) getJSON(pathWithQuery string, dst any) error {
 
 // FindArtistByName searches the Lidarr artist list for one whose folder name matches artistName.
 func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtist, error) {
-	err := LidarrLoadArtistsCache()
-	if err != nil {
-		return nil, err
-	}
-
 	foundCachedArtist := []models.LidarrArtist{}
 	anyExpired := false
+	lidarrArtistsCacheMu.RLock()
 	for _, cachedArtist := range lidarrArtistsCache {
 		if strings.EqualFold(cachedArtist.Artist.Name, artistName) {
 			logger.Log.Trace("cached Lidarr artist entry found")
@@ -100,6 +111,7 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 			}
 		}
 	}
+	lidarrArtistsCacheMu.RUnlock()
 
 	if anyExpired {
 		logger.Log.Debug("One or more Lidarr artist entries expired, retrieving new data...")
@@ -120,17 +132,12 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 	logger.Log.Debugf("we want artist: %s", want)
 
 	validArtists := []models.LidarrArtist{}
+	lidarrArtistsCacheMu.Lock()
 	for i := range artists {
 		// add artist to cache
 		lidarrArtistsCache[strconv.FormatInt(artists[i].ID, 10)] = models.CachedLidarrArtistRelease{
 			Artist:    artists[i],
 			Timestamp: time.Now(),
-		}
-
-		// save new cache
-		err = LidarrSaveArtistsCache()
-		if err != nil {
-			return nil, err
 		}
 
 		// Extract last folder from Lidarr's stored path
@@ -141,6 +148,10 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 			validArtists = append(validArtists, artists[i])
 		}
 	}
+	lidarrArtistsCacheMu.Unlock()
+
+	// persistence is batched; the whole artist list was just (re)populated
+	markCacheDirty(cacheNameLidarrArtists)
 
 	if len(validArtists) == 1 {
 		return validArtists, nil
@@ -152,16 +163,49 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 	return nil, fmt.Errorf("artist %q not found in Lidarr", artistName)
 }
 
-// retrieves the Lidarr track object from a Lidarr artist ID and track file path
-// retrieves the Lidarr track object from a Lidarr artist ID and track file path
-// Matches on (album folder, file basename) only — ignores the rest of the path.
-func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string, rootDir string) (*models.LidarrTrackFile, error) {
+// getTrackFilesByArtist returns all Lidarr track files for an artist, cached per
+// artist ID. Without the cache this endpoint is re-fetched for every track in the
+// library (each call returns the artist's entire track file list), which is a
+// major driver of full-library scan time.
+func (c *LidarrClient) getTrackFilesByArtist(artistID int64) ([]models.LidarrTrackFile, error) {
+	key := strconv.FormatInt(artistID, 10)
+
+	lidarrTrackFilesCacheMu.RLock()
+	cached, ok := lidarrTrackFilesCache[key]
+	lidarrTrackFilesCacheMu.RUnlock()
+	if ok && time.Since(cached.Timestamp) < lidarrTrackFilesCacheDuration {
+		logger.Log.Debug("returning cached Lidarr track files for artist ID: " + key)
+		return cached.TrackFiles, nil
+	}
+
+	logger.Log.Debug("cached track files not found for artist ID: " + key)
+
 	var files []models.LidarrTrackFile
 	if err := c.getJSON(fmt.Sprintf("/api/v1/trackfile?artistId=%d", artistID), &files); err != nil {
 		return nil, err
 	}
+
+	lidarrTrackFilesCacheMu.Lock()
+	lidarrTrackFilesCache[key] = models.CachedLidarrTrackFilesRelease{
+		TrackFiles: files,
+		Timestamp:  time.Now(),
+	}
+	lidarrTrackFilesCacheMu.Unlock()
+	markCacheDirty(cacheNameLidarrTrackFiles)
+
+	return files, nil
+}
+
+// retrieves the Lidarr track object from a Lidarr artist ID and track file path
+// retrieves the Lidarr track object from a Lidarr artist ID and track file path
+// Matches on (album folder, file basename) only — ignores the rest of the path.
+func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string, rootDir string) (*models.LidarrTrackFile, error) {
+	files, err := c.getTrackFilesByArtist(artistID)
+	if err != nil {
+		return nil, err
+	}
 	if len(files) < 1 {
-		logger.Log.Error("no Lidarr track files found for artist ID: %s", artistID)
+		logger.Log.Errorf("no Lidarr track files found for artist ID: %d", artistID)
 		return nil, nil
 	}
 
@@ -212,17 +256,17 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 
 // retrieves the Lidarr album object from a Lidarr artist ID and album ID
 func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, error) {
-	err := LidarrLoadAlbumsCache()
-	if err != nil {
-		return nil, err
-	}
+	albumKey := strconv.FormatInt(albumID, 10)
 
-	if cached, ok := lidarrAlbumsCache[strconv.FormatInt(albumID, 10)]; ok {
+	lidarrAlbumsCacheMu.RLock()
+	cached, ok := lidarrAlbumsCache[albumKey]
+	lidarrAlbumsCacheMu.RUnlock()
+	if ok {
 		logger.Log.Trace("cached entry found for Lidarr album")
 		if time.Since(cached.Timestamp) < lidarrAlbumsCacheDuration {
 			for _, r := range cached.Album.Releases {
 				if r.Monitored && r.ForeignReleaseID != "" {
-					logger.Log.Debug("returning cached album release: " + strconv.FormatInt(albumID, 10))
+					logger.Log.Debug("returning cached album release: " + albumKey)
 					return &r.ForeignReleaseID, nil
 				}
 			}
@@ -238,16 +282,13 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 
 	for _, a := range albums {
 		// add artist to cache
-		lidarrAlbumsCache[strconv.FormatInt(albumID, 10)] = models.CachedLidarrAlbumRelease{
+		lidarrAlbumsCacheMu.Lock()
+		lidarrAlbumsCache[albumKey] = models.CachedLidarrAlbumRelease{
 			Album:     a,
 			Timestamp: time.Now(),
 		}
-
-		// save new cache
-		err = LidarrSaveAlbumsCache()
-		if err != nil {
-			return nil, err
-		}
+		lidarrAlbumsCacheMu.Unlock()
+		markCacheDirty(cacheNameLidarrAlbums)
 
 		if a.ID != albumID {
 			continue
@@ -264,20 +305,17 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 }
 
 func (c *LidarrClient) GetTracksByAlbumAndArtistID(artistID int64, albumID int64) ([]models.LidarrTrack, error) {
-	err := LidarrLoadTracksCache()
-	if err != nil {
-		return nil, err
+	albumKey := strconv.FormatInt(albumID, 10)
+
+	lidarrTracksCacheMu.RLock()
+	cached, ok := lidarrTracksCache[albumKey]
+	lidarrTracksCacheMu.RUnlock()
+	if ok && time.Since(cached.Timestamp) < lidarrTracksCacheDuration {
+		logger.Log.Debug("returning cached tracks for album: " + albumKey)
+		return cached.Tracks, nil
 	}
 
-	if cached, ok := lidarrTracksCache[strconv.FormatInt(albumID, 10)]; ok {
-		logger.Log.Trace("cached entry found for Lidarr track")
-		if time.Since(cached.Timestamp) < lidarrTracksCacheDuration {
-			logger.Log.Debug("returning cached tracks for album: " + strconv.FormatInt(albumID, 10))
-			return cached.Tracks, nil
-		}
-	}
-
-	logger.Log.Debug("cached tracks not found for album ID: " + strconv.FormatInt(albumID, 10))
+	logger.Log.Debug("cached tracks not found for album ID: " + albumKey)
 
 	var t []models.LidarrTrack
 	if err := c.getJSON(fmt.Sprintf("/api/v1/track?artistId=%d&albumId=%d", artistID, albumID), &t); err != nil {
@@ -290,16 +328,13 @@ func (c *LidarrClient) GetTracksByAlbumAndArtistID(artistID int64, albumID int64
 	}
 
 	// add tracks to cache
-	lidarrTracksCache[strconv.FormatInt(albumID, 10)] = models.CachedLidarrTracksRelease{
+	lidarrTracksCacheMu.Lock()
+	lidarrTracksCache[albumKey] = models.CachedLidarrTracksRelease{
 		Tracks:    t,
 		Timestamp: time.Now(),
 	}
-
-	// save new cache
-	err = LidarrSaveTracksCache()
-	if err != nil {
-		return nil, err
-	}
+	lidarrTracksCacheMu.Unlock()
+	markCacheDirty(cacheNameLidarrTracks)
 
 	return t, nil
 }
@@ -313,11 +348,15 @@ func LidarrLoadArtistsCache() error {
 		return err
 	}
 
+	lidarrArtistsCacheMu.Lock()
+	defer lidarrArtistsCacheMu.Unlock()
 	return json.Unmarshal(data, &lidarrArtistsCache)
 }
 
 func LidarrSaveArtistsCache() error {
+	lidarrArtistsCacheMu.RLock()
 	data, err := json.MarshalIndent(lidarrArtistsCache, "", "  ")
+	lidarrArtistsCacheMu.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -334,11 +373,15 @@ func LidarrLoadAlbumsCache() error {
 		return err
 	}
 
+	lidarrAlbumsCacheMu.Lock()
+	defer lidarrAlbumsCacheMu.Unlock()
 	return json.Unmarshal(data, &lidarrAlbumsCache)
 }
 
 func LidarrSaveAlbumsCache() error {
+	lidarrAlbumsCacheMu.RLock()
 	data, err := json.MarshalIndent(lidarrAlbumsCache, "", "  ")
+	lidarrAlbumsCacheMu.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -355,16 +398,45 @@ func LidarrLoadTracksCache() error {
 		return err
 	}
 
+	lidarrTracksCacheMu.Lock()
+	defer lidarrTracksCacheMu.Unlock()
 	return json.Unmarshal(data, &lidarrTracksCache)
 }
 
 func LidarrSaveTracksCache() error {
+	lidarrTracksCacheMu.RLock()
 	data, err := json.MarshalIndent(lidarrTracksCache, "", "  ")
+	lidarrTracksCacheMu.RUnlock()
 	if err != nil {
 		return err
 	}
 
 	return os.WriteFile(lidarrTracksCachePath, data, 0644)
+}
+
+func LidarrLoadTrackFilesCache() error {
+	data, err := os.ReadFile(lidarrTrackFilesCachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // No cache yet
+		}
+		return err
+	}
+
+	lidarrTrackFilesCacheMu.Lock()
+	defer lidarrTrackFilesCacheMu.Unlock()
+	return json.Unmarshal(data, &lidarrTrackFilesCache)
+}
+
+func LidarrSaveTrackFilesCache() error {
+	lidarrTrackFilesCacheMu.RLock()
+	data, err := json.MarshalIndent(lidarrTrackFilesCache, "", "  ")
+	lidarrTrackFilesCacheMu.RUnlock()
+	if err != nil {
+		return err
+	}
+
+	return os.WriteFile(lidarrTrackFilesCachePath, data, 0644)
 }
 
 // HealthCheck hits a cheap endpoint and checks auth.

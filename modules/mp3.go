@@ -14,17 +14,10 @@ import (
 	"github.com/bogem/id3v2"
 )
 
-func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
-	unchanged = false
-	tagsWritten = 0
-
-	originalFilePath := filePath
-	filePath, err = utilities.NormalizePathForExternalTool(filePath)
-	if err != nil {
-		logger.Log.Error("failed to normalize path. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to normalize path")
-	}
-
+// buildMP3DesiredTags maps resolved metadata onto the ID3 keys we write. Kept
+// pure (no I/O) so the field-to-tag wiring can be unit-tested. Note: MP3 joins
+// all genres with ";", unlike FLAC which writes only the first.
+func buildMP3DesiredTags(metadata models.FileTags) map[string]string {
 	genreString := ""
 	for index, genre := range metadata.Genres {
 		if index != 0 {
@@ -33,7 +26,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		genreString += genre
 	}
 
-	desired := map[string]string{
+	return map[string]string{
 		"ARTIST":      metadata.Artist,
 		"ARTISTS":     metadata.ArtistSemicolon,
 		"ALBUMARTIST": metadata.AlbumArtist,
@@ -72,6 +65,20 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		"MusicBrainz Release Group Id":      metadata.MBReleaseGroupID,
 		"MusicBrainz Release Track Id":      metadata.MBReleaseTrackID,
 	}
+}
+
+func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
+	unchanged = false
+	tagsWritten = 0
+
+	originalFilePath := filePath
+	filePath, err = utilities.NormalizePathForExternalTool(filePath)
+	if err != nil {
+		logger.Log.Error("failed to normalize path. error: " + err.Error())
+		return unchanged, tagsWritten, errors.New("failed to normalize path")
+	}
+
+	desired := buildMP3DesiredTags(metadata)
 
 	logger.Log.Debug(desired)
 

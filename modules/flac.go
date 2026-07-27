@@ -66,23 +66,16 @@ func getFlacTagsMap(filePath string) (map[string][]string, error) {
 	return out, nil
 }
 
-// SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
-func SetFlacTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
-	unchanged = false
-	tagsWritten = 0
-
-	filePath, err = utilities.NormalizePathForExternalTool(filePath)
-	if err != nil {
-		logger.Log.Error("failed to normalize path. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to normalize path")
-	}
-
+// buildFLACDesiredTags maps resolved metadata onto the Vorbis comment keys we
+// write. Kept pure (no I/O) so the field-to-tag wiring can be unit-tested.
+// Note: FLAC writes only the first genre (Vorbis GENRE), unlike MP3 which joins.
+func buildFLACDesiredTags(metadata models.FileTags) map[string]string {
 	genreString := ""
 	if len(metadata.Genres) > 0 {
 		genreString = metadata.Genres[0]
 	}
 
-	desired := map[string]string{
+	return map[string]string{
 		"ARTIST":                     metadata.Artist,
 		"ARTISTS":                    metadata.ArtistSemicolon,
 		"ALBUMARTIST":                metadata.AlbumArtist,
@@ -118,6 +111,20 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		"COMPOSER":                   metadata.Composer,
 		"AUTHOR":                     metadata.Author,
 	}
+}
+
+// SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
+func SetFlacTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
+	unchanged = false
+	tagsWritten = 0
+
+	filePath, err = utilities.NormalizePathForExternalTool(filePath)
+	if err != nil {
+		logger.Log.Error("failed to normalize path. error: " + err.Error())
+		return unchanged, tagsWritten, errors.New("failed to normalize path")
+	}
+
+	desired := buildFLACDesiredTags(metadata)
 
 	existing, err := getFlacTagsMap(filePath)
 	if err != nil {

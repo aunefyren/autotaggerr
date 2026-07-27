@@ -88,6 +88,12 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrProcessConcurrency < 1 {
+		// set new value (number of files processed in parallel per scan)
+		ConfigFile.AutotaggerrProcessConcurrency = 4
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrCustomArtistDelimiter == "" {
 		// set new value
 		ConfigFile.AutotaggerrCustomArtistDelimiter = " & "
@@ -141,6 +147,7 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrVersion = autotaggerrVersionParameter
 	ConfigFile.AutotaggerrLibraries = []string{}
 	ConfigFile.AutotaggerrProcessCronSchedule = "0 0 18 * * 7"
+	ConfigFile.AutotaggerrProcessConcurrency = 4
 	ConfigFile.AutotaggerrCustomArtistDelimiter = " & "
 	ConfigFile.AutotaggerrUseCurrentArtistName = true
 	ConfigFile.AutotaggerrUseCustomArtistDelimiter = true

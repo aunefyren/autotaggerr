@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
 	"os"
 	"sync"
@@ -20,9 +21,17 @@ var (
 	queryMutex                      sync.Mutex
 	rateLimit                       = time.Second
 	musicbrainzReleaseCachePath     = "config/mb_releases.json"
-	musicbrainzReleaseCacheDuration = 7 * 24 * time.Hour // 1 week
+	musicbrainzReleaseCacheDuration = 7 * 24 * time.Hour // 1 week (base TTL)
+	musicbrainzReleaseCacheJitter   = 7 * 24 * time.Hour // up to +1 week of jitter (7-14 days total)
 	musicbrainzReleaseCache         = map[string]models.CachedMusicBrainzRelease{}
+	musicbrainzReleaseCacheMu       sync.RWMutex
 )
+
+// musicbrainzCacheExpiry returns a jittered expiry time (base + [0, jitter))
+// so entries fetched together during one scan don't all expire at once.
+func musicbrainzCacheExpiry(now time.Time) time.Time {
+	return now.Add(musicbrainzReleaseCacheDuration + time.Duration(rand.Int63n(int64(musicbrainzReleaseCacheJitter))))
+}
 
 // RateLimit wraps any API function and ensures at least 1s between executions
 func RateLimit() error {
@@ -42,8 +51,13 @@ func RateLimit() error {
 func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
 	var release models.MusicBrainzReleaseResponse
 
-	if cached, ok := musicbrainzReleaseCache[mbID]; ok {
-		if time.Since(cached.Timestamp) < musicbrainzReleaseCacheDuration {
+	musicbrainzReleaseCacheMu.RLock()
+	cached, ok := musicbrainzReleaseCache[mbID]
+	musicbrainzReleaseCacheMu.RUnlock()
+	if ok {
+		// A zero ExpiresAt (pre-jitter cache entry) is treated as expired so it
+		// gets refreshed once and upgraded to the new jittered format.
+		if time.Now().Before(cached.ExpiresAt) {
 			logger.Log.Debug("returning cached release for ID: " + mbID)
 			return cached.Release, nil
 		}
@@ -102,24 +116,20 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 		return apiResponse, errors.New("failed to parse Musicbrainz API response")
 	}
 
+	now := time.Now()
+	musicbrainzReleaseCacheMu.Lock()
 	musicbrainzReleaseCache[mbID] = models.CachedMusicBrainzRelease{
 		Release:   apiResponse,
-		Timestamp: time.Now(),
+		Timestamp: now,
+		ExpiresAt: musicbrainzCacheExpiry(now),
 	}
+	musicbrainzReleaseCacheMu.Unlock()
 
-	err = MusicbrainzSaveCache()
-	if err != nil {
-		logger.Log.Error("failed to save Musicbrainz cache. error: " + err.Error())
-		return apiResponse, errors.New("failed to save Musicbrainz cache")
-	}
+	// Persistence is batched (see cache.go); the in-memory map above is already
+	// updated, so no need to write — and reload — the whole file on every fetch.
+	markCacheDirty(cacheNameMusicbrainz)
 
-	err = MusicbrainzLoadCache()
-	if err != nil {
-		logger.Log.Error("failed to load Musicbrainz cache. error: " + err.Error())
-		return apiResponse, errors.New("failed to load Musicbrainz cache")
-	}
-
-	logger.Log.Trace(fmt.Sprintf("api response: %s", apiResponse))
+	logger.Log.Trace(fmt.Sprintf("api response: %+v", apiResponse))
 
 	return apiResponse, nil
 }
@@ -165,6 +175,10 @@ func MusicBrainzDateStringToDateTime(dateStr string) (time.Time, error) {
 	return parsedTime, nil
 }
 
+func init() {
+	registerCache(cacheNameMusicbrainz, MusicbrainzSaveCache)
+}
+
 func MusicbrainzLoadCache() error {
 	data, err := os.ReadFile(musicbrainzReleaseCachePath)
 	if err != nil {
@@ -174,11 +188,15 @@ func MusicbrainzLoadCache() error {
 		return err
 	}
 
+	musicbrainzReleaseCacheMu.Lock()
+	defer musicbrainzReleaseCacheMu.Unlock()
 	return json.Unmarshal(data, &musicbrainzReleaseCache)
 }
 
 func MusicbrainzSaveCache() error {
+	musicbrainzReleaseCacheMu.RLock()
 	data, err := json.MarshalIndent(musicbrainzReleaseCache, "", "  ")
+	musicbrainzReleaseCacheMu.RUnlock()
 	if err != nil {
 		return err
 	}

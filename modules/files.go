@@ -7,10 +7,52 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 )
+
+// defaultProcessConcurrency is the fallback worker count when the config value is
+// unset or invalid. Kept modest because FLAC rewrites are disk-bound.
+const defaultProcessConcurrency = 4
+
+// AlbumRefreshSet is a concurrency-safe collection of albums (album name -> Plex
+// album key) that changed during a scan and therefore need a Plex metadata
+// refresh. It replaces the previous pass-a-map-and-return-it threading so that
+// multiple files can be processed in parallel.
+type AlbumRefreshSet struct {
+	mu sync.Mutex
+	m  map[string]string
+}
+
+// NewAlbumRefreshSet returns a set pre-seeded with the given entries (may be nil).
+func NewAlbumRefreshSet(seed map[string]string) *AlbumRefreshSet {
+	m := map[string]string{}
+	for k, v := range seed {
+		m[k] = v
+	}
+	return &AlbumRefreshSet{m: m}
+}
+
+func (s *AlbumRefreshSet) Add(albumName, albumKey string) {
+	s.mu.Lock()
+	s.m[albumName] = albumKey
+	s.mu.Unlock()
+}
+
+// Snapshot returns a copy of the current entries, safe to iterate after the scan.
+func (s *AlbumRefreshSet) Snapshot() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.m))
+	for k, v := range s.m {
+		out[k] = v
+	}
+	return out
+}
 
 // List of allowed audio file extensions
 var supportedExtensions = map[string]bool{
@@ -90,10 +132,9 @@ func SetFileTags(filePath string, metadata models.FileTags, configFile models.Co
 	}
 }
 
-func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefresh map[string]string, err error) {
+func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
 	unchanged = false
 	tagsWritten = 0
-	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
 	mbReleaseID := ""
 	mbTrackID := ""
 	mbRecordingID := ""
@@ -106,7 +147,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		lidarrTrackObject, err := ResolveMetadataDetailsFromLidarr(lidarrClient, filePath, rootDir)
 		if err != nil {
 			logger.Log.Errorf("failed to retrieve track details from Lidarr for '%s'. error: %s", filePath, err.Error())
-			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, fmt.Errorf("failed to retrieve track details from Lidarr for '%s'", filePath)
+			return unchanged, tagsWritten, fmt.Errorf("failed to retrieve track details from Lidarr for '%s'", filePath)
 		} else if lidarrTrackObject == nil {
 			logger.Log.Warnf("Lidarr successfully executed, but found nothing for %s", filePath)
 		} else {
@@ -126,28 +167,28 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		mbReleaseID, err = ExtractMusicBrainzReleaseID(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract MB release ID. error: " + err.Error())
-			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract MB release ID")
+			return unchanged, tagsWritten, errors.New("failed to extract MB release ID")
 		}
 
 		// get MB data from track
 		mbTrackID, err = ExtractMusicBrainzTrackID(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract track MB ID. error: " + err.Error())
-			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track MB ID")
+			return unchanged, tagsWritten, errors.New("failed to extract track MB ID")
 		}
 
 		// get MB data from track
 		mbRecordingID, err = ExtractMusicBrainzRecordingID(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract recording MB ID. error: " + err.Error())
-			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract recording MB ID")
+			return unchanged, tagsWritten, errors.New("failed to extract recording MB ID")
 		}
 
 		// get track title from track
 		trackTitle, err = ExtractTrackTitle(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract track title. error: " + err.Error())
-			return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to extract track title")
+			return unchanged, tagsWritten, errors.New("failed to extract track title")
 		}
 	}
 
@@ -157,14 +198,14 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	logger.Log.Debug("MB recording ID: " + mbRecordingID)
 
 	if mbTrackID == "" || mbReleaseID == "" {
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("MB track or release ID field empty")
+		return unchanged, tagsWritten, errors.New("MB track or release ID field empty")
 	}
 
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(mbReleaseID)
 	if err != nil {
 		logger.Log.Error("failed to get MB release data. error: " + err.Error())
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to get MB release data")
+		return unchanged, tagsWritten, errors.New("failed to get MB release data")
 	}
 	logger.Log.Debug("MB title response: " + response.Title)
 
@@ -173,11 +214,11 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		for _, track := range media.Tracks {
 			if track.ID == mbTrackID {
 				logger.Log.Debug("release track ID found in MB response")
-				unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFileAfterMatch(
+				unchanged, tagsWritten, err = ProcessTrackFileAfterMatch(
 					filePath,
 					lidarrClient,
 					plexClient,
-					albumsWhoNeedMetadataRefresh,
+					refreshSet,
 					rootDir,
 					configFile,
 					track,
@@ -190,14 +231,14 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 
 	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", mbTrackID, mbReleaseID, trackTitle, response.ID)
 	logger.Log.Warn("Lidarr metadata data could be outdated")
-	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
+	return unchanged, tagsWritten, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
 }
 
 func ProcessTrackFileAfterMatch(
 	filePath string,
 	lidarrClient *LidarrClient,
 	plexClient *PlexClient,
-	albumsWhoNeedMetadataRefreshSoFar map[string]string,
+	refreshSet *AlbumRefreshSet,
 	rootDir string, configFile models.ConfigStruct,
 	track models.Track,
 	media models.MusicBrainzMedia,
@@ -205,11 +246,8 @@ func ProcessTrackFileAfterMatch(
 ) (
 	unchanged bool,
 	tagsWritten int,
-	albumsWhoNeedMetadataRefresh map[string]string,
 	err error,
 ) {
-	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
-
 	trackArtist := ""
 	if !configFile.AutotaggerrIgnoreRedundantContributingArtists || len(track.ArtistCredit) > 1 {
 		trackArtist = MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
@@ -239,7 +277,7 @@ func ProcessTrackFileAfterMatch(
 			releaseArtist = response.ArtistCredit[0].Name
 		}
 	} else if releaseArtist == "" {
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to determine album artist")
+		return unchanged, tagsWritten, errors.New("failed to determine album artist")
 	}
 
 	releaseArtistID := ""
@@ -339,7 +377,7 @@ func ProcessTrackFileAfterMatch(
 	unchanged, tagsWritten, err = SetFileTags(filePath, metadata, configFile)
 	if err != nil {
 		logger.Log.Error("failed to set file tags. error: " + err.Error())
-		return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, errors.New("failed to set FLAC artist tags")
+		return unchanged, tagsWritten, errors.New("failed to set FLAC artist tags")
 	} else {
 		logger.Log.Debug("file tagger finished")
 	}
@@ -350,14 +388,14 @@ func ProcessTrackFileAfterMatch(
 	}
 
 	if plexClient != nil && !unchanged {
-		albumsWhoNeedMetadataRefresh, err = PlexRefreshForFile(unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, *plexClient, response.Title, releaseArtist, track.Title)
+		err = PlexRefreshForFile(unchanged, tagsWritten, refreshSet, *plexClient, response.Title, releaseArtist, track.Title)
 		if err != nil {
 			logger.Log.Warn("failed to prepare Plex refresh for album. error: " + err.Error())
 		}
 	}
 
 	logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
-	return unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, nil
+	return unchanged, tagsWritten, nil
 
 }
 
@@ -375,12 +413,8 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 	allTagsWritten = 0
 	errorFiles = []string{}
 
-	// load cache into memory
-	err = MusicbrainzLoadCache()
-	if err != nil {
-		logger.Log.Error("failed to load release cache. error: " + err.Error())
-		return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefreshSoFar, errors.New("failed to load release cache")
-	}
+	// caches are loaded once at startup (see modules.LoadAllCaches) and kept warm
+	// in memory across scans, so there is no per-scan disk read here.
 
 	// first pass, count total supported files
 	totalFiles := 0
@@ -396,47 +430,101 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 		return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefreshSoFar, nil
 	}
 
-	logger.Log.Info(fmt.Sprintf("found %d supported files. starting processing...", totalFiles))
+	// number of files to process in parallel; <1 falls back to the default and
+	// 1 reproduces the old serial behavior exactly
+	workers := configFile.AutotaggerrProcessConcurrency
+	if workers < 1 {
+		workers = defaultProcessConcurrency
+	}
+	logger.Log.Infof("found %d supported files. starting processing with %d worker(s)...", totalFiles, workers)
 
-	// track progress thresholds (10%, 20%, ... 100%)
-	nextProgress := 10
+	refreshSet := NewAlbumRefreshSet(albumsWhoNeedMetadataRefreshSoFar)
 
-	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshSoFar
+	var (
+		counterAtomic   atomic.Int64 // successfully processed files
+		unchangedAtomic atomic.Int64
+		tagsAtomic      atomic.Int64
+		resultMu        sync.Mutex // guards errorFiles + nextProgress
+		nextProgress    = 10       // progress thresholds (10%, 20%, ... 100%)
+	)
 
-	// second pass, actual processing
-	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err != nil {
-			return err
+	// Cache writes are batched (see cache.go): a background ticker flushes pending
+	// changes during long scans so a crash only loses a bounded amount of freshly
+	// fetched data, and a final flush runs once processing completes.
+	defer FlushCaches()
+	flushDone := make(chan struct{})
+	var flushWG sync.WaitGroup
+	flushWG.Add(1)
+	go func() {
+		defer flushWG.Done()
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-flushDone:
+				return
+			case <-ticker.C:
+				FlushCaches()
+			}
 		}
-		if d.IsDir() {
+	}()
+
+	// second pass, actual processing — bounded worker pool
+	sem := make(chan struct{}, workers)
+	var wg sync.WaitGroup
+
+	err = filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if d.IsDir() || !supportedExtensions[strings.ToLower(filepath.Ext(path))] {
 			return nil
 		}
 
-		unchanged := false
-		tagsWritten := 0
+		wg.Add(1)
+		sem <- struct{}{} // blocks when the pool is full (backpressure)
+		go func(path string) {
+			defer wg.Done()
+			defer func() { <-sem }()
 
-		if supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			unchanged, tagsWritten, albumsWhoNeedMetadataRefresh, err = ProcessTrackFile(path, lidarrClient, plexClient, albumsWhoNeedMetadataRefresh, originalRoot, configFile)
-			if err != nil {
-				logger.Log.Error("failed to process file '" + path + "'. error: " + err.Error())
+			unchanged, tagsWritten, procErr := ProcessTrackFile(path, lidarrClient, plexClient, refreshSet, originalRoot, configFile)
+			if procErr != nil {
+				logger.Log.Error("failed to process file '" + path + "'. error: " + procErr.Error())
+				resultMu.Lock()
 				errorFiles = append(errorFiles, path)
-			} else {
-				counter++
-				if unchanged {
-					unchangedFiles++
-				}
-				allTagsWritten += tagsWritten
+				resultMu.Unlock()
+				return
+			}
 
-				// print intervals
-				progress := (counter * 100) / totalFiles
-				if progress >= nextProgress {
-					logger.Log.Info(fmt.Sprintf("progress: %d%% (%d/%d files)", progress, counter, totalFiles))
+			done := counterAtomic.Add(1)
+			if unchanged {
+				unchangedAtomic.Add(1)
+			}
+			tagsAtomic.Add(int64(tagsWritten))
+
+			// print intervals (guarded so concurrent workers don't double-log a threshold)
+			progress := int(done) * 100 / totalFiles
+			resultMu.Lock()
+			if progress >= nextProgress {
+				logger.Log.Info(fmt.Sprintf("progress: %d%% (%d/%d files)", progress, done, totalFiles))
+				for progress >= nextProgress {
 					nextProgress += 10
 				}
 			}
-		}
+			resultMu.Unlock()
+		}(path)
+
 		return nil
 	})
+
+	wg.Wait()
+	close(flushDone)
+	flushWG.Wait()
+
+	counter = int(counterAtomic.Load())
+	unchangedFiles = int(unchangedAtomic.Load())
+	allTagsWritten = int(tagsAtomic.Load())
+	albumsWhoNeedMetadataRefresh = refreshSet.Snapshot()
 
 	return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err
 }

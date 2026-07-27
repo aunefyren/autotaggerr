@@ -1,22 +1,33 @@
 #!/bin/sh
 
-# Initialize the command with the binary
-CMD="/app/autotaggerr"
+# Start with the binary
+set -- /app/autotaggerr
 
-# Add the --port flag if the PORT environment variable is set
-if [ -n "$port" ]; then
-  CMD="$CMD --port $port"
+# Map environment variables onto CLI flags when set
+[ -n "$port" ] && set -- "$@" --port "$port"
+[ -n "$externalurl" ] && set -- "$@" --externalurl "$externalurl"
+[ -n "$TZ" ] && set -- "$@" --tz "$TZ"
+[ -n "$concurrency" ] && set -- "$@" --concurrency "$concurrency"
+[ -n "$file" ] && set -- "$@" --file "$file"
+[ -n "$fileRoot" ] && set -- "$@" --fileRoot "$fileRoot"
+
+# SMTP settings
+[ -n "$disablesmtp" ] && set -- "$@" --disablesmtp "$disablesmtp"
+[ -n "$smtphost" ] && set -- "$@" --smtphost "$smtphost"
+[ -n "$smtpport" ] && set -- "$@" --smtpport "$smtpport"
+[ -n "$smtpusername" ] && set -- "$@" --smtpusername "$smtpusername"
+[ -n "$smtppassword" ] && set -- "$@" --smtppassword "$smtppassword"
+[ -n "$smtpfrom" ] && set -- "$@" --smtpfrom "$smtpfrom"
+
+# When started as root, honor PUID/PGID: fix ownership of the writable config
+# directory, then drop privileges to that uid/gid. If the container is already
+# running as a non-root user (e.g. `docker run --user`), just exec directly.
+if [ "$(id -u)" = "0" ]; then
+  PUID="${PUID:-1000}"
+  PGID="${PGID:-1000}"
+  chown -R "${PUID}:${PGID}" /app/config 2>/dev/null || true
+  exec su-exec "${PUID}:${PGID}" "$@"
 fi
 
-# Add the --timezone flag if the TIMEZONE environment variable is set
-if [ -n "$TZ" ]; then
-  CMD="$CMD --tz $TZ"
-fi
-
-# add the --file
-if [ -n "$file" ]; then
-  CMD="$CMD --file $file"
-fi
-
-# Execute the final command
-exec $CMD
+# Execute safely
+exec "$@"

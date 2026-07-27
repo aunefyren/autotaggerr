@@ -13,6 +13,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -24,6 +25,7 @@ var (
 	plexAlbumKeyCachePath     = "config/plex_album_keys.json"
 	plexAlbumKeyCacheDuration = time.Hour // 1 hour
 	plexAlbumKeyCache         = map[string]models.PlexAlbumKeyCache{}
+	plexAlbumKeyCacheMu       sync.RWMutex
 )
 
 type PlexClient struct {
@@ -309,6 +311,10 @@ func (p *PlexClient) buildURL(path string, q map[string]string) string {
 	return u.String()
 }
 
+func init() {
+	registerCache(cacheNamePlexAlbumKeys, PlexSaveAlbumKeyCache)
+}
+
 func PlexLoadAlbumKeyCache() error {
 	data, err := os.ReadFile(plexAlbumKeyCachePath)
 	if err != nil {
@@ -318,11 +324,15 @@ func PlexLoadAlbumKeyCache() error {
 		return err
 	}
 
+	plexAlbumKeyCacheMu.Lock()
+	defer plexAlbumKeyCacheMu.Unlock()
 	return json.Unmarshal(data, &plexAlbumKeyCache)
 }
 
 func PlexSaveAlbumKeyCache() error {
+	plexAlbumKeyCacheMu.RLock()
 	data, err := json.MarshalIndent(plexAlbumKeyCache, "", "  ")
+	plexAlbumKeyCacheMu.RUnlock()
 	if err != nil {
 		return err
 	}
@@ -330,16 +340,12 @@ func PlexSaveAlbumKeyCache() error {
 	return os.WriteFile(plexAlbumKeyCachePath, data, 0644)
 }
 
-func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRefreshInput map[string]string, plexClient PlexClient, albumTitle string, releaseArtist string, trackTitle string) (albumsWhoNeedMetadataRefresh map[string]string, err error) {
-	albumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefreshInput
-
-	err = PlexLoadAlbumKeyCache()
-	if err != nil {
-		return albumsWhoNeedMetadataRefresh, err
-	}
-
+func PlexRefreshForFile(unchanged bool, tagsWritten int, refreshSet *AlbumRefreshSet, plexClient PlexClient, albumTitle string, releaseArtist string, trackTitle string) error {
 	albumKey := ""
-	if cached, ok := plexAlbumKeyCache[albumTitle]; ok {
+	plexAlbumKeyCacheMu.RLock()
+	cached, ok := plexAlbumKeyCache[albumTitle]
+	plexAlbumKeyCacheMu.RUnlock()
+	if ok {
 		logger.Log.Trace("cached entry for Plex Album key found")
 		if time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
 			logger.Log.Debug("returning cached album key for album: " + albumTitle)
@@ -349,41 +355,38 @@ func PlexRefreshForFile(unchanged bool, tagsWritten int, albumsWhoNeedMetadataRe
 		sectionID, err := plexClient.FindMusicSectionID()
 		if err != nil {
 			logger.Log.Error("failed to find Plex music section ID. error: " + err.Error())
-			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex music section ID")
+			return errors.New("failed to find Plex music section ID")
 		}
 
 		artistKey, err := plexClient.FindArtistKey(sectionID, releaseArtist)
 		if err != nil {
 			logger.Log.Error("failed to find Plex artist key for '" + releaseArtist + "'. error: " + err.Error())
-			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex artist key for '" + releaseArtist + "'")
+			return errors.New("failed to find Plex artist key for '" + releaseArtist + "'")
 		}
 
 		logger.Log.Trace(artistKey + " - " + albumTitle)
 
-		albumKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, albumTitle, trackTitle)
+		resolvedKey, err := plexClient.ResolveAlbumKeyInSection(sectionID, releaseArtist, albumTitle, trackTitle)
 		if err != nil {
 			logger.Log.Error("failed to find Plex album key. error: " + err.Error())
-			return albumsWhoNeedMetadataRefresh, errors.New("failed to find Plex album key")
-		} else {
-			logger.Log.Trace(albumKey)
+			return errors.New("failed to find Plex album key")
 		}
+		albumKey = resolvedKey
+		logger.Log.Trace(albumKey)
 
 		// add album key to cache
+		plexAlbumKeyCacheMu.Lock()
 		plexAlbumKeyCache[albumTitle] = models.PlexAlbumKeyCache{
 			AlbumKey:  albumKey,
 			Timestamp: time.Now(),
 		}
-
-		// save new cache
-		err = PlexSaveAlbumKeyCache()
-		if err != nil {
-			return albumsWhoNeedMetadataRefresh, err
-		}
+		plexAlbumKeyCacheMu.Unlock()
+		markCacheDirty(cacheNamePlexAlbumKeys)
 	}
 
 	if !unchanged && tagsWritten > 0 {
-		albumsWhoNeedMetadataRefresh[albumTitle] = albumKey
+		refreshSet.Add(albumTitle, albumKey)
 	}
 
-	return
+	return nil
 }

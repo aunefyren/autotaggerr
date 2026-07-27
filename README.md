@@ -1,5 +1,8 @@
 # 🎵 Autotaggerr 🎵
 
+[![CI](https://img.shields.io/github/actions/workflow/status/aunefyren/autotaggerr/go.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/aunefyren/autotaggerr/actions/workflows/go.yml)
+[![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/aunefyren/111899f93369f8f73ab6a4296d23da9a/raw/autotaggerr-coverage.json&style=for-the-badge)](https://github.com/aunefyren/autotaggerr/actions/workflows/go.yml)
+
 **Autotaggerr** is an automated music tagging utility that enriches your Lidarr managed audio library with detailed metadata from [MusicBrainz](https://musicbrainz.org/). It identifies tracks based on their MusicBrainz Release ID (used by tools like [Lidarr](https://lidarr.audio/)), or by talking to Lidarr through API. it then fills in missing metadata, including: track artists, release date, genre, track numbers, and more. It can automatically refresh the metadata in Plex afterward.
 
 > Built for automation of large libraries!
@@ -62,6 +65,8 @@ There are other solutions that try to fix this, like a Beets plugin that can run
     - Set `Scrub Existing Tags` to unchecked
 5. Plex must be set up to respect local metadata:
     - Library -> Manage library -> Edit -> Advanced -> Check `Prefer local metadata`
+6. Jellyfin identifies artists by name, not by MusicBrainz ID (which Autotaggerr does tag). If an online provider (e.g. TheAudioDB) spells an artist differently than MusicBrainz — such as a straight `'` vs a curly `’` apostrophe — Jellyfin can show duplicate artists and even bake both spellings into `album.nfo`. It may therefore be wise to disable the `Nfo` metadata reader (and/or TheAudioDB) for your music library so Jellyfin trusts the embedded tags Autotaggerr writes:
+    - Dashboard -> Libraries -> your music library -> uncheck `Nfo` under the metadata readers/downloaders
 
 ---
 
@@ -133,6 +138,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	],
 	"autotaggerr_process_on_start_up": true,
 	"autotaggerr_process_cron_schedule": "0 0 18 * * 7",
+	"autotaggerr_process_concurrency": 4,
 	"lidarr_base_url": "https://lidarr.mycooldomain.com",
 	"lidarr_api_key": "XXX",
 	"lidarr_header_cookie": "",
@@ -140,6 +146,47 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"plex_token": "XXX"
 }
 ```
+
+### 🔧 Configuration reference
+
+Every setting can be defined in `config.json`. A subset can also be overridden at runtime with a startup flag or an environment variable (the container `entrypoint.sh` maps env vars onto the flags). Precedence is: **startup flag → environment variable → config file value**. A flag/env only overrides the config when it is explicitly provided.
+
+| Config file entry | Startup flag | Environment variable | Type | Description |
+|---|---|---|---|---|
+| `timezone` | `-tz` | `TZ` | string | IANA timezone the app runs in. Default `Europe/Paris`. |
+| `private_key` | — | — | string | Auto-generated 64-byte base64 secret. Leave empty; it is created on first start. |
+| `autotaggerr_port` | `-port` | `port` | int | HTTP port the service listens on. Default `8080`. |
+| `autotaggerr_name` | — | — | string | Display name of the instance. Default `Autotaggerr`. |
+| `autotaggerr_external_url` | `-externalurl` | `externalurl` | string | URL others use to reach Autotaggerr. Default empty. |
+| `autotaggerr_version` | — | — | string | Build version. Injected at release time; do not set manually. |
+| `autotaggerr_environment` | — | — | string | `prod` or `test`. `test` disables Gin release mode. Default `prod`. |
+| `autotaggerr_test_email` | — | — | string | Address used for SMTP test mail. Default empty. |
+| `autotaggerr_log_level` | — | — | string | Logrus level (`trace`, `debug`, `info`, `warn`, `error`, …). Default `info`. |
+| `autotaggerr_libraries` | — | — | string[] | Absolute paths of music libraries to scan recursively. Default `[]`. |
+| `autotaggerr_process_on_start_up` | — | — | bool | Run a full library scan immediately on startup. Default `false`. |
+| `autotaggerr_process_cron_schedule` | — | — | string | 6-field cron for the recurring scan. Default `0 0 18 * * 7` (Sundays 18:00). |
+| `autotaggerr_process_concurrency` | `-concurrency` | `concurrency` | int | Number of files processed in parallel per library scan. `1` = serial. Default `4`. |
+| `autotaggerr_use_current_artist_name` | — | — | bool | Prefer the artist's current name over the credited name. Default `true`. |
+| `autotaggerr_ignore_redundant_contributing_artists` | — | — | bool | Drop contributing artists already covered by the album artist. Default `true`. |
+| `autotaggerr_use_custom_artist_delimiter` | — | — | bool | Join multiple artists with a custom delimiter. Default `true`. |
+| `autotaggerr_custom_artist_delimiter` | — | — | string | Delimiter used when joining artists. Default `" & "`. |
+| `autotaggerr_custom_artist_delimiter_commas` | — | — | bool | Use commas between artists, with the custom delimiter before the last. Default `true`. |
+| `autotaggerr_remove_values` | — | — | bool | Remove existing tag values not present in the new metadata. Default `false`. |
+| `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. |
+| `smtp_host` | `-smtphost` | `smtphost` | string | SMTP server hostname. Default empty. |
+| `smtp_port` | `-smtpport` | `smtpport` | int | SMTP server port. Default `0`. |
+| `smtp_username` | `-smtpusername` | `smtpusername` | string | SMTP auth username. Default empty. |
+| `smtp_password` | `-smtppassword` | `smtppassword` | string | SMTP auth password. Default empty. |
+| `smtp_from` | `-smtpfrom` | `smtpfrom` | string | Sender address for outgoing mail. Default empty. |
+| `lidarr_base_url` | — | — | string | Base URL of the Lidarr instance (fallback metadata source). Default empty. |
+| `lidarr_api_key` | — | — | string | Lidarr API key. Default empty. |
+| `lidarr_header_cookie` | — | — | string | Optional cookie header sent with Lidarr requests (e.g. for a reverse proxy). Default empty. |
+| `plex_base_url` | — | — | string | Base URL of the Plex instance to refresh. Default empty. |
+| `plex_token` | — | — | string | Plex auth token. Default empty. |
+| — | `-file` | `file` | string | Process a single file, then exit instead of running the service. Runtime-only, not stored in config. |
+| — | `-fileRoot` | `fileRoot` | string | Library root containing the artist folder for `-file`. Required with `-file`. Runtime-only. |
+| — | — | `PUID` | int | **Env only.** UID the container process runs as. Default `1000`. |
+| — | — | `PGID` | int | **Env only.** GID the container process runs as. Default `1000`. |
 
 ---
 
