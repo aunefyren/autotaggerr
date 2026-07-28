@@ -178,6 +178,9 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Sidebar nav** — `--bg`, item height 34px, icon + label. Active = `--accent-subtle` fill,
   `--accent-text` label, 2px `--accent` left marker. Hover = `--surface-2`.
 - **Tabs** — underline style; active tab `--text` + 2px `--accent` underline; others `--text-muted`.
+- **Labelled divider** (`.or-divider`) — hairline `--border` rules flanking an eyebrow-styled label
+  (11px, uppercase, `.06em`, `--text-dim`). Separates alternative paths that are equally valid, not
+  a section boundary — currently password login vs. external identity providers.
 - **Toast / inline alert** — `*-bg` tint + `*-text`, left accent bar in the status color, icon +
   message + optional action. Errors state what happened and how to fix it (see Voice).
 - **Progress** — thin (4px) track `--surface-2`, fill `--accent` (or `--info` while scanning);

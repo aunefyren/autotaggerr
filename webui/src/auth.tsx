@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from "react";
-import { api, setToken } from "./api";
+import { api, consumeTokenFromUrl, setToken } from "./api";
 import { User } from "./types";
 
 interface AuthState {
@@ -20,9 +20,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Restore the session from a stored token on load.
+  // Restore the session on load. An external login lands here with its token in
+  // the URL fragment, so claim that first — then /auth/me resolves the user
+  // identically for password and federated logins.
   useEffect(() => {
     let active = true;
+    consumeTokenFromUrl();
     api
       .get<User>("/auth/me")
       .then((u) => active && setUser(u))

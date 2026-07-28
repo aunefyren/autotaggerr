@@ -152,3 +152,24 @@ export interface ArtistDetail {
   artist: CollectionArtist;
   release_groups: CollectionReleaseGroup[];
 }
+
+/** An enabled external login option, as shown on the login page. */
+export interface LoginProvider {
+  id: string;
+  name: string;
+  type: string;
+}
+
+/** An OIDC login provider, as administered on the Login providers page. */
+export interface AuthProvider {
+  id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  issuer: string;
+  client_id: string;
+  scopes: string;
+  redirect_url: string;
+  allow_signup: boolean;
+  default_role: string;
+}

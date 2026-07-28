@@ -32,6 +32,13 @@ func (a *API) Register(rg *gin.RouterGroup) {
 	rg.GET("/ping", APIPing)
 	rg.POST("/auth/login", a.login)
 
+	// External login. These must be public — they are how you authenticate — and
+	// they are safe to expose: the provider list carries no secrets, and the flow
+	// itself is protected by the signed state/nonce/PKCE cookie.
+	rg.GET("/auth/providers", a.listLoginProviders)
+	rg.GET("/auth/oidc/:id/start", a.startOIDCLogin)
+	rg.GET("/auth/oidc/:id/callback", a.completeOIDCLogin)
+
 	protected := rg.Group("")
 	protected.Use(auth.Middleware(a.DB, a.SigningKey))
 	{
@@ -44,6 +51,13 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/data-sources/:id", a.getDataSource)
 		protected.PUT("/data-sources/:id", a.updateDataSource)
 		protected.DELETE("/data-sources/:id", a.deleteDataSource)
+
+		// Auth providers (admin configuration of external login)
+		protected.GET("/auth-providers", a.listAuthProviders)
+		protected.POST("/auth-providers", a.createAuthProvider)
+		protected.GET("/auth-providers/:id", a.getAuthProvider)
+		protected.PUT("/auth-providers/:id", a.updateAuthProvider)
+		protected.DELETE("/auth-providers/:id", a.deleteAuthProvider)
 
 		// Managers
 		protected.GET("/managers", a.listManagers)

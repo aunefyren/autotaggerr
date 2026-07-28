@@ -186,6 +186,42 @@ type User struct {
 	PasswordHash string `json:"-"`
 	Role         string `gorm:"not null;default:admin" json:"role"`
 	APIKey       string `gorm:"uniqueIndex" json:"-"`
+
+	// External identity, set when the account is linked to an auth provider. The
+	// pair (AuthProviderID, ExternalSubject) is the stable identity — OIDC `sub` is
+	// immutable, whereas email and username can be changed at the provider.
+	AuthProviderID  *uuid.UUID `gorm:"index" json:"auth_provider_id,omitempty"`
+	ExternalSubject string     `gorm:"index" json:"-"`
+}
+
+// Auth provider types.
+const AuthProviderTypeOIDC = "oidc"
+
+// AuthProvider is a configured external login method (OpenID Connect today).
+// Password login is always available and is not represented here — this table only
+// holds the federated options shown alongside it.
+type AuthProvider struct {
+	Base
+	Name    string `gorm:"not null" json:"name"` // label on the login button
+	Type    string `gorm:"not null" json:"type"`
+	Enabled bool   `json:"enabled"`
+
+	// Issuer is the OIDC discovery base URL (no /.well-known suffix).
+	Issuer       string `json:"issuer"`
+	ClientID     string `json:"client_id"`
+	ClientSecret string `json:"-"`
+	// Scopes is space-separated; empty means "openid profile email".
+	Scopes string `json:"scopes"`
+	// RedirectURL overrides the callback URL sent to the provider. Leave empty to
+	// derive it from the incoming request, which is right unless a proxy rewrites
+	// the path.
+	RedirectURL string `json:"redirect_url"`
+
+	// AllowSignup creates a local account on first successful login. With it off,
+	// only users who already exist (matched by subject, or by verified email) can
+	// sign in — the safer default for a private instance.
+	AllowSignup bool   `json:"allow_signup"`
+	DefaultRole string `json:"default_role"`
 }
 
 // Event is a record of something the app did — a scan, a Plex refresh, etc. It
@@ -310,6 +346,7 @@ func AllDBModels() []any {
 		&LibraryItem{},
 		&MusicbrainzReleaseCache{},
 		&User{},
+		&AuthProvider{},
 		&Event{},
 		&CollectionArtist{},
 		&CollectionReleaseGroup{},

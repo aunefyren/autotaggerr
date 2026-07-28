@@ -9,6 +9,20 @@ export function setToken(token: string | null) {
   else localStorage.removeItem(TOKEN_KEY);
 }
 
+/**
+ * Picks up a session token handed back by the OIDC callback in the URL fragment.
+ * Fragments never reach the server, so the token stays out of access logs and the
+ * Referer header; it is stripped from the address bar immediately so it does not
+ * linger in history or get shared by copying the URL.
+ */
+export function consumeTokenFromUrl(): boolean {
+  const match = /[#&]token=([^&]+)/.exec(window.location.hash);
+  if (!match) return false;
+  setToken(decodeURIComponent(match[1]));
+  window.history.replaceState(null, "", window.location.pathname + window.location.search);
+  return true;
+}
+
 export class ApiError extends Error {
   status: number;
   constructor(status: number, message: string) {

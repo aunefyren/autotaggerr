@@ -97,8 +97,23 @@ each item's on-disk identity so skip-unchanged stays correct; emits a `drift_syn
 (releases checked/changed, files re-tagged, errors). API `POST /sync`; UI "Check for updates" on the
 Activity page with a drift detail view. Live-verified end to end. **Remaining ideas:** schedule the
 sync on its own cron; a `tag_write` event per re-tagged file; surface which fields changed.) ·
-**M5 present-vs-wanted — pass A done** (design + status below) · M6 native fingerprint resolution +
-OAuth. M0–M2 land the backbone with no behavior change for Lidarr users.
+**M5 present-vs-wanted — pass A done** (design + status below) · **OAuth/OIDC — done**
+(shipped ahead of schedule; it was only bundled into M6 by the original plan and shares nothing with
+the native-manager work, so it now stands alone). `auth/oidc.go` adds authorization-code + PKCE login
+against any OIDC provider: `StartLogin` issues a signed, HttpOnly, 10-minute flow cookie carrying
+state/nonce/verifier (no server-side session store, so a restart mid-login fails closed);
+`CompleteLogin` verifies cookie signature+expiry, provider match, state (CSRF), the code exchange,
+ID-token signature/issuer/audience/expiry via JWKS, and nonce. `ResolveUser` matches by immutable
+`(provider, sub)` -> *verified* email -> optional signup; unverified emails never match an existing
+account (takeover guard). Providers are DB rows (`models.AuthProvider`) with full CRUD under
+`/auth-providers` (client secret write-only), public `/auth/providers` +
+`/auth/oidc/:id/{start,callback}`, and a **Login providers** admin page; the login page grows
+"Continue with ..." buttons. The session token comes back in the URL *fragment* so it never reaches
+a server log, and the SPA strips it on read. Password login can never be disabled, so a broken
+provider cannot lock you out. Unit-tested incl. the takeover and forged-callback cases;
+**not yet live-verified against a real IdP**. Full setup + gaps in `docs/authentication.md`.) ·
+**M6 native manager — planned** (design + passes below). M0-M2 land the backbone with no behavior
+change for Lidarr users.
 
 ### M5 design — present vs wanted (collection)
 
@@ -150,8 +165,113 @@ means "wanted" needs a **type filter** (default albums+EPs, official) or the mis
   `mismatch_count`; `GET /artists/:mbid` returns server-derived `complete` + `discrepancy` so the
   rules have one definition. UI: a **Mismatch** column, a mismatch pill in the artist modal, and a
   per-album `⚠ Lidarr 3/21` note with a hover explanation of what to do.
-  **Remaining:** a configurable wanted-type filter for native monitoring; the split is unit-tested
-  but **not yet live-verified** against the real Lidarr instance.
+  Live-verified against the real Lidarr instance. **Remaining:** a configurable wanted-type filter
+  for native monitoring — superseded in part by M6 pass B, where an *explicit* desire overrides the
+  filter outright.
+
+### M6 design — native manager (standalone)
+
+What the Autotaggerr manager needs in order to stand on its own. Lidarr manages *acquisition* at
+album granularity; the native manager manages *knowledge* at whatever granularity the files
+actually have. That difference — not feature parity — is the point.
+
+**Explicitly out of scope: acquisition.** There are no indexers, download clients, or release
+grabbing, and none are planned. Autotaggerr enriches files that already exist. Files arrive
+manually today; a file-import helper is pass E.
+
+**Where the native manager stands today:** `AutotaggerrManager.Correlate` is
+`ResolveCorrelation(filePath, nil, rootDir)` — embedded MusicBrainz tags only. FLACs that already
+carry MB IDs (including everything Autotaggerr tagged via Lidarr) resolve; untagged MP3s do not.
+`LibraryItem.Pinned` exists and the pipeline honours it (`components/pipeline.go` never lets
+automatic resolution downgrade a pin) but nothing can *set* it. Artists only ever materialise from
+files on disk, so an artist you own nothing of cannot be added or monitored.
+
+**Desire model** (settled). Desire is *authored* user intent, and it must express five cases:
+
+| # | "I want…" | `release_mbid` | `recordings` |
+|---|---|---|---|
+| 1 | this album, any release (default) | empty | empty |
+| 2 | these songs, any release (default) | empty | {a, b} |
+| 3 | this specific release | X | empty |
+| 4 | these songs from this release | X | {a, b} |
+| 5 | these songs from release X *and* those from Y, same RG (niche) | two rows: X, Y | {a,b} / {c,d} |
+
+Empty `release_mbid` means "any release will do"; an empty recording set means "the whole thing".
+Case 5 falls out as multiple rows under one release-group, with `(release_group, release)` unique so
+overlapping track sets merge rather than duplicating.
+
+**Songs are identified by *recording* MBID, not track MBID.** A MusicBrainz *track* is a recording's
+placement on one specific release, so track IDs are release-scoped and cannot express case 2, where
+no release has been chosen yet. A *recording* is the audio and is stable across every release it
+appears on. The data is already present — `LibraryItem` stores `MBRecordingID` and
+`MBReleaseTrackID` separately, and `models.Track` carries its nested `Recording` — so this costs
+modelling care, not new fetches.
+
+**Satisfaction differs by intent, deliberately:**
+- An *album* desire (empty recording set) is satisfied when **at least one acceptable release is
+  complete**. Owning 5 tracks of the original and 7 of the remaster is two partial albums, not one
+  complete one.
+- A *song* desire is satisfied when **those recordings are owned, from any release**. The user asked
+  for songs, not a coherent album, so requiring one edition would be wrong.
+
+Do not "fix" one of these to match the other; the asymmetry follows from what was asked for.
+
+**Desire lives in its own table, never as flags on the collection rows.** Desire is authored
+(sparse, typed by a human, must never be recomputed); ownership is derived (rebuilt from disk on
+every scan). M5 already produced one bug from exactly that mixture — `Rebuild` and `SyncLidarr`
+writing the same columns, so a scan silently wiped the Lidarr mirror. Separating the tables makes
+the same class of bug structurally impossible, with the user's own intent as the thing that would
+otherwise be at risk.
+
+**Passes:**
+
+- **Pass A — manual attach.** Tell Autotaggerr what an unmatched file is. This is the piece that
+  makes the native manager usable at all, and it is independent of the collection rework.
+  API: browse unmatched items (the `library-items` filter already exists), MB release search +
+  tracklist (rate-limited, cache-backed), and `POST /library-items/:id/attach`
+  {`mb_release_id`, `mb_release_track_id`} setting the IDs, `Pinned`, and
+  `CorrelationSource = manual`; plus an un-attach. UI: an Attach action on unmatched items —
+  search a release, pick the track (prefilled from folder/filename), preview the **tag-diff**
+  before writing. *Self-healing:* once attached and tagged, the file carries embedded MB IDs and
+  resolves natively forever after, so attaching is a one-time cost per file rather than an
+  annotation to maintain.
+- **Pass B — collection authoring.** Add artists and release-groups you own nothing of, and mark
+  them desired. MB artist search; `CollectionArtist` gains an origin (library|manual) so a
+  file-less artist is not an anomaly and `Rebuild` never treats it as one. Desire is written to
+  `CollectionDesire` (see the desire model above) — *not* as a flag on `CollectionReleaseGroup`,
+  which stays derived. Pass B only needs the album-level shape (cases 1 and 3); cases 2/4/5 arrive
+  with pass C, so the table is introduced here and filled out there. An explicit desire is distinct
+  from discovered-from-discography and **must override the `wantedType` filter** — otherwise the UI
+  refuses to keep a live album or single the user just asked for. Monitoring stops 404-ing for
+  artists with no files.
+- **Pass C — multiple releases + partial monitoring.** Two separate concerns, kept in separate
+  tables (see the desire model above).
+  *Ownership:* `Rebuild` currently collapses each release-group to `rgBest` (the single best-owned
+  edition) and discards the others; that stops. A new `CollectionRelease` child row per owned
+  edition holds per-edition track counts, so owning the 1977 original and the 2017 remaster shows
+  as two editions rather than one.
+  *Desire:* a new `CollectionDesire` row — `artist_mb_id`, `release_group_mb_id`, optional
+  `release_mb_id`, optional serialized `recording_mb_ids` — covering all five cases in one shape.
+  Owned recordings and owned per-edition tracks are both derivable from `LibraryItem`
+  (`MBRecordingID` / `MBReleaseTrackID`) plus the cached release payload, so this needs **no track
+  table and no extra MusicBrainz fetches**.
+  UI: an RG expands to its editions with per-edition completeness; song selection offers "any
+  release" (default) or a specific edition.
+- **Pass D — AcoustID.** Detachable at three levels: a DataSource row (no row, no feature),
+  `fpcalc` presence (missing → unavailable, logged once, native manager behaves exactly as before),
+  and per-library opt-in. `modules/acoustid.go` is self-contained: `fpcalc -json`, `/v2/lookup`,
+  its own rate limiter (separate from MusicBrainz's), and fingerprint results cached in the DB —
+  fingerprinting decodes the whole file, so re-doing it per scan is not viable. It returns
+  *recording* MBIDs, so a scored disambiguation step picks the release (folder album/year as the
+  signal), built as a pure, table-tested function. **Fails closed:** below a confidence threshold
+  the file stays unmatched rather than being mistagged — a wrong match is worse than no match.
+  Surfaces as autofill in the pass-A attach UI, not as a silent auto-tagger, which keeps it a
+  suggestion engine rather than a second resolution pipeline.
+- **Pass E — file import** (later). Move/copy loose files into the library layout, then hand off to
+  pass A.
+
+**Ordering rationale:** A before B/C because it is self-contained and immediately useful; D last
+because by then it is an autofill button on an existing screen instead of new machinery.
 
 ## Recently fixed
 

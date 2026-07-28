@@ -68,6 +68,15 @@
 .login-card { width: 340px; max-width: 100%; }
 .login-card .brand { justify-content: center; font-size: 18px; padding-bottom: 4px; }
 .login-card .sub { text-align: center; color: var(--text-muted); margin-bottom: 18px; font-size: 12px; }
+/* Labelled hairline rule, separating password login from external providers. */
+.or-divider {
+  display: flex; align-items: center; gap: 10px;
+  color: var(--text-dim); font-size: 11px; text-transform: uppercase;
+  letter-spacing: 0.06em; font-weight: 500; margin: 2px 0;
+}
+.or-divider::before, .or-divider::after {
+  content: ""; flex: 1; height: 1px; background: var(--border);
+}
 
 /* Modal */
 .backdrop {

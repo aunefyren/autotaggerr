@@ -1,8 +1,12 @@
 package routers
 
 import (
+	"errors"
 	"net/http"
+	"net/url"
+	"strings"
 
+	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -385,4 +389,141 @@ func (a *API) updateLibrary(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, l)
+}
+
+// --- Auth providers ---------------------------------------------------------
+
+type authProviderInput struct {
+	Name         *string `json:"name"`
+	Type         *string `json:"type"`
+	Enabled      *bool   `json:"enabled"`
+	Issuer       *string `json:"issuer"`
+	ClientID     *string `json:"client_id"`
+	ClientSecret *string `json:"client_secret"`
+	Scopes       *string `json:"scopes"`
+	RedirectURL  *string `json:"redirect_url"`
+	AllowSignup  *bool   `json:"allow_signup"`
+	DefaultRole  *string `json:"default_role"`
+}
+
+func (in authProviderInput) apply(p *models.AuthProvider) {
+	if in.Name != nil {
+		p.Name = *in.Name
+	}
+	if in.Type != nil {
+		p.Type = *in.Type
+	}
+	if in.Enabled != nil {
+		p.Enabled = *in.Enabled
+	}
+	if in.Issuer != nil {
+		p.Issuer = strings.TrimSuffix(strings.TrimSpace(*in.Issuer), "/")
+	}
+	if in.ClientID != nil {
+		p.ClientID = *in.ClientID
+	}
+	// Omitting client_secret keeps the stored one, so the UI can edit a provider
+	// without ever receiving (or resending) the secret.
+	if in.ClientSecret != nil {
+		p.ClientSecret = *in.ClientSecret
+	}
+	if in.Scopes != nil {
+		p.Scopes = *in.Scopes
+	}
+	if in.RedirectURL != nil {
+		p.RedirectURL = *in.RedirectURL
+	}
+	if in.AllowSignup != nil {
+		p.AllowSignup = *in.AllowSignup
+	}
+	if in.DefaultRole != nil {
+		p.DefaultRole = *in.DefaultRole
+	}
+}
+
+func (a *API) getAuthProvider(c *gin.Context) { getEntity[models.AuthProvider](a, c) }
+
+func (a *API) deleteAuthProvider(c *gin.Context) {
+	deleteEntity[models.AuthProvider](a, c)
+	auth.ResetProviderCache()
+}
+
+func (a *API) listAuthProviders(c *gin.Context) {
+	var rows []models.AuthProvider
+	if err := a.DB.Order("name").Find(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list auth providers"})
+		return
+	}
+	// ClientSecret is hidden via json:"-" on the model.
+	c.JSON(http.StatusOK, rows)
+}
+
+func (a *API) createAuthProvider(c *gin.Context) {
+	var in authProviderInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	p := models.AuthProvider{Type: models.AuthProviderTypeOIDC, Enabled: true, DefaultRole: models.UserRoleAdmin}
+	in.apply(&p)
+	if err := validateAuthProvider(p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := a.DB.Create(&p).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create failed"})
+		return
+	}
+	auth.ResetProviderCache()
+	c.JSON(http.StatusCreated, p)
+}
+
+func (a *API) updateAuthProvider(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	var p models.AuthProvider
+	if err := a.DB.First(&p, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	var in authProviderInput
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	in.apply(&p)
+	if err := validateAuthProvider(p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	if err := a.DB.Save(&p).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
+		return
+	}
+	auth.ResetProviderCache()
+	c.JSON(http.StatusOK, p)
+}
+
+// validateAuthProvider rejects configurations that cannot possibly complete a
+// login, so the failure surfaces at save time rather than as a broken login button.
+func validateAuthProvider(p models.AuthProvider) error {
+	if strings.TrimSpace(p.Name) == "" {
+		return errors.New("name is required")
+	}
+	if p.Type != models.AuthProviderTypeOIDC {
+		return errors.New("type must be oidc")
+	}
+	if strings.TrimSpace(p.ClientID) == "" || strings.TrimSpace(p.ClientSecret) == "" {
+		return errors.New("client_id and client_secret are required")
+	}
+	u, err := url.Parse(strings.TrimSpace(p.Issuer))
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return errors.New("issuer must be an absolute URL, e.g. https://id.example.com/application/o/autotaggerr")
+	}
+	if u.Scheme != "https" && u.Hostname() != "localhost" && u.Hostname() != "127.0.0.1" {
+		return errors.New("issuer must use https")
+	}
+	return nil
 }

@@ -10,6 +10,7 @@ const NAV = [
   { to: "/items", label: "Items", ic: "≣" },
   { to: "/collection", label: "Collection", ic: "♫" },
   { to: "/activity", label: "Activity", ic: "⟳" },
+  { to: "/login-providers", label: "Login providers", ic: "⚿" },
 ];
 
 export default function Layout() {
