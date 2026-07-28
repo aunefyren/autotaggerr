@@ -2,6 +2,25 @@ package models
 
 import "time"
 
+// Correlation is the resolved identity of a track file: which MusicBrainz
+// release/track/recording it maps to, plus which source decided that. It is the
+// output of a Manager and the unit persisted into the library_items index.
+type Correlation struct {
+	MBReleaseID      string `json:"mb_release_id"`
+	MBReleaseTrackID string `json:"mb_release_track_id"`
+	MBRecordingID    string `json:"mb_recording_id"`
+	TrackTitle       string `json:"track_title"`
+	Source           string `json:"source"`
+}
+
+// TagDiffEntry is one tag's current-vs-desired state for the read-only diff view.
+type TagDiffEntry struct {
+	Key     string `json:"key"`
+	Current string `json:"current"`
+	Desired string `json:"desired"`
+	Changed bool   `json:"changed"`
+}
+
 type FileTags struct {
 	Artist                string   `json:"artist"`
 	ArtistSemicolon       string   `json:"artist_semicolon"`

@@ -4,7 +4,20 @@ import (
 	"sync"
 
 	"github.com/aunefyren/autotaggerr/logger"
+	"gorm.io/gorm"
 )
+
+// cacheDB is the database handle used for DB-backed caches (the MusicBrainz
+// release cache today). It is nil until SetDB runs at startup; while nil, caches
+// fall back to their legacy JSON files, which keeps DB-less callers (and tests)
+// working unchanged.
+var cacheDB *gorm.DB
+
+// SetDB wires the database handle for DB-backed caches. Call once at startup,
+// before LoadAllCaches.
+func SetDB(db *gorm.DB) {
+	cacheDB = db
+}
 
 // Cache writes used to be flushed to disk on every single cache miss, which on a
 // full-library scan meant rewriting each (growing) JSON file thousands of times.

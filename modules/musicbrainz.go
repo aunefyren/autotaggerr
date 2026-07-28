@@ -137,17 +137,25 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	}
 
 	now := time.Now()
-	musicbrainzReleaseCacheMu.Lock()
-	musicbrainzReleaseCache[mbID] = models.CachedMusicBrainzRelease{
+	entry := models.CachedMusicBrainzRelease{
 		Release:   apiResponse,
 		Timestamp: now,
 		ExpiresAt: musicbrainzCacheExpiry(now),
 	}
+	musicbrainzReleaseCacheMu.Lock()
+	musicbrainzReleaseCache[mbID] = entry
 	musicbrainzReleaseCacheMu.Unlock()
 
-	// Persistence is batched (see cache.go); the in-memory map above is already
-	// updated, so no need to write — and reload — the whole file on every fetch.
-	markCacheDirty(cacheNameMusicbrainz)
+	// Persist the entry. With a database configured we write through this single
+	// row immediately (cheap, unlike rewriting a growing JSON blob); otherwise we
+	// mark the JSON cache dirty for the batched flush (see cache.go).
+	if cacheDB != nil {
+		if err := musicbrainzStoreDB(mbID, entry); err != nil {
+			logger.Log.Warnf("failed to persist MusicBrainz cache row %s: %s", mbID, err.Error())
+		}
+	} else {
+		markCacheDirty(cacheNameMusicbrainz)
+	}
 
 	logger.Log.Trace(fmt.Sprintf("api response: %+v", apiResponse))
 
@@ -199,7 +207,20 @@ func init() {
 	registerCache(cacheNameMusicbrainz, MusicbrainzSaveCache)
 }
 
+// MusicbrainzLoadCache warms the in-memory map at startup. With a database
+// configured it loads from the DB (migrating a legacy JSON cache once); otherwise
+// it reads the legacy JSON file.
 func MusicbrainzLoadCache() error {
+	if cacheDB != nil {
+		if err := musicbrainzMigrateJSONIfNeeded(); err != nil {
+			logger.Log.Warnf("MusicBrainz cache JSON migration failed: %s", err.Error())
+		}
+		return musicbrainzLoadFromDB()
+	}
+	return musicbrainzLoadCacheJSON()
+}
+
+func musicbrainzLoadCacheJSON() error {
 	data, err := os.ReadFile(musicbrainzReleaseCachePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -213,7 +234,14 @@ func MusicbrainzLoadCache() error {
 	return json.Unmarshal(data, &musicbrainzReleaseCache)
 }
 
+// MusicbrainzSaveCache persists the JSON cache for the batched flush. It is a
+// no-op when a database is configured, because entries are written through to the
+// DB as they are fetched (see QueryMusicBrainzReleaseData).
 func MusicbrainzSaveCache() error {
+	if cacheDB != nil {
+		return nil
+	}
+
 	musicbrainzReleaseCacheMu.RLock()
 	data, err := json.MarshalIndent(musicbrainzReleaseCache, "", "  ")
 	musicbrainzReleaseCacheMu.RUnlock()
@@ -222,4 +250,78 @@ func MusicbrainzSaveCache() error {
 	}
 
 	return os.WriteFile(musicbrainzReleaseCachePath, data, 0644)
+}
+
+// musicbrainzStoreDB upserts one release into the DB-backed cache. The MB ID is
+// the primary key, so Save inserts or updates in one call.
+func musicbrainzStoreDB(mbID string, entry models.CachedMusicBrainzRelease) error {
+	payload, err := json.Marshal(entry.Release)
+	if err != nil {
+		return err
+	}
+	row := models.MusicbrainzReleaseCache{
+		MBID:      mbID,
+		Payload:   string(payload),
+		FetchedAt: entry.Timestamp,
+		ExpiresAt: entry.ExpiresAt,
+	}
+	return cacheDB.Save(&row).Error
+}
+
+// musicbrainzLoadFromDB loads every cached release row into the in-memory map.
+func musicbrainzLoadFromDB() error {
+	var rows []models.MusicbrainzReleaseCache
+	if err := cacheDB.Find(&rows).Error; err != nil {
+		return err
+	}
+
+	musicbrainzReleaseCacheMu.Lock()
+	defer musicbrainzReleaseCacheMu.Unlock()
+	for _, r := range rows {
+		var release models.MusicBrainzReleaseResponse
+		if err := json.Unmarshal([]byte(r.Payload), &release); err != nil {
+			logger.Log.Warnf("skipping corrupt MusicBrainz cache row %s: %s", r.MBID, err.Error())
+			continue
+		}
+		musicbrainzReleaseCache[r.MBID] = models.CachedMusicBrainzRelease{
+			Release:   release,
+			Timestamp: r.FetchedAt,
+			ExpiresAt: r.ExpiresAt,
+		}
+	}
+	return nil
+}
+
+// musicbrainzMigrateJSONIfNeeded imports a legacy config/mb_releases.json into the
+// database once, when the DB cache is still empty. It is a no-op afterwards.
+func musicbrainzMigrateJSONIfNeeded() error {
+	var count int64
+	if err := cacheDB.Model(&models.MusicbrainzReleaseCache{}).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+
+	data, err := os.ReadFile(musicbrainzReleaseCachePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+
+	legacy := map[string]models.CachedMusicBrainzRelease{}
+	if err := json.Unmarshal(data, &legacy); err != nil {
+		return err
+	}
+	for id, entry := range legacy {
+		if err := musicbrainzStoreDB(id, entry); err != nil {
+			return err
+		}
+	}
+	if len(legacy) > 0 {
+		logger.Log.Infof("migrated %d MusicBrainz cache entries from JSON into the database", len(legacy))
+	}
+	return nil
 }

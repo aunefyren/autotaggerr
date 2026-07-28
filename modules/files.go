@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/utilities"
 )
 
 // defaultProcessConcurrency is the fallback worker count when the config value is
@@ -132,13 +134,23 @@ func SetFileTags(filePath string, metadata models.FileTags, configFile models.Co
 	}
 }
 
+// ProcessTrackFile resolves a file's MusicBrainz correlation and writes tags. It
+// is kept as the low-level single-file engine (used by the CLI path and tests);
+// the component pipeline reuses ResolveCorrelation + TagResolvedFile directly.
 func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
-	unchanged = false
-	tagsWritten = 0
-	mbReleaseID := ""
-	mbTrackID := ""
-	mbRecordingID := ""
-	trackTitle := ""
+	correlation, err := ResolveCorrelation(filePath, lidarrClient, rootDir)
+	if err != nil {
+		return false, 0, err
+	}
+	return TagResolvedFile(filePath, correlation, plexClient, refreshSet, rootDir, configFile)
+}
+
+// ResolveCorrelation determines the MusicBrainz release/track/recording IDs for a
+// file. It prefers Lidarr (when a client is supplied) and falls back to the file's
+// own embedded tags, mirroring the original ProcessTrackFile behavior. A nil
+// lidarrClient reproduces the native (tags-only) path.
+func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir string) (models.Correlation, error) {
+	correlation := models.Correlation{}
 
 	logger.Log.Debugf("processing track file: %s", filePath)
 
@@ -147,7 +159,7 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		lidarrTrackObject, err := ResolveMetadataDetailsFromLidarr(lidarrClient, filePath, rootDir)
 		if err != nil {
 			logger.Log.Errorf("failed to retrieve track details from Lidarr for '%s'. error: %s", filePath, err.Error())
-			return unchanged, tagsWritten, fmt.Errorf("failed to retrieve track details from Lidarr for '%s'", filePath)
+			return correlation, fmt.Errorf("failed to retrieve track details from Lidarr for '%s'", filePath)
 		} else if lidarrTrackObject == nil {
 			logger.Log.Warnf("Lidarr successfully executed, but found nothing for %s", filePath)
 		} else {
@@ -155,69 +167,76 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 		}
 
 		if lidarrTrackObject != nil {
-			mbReleaseID = lidarrTrackObject.MBReleaseID
-			mbTrackID = lidarrTrackObject.MBTrackID
-			mbRecordingID = lidarrTrackObject.MBRecordingID
-			trackTitle = lidarrTrackObject.TrackTitle
+			correlation.MBReleaseID = lidarrTrackObject.MBReleaseID
+			correlation.MBReleaseTrackID = lidarrTrackObject.MBTrackID
+			correlation.MBRecordingID = lidarrTrackObject.MBRecordingID
+			correlation.TrackTitle = lidarrTrackObject.TrackTitle
+			correlation.Source = models.CorrelationSourceLidarr
 		}
 	}
 
-	if mbTrackID == "" || mbReleaseID == "" {
-		// get MB release data from track
-		mbReleaseID, err = ExtractMusicBrainzReleaseID(filePath)
+	if correlation.MBReleaseTrackID == "" || correlation.MBReleaseID == "" {
+		// fall back to the file's own embedded MusicBrainz tags
+		var err error
+		correlation.MBReleaseID, err = ExtractMusicBrainzReleaseID(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract MB release ID. error: " + err.Error())
-			return unchanged, tagsWritten, errors.New("failed to extract MB release ID")
+			return correlation, errors.New("failed to extract MB release ID")
 		}
 
-		// get MB data from track
-		mbTrackID, err = ExtractMusicBrainzTrackID(filePath)
+		correlation.MBReleaseTrackID, err = ExtractMusicBrainzTrackID(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract track MB ID. error: " + err.Error())
-			return unchanged, tagsWritten, errors.New("failed to extract track MB ID")
+			return correlation, errors.New("failed to extract track MB ID")
 		}
 
-		// get MB data from track
-		mbRecordingID, err = ExtractMusicBrainzRecordingID(filePath)
+		correlation.MBRecordingID, err = ExtractMusicBrainzRecordingID(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract recording MB ID. error: " + err.Error())
-			return unchanged, tagsWritten, errors.New("failed to extract recording MB ID")
+			return correlation, errors.New("failed to extract recording MB ID")
 		}
 
-		// get track title from track
-		trackTitle, err = ExtractTrackTitle(filePath)
+		correlation.TrackTitle, err = ExtractTrackTitle(filePath)
 		if err != nil {
 			logger.Log.Error("failed to extract track title. error: " + err.Error())
-			return unchanged, tagsWritten, errors.New("failed to extract track title")
+			return correlation, errors.New("failed to extract track title")
 		}
+		correlation.Source = models.CorrelationSourceTags
 	}
 
-	logger.Log.Debug("MB release ID: " + mbReleaseID)
-	logger.Log.Debug("MB track ID: " + mbTrackID)
-	logger.Log.Debug("track title: " + trackTitle)
-	logger.Log.Debug("MB recording ID: " + mbRecordingID)
+	logger.Log.Debug("MB release ID: " + correlation.MBReleaseID)
+	logger.Log.Debug("MB track ID: " + correlation.MBReleaseTrackID)
+	logger.Log.Debug("track title: " + correlation.TrackTitle)
+	logger.Log.Debug("MB recording ID: " + correlation.MBRecordingID)
 
-	if mbTrackID == "" || mbReleaseID == "" {
-		return unchanged, tagsWritten, errors.New("MB track or release ID field empty")
+	if correlation.MBReleaseTrackID == "" || correlation.MBReleaseID == "" {
+		return correlation, errors.New("MB track or release ID field empty")
 	}
 
+	return correlation, nil
+}
+
+// TagResolvedFile fetches the release for an already-resolved correlation, finds
+// the matching track, and writes the file's tags (diffed). It is the back half of
+// the per-file pipeline, shared by ProcessTrackFile and the component pipeline.
+func TagResolvedFile(filePath string, correlation models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
 	// Get MB data from API
-	response, err := GetMusicBrainzRelease(mbReleaseID)
+	response, err := GetMusicBrainzRelease(correlation.MBReleaseID)
 	if err != nil {
 		// wrap the cause; the scan/single-file caller logs this together with the
 		// file path, so no separate log line is needed here
-		return unchanged, tagsWritten, fmt.Errorf("failed to get MB release data: %w", err)
+		return false, 0, fmt.Errorf("failed to get MB release data: %w", err)
 	}
 	logger.Log.Debug("MB title response: " + response.Title)
 
 	// Go through API response for information
 	for _, media := range response.Media {
 		for _, track := range media.Tracks {
-			if track.ID == mbTrackID {
+			if track.ID == correlation.MBReleaseTrackID {
 				logger.Log.Debug("release track ID found in MB response")
-				unchanged, tagsWritten, err = ProcessTrackFileAfterMatch(
+				return ProcessTrackFileAfterMatch(
 					filePath,
-					lidarrClient,
+					nil,
 					plexClient,
 					refreshSet,
 					rootDir,
@@ -225,14 +244,13 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 					track,
 					media,
 					response)
-				return
 			}
 		}
 	}
 
-	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", mbTrackID, mbReleaseID, trackTitle, response.ID)
+	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", correlation.MBReleaseTrackID, correlation.MBReleaseID, correlation.TrackTitle, response.ID)
 	logger.Log.Warn("Lidarr metadata data could be outdated")
-	return unchanged, tagsWritten, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
+	return false, 0, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
 }
 
 func ProcessTrackFileAfterMatch(
@@ -249,6 +267,46 @@ func ProcessTrackFileAfterMatch(
 	tagsWritten int,
 	err error,
 ) {
+	metadata, err := BuildFileTags(track, media, response, configFile)
+	if err != nil {
+		return false, 0, err
+	}
+
+	// re-tag file with new information
+	unchanged, tagsWritten, err = SetFileTags(filePath, metadata, configFile)
+	if err != nil {
+		logger.Log.Error("failed to set file tags. error: " + err.Error())
+		return unchanged, tagsWritten, errors.New("failed to set FLAC artist tags")
+	} else {
+		logger.Log.Debug("file tagger finished")
+	}
+
+	changeString := "unchanged"
+	if !unchanged {
+		changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
+	}
+
+	if plexClient != nil && !unchanged {
+		err = PlexRefreshForFile(unchanged, tagsWritten, refreshSet, *plexClient, response.Title, metadata.AlbumArtist, track.Title)
+		if err != nil {
+			logger.Log.Warn("failed to prepare Plex refresh for album. error: " + err.Error())
+		}
+	}
+
+	logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
+	return unchanged, tagsWritten, nil
+
+}
+
+// BuildFileTags maps a matched MusicBrainz track/release onto the FileTags we
+// write. It is pure (no I/O), so it can be reused both by the tagging path and by
+// the read-only tag-diff endpoint that shows current vs desired without writing.
+func BuildFileTags(
+	track models.Track,
+	media models.MusicBrainzMedia,
+	response models.MusicBrainzReleaseResponse,
+	configFile models.ConfigStruct,
+) (models.FileTags, error) {
 	trackArtist := ""
 	if !configFile.AutotaggerrIgnoreRedundantContributingArtists || len(track.ArtistCredit) > 1 {
 		trackArtist = MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
@@ -269,7 +327,7 @@ func ProcessTrackFileAfterMatch(
 
 	// determine release artist
 	releaseArtist := ""
-	if releaseArtist == "" && len(response.ArtistCredit) > 0 {
+	if len(response.ArtistCredit) > 0 {
 		if configFile.AutotaggerrUseCurrentArtistName {
 			// use current artist name if configured
 			releaseArtist = response.ArtistCredit[0].Artist.Name
@@ -277,8 +335,8 @@ func ProcessTrackFileAfterMatch(
 			// use original release artist name if configured
 			releaseArtist = response.ArtistCredit[0].Name
 		}
-	} else if releaseArtist == "" {
-		return unchanged, tagsWritten, errors.New("failed to determine album artist")
+	} else {
+		return models.FileTags{}, errors.New("failed to determine album artist")
 	}
 
 	releaseArtistID := ""
@@ -374,30 +432,58 @@ func ProcessTrackFileAfterMatch(
 		metadata.Genres = append(metadata.Genres, genre.Name)
 	}
 
-	// re-tag file with new information
-	unchanged, tagsWritten, err = SetFileTags(filePath, metadata, configFile)
-	if err != nil {
-		logger.Log.Error("failed to set file tags. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to set FLAC artist tags")
-	} else {
-		logger.Log.Debug("file tagger finished")
-	}
+	return metadata, nil
+}
 
-	changeString := "unchanged"
-	if !unchanged {
-		changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
-	}
+// DiffFileTags reports, per tag, the file's current value versus what Autotaggerr
+// would write — without touching the file. It reuses the same desired-tag maps and
+// diff logic as the writer, so "changed" matches exactly what a scan would do.
+func DiffFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) ([]models.TagDiffEntry, error) {
+	ext := strings.ToLower(filepath.Ext(filePath))
 
-	if plexClient != nil && !unchanged {
-		err = PlexRefreshForFile(unchanged, tagsWritten, refreshSet, *plexClient, response.Title, releaseArtist, track.Title)
+	var desired map[string]string
+	var existing map[string][]string
+	var changed map[string]string
+
+	switch ext {
+	case ".flac":
+		desired = buildFLACDesiredTags(metadata)
+		m, err := getFlacTagsMap(filePath)
 		if err != nil {
-			logger.Log.Warn("failed to prepare Plex refresh for album. error: " + err.Error())
+			return nil, err
 		}
+		existing = m
+		changed, _ = utilities.DiffFlacTags(existing, desired, configFile)
+	case ".mp3":
+		desired = buildMP3DesiredTags(metadata)
+		m, err := GetMP3Tags(filePath)
+		if err != nil {
+			return nil, err
+		}
+		existing = m
+		changed, _ = utilities.DiffID3Tags(existing, desired)
+	default:
+		return nil, errors.New("unsupported file type")
 	}
 
-	logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
-	return unchanged, tagsWritten, nil
+	keys := make([]string, 0, len(desired))
+	for k := range desired {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 
+	entries := make([]models.TagDiffEntry, 0, len(keys))
+	for _, k := range keys {
+		up := strings.ToUpper(k)
+		current := strings.Join(existing[up], "; ")
+		want := desired[k]
+		if current == "" && want == "" {
+			continue // nothing to show for an empty-on-both tag
+		}
+		_, isChanged := changed[up]
+		entries = append(entries, models.TagDiffEntry{Key: k, Current: current, Desired: want, Changed: isChanged})
+	}
+	return entries, nil
 }
 
 func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, configFile models.ConfigStruct) (
@@ -408,14 +494,33 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 	albumsWhoNeedMetadataRefresh map[string]string,
 	err error,
 ) {
-	originalRoot := root
-	counter = 0
-	unchangedFiles = 0
-	allTagsWritten = 0
+	refreshSet := NewAlbumRefreshSet(albumsWhoNeedMetadataRefreshSoFar)
+
+	counter, unchangedFiles, allTagsWritten, errorFiles, err = WalkAndProcess(root, configFile.AutotaggerrProcessConcurrency, func(path string) (bool, int, error) {
+		return ProcessTrackFile(path, lidarrClient, plexClient, refreshSet, root, configFile)
+	})
+
+	return counter, unchangedFiles, allTagsWritten, errorFiles, refreshSet.Snapshot(), err
+}
+
+// WalkAndProcess walks root and, for every supported audio file, runs process in
+// a bounded worker pool — aggregating counts, collecting per-file errors, logging
+// progress, and periodically flushing batched caches. It is the single scan
+// orchestrator shared by the legacy folder scan and the component pipeline; the
+// process callback decides how each file is correlated and tagged.
+func WalkAndProcess(root string, workers int, process func(path string) (unchanged bool, tagsWritten int, err error)) (
+	counter int,
+	unchangedFiles int,
+	allTagsWritten int,
+	errorFiles []string,
+	err error,
+) {
 	errorFiles = []string{}
 
-	// caches are loaded once at startup (see modules.LoadAllCaches) and kept warm
-	// in memory across scans, so there is no per-scan disk read here.
+	// <1 falls back to the default; 1 reproduces the old serial behavior exactly
+	if workers < 1 {
+		workers = defaultProcessConcurrency
+	}
 
 	// first pass, count total supported files
 	totalFiles := 0
@@ -428,18 +533,10 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 
 	if totalFiles == 0 {
 		logger.Log.Info("no supported files found in: " + root)
-		return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefreshSoFar, nil
+		return 0, 0, 0, errorFiles, nil
 	}
 
-	// number of files to process in parallel; <1 falls back to the default and
-	// 1 reproduces the old serial behavior exactly
-	workers := configFile.AutotaggerrProcessConcurrency
-	if workers < 1 {
-		workers = defaultProcessConcurrency
-	}
 	logger.Log.Infof("found %d supported files. starting processing with %d worker(s)...", totalFiles, workers)
-
-	refreshSet := NewAlbumRefreshSet(albumsWhoNeedMetadataRefreshSoFar)
 
 	var (
 		counterAtomic   atomic.Int64 // successfully processed files
@@ -488,7 +585,7 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 			defer wg.Done()
 			defer func() { <-sem }()
 
-			unchanged, tagsWritten, procErr := ProcessTrackFile(path, lidarrClient, plexClient, refreshSet, originalRoot, configFile)
+			unchanged, tagsWritten, procErr := process(path)
 			if procErr != nil {
 				logger.Log.Error("failed to process file '" + path + "'. error: " + procErr.Error())
 				resultMu.Lock()
@@ -525,9 +622,7 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 	counter = int(counterAtomic.Load())
 	unchangedFiles = int(unchangedAtomic.Load())
 	allTagsWritten = int(tagsAtomic.Load())
-	albumsWhoNeedMetadataRefresh = refreshSet.Snapshot()
-
-	return counter, unchangedFiles, allTagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err
+	return counter, unchangedFiles, allTagsWritten, errorFiles, err
 }
 
 func ReleaseToAlbumType(release models.MusicBrainzReleaseResponse) string {

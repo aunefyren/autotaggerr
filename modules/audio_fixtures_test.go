@@ -175,6 +175,41 @@ func TestMP3IdempotentWrite(t *testing.T) {
 // (tracks with more than one ISRC, common on singles/features) was written into a
 // single frame but read back as only its first value, so the diff never converged
 // and the file was re-tagged on every scan. The ISRC must survive read-back intact.
+func TestDiffFileTags(t *testing.T) {
+	requireTool(t, "metaflac")
+	path := synthAudio(t, ".flac")
+
+	// Seed the file with an initial set of tags.
+	initial := models.FileTags{Album: "Old Album", Title: "Song", MBAlbumID: "rel-1"}
+	if _, _, err := SetFlacTags(path, initial, models.ConfigStruct{}); err != nil {
+		t.Fatalf("SetFlacTags: %v", err)
+	}
+
+	// Desired changes only the album.
+	desired := models.FileTags{Album: "New Album", Title: "Song", MBAlbumID: "rel-1"}
+	entries, err := DiffFileTags(path, desired, models.ConfigStruct{})
+	if err != nil {
+		t.Fatalf("DiffFileTags: %v", err)
+	}
+
+	byKey := map[string]models.TagDiffEntry{}
+	for _, e := range entries {
+		byKey[e.Key] = e
+	}
+
+	album := byKey["ALBUM"]
+	if !album.Changed || album.Current != "Old Album" || album.Desired != "New Album" {
+		t.Errorf("ALBUM diff wrong: %+v", album)
+	}
+	title := byKey["TITLE"]
+	if title.Changed || title.Current != "Song" || title.Desired != "Song" {
+		t.Errorf("TITLE should be unchanged: %+v", title)
+	}
+	if id, ok := byKey["MUSICBRAINZ_ALBUMID"]; !ok || id.Changed {
+		t.Errorf("MUSICBRAINZ_ALBUMID should be present and unchanged: %+v", id)
+	}
+}
+
 func TestMP3MultiISRCIdempotent(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")

@@ -125,6 +125,10 @@ Edit the config.json, found within the config directory. If it isn't there, just
 ```json
 {
 	"timezone": "Europe/Paris",
+	"database": {
+		"type": "sqlite",
+		"dsn": "config/autotaggerr.db"
+	},
 	"private_key": "",
 	"autotaggerr_port": 8080,
 	"autotaggerr_name": "Autotaggerr",
@@ -154,7 +158,9 @@ Every setting can be defined in `config.json`. A subset can also be overridden a
 | Config file entry | Startup flag | Environment variable | Type | Description |
 |---|---|---|---|---|
 | `timezone` | `-tz` | `TZ` | string | IANA timezone the app runs in. Default `Europe/Paris`. |
-| `private_key` | — | — | string | Auto-generated 64-byte base64 secret. Leave empty; it is created on first start. |
+| `database.type` | — | — | string | Database driver: `sqlite` (default, pure-Go/CGO-free). `postgres`/`mysql` planned. |
+| `database.dsn` | — | — | string | Connection string; for `sqlite` a file path. Default `config/autotaggerr.db`. |
+| `private_key` | — | — | string | Auto-generated 64-byte base64 secret (also signs auth tokens). Leave empty; it is created on first start. |
 | `autotaggerr_port` | `-port` | `port` | int | HTTP port the service listens on. Default `8080`. |
 | `autotaggerr_name` | — | — | string | Display name of the instance. Default `Autotaggerr`. |
 | `autotaggerr_external_url` | `-externalurl` | `externalurl` | string | URL others use to reach Autotaggerr. Default empty. |

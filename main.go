@@ -4,13 +4,14 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io/fs"
 	"log"
+	"mime"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 
 	"strconv"
 	"time"
@@ -19,29 +20,26 @@ import (
 
 	"codnect.io/chrono"
 
+	"github.com/aunefyren/autotaggerr/components"
+	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/routers"
+	"github.com/aunefyren/autotaggerr/scan"
 	"github.com/aunefyren/autotaggerr/utilities"
+	"github.com/aunefyren/autotaggerr/web"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-)
-
-// jobMu ensures only one scheduled job runs at a time, so the two cron jobs
-// cannot overlap each other even if their schedules fire simultaneously.
-var jobMu sync.Mutex
-
-// Per-job running flags prevent the same job from being queued twice while a
-// previous run is still in progress. CompareAndSwap makes this check atomic.
-var (
-	libraryScanRunning atomic.Bool
+	"gorm.io/gorm"
 )
 
 var (
 	lidarrClient *modules.LidarrClient
 	plexClient   *modules.PlexClient
+	db           *gorm.DB
+	scanRunner   *scan.Runner
 )
 
 func main() {
@@ -68,6 +66,32 @@ func main() {
 	logger.InitLogger(files.ConfigFile)
 
 	logger.Log.Info("running Autotaggerr version: " + files.ConfigFile.AutotaggerrVersion)
+
+	// Connect to the database and apply the schema. Domain config (managers,
+	// libraries, data sources, tagger profiles) lives here; bootstrap config
+	// (how to reach the DB) stays in config.json.
+	db, err = database.Connect(files.ConfigFile.Database)
+	if err != nil {
+		logger.Log.Fatal("failed to connect to database. error: " + err.Error())
+		os.Exit(1)
+	}
+	logger.Log.Info("database connected")
+
+	// Wire the DB into the cache layer so the MusicBrainz release cache persists to
+	// the database (write-through) instead of a JSON file. Must run before LoadAllCaches.
+	modules.SetDB(db)
+
+	// Seed the DB from config.json on first run so existing (Lidarr) setups keep
+	// working unchanged. Idempotent — safe to run every startup.
+	adminCreds, err := database.Seed(db, files.ConfigFile)
+	if err != nil {
+		logger.Log.Fatal("failed to seed database. error: " + err.Error())
+		os.Exit(1)
+	}
+	if adminCreds != nil {
+		logger.Log.Warnf("created initial admin user %q — password: %s | API key: %s (shown once; store it now)",
+			adminCreds.Username, adminCreds.Password, adminCreds.APIKey)
+	}
 
 	// Set GIN mode
 	if files.ConfigFile.AutotaggerrEnvironment != "test" {
@@ -140,11 +164,15 @@ func main() {
 	// in-memory from here on (see modules/cache.go)
 	modules.LoadAllCaches()
 
-	// Create task scheduler for sunday reminders
+	// Shared scan runner: the cron job, the startup run, and the API all drive
+	// library scans through this one instance (single-run guard + status).
+	scanRunner = scan.NewRunner(db, plexClient, files.ConfigFile)
+
+	// Create task scheduler for the recurring library scan
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
 	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		processLibraries(files.ConfigFile.AutotaggerrLibraries, lidarrClient, plexClient, files.ConfigFile)
+		scanRunner.RunAll()
 	}, files.ConfigFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
 		logger.Log.Error("library process task was not scheduled successfully.")
@@ -152,15 +180,19 @@ func main() {
 
 	// start library process if no file is configured and the feature is enabled
 	if files.ConfigFile.AutotaggerrProcessOnStartUp && filePath == nil {
-		go processLibraries(files.ConfigFile.AutotaggerrLibraries, lidarrClient, plexClient, files.ConfigFile)
+		go scanRunner.RunAll()
 	}
 
 	// process file path
 	if filePath != nil && fileRootPath != nil {
 		refreshSet := modules.NewAlbumRefreshSet(nil)
 
-		_, _, err := modules.ProcessTrackFile(*filePath, lidarrClient, plexClient, refreshSet, *fileRootPath, files.ConfigFile)
-		if err != nil {
+		// Resolve the owning library's manager + tagger from the DB and run the
+		// component pipeline, which also records the correlation to library_items.
+		library, manager, tagger, buildErr := components.BuildForFile(db, *filePath, *fileRootPath)
+		if buildErr != nil {
+			logger.Log.Error("failed to build pipeline for file. error: " + buildErr.Error())
+		} else if _, _, err := components.ProcessFile(db, library, manager, tagger, plexClient, refreshSet, *filePath, *fileRootPath, files.ConfigFile.AutotaggerrVersion); err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
 
@@ -175,51 +207,74 @@ func main() {
 	}
 
 	// Initialize Router
-	router := initRouter()
+	router := initRouter(db, scanRunner, files.ConfigFile)
 
 	logger.Log.Info("router initialized. starting Autotaggerr at http://*:" + strconv.Itoa(files.ConfigFile.AutotaggerrPort))
 
 	log.Fatal(router.Run(":" + strconv.Itoa(files.ConfigFile.AutotaggerrPort)))
 }
 
-func initRouter() *gin.Engine {
+func initRouter(db *gorm.DB, scanRunner *scan.Runner, cfg models.ConfigStruct) *gin.Engine {
 	router := gin.Default()
-
-	router.LoadHTMLGlob("web/*/*.html")
-
-	// API endpoint
-	api := router.Group("/api")
-	{
-		api.GET("/ping", routers.APIPing)
-
-	}
 
 	router.Use(cors.New(cors.Config{
 		AllowOrigins: []string{"*"},
 		// AllowAllOrigins:  true,
-		AllowMethods:     []string{"GET", "POST", "PATCH"},
-		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "Access-Control-Allow-Origin"},
+		AllowMethods:     []string{"GET", "POST", "PATCH", "PUT", "DELETE"},
+		AllowHeaders:     []string{"Origin", "Content-Type", "Authorization", "X-Api-Key", "Access-Control-Allow-Origin"},
 		ExposeHeaders:    []string{"Content-Length"},
 		AllowCredentials: true,
 		AllowOriginFunc:  func(origin string) bool { return true },
 		MaxAge:           12 * time.Hour,
 	}))
 
-	// Static endpoint for different directories
-	router.Static("/txt", "./web/txt")
+	// Legacy liveness probe.
+	router.GET("/api/ping", routers.APIPing)
 
-	// Static endpoint for homepage
-	router.GET("/", func(c *gin.Context) {
-		c.HTML(http.StatusOK, "frontpage.html", nil)
-	})
+	// Versioned JSON API (auth + domain endpoints).
+	api := &routers.API{
+		DB:         db,
+		Scan:       scanRunner,
+		SigningKey: files.GetPrivateKey(0),
+		AppName:    cfg.AutotaggerrName,
+		Version:    cfg.AutotaggerrVersion,
+	}
+	api.Register(router.Group("/api/v1"))
 
-	// Static endpoint for robots.txt
-	router.GET("/robots.txt", func(c *gin.Context) {
-		TXTfile, err := os.ReadFile("./web/txt/robots.txt")
-		if err != nil {
-			logger.Log.Info("Reading manifest threw error trying to open the file. Error: " + err.Error())
+	// Serve the embedded single-page app. Real asset requests are served from the
+	// build; everything else falls back to index.html so client-side routing works.
+	// /api/* is never hijacked. Bytes are written directly (with the right MIME) to
+	// avoid http.FileServer's directory-index redirects.
+	distFS, err := fs.Sub(web.Dist, "dist")
+	if err != nil {
+		logger.Log.Fatal("failed to open embedded web assets. error: " + err.Error())
+	}
+	serveAsset := func(c *gin.Context, name string) {
+		data, readErr := fs.ReadFile(distFS, name)
+		if readErr != nil {
+			c.Status(http.StatusNotFound)
+			return
 		}
-		c.Data(http.StatusOK, "text/plain", TXTfile)
+		ctype := mime.TypeByExtension(path.Ext(name))
+		if ctype == "" {
+			ctype = "application/octet-stream"
+		}
+		c.Data(http.StatusOK, ctype, data)
+	}
+	router.NoRoute(func(c *gin.Context) {
+		reqPath := c.Request.URL.Path
+		if strings.HasPrefix(reqPath, "/api/") || reqPath == "/api" {
+			c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+			return
+		}
+		asset := strings.TrimPrefix(reqPath, "/")
+		if asset != "" {
+			if _, statErr := fs.Stat(distFS, asset); statErr == nil {
+				serveAsset(c, asset)
+				return
+			}
+		}
+		serveAsset(c, "index.html") // client-side route → SPA entry
 	})
 
 	return router
@@ -307,62 +362,4 @@ func parseFlags(configFile models.ConfigStruct) (models.ConfigStruct, *string, *
 	}
 
 	return configFile, filePath, fileRootPath, nil
-}
-
-func processLibraries(libraries []string, lidarrClient *modules.LidarrClient, plexClient *modules.PlexClient, configFile models.ConfigStruct) {
-	if !libraryScanRunning.CompareAndSwap(false, true) {
-		logger.Log.Warn("library scan skipped: previous run still in progress")
-		return
-	}
-	defer libraryScanRunning.Store(false)
-
-	jobMu.Lock()
-	defer jobMu.Unlock()
-
-	logger.Log.Info("library process task starting...")
-	startTime := time.Now()
-	count := 0
-	allUnchangedFiles := 0
-	allTagsWritten := 0
-	allErrorFiles := []string{}
-	allAlbumsWhoNeedMetadataRefresh := map[string]string{}
-
-	for _, library := range libraries {
-		albumsWhoNeedMetadataRefresh := allAlbumsWhoNeedMetadataRefresh
-		logger.Log.Info("processing library: " + library)
-		libraryCount, unchangedFiles, tagsWritten, errorFiles, albumsWhoNeedMetadataRefresh, err := modules.ScanFolderRecursive(library, lidarrClient, plexClient, albumsWhoNeedMetadataRefresh, configFile)
-		if err != nil {
-			logger.Log.Error("failed to process library '" + library + "'. error: " + err.Error())
-		} else {
-			count += libraryCount
-			allUnchangedFiles += unchangedFiles
-			allTagsWritten += tagsWritten
-			allErrorFiles = append(allErrorFiles, errorFiles...)
-			allAlbumsWhoNeedMetadataRefresh = albumsWhoNeedMetadataRefresh
-			logger.Log.Info("processed library: " + library)
-		}
-	}
-
-	for albumName, albumKey := range allAlbumsWhoNeedMetadataRefresh {
-		if err := plexClient.RefreshAlbum(albumKey); err != nil {
-			logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
-		}
-		logger.Log.Info("triggered Plex refresh for album: " + albumName)
-	}
-
-	endTime := time.Now()
-	durationTime := endTime.Sub(startTime)
-	filesChanged := count - allUnchangedFiles
-
-	logger.Log.Info("library process task finished. " + strconv.Itoa(count) + " files processed. " + strconv.Itoa(len(allErrorFiles)) + " files not processed because of errors. " + strconv.Itoa(filesChanged) + " files changed. " + strconv.Itoa(allTagsWritten) + " tags written")
-
-	if len(allErrorFiles) > 0 {
-		logString := "files that failed to be processed: "
-		for _, filePath := range allErrorFiles {
-			logString += "\n" + filePath
-		}
-		logger.Log.Warn(logString)
-	}
-
-	logger.Log.Info("process took: " + durationTime.String())
 }

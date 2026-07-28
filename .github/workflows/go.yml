@@ -28,6 +28,21 @@ jobs:
       - name: Install audio tools
         run: sudo apt-get update && sudo apt-get install -y flac ffmpeg
 
+      # The SPA must be built before any Go step: `go build`/`vet`/`test` compile
+      # package web, which embeds web/dist via go:embed.
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build web UI
+        run: |
+          cd webui
+          npm ci
+          npm run build
+
       - name: Format check (gofmt)
         run: |
           unformatted=$(gofmt -l .)

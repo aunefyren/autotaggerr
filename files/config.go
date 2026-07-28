@@ -76,6 +76,18 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.Database.Type == "" {
+		// Default to the pure-Go sqlite driver (CGO-free build).
+		ConfigFile.Database.Type = "sqlite"
+		anythingChanged = true
+	}
+
+	if ConfigFile.Database.DSN == "" {
+		// For sqlite the DSN is a file path under the config directory.
+		ConfigFile.Database.DSN = "config/autotaggerr.db"
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrPort == 0 {
 		// Set new value
 		ConfigFile.AutotaggerrPort = 8080
@@ -143,6 +155,7 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrPort = 8080
 	ConfigFile.AutotaggerrName = "Autotaggerr"
 	ConfigFile.AutotaggerrEnvironment = "prod"
+	ConfigFile.Database = models.DatabaseConfig{Type: "sqlite", DSN: "config/autotaggerr.db"}
 	ConfigFile.SMTPEnabled = true
 	ConfigFile.AutotaggerrVersion = autotaggerrVersionParameter
 	ConfigFile.AutotaggerrLibraries = []string{}

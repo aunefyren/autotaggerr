@@ -27,3 +27,9 @@ go.work.sum
 
 # config directory
 /config
+
+# web UI dependencies (installed via `npm ci` in webui/)
+/webui/node_modules
+# NOTE: web/dist (the built SPA) is intentionally NOT ignored — the Go binary
+# embeds it via go:embed, so committing it keeps `go build ./...` working without
+# a Node toolchain. CI rebuilds it from webui/ before every Go step.

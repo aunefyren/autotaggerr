@@ -21,11 +21,29 @@ go run . --file "<path>" --fileRoot "<library-root>"   # one-shot single-file pr
 
 ## CI gates (`.github/workflows/go.yml`)
 
-Every push/PR runs, in order: `gofmt` check → `go build` → `go vet` → `go test` with race +
-coverage. The workflow installs `flac` + `ffmpeg` so the audio fixture tests run in CI too.
-**`gofmt` and `go vet` are hard gates** — keep both clean or CI goes red. Commit
-files with LF endings (`.gitattributes` normalizes to LF; the working tree may show CRLF on
-Windows/WSL, which is fine — git stores LF).
+Every push/PR runs, in order: **build the web UI** (`npm ci && npm run build` in `webui/`) →
+`gofmt` check → `go build` → `go vet` → `go test` with race + coverage. The workflow installs
+`flac` + `ffmpeg` so the audio fixture tests run in CI too. **`gofmt` and `go vet` are hard
+gates** — keep both clean or CI goes red. Commit files with LF endings (`.gitattributes`
+normalizes to LF; the working tree may show CRLF on Windows/WSL, which is fine — git stores LF).
+
+## Web UI (`webui/` → `web/dist`)
+
+The frontend is a Vite + React + TypeScript SPA in `webui/`, styled entirely from the design
+tokens in `docs/style-guide.md` (see the "UI follows the style guide" rule above). It builds into
+`web/dist`, which the Go binary embeds via `go:embed` (`web/embed.go`) and serves with an
+index.html fallback for client-side routes — so the whole app ships in one binary.
+
+```bash
+cd webui
+npm ci            # install (Node 18+; Vite 4/React 18 are pinned for older Node too)
+npm run dev       # dev server on :5173, proxies /api to the Go service on :8080
+npm run build     # type-check + bundle into ../web/dist
+```
+
+**`web/dist` is committed** (not gitignored) so `go build ./...` works without a Node toolchain;
+rebuild and commit it when the UI changes. `webui/node_modules` is ignored. After changing the UI,
+run `npm run build` before building/running the Go binary, or the embedded assets will be stale.
 
 ## Git ownership
 
@@ -56,6 +74,10 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
 - **Caching**: MusicBrainz/Lidarr/Plex lookups cache to JSON under `./config/` with
   `*LoadCache`/`*SaveCache` helpers loaded at startup. MusicBrainz requests go through
   `RateLimit()` — route any new MusicBrainz call through it.
+- **UI follows the style guide.** Once `docs/style-guide.md` exists, *every* UI change must consult it
+  and either follow it or deliberately reshape it (updating the guide in the same change). Reuse the
+  shared design tokens, colors, elements, and principles as much as possible — do not introduce
+  one-off styles. See the "Standalone media manager" epic in `wip.md`.
 
 ## Versioning & release
 

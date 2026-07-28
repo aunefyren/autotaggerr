@@ -23,11 +23,22 @@ type LidarrTrack struct {
 }
 
 type LidarrAlbum struct {
-	ID             int64            `json:"id"`
-	Title          string           `json:"title"`
-	ForeignAlbumID string           `json:"foreignAlbumId"`
-	ArtistID       int64            `json:"artistId"`
-	Releases       []LidarrAlbumRel `json:"releases"`
+	ID             int64                 `json:"id"`
+	Title          string                `json:"title"`
+	ForeignAlbumID string                `json:"foreignAlbumId"` // MusicBrainz release-group ID
+	ArtistID       int64                 `json:"artistId"`
+	Monitored      bool                  `json:"monitored"`
+	AlbumType      string                `json:"albumType"`
+	ReleaseDate    string                `json:"releaseDate"`
+	Statistics     LidarrAlbumStatistics `json:"statistics"`
+	Releases       []LidarrAlbumRel      `json:"releases"`
+}
+
+// LidarrAlbumStatistics carries Lidarr's have/total track counts for an album,
+// which the collection mirror maps to owned/partial state.
+type LidarrAlbumStatistics struct {
+	TrackCount     int `json:"trackCount"`
+	TrackFileCount int `json:"trackFileCount"`
 }
 
 type LidarrAlbumRel struct {

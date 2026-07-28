@@ -4,7 +4,6 @@ import (
 	"flag"
 	"io"
 	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -13,30 +12,11 @@ import (
 )
 
 func init() {
-	// processLibraries logs through logger.Log, which is nil until InitLogger runs.
+	// main logs through logger.Log, which is nil until InitLogger runs.
 	if logger.Log == nil {
 		logger.Log = logrus.New()
 		logger.Log.SetOutput(io.Discard)
 	}
-}
-
-// TestProcessLibraries drives the scheduled-scan entry point over a temp library
-// containing an invalid audio file. With nil clients and no MB IDs, no network is
-// touched: the file is counted as an error and the run completes cleanly. This
-// covers processLibraries + the ScanFolderRecursive error path end to end.
-func TestProcessLibraries(t *testing.T) {
-	root := t.TempDir()
-	albumDir := filepath.Join(root, "Artist", "Album (2020)")
-	if err := os.MkdirAll(albumDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(albumDir, "01 track.flac"), []byte("not a real flac"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := models.ConfigStruct{AutotaggerrProcessConcurrency: 2}
-	// nil Lidarr/Plex clients: no external services are contacted.
-	processLibraries([]string{root}, nil, nil, cfg)
 }
 
 // runParseFlags invokes parseFlags with a fresh flag set + os.Args so it can be

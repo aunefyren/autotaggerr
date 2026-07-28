@@ -1,0 +1,91 @@
+/* App shell layout. Component/token styles live in theme.css. */
+
+.app {
+  display: grid;
+  grid-template-columns: 210px 1fr;
+  height: 100vh;
+}
+
+/* Sidebar */
+.sidebar {
+  background: var(--bg);
+  border-right: 1px solid var(--border);
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px 14px;
+  font-weight: 600;
+  font-size: 14px;
+}
+.brand .logo {
+  width: 22px; height: 22px; border-radius: 5px;
+  background: linear-gradient(135deg, var(--accent), #4c7dff);
+  display: flex; align-items: center; justify-content: center; font-size: 12px;
+}
+.navitem {
+  height: 34px; display: flex; align-items: center; gap: 9px; padding: 0 10px;
+  border-radius: var(--radius); color: var(--text-muted); font-size: 13px;
+  position: relative; cursor: pointer; text-decoration: none;
+}
+.navitem .ic { width: 16px; text-align: center; opacity: 0.85; font-size: 13px; }
+.navitem:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.navitem.active { background: var(--accent-subtle); color: var(--accent-text); }
+.navitem.active::before {
+  content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+  background: var(--accent); border-radius: 2px;
+}
+.sidebar .spacer { flex: 1; }
+.sidebar .who { padding: 8px; font-size: 11px; color: var(--text-dim); border-top: 1px solid var(--border); }
+
+/* Main column */
+.main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+.topbar {
+  height: 48px; flex: none; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 20px; background: var(--surface-1);
+}
+.topbar .title { font-weight: 600; font-size: 15px; }
+.content { flex: 1; overflow-y: auto; padding: 20px; }
+
+/* Page primitives */
+.page-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; }
+.page-head h1 { font-size: 18px; }
+.row { display: flex; gap: 8px; align-items: center; }
+.stack { display: flex; flex-direction: column; gap: 12px; }
+.grid-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
+.stat .n { font-size: 28px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat .l { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-dim); }
+
+/* Login */
+.login-wrap { height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.login-card { width: 340px; max-width: 100%; }
+.login-card .brand { justify-content: center; font-size: 18px; padding-bottom: 4px; }
+.login-card .sub { text-align: center; color: var(--text-muted); margin-bottom: 18px; font-size: 12px; }
+
+/* Modal */
+.backdrop {
+  position: fixed; inset: 0; background: rgba(13, 11, 20, 0.7);
+  display: flex; align-items: center; justify-content: center; padding: 20px; z-index: 40;
+}
+.modal {
+  width: 440px; max-width: 100%; background: var(--surface-3);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-2); padding: 18px;
+}
+.modal.wide { width: 680px; }
+.modal .scroll { max-height: 60vh; overflow-y: auto; }
+.modal h2 { font-size: 15px; margin-bottom: 14px; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+
+/* Responsive */
+@media (max-width: 720px) {
+  .app { grid-template-columns: 1fr; }
+  .sidebar { display: none; }
+}

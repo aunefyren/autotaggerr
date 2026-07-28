@@ -250,6 +250,26 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 	return match, nil
 }
 
+// GetArtists returns every artist Lidarr manages (with their MusicBrainz IDs),
+// used by the collection mirror to match Autotaggerr artists to Lidarr.
+func (c *LidarrClient) GetArtists() ([]models.LidarrArtist, error) {
+	var artists []models.LidarrArtist
+	if err := c.getJSON("/api/v1/artist", &artists); err != nil {
+		return nil, err
+	}
+	return artists, nil
+}
+
+// GetArtistAlbums returns an artist's albums with monitoring + have/total track
+// statistics, which the mirror maps onto owned/wanted release-groups.
+func (c *LidarrClient) GetArtistAlbums(artistID int64) ([]models.LidarrAlbum, error) {
+	var albums []models.LidarrAlbum
+	if err := c.getJSON(fmt.Sprintf("/api/v1/album?artistId=%d", artistID), &albums); err != nil {
+		return nil, err
+	}
+	return albums, nil
+}
+
 // retrieves the Lidarr album object from a Lidarr artist ID and album ID
 func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, error) {
 	albumKey := strconv.FormatInt(albumID, 10)

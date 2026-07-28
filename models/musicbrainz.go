@@ -174,3 +174,19 @@ type MusicBrainzMedia struct {
 	Format      string  `json:"format"`
 	Tracks      []Track `json:"tracks"`
 }
+
+// MusicBrainzArtistReleaseGroups is the response of the release-group browse
+// endpoint (release-group?artist=<id>), used to build an artist's discography.
+type MusicBrainzArtistReleaseGroups struct {
+	Count         int                             `json:"release-group-count"`
+	Offset        int                             `json:"release-group-offset"`
+	ReleaseGroups []MusicBrainzArtistReleaseGroup `json:"release-groups"`
+}
+
+type MusicBrainzArtistReleaseGroup struct {
+	ID               string   `json:"id"`
+	Title            string   `json:"title"`
+	PrimaryType      string   `json:"primary-type"`
+	SecondaryTypes   []string `json:"secondary-types"`
+	FirstReleaseDate string   `json:"first-release-date"`
+}
