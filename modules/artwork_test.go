@@ -238,14 +238,43 @@ func TestArtworkCacheKeySeparatesSizes(t *testing.T) {
 	}
 }
 
+// TestSniffImageType: fanart.tv serves a mix of formats behind extensionless URLs
+// and CDNs mislabel Content-Type, so the bytes are the only reliable answer. The
+// negative cases matter most — an error page cached as a cover would be served
+// forever.
 func TestSniffImageType(t *testing.T) {
-	if got := sniffImageType(jpegBytes); got != "image/jpeg" {
-		t.Errorf("jpeg sniffed as %q", got)
+	cases := []struct {
+		name string
+		data []byte
+		want string
+	}{
+		{"jpeg", jpegBytes, "image/jpeg"},
+		{"png", []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A, 0x00}, "image/png"},
+		{"webp", []byte("RIFF____WEBPVP8 "), "image/webp"},
+		{"gif", []byte("GIF89a__________"), "image/gif"},
+		{"html error page", []byte("<html>nope</html>"), ""},
+		{"empty", nil, ""},
+		{"too short to identify", []byte{0xFF}, ""},
 	}
-	if got := sniffImageType([]byte("RIFF____WEBPVP8 ")); got != "image/webp" {
-		t.Errorf("webp sniffed as %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sniffImageType(tc.data); got != tc.want {
+				t.Errorf("sniffImageType = %q, want %q", got, tc.want)
+			}
+		})
 	}
-	if got := sniffImageType([]byte("<html>")); got != "" {
-		t.Errorf("html sniffed as %q; want no type", got)
+}
+
+// TestOrDefault: an empty base URL on a data source row means "use the provider's
+// real endpoint", not "request nothing".
+func TestOrDefault(t *testing.T) {
+	if got := orDefault("", "fallback"); got != "fallback" {
+		t.Errorf("orDefault(empty) = %q, want fallback", got)
+	}
+	if got := orDefault("   ", "fallback"); got != "fallback" {
+		t.Errorf("orDefault(blank) = %q, want fallback", got)
+	}
+	if got := orDefault("https://configured", "fallback"); got != "https://configured" {
+		t.Errorf("orDefault = %q, want the configured value", got)
 	}
 }

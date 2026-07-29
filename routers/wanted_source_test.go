@@ -19,13 +19,13 @@ func album(mbid string) models.CollectionReleaseGroup {
 func TestAutoWantRequiresFollowing(t *testing.T) {
 	artist := models.CollectionArtist{MBID: "a1", ManagedBy: models.ManagedByAutotaggerr, Monitored: false}
 
-	view := newReleaseGroupView(album("rg1"), false, false, artist, nil)
+	view := newReleaseGroupView(album("rg1"), false, false, artist, nil, nil)
 	if view.Wanted || view.WantedSource != "" {
 		t.Errorf("unfollowed artist produced wanted=%v source=%q", view.Wanted, view.WantedSource)
 	}
 
 	artist.Monitored = true
-	view = newReleaseGroupView(album("rg1"), false, false, artist, nil)
+	view = newReleaseGroupView(album("rg1"), false, false, artist, nil, nil)
 	if !view.Wanted || view.WantedSource != wantedSourceAuto {
 		t.Errorf("followed artist: wanted=%v source=%q, want auto", view.Wanted, view.WantedSource)
 	}
@@ -38,7 +38,7 @@ func TestAutoWantRequiresFollowing(t *testing.T) {
 func TestFollowDoesNotGovernManagedArtists(t *testing.T) {
 	artist := models.CollectionArtist{MBID: "a1", ManagedBy: models.ManagedByLidarr, Monitored: true}
 
-	view := newReleaseGroupView(album("rg1"), true, false, artist, nil)
+	view := newReleaseGroupView(album("rg1"), true, false, artist, nil, nil)
 	if view.WantedSource == wantedSourceAuto {
 		t.Error("a Lidarr-managed artist reported a native follow as the reason an album is wanted")
 	}
@@ -48,7 +48,7 @@ func TestFollowDoesNotGovernManagedArtists(t *testing.T) {
 
 	// Mixed artists have at least one Lidarr-managed library, so the same holds.
 	artist.ManagedBy = models.ManagedByMixed
-	if view := newReleaseGroupView(album("rg1"), true, false, artist, nil); view.WantedSource == wantedSourceAuto {
+	if view := newReleaseGroupView(album("rg1"), true, false, artist, nil, nil); view.WantedSource == wantedSourceAuto {
 		t.Error("a mixed-managed artist reported an auto want")
 	}
 }
@@ -60,14 +60,14 @@ func TestManagerMonitoringIsTheWantedSourceForManagedArtists(t *testing.T) {
 	rg := album("rg1")
 	rg.InCatalog, rg.CatalogMonitored = true, true
 
-	view := newReleaseGroupView(rg, true, false, artist, nil)
+	view := newReleaseGroupView(rg, true, false, artist, nil, nil)
 	if !view.Wanted || view.WantedSource != wantedSourceManager {
 		t.Errorf("wanted=%v source=%q, want manager", view.Wanted, view.WantedSource)
 	}
 
 	// Monitored in the catalog but not actually in it is not a want.
 	rg.InCatalog = false
-	if view := newReleaseGroupView(rg, true, false, artist, nil); view.Wanted {
+	if view := newReleaseGroupView(rg, true, false, artist, nil, nil); view.Wanted {
 		t.Errorf("album absent from the catalog was reported wanted: %+v", view)
 	}
 }
@@ -80,11 +80,11 @@ func TestExplicitWantOutranksEverything(t *testing.T) {
 		{MBID: "a1", ManagedBy: models.ManagedByAutotaggerr, Monitored: true},
 		{MBID: "a1", ManagedBy: models.ManagedByLidarr, Monitored: true},
 	} {
-		anyEdition := newReleaseGroupView(album("rg1"), true, true, artist, nil)
+		anyEdition := newReleaseGroupView(album("rg1"), true, true, artist, nil, nil)
 		if anyEdition.WantedSource != wantedSourceExplicit {
 			t.Errorf("any-edition want under %s: source = %q", artist.ManagedBy, anyEdition.WantedSource)
 		}
-		editions := newReleaseGroupView(album("rg1"), true, false, artist, []string{"rel-1"})
+		editions := newReleaseGroupView(album("rg1"), true, false, artist, []string{"rel-1"}, nil)
 		if editions.WantedSource != wantedSourceExplicit {
 			t.Errorf("specific-edition want under %s: source = %q", artist.ManagedBy, editions.WantedSource)
 		}

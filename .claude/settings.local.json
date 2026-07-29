@@ -5,7 +5,8 @@
       "Bash(go build *)",
       "Bash(go vet *)",
       "Bash(go test *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(gofmt -l routers/)"
     ]
   }
 }

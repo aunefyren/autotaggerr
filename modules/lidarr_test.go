@@ -334,3 +334,72 @@ func TestLidarrHealthCheck(t *testing.T) {
 		t.Errorf("HealthCheck = (%v, %v), want (true, nil)", ok, err)
 	}
 }
+
+// TestLidarrGetArtists: the collection mirror matches Autotaggerr artists to Lidarr
+// by MusicBrainz ID, so the ID has to survive the round trip — matching by name is
+// exactly what the mirror is avoiding.
+func TestLidarrGetArtists(t *testing.T) {
+	resetLidarrCaches()
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/artist": []models.LidarrArtist{
+			{ID: 1, Name: "Radiohead", ForeignArtistID: "a74b1b7f-71a5-4011-9441-d0b5e4122711"},
+			{ID: 2, Name: "Pink Floyd", ForeignArtistID: "83d91898-7763-47d7-b03b-b92132375c47"},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	artists, err := client.GetArtists()
+	if err != nil {
+		t.Fatalf("GetArtists: %v", err)
+	}
+	if len(artists) != 2 {
+		t.Fatalf("artists = %d, want 2", len(artists))
+	}
+	if artists[0].ForeignArtistID != "a74b1b7f-71a5-4011-9441-d0b5e4122711" {
+		t.Errorf("first artist MBID = %q", artists[0].ForeignArtistID)
+	}
+}
+
+// TestLidarrGetArtistAlbums: the mirror maps Lidarr's have/total statistics onto
+// owned and wanted release-groups, so both the monitored flag and the counts matter.
+func TestLidarrGetArtistAlbums(t *testing.T) {
+	resetLidarrCaches()
+	albums := []models.LidarrAlbum{
+		{ID: 10, Title: "OK Computer", ForeignAlbumID: "rg-1", Monitored: true},
+		{ID: 11, Title: "Kid A", ForeignAlbumID: "rg-2", Monitored: false},
+	}
+	mock := newLidarrMock(t, map[string]any{"/api/v1/album": albums})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	got, err := client.GetArtistAlbums(1)
+	if err != nil {
+		t.Fatalf("GetArtistAlbums: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("albums = %d, want 2", len(got))
+	}
+	if got[0].ForeignAlbumID != "rg-1" || !got[0].Monitored {
+		t.Errorf("first album = %+v", got[0])
+	}
+	if got[1].Monitored {
+		t.Error("an unmonitored album came back monitored")
+	}
+}
+
+// TestLidarrClientReportsHTTPFailures: an unreachable or unhappy Lidarr must be an
+// error the caller can report, not an empty list that reads as "you own nothing".
+func TestLidarrClientReportsHTTPFailures(t *testing.T) {
+	resetLidarrCaches()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+	client := NewLidarrClient(server.URL, "wrong-key", nil)
+
+	if _, err := client.GetArtists(); err == nil {
+		t.Error("a 401 from Lidarr was reported as success")
+	}
+	if _, err := client.GetArtistAlbums(1); err == nil {
+		t.Error("a 401 from Lidarr was reported as success")
+	}
+}

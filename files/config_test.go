@@ -129,3 +129,55 @@ func TestGetPrivateKey(t *testing.T) {
 		t.Errorf("GetPrivateKey = %q, want %q", got, want)
 	}
 }
+
+// TestGetPrivateKeyRecoversFromACorruptKey: the signing key is what every session
+// token is signed with, so a config file holding an unparseable one must self-heal
+// rather than take the service down. The cost is that existing sessions stop
+// verifying, which is the correct trade — they were signed with a key nobody has.
+func TestGetPrivateKeyRecoversFromACorruptKey(t *testing.T) {
+	// ResetSecureKey persists the replacement, so the config paths must point
+	// somewhere writable that is not the real ./config.
+	redirectConfig(t)
+
+	original := ConfigFile
+	t.Cleanup(func() { ConfigFile = original })
+
+	ConfigFile.PrivateKey = "this is not base64!!!"
+	got := GetPrivateKey(0)
+
+	if len(got) == 0 {
+		t.Fatal("GetPrivateKey returned no key after a corrupt one")
+	}
+	// The replacement is a real 64-byte key, and it was written back so the next
+	// start does not have to regenerate it again.
+	if len(got) != 64 {
+		t.Errorf("recovered key length = %d, want 64", len(got))
+	}
+	if ConfigFile.PrivateKey == "this is not base64!!!" {
+		t.Error("the corrupt key was left in the config")
+	}
+	if _, err := base64.StdEncoding.DecodeString(ConfigFile.PrivateKey); err != nil {
+		t.Errorf("the replacement key is not valid base64: %v", err)
+	}
+}
+
+// TestResetSecureKeyReplacesTheKey: called when a key is unusable, and directly by
+// GetPrivateKey's recovery path.
+func TestResetSecureKeyReplacesTheKey(t *testing.T) {
+	redirectConfig(t)
+
+	original := ConfigFile
+	t.Cleanup(func() { ConfigFile = original })
+
+	ConfigFile.PrivateKey = base64.StdEncoding.EncodeToString([]byte("the-old-key"))
+	before := ConfigFile.PrivateKey
+
+	ResetSecureKey()
+
+	if ConfigFile.PrivateKey == before {
+		t.Error("ResetSecureKey left the old key in place")
+	}
+	if _, err := base64.StdEncoding.DecodeString(ConfigFile.PrivateKey); err != nil {
+		t.Errorf("new key is not valid base64: %v", err)
+	}
+}

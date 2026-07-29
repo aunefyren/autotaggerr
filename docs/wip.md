@@ -22,7 +22,14 @@ repeatedly found faults no test could — the UI claiming a state the data did n
   pressings of to be meaningful at all.
 - **AcoustID identification** — needs a real client key from acoustid.org, plus `fpcalc` (already in
   the Docker image; `libchromaprint-tools` on Ubuntu).
-- **OIDC login** — never tested against a real identity provider.
+- **OIDC login** — never tested against a real identity provider. The flow is now covered end to
+  end against a *fake* one (`auth/oidc_flow_test.go` for `StartLogin`/`CompleteLogin`,
+  `routers/oidc_flow_test.go` for the two redirects): real discovery document, real JWKS, real RS256
+  ID token, plus the refusals (state mismatch, forged flow cookie, replayed nonce, wrong audience,
+  expired token, unverified email). That retires the "is the plumbing wired" question. What a fake
+  cannot predict is where real issuers differ — a trailing slash in the issuer, `email_verified`
+  sent as a string, group claims, clock skew — so a session against an actual provider is still
+  worth having.
 - **Artwork on a real collection.** The Cover Art Archive path was verified end to end against one
   real release-group (fetched, cached, served, cache-hit on the second call), but never against a
   browsing page with hundreds of rows. What to watch: first-paint behaviour on a cold cache, how many

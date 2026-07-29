@@ -455,3 +455,25 @@ func TestRebuildReportsUnknownProvenance(t *testing.T) {
 		t.Errorf("managed_by = %q, want unknown", a.ManagedBy)
 	}
 }
+
+// TestFollowGoverns: a stored follow flag only governs while the artist is natively
+// managed. This is the guard for the bug where a stale Monitored flag — set before
+// the artist became Lidarr-managed — kept producing automatic wants that the artist
+// page offered no control to turn off.
+func TestFollowGoverns(t *testing.T) {
+	cases := map[string]bool{
+		models.ManagedByAutotaggerr: true,
+		models.ManagedByLidarr:      false,
+		models.ManagedByMixed:       false,
+		// Unresolvable provenance is not a manager's claim, so the native follow
+		// settings are still the only thing that could decide.
+		models.ManagedByUnknown: true,
+		"":                      true,
+	}
+	for managedBy, want := range cases {
+		artist := models.CollectionArtist{ManagedBy: managedBy, Monitored: true}
+		if got := FollowGoverns(artist); got != want {
+			t.Errorf("FollowGoverns(managed_by=%q) = %v, want %v", managedBy, got, want)
+		}
+	}
+}

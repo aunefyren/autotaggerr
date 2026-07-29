@@ -139,12 +139,19 @@ const (
 	wantedSourceManager  = "manager"
 )
 
+// desiredRecordings is a parameter rather than a field assigned by the caller
+// afterwards, because two of the three callers set it that way and the third
+// forgot — so `GET /artists/:mbid` reported "whole album" for a want that had
+// specific tracks, while the discography endpoint reported it correctly. The UI
+// falls back from one to the other when MusicBrainz is down, so the two must agree.
+// A required argument cannot be forgotten; a field set after construction can.
 func newReleaseGroupView(
 	rg models.CollectionReleaseGroup,
 	hasCatalog bool,
 	anyEdition bool,
 	artist models.CollectionArtist,
 	desiredReleases []string,
+	desiredRecordings []string,
 ) releaseGroupView {
 	explicit := anyEdition || len(desiredReleases) > 0
 	source := ""
@@ -161,8 +168,13 @@ func newReleaseGroupView(
 	case artist.Monitored && collection.FollowWantsStored(artist, rg.PrimaryType, rg.SecondaryTypes):
 		source = wantedSourceAuto
 	}
+	// Empty slices, not nil: the UI reads .length on both, and a JSON null would
+	// make every row check for it.
 	if desiredReleases == nil {
 		desiredReleases = []string{}
+	}
+	if desiredRecordings == nil {
+		desiredRecordings = []string{}
 	}
 	return releaseGroupView{
 		CollectionReleaseGroup: rg,
@@ -172,6 +184,7 @@ func newReleaseGroupView(
 		WantedSource:           source,
 		WantedAnyEdition:       anyEdition,
 		DesiredReleases:        desiredReleases,
+		DesiredRecordings:      desiredRecordings,
 	}
 }
 
@@ -274,12 +287,16 @@ func (a *API) getArtist(c *gin.Context) {
 	// a set one narrows the want to that edition.
 	anyEdition := map[string]bool{}
 	editions := map[string][]string{}
+	recordings := map[string][]string{}
 	for _, d := range desires {
 		if d.ReleaseMBID == "" {
 			anyEdition[d.ReleaseGroupMBID] = true
-			continue
+		} else {
+			editions[d.ReleaseGroupMBID] = append(editions[d.ReleaseGroupMBID], d.ReleaseMBID)
 		}
-		editions[d.ReleaseGroupMBID] = append(editions[d.ReleaseGroupMBID], d.ReleaseMBID)
+		// Across every desire of the group, whichever edition each names: the row
+		// reports what songs were asked for, not which edition they came from.
+		recordings[d.ReleaseGroupMBID] = append(recordings[d.ReleaseGroupMBID], d.RecordingMBIDs...)
 	}
 
 	catalogued := hasCatalog(groups)[mbid]
@@ -289,7 +306,7 @@ func (a *API) getArtist(c *gin.Context) {
 	}
 	views := make([]releaseGroupView, 0, len(groups))
 	for _, rg := range groups {
-		view := newReleaseGroupView(rg, catalogued, anyEdition[rg.MBID], artist, editions[rg.MBID])
+		view := newReleaseGroupView(rg, catalogued, anyEdition[rg.MBID], artist, editions[rg.MBID], recordings[rg.MBID])
 		view.OwnedEditions = editionCounts[rg.MBID]
 		views = append(views, view)
 	}
@@ -604,8 +621,7 @@ func (a *API) discography(c *gin.Context) {
 				FirstReleaseDate: g.FirstReleaseDate,
 			}
 		}
-		view := newReleaseGroupView(rg, catalogued, anyEdition[g.ID], artist, editions[g.ID])
-		view.DesiredRecordings = recordings[g.ID]
+		view := newReleaseGroupView(rg, catalogued, anyEdition[g.ID], artist, editions[g.ID], recordings[g.ID])
 		view.OwnedEditions = editionCounts[g.ID]
 		out = append(out, view)
 	}
@@ -725,8 +741,7 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 		recordings = append(recordings, d.RecordingMBIDs...)
 	}
 
-	view := newReleaseGroupView(rg, catalogued, anyEdition, artist, editionIDs)
-	view.DesiredRecordings = recordings
+	view := newReleaseGroupView(rg, catalogued, anyEdition, artist, editionIDs, recordings)
 
 	editions, err := collection.ReleaseGroupEditions(rgMBID)
 	if err != nil {

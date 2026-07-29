@@ -23,10 +23,36 @@ go run . --file "<path>" --fileRoot "<library-root>"   # one-shot single-file pr
 ## CI gates (`.github/workflows/go.yml`)
 
 Every push/PR runs, in order: **build the web UI** (`npm ci && npm run build` in `webui/`) →
-`gofmt` check → `go build` → `go vet` → `go test` with race + coverage. The workflow installs
+`gofmt` check → `go build` → `go vet` → `go test` with race + coverage → **coverage gate**. The workflow installs
 `flac` + `ffmpeg` so the audio fixture tests run in CI too. **`gofmt` and `go vet` are hard
 gates** — keep both clean or CI goes red. Commit files with LF endings (`.gitattributes`
 normalizes to LF; the working tree may show CRLF on Windows/WSL, which is fine — git stores LF).
+
+### The coverage gate
+
+`COVERAGE_MIN` in the workflow (currently **75**) fails the build when total statement coverage
+drops below it. Two things about it are easy to get wrong:
+
+- **Coverage is per package.** `go test ./...` without `-coverpkg` credits a package only for what
+  its *own* tests execute. `auth.Middleware` read 0% for a long time even though every `routers`
+  test went through it — a handler test proves the route is wired, not that the boundary holds. So
+  test a package from inside that package, and do not expect an integration test to raise the
+  number somewhere else.
+- **Anything talking to MusicBrainz needs its stub.** `musicbrainzBaseURL` is a package var for
+  exactly this; `withMockMB` in `modules/musicbrainz_http_test.go` points it at an `httptest`
+  server and resets the caches and rate limiter. It is unexported, so tests in *other* packages
+  cannot stub MusicBrainz — those handlers can only be covered on the paths that return before the
+  external call (unknown artist, blank query). A test that depends on musicbrainz.org being
+  reachable fails for reasons unrelated to the change that broke it.
+
+To find the cheapest remaining gaps, sum the uncovered statements per file rather than reading
+percentages — a 40%-covered 300-statement file matters more than a 0%-covered 10-statement one:
+
+```bash
+go test -covermode=atomic -coverprofile=cover.out ./...
+awk -F'[: ]' 'NR>1 {n=$(NF-1); c=$NF; t[$1]+=n; if(c=="0") u[$1]+=n}
+  END {for (f in t) printf "%5d %5d %s\n", u[f]+0, t[f], f}' cover.out | sort -rn | head -20
+```
 
 ## Web UI (`webui/` → `web/dist`)
 
