@@ -8,6 +8,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -57,6 +58,19 @@ func deleteEntity[T any](a *API, c *gin.Context) {
 
 // --- Data sources -----------------------------------------------------------
 
+// validDataSourceType lists the providers the app knows how to talk to. Kept as
+// one function so the create and update paths cannot drift apart.
+func validDataSourceType(t string) bool {
+	switch t {
+	case models.DataSourceTypeMusicBrainz,
+		models.DataSourceTypeAcoustID,
+		models.DataSourceTypeCoverArtArchive,
+		models.DataSourceTypeFanart:
+		return true
+	}
+	return false
+}
+
 type dataSourceInput struct {
 	Name      *string  `json:"name"`
 	Type      *string  `json:"type"`
@@ -105,7 +119,7 @@ func (a *API) createDataSource(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name and type are required"})
 		return
 	}
-	if *in.Type != models.DataSourceTypeMusicBrainz && *in.Type != models.DataSourceTypeAcoustID {
+	if !validDataSourceType(*in.Type) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported data source type"})
 		return
 	}
@@ -133,10 +147,21 @@ func (a *API) updateDataSource(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	if in.Type != nil && !validDataSourceType(*in.Type) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported data source type"})
+		return
+	}
 	in.apply(&ds)
 	if err := a.DB.Save(&ds).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 		return
+	}
+	// Artwork lookups remember "no image for this MBID" for a day. Those answers
+	// were recorded under the old settings — most likely before this source had a
+	// key at all — so keeping them would make a freshly configured provider look
+	// broken until tomorrow.
+	if ds.Type == models.DataSourceTypeFanart || ds.Type == models.DataSourceTypeCoverArtArchive {
+		modules.ResetArtworkNegativeCache()
 	}
 	c.JSON(http.StatusOK, ds)
 }

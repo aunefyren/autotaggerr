@@ -144,6 +144,157 @@ table.data tbody tr:hover td { background: var(--surface-2); }
 table.data td.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
 table.data td .path { font-family: var(--font-mono); color: var(--text); font-size: 12px; }
 
+/* Artwork — a cover is structure, so it always occupies its square, image or not.
+   The fallback is a neutral monogram: a per-artist hue would break the one-accent
+   rule and turn a browsing aid into confetti. */
+.artwork {
+  flex: none; border-radius: var(--radius-sm); background: var(--surface-2);
+  object-fit: cover; display: block;
+}
+.artwork-fallback {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-family: var(--font-mono); font-weight: 500; color: var(--text-dim);
+  border: 1px solid var(--border); letter-spacing: 0.02em; user-select: none;
+}
+.artwork-lg { border-radius: var(--radius); }
+
+/* Coverage meter (signature) — one cell per item below the cap, a proportional
+   bar above it. Colours are the diff language: owned = added, partial = warning. */
+.coverage { display: inline-flex; align-items: center; gap: 2px; vertical-align: middle; }
+.coverage-cell { width: 4px; height: 12px; border-radius: 1px; flex: none; }
+.coverage-cell.full { background: var(--diff-add-text); }
+.coverage-cell.half { background: var(--warning); }
+.coverage-cell.none { background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border); }
+.coverage-track {
+  display: flex; height: 6px; width: 100%; min-width: 80px; overflow: hidden;
+  background: var(--surface-2); border-radius: var(--radius-pill);
+  box-shadow: inset 0 0 0 1px var(--border);
+}
+.coverage-fill { display: block; height: 100%; }
+.coverage-fill.full { background: var(--diff-add-text); }
+.coverage-fill.half { background: var(--warning); }
+
+/* Disk marker — the glyph that keeps colour from being the only signal. */
+.disk-marker { font-size: 12px; line-height: 1; flex: none; }
+.disk-marker.full { color: var(--diff-add-text); }
+.disk-marker.half { color: var(--warning-text); }
+.disk-marker.none { color: var(--text-muted); }
+
+/* Entity header — the artist/album page opener: art, identity, coverage, actions. */
+.entity-head {
+  position: relative; overflow: hidden;
+  background: var(--surface-1); border: 1px solid var(--border);
+  border-radius: var(--radius-lg); padding: var(--space-6);
+  display: flex; gap: 16px; align-items: flex-start;
+}
+/* The one place an image is allowed to be atmosphere. Capped low and always under
+   a scrim, so header text keeps its contrast whatever the image is. */
+.entity-backdrop {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; opacity: 0.18; z-index: 0;
+  mask-image: linear-gradient(100deg, transparent 0%, rgba(0, 0, 0, 0.6) 45%, #000 100%);
+  -webkit-mask-image: linear-gradient(100deg, transparent 0%, rgba(0, 0, 0, 0.6) 45%, #000 100%);
+}
+.entity-head::after {
+  content: ""; position: absolute; inset: 0; z-index: 1;
+  background: linear-gradient(90deg, var(--surface-1) 0%, rgba(20, 18, 28, 0.86) 55%, rgba(20, 18, 28, 0.7) 100%);
+}
+.entity-head > * { position: relative; z-index: 2; }
+.entity-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.entity-head h1 { font-size: 20px; }
+.entity-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.entity-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+/* Header facts: separated by hairline middots, wrapping as one paragraph rather
+   than a grid of labelled cells — they are read, not compared. */
+.entity-meta {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  font-size: 12px; color: var(--text-muted);
+}
+.entity-meta .sep { color: var(--border-strong); }
+.entity-coverage { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.entity-coverage .cov-label { font-size: 12px; color: var(--text-muted); font-family: var(--font-mono); }
+@media (max-width: 720px) {
+  .entity-head { flex-direction: column; }
+  .entity-head::after { background: linear-gradient(180deg, rgba(20, 18, 28, 0.75) 0%, var(--surface-1) 70%); }
+}
+
+/* Table toolbar — one query, plus the chips that narrow it. */
+.table-toolbar {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.table-toolbar .toolbar-search { flex: 1 1 200px; max-width: 320px; }
+.table-toolbar .toolbar-count { font-size: 11px; margin-left: auto; white-space: nowrap; }
+
+/* Filter chip — a count that is also a control. */
+.chip {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px 0 10px;
+  background: transparent; border: 1px solid var(--border); border-radius: var(--radius-pill);
+  color: var(--text-muted); font-family: inherit; font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease), border-color var(--dur) var(--ease);
+}
+.chip:hover { background: var(--surface-2); color: var(--text); }
+.chip:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.chip:disabled { opacity: 0.45; cursor: default; }
+.chip.on { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent-text); }
+.chip .chip-n { font-size: 11px; color: var(--text-dim); font-variant-numeric: tabular-nums; }
+.chip.on .chip-n { color: var(--accent-text); }
+.chip-warn.on { background: var(--warning-bg); border-color: var(--warning); color: var(--warning-text); }
+.chip-warn.on .chip-n { color: var(--warning-text); }
+
+/* Sortable column header */
+.sortbtn {
+  display: inline-flex; align-items: center; gap: 5px; padding: 0; border: none;
+  background: none; cursor: pointer; font: inherit; letter-spacing: inherit;
+  text-transform: inherit; color: inherit;
+}
+.sortbtn:hover { color: var(--text); }
+.sortbtn:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--radius-sm); }
+.sortbtn.active { color: var(--text); }
+.sortbtn .caret { font-size: 8px; color: var(--text-dim); }
+.sortbtn.active .caret { color: var(--accent-text); }
+
+/* Grouped table sections — Albums / EPs / Singles, each collapsible. Grouping is
+   real data (the MusicBrainz primary type), not visual chunking. One table with a
+   tbody per section, so every section shares one set of column widths. */
+table.data tbody tr.group-row td { padding: 0; height: auto; background: var(--surface-2); }
+table.data tbody tr.group-row:hover td { background: var(--surface-2); }
+.group-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 8px 12px; background: var(--surface-2); border: none; border-bottom: 1px solid var(--border);
+  color: var(--text); font-family: inherit; font-size: 12px; font-weight: 600; cursor: pointer; text-align: left;
+}
+.group-head:hover { background: var(--surface-3); }
+.group-head:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent-ring); }
+.group-head .twisty { font-size: 9px; color: var(--text-dim); width: 9px; flex: none; }
+.group-head .group-n { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); font-weight: 400; }
+.group-head .group-cov { margin-left: auto; }
+.group-section + .group-section { margin-top: 0; }
+
+/* Edition / track rows — a checkbox that is the want, and a body that selects.
+   Two jobs, two hit areas: that split is what removed the need for a mode switch
+   above the panes. */
+.edition-row, .track-row {
+  display: flex; align-items: flex-start; gap: 10px;
+  padding: 8px 12px; border-top: 1px solid var(--border);
+}
+.edition-row.active { background: var(--accent-subtle); box-shadow: inset 2px 0 0 var(--accent); }
+.edition-row:hover, .track-row:hover { background: var(--surface-2); }
+.edition-row.active:hover { background: var(--accent-subtle); }
+.edition-row input[type="checkbox"], .track-row input[type="checkbox"] { margin-top: 1px; flex: none; }
+/* The selecting half of an edition row: a real button, so the tracklist can be
+   reached without a mouse. */
+.edition-pick {
+  flex: 1; min-width: 0; text-align: left; background: none; border: none;
+  padding: 0; font: inherit; color: inherit; cursor: pointer;
+}
+.edition-pick:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--radius-sm); }
+/* The visible defaults — "Any edition", "All tracks". They sit above their list
+   and read as part of it, not as a separate control. */
+.any-row, .all-row { align-items: center; background: var(--surface-2); cursor: pointer; }
+.any-row:hover, .all-row:hover { background: var(--surface-3); }
+.track-row { align-items: center; padding: 4px 12px; border-top: none; cursor: pointer; }
+.all-row { padding: 8px 12px; }
+
 /* Progress */
 .track { height: 4px; background: var(--surface-2); border-radius: var(--radius-pill); overflow: hidden; }
 .track > i { display: block; height: 100%; background: var(--info); border-radius: inherit; transition: width var(--dur-slow) var(--ease); }

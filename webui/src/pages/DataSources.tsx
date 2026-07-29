@@ -65,6 +65,11 @@ export default function DataSources() {
   );
 }
 
+/** Which providers authenticate. The Cover Art Archive and MusicBrainz do not. */
+function needsKey(type: string): boolean {
+  return type === "acoustid" || type === "fanart";
+}
+
 function DataSourceForm({
   initial,
   onClose,
@@ -114,6 +119,8 @@ function DataSourceForm({
           <select className="select" value={type} onChange={(e) => setType(e.target.value)} disabled={editing}>
             <option value="musicbrainz">MusicBrainz</option>
             <option value="acoustid">AcoustID</option>
+            <option value="coverartarchive">Cover Art Archive</option>
+            <option value="fanart">fanart.tv</option>
           </select>
           {type === "acoustid" && (
             <span className="dim" style={{ fontSize: 11 }}>
@@ -121,21 +128,39 @@ function DataSourceForm({
               opt-in; it only ever suggests a match for you to confirm.
             </span>
           )}
+          {type === "coverartarchive" && (
+            <span className="dim" style={{ fontSize: 11 }}>
+              Album covers, matched by MusicBrainz ID. No key needed. One is added for you already —
+              a second does nothing.
+            </span>
+          )}
+          {type === "fanart" && (
+            <span className="dim" style={{ fontSize: 11 }}>
+              Artist portraits and backdrops for the collection pages. MusicBrainz has no artist
+              images, so this is the only source for them.
+            </span>
+          )}
         </div>
 
-        <div className="field">
-          <label className="flabel">API key</label>
-          <input
-            className="input mono"
-            type="password"
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-            placeholder={editing ? "Unchanged" : "Your AcoustID client key"}
-          />
-          <span className="dim" style={{ fontSize: 11 }}>
-            Stored, never shown again. Get one free at acoustid.org/new-application.
-          </span>
-        </div>
+        {/* Only the keyed providers show a key field. Offering one for the Cover Art
+            Archive would imply a credential it does not have. */}
+        {needsKey(type) && (
+          <div className="field">
+            <label className="flabel">API key</label>
+            <input
+              className="input mono"
+              type="password"
+              value={apiKey}
+              onChange={(e) => setApiKey(e.target.value)}
+              placeholder={editing ? "Unchanged" : type === "fanart" ? "Your fanart.tv personal key" : "Your AcoustID client key"}
+            />
+            <span className="dim" style={{ fontSize: 11 }}>
+              {type === "fanart"
+                ? "Stored, never shown again. Get one free at fanart.tv — sign in, then Add API key."
+                : "Stored, never shown again. Get one free at acoustid.org/new-application."}
+            </span>
+          </div>
+        )}
 
         <div className="field">
           <label className="flabel">Base URL</label>

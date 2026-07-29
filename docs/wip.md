@@ -23,6 +23,18 @@ repeatedly found faults no test could — the UI claiming a state the data did n
 - **AcoustID identification** — needs a real client key from acoustid.org, plus `fpcalc` (already in
   the Docker image; `libchromaprint-tools` on Ubuntu).
 - **OIDC login** — never tested against a real identity provider.
+- **Artwork on a real collection.** The Cover Art Archive path was verified end to end against one
+  real release-group (fetched, cached, served, cache-hit on the second call), but never against a
+  browsing page with hundreds of rows. What to watch: first-paint behaviour on a cold cache, how many
+  rows resolve to no cover at all, and whether `config/artwork/` grows to a size worth pruning.
+- **fanart.tv artist images** — needs a personal API key from fanart.tv, added as a `fanart` data
+  source. Entirely untested against the real service: the thumb/backdrop resolution is covered only
+  by a stubbed response. Without a key, artists show monogram tiles, which *is* the tested path.
+- **The reworked browsing pages** (collection / artist / release-group). Rebuilt around artwork,
+  coverage meters, sortable-filterable tables and grouped catalogue sections; the release-group page
+  lost its three scope buttons in favour of checkboxes on the editions and tracks themselves. Worth a
+  session with a real library: whether the Albums/EPs/Singles/Other split puts things where you expect,
+  and whether ticking editions and tracks records the want you meant.
 
 ## Open work
 

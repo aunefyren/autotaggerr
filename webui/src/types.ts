@@ -282,6 +282,23 @@ export interface Edition extends ReleaseSearchResult {
   complete: boolean;
 }
 
+/**
+ * Who an artist is, from MusicBrainz — a live read, never stored, and never
+ * required: the artist page renders without it and simply says less.
+ */
+export interface ArtistInfo {
+  /** MusicBrainz's own vocabulary: "Person", "Group", "Orchestra", … */
+  type: string;
+  disambiguation: string;
+  country: string;
+  /** Where they are from — begin area if MusicBrainz has one, else the country's area. */
+  area: string;
+  begin: string;
+  end: string;
+  ended: boolean;
+  genres: string[] | null;
+}
+
 export interface ArtistDetail {
   artist: CollectionArtist;
   release_groups: CollectionReleaseGroup[];

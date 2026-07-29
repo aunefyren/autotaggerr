@@ -138,15 +138,24 @@ artist is natively managed.
 These came out of live testing and are recorded in [style-guide.md](style-guide.md); they are
 repeated here because they are about *this* data model.
 
-- **Intent is UI state; only outcomes go in the database.** Two of the three desire scopes have an
-  empty state the DB cannot represent — "specific tracks, none picked" stores byte-identically to
-  "whole album", and "specific editions, none marked" stores like no want at all. Scope is therefore
-  component state, seeded once from what is stored, and only fully-expressed choices persist.
+- **Make the default a control, and the unrepresentable states go away.** The release-group page used
+  to carry three scope buttons (any release · whole album / any release · specific tracks / specific
+  editions) above interactive panes that could express the same thing more precisely. Scope had to be
+  component state, because two of the three had an empty state the DB cannot hold: "specific tracks,
+  none picked" stores byte-identically to "whole album", and "specific editions, none marked" stores
+  like no want at all.
+  Both problems were the *modes*, not the data. Giving each default a real checkbox — an **Any
+  edition** row above the edition list, an **All tracks** row above the tracklist — makes those states
+  visible, selectable and returnable-to, and leaves nothing for a mode to remember. There is now no
+  scope state at all: every checkbox reads straight off the stored desire rows, and a summary line
+  under the header says what they add up to. Two controls for one intention is one too many, and the
+  buttons were the weaker one.
 - **Derived state is never a toggle.** An `auto` or `manager` want is shown as state (a pill naming
   the authority) with the toggle frozen, plus a separate **Pin** action to make it yours. A toggle
   whose off direction silently does nothing is worse than a disabled one.
-- **A derived state still has a value.** A want with no desire rows means *any release, whole
-  album*, so the editor opens on that rather than on "nothing wanted".
+- **A derived state still has a value.** A want with no desire rows means *any edition, whole
+  album*, so the page shows **Any edition** and **All tracks** ticked (and frozen — narrowing is
+  allowed, switching it off is not) rather than an unticked list next to a wanted album.
 - **The label carries the state** — `Following`/`Follow`, `Wanted`/`Want`. An accent fill alone was
   consistently read as an invitation to click.
 - **One word per concept.** "Wanted" everywhere; never "monitor" in the UI (it is the DB field
@@ -158,6 +167,7 @@ repeated here because they are about *this* data model.
 |----------|---------|
 | `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts |
 | `GET /artists/:mbid` | artist detail: release-groups (with derived `complete`, `discrepancy`, `wanted*`) + desires |
+| `GET /artists/:mbid/info` | who the artist is (kind, origin, active years, top genres) — a live MusicBrainz entity read for the page header, cached 24h. Its own endpoint so the page never waits on it; a failure means the header shows less, never an error. |
 | `GET /artists/:mbid/discography` | live MusicBrainz read of *all* release-group types, **not stored** — browsing a catalogue must never require committing to it, or inflate the missing count. Cached 6h; a stale copy beats an empty page when MB is down. |
 | `GET /artists/:mbid/release-groups/:rgid` | the group, every edition (annotated with owned state), and that group's desires, in one call |
 | `POST /artists` · `GET /search/artists` | add an artist you own nothing of |
@@ -169,17 +179,61 @@ repeated here because they are about *this* data model.
 
 ## UI
 
-- `/collection` — artist list: completeness, provenance badge, wanted summary.
-- `/collection/:mbid` — the artist page: stat row, follow panel, discography table with filter tabs.
-- `/collection/:mbid/:rgid` — the release-group page: scope choice, then a `.rg-split` master/detail
-  with editions on the left and the selected edition's tracklist on the right. Each edition carries
-  its own Wanted toggle and its own track selection, mapping 1:1 onto desire rows. Recordings wanted
-  but absent from the edition on screen are **reported, not dropped**.
+These three are browsing surfaces first and editors second, which is what decides how they look: an
+artist avatar and album cover on every row, a coverage meter instead of columns of counts, and sort +
+filter state kept in the URL so opening an album and coming back does not reset the list. See
+[style-guide.md](style-guide.md) for the components (artwork, coverage meter, entity header, table
+toolbar, grouped sections).
 
-Both are real routes, not modals: they are browsing destinations as much as editors, and they want
-a URL and a back button.
+- `/collection` — artist list: avatar, provenance badge, coverage meter, missing/mismatch counts,
+  wanted summary. Sortable by name, missing and mismatch; filterable by text and by "mismatched".
+- `/collection/:mbid` — the artist page: an entity header (portrait, backdrop, kind/origin/years/
+  genres from `/info`, album coverage, Following toggle with the follow types behind a **Settings**
+  disclosure), a chip row that doubles as the counts and the filters, then the catalogue split into
+  **Albums / EPs / Singles / Other** collapsible sections. Anything carrying a secondary type (live,
+  compilation, remix, soundtrack) lands in *Other* — the same rule following already uses for what
+  counts as an album, and what keeps a reissue-heavy catalogue from burying the six records a person
+  thinks of as the discography. Singles and Other start closed.
+- `/collection/:mbid/:rgid` — the release-group page: an entity header (cover, type/year/artist, track
+  coverage, the derived want summary, Wanted/Pin), then a `.rg-split` master/detail with editions on
+  the left and the selected edition's tracklist on the right.
+  Each edition has a **checkbox** (want this edition) and a separate row body (show me its tracks) —
+  two jobs, two hit areas, so ticking never triggers a fetch. Above the list sits the **Any edition**
+  default row; above the tracklist, **All tracks**. Editions are filterable and sortable too, since a
+  reissued album can list forty. Recordings wanted but absent from the edition on screen are
+  **reported, not dropped**.
+
+All three are real routes, not modals: they are browsing destinations as much as editors, and they
+want a URL and a back button.
+
+## Artwork
+
+Covers come from the **Cover Art Archive** (keyed by release-group or release MBID, no credential,
+seeded enabled); artist portraits and backdrops from **fanart.tv** (keyed by artist MBID, needs the
+user's own API key, so it is not seeded — without it artists get monogram tiles and nothing else
+changes). Both are `DataSource` rows, administered on the Data sources page like AcoustID.
+
+`GET /artwork/:entity/:mbid` proxies them, and it is proxied rather than hot-linked for three
+reasons: the fanart.tv key must not reach the browser, the disk cache means a cover is fetched once
+per install instead of once per visitor, and a page of covers never reveals the user's IP to an
+external host. Three properties make it safe to call from a table with a hundred rows — a disk cache
+under `config/artwork/`, a **negative** cache so "no art for this MBID" is not re-asked on every
+paint, and single-flight so N rows racing for one uncached image make one upstream request. Its own
+per-host rate limiter, deliberately *not* the 1 req/s MusicBrainz one: a page of covers would take a
+minute to fill for no reason.
+
+The route is **public**, because an `<img>` tag cannot send an `Authorization` header. It leaks
+nothing — every response is a cover or a photo keyed by an MBID, the endpoint answers for any MBID
+rather than only ones in this collection, and the credentials stay server-side. The negative cache is
+bounded (`artworkNegativeMax`) precisely because an unauthenticated caller can ask about any id.
 
 ## Tests
+
+`modules/artwork_test.go` covers the artwork path against a stub provider: that the disk cache and the
+negative cache each hold (asserted by counting upstream requests, not by inspecting the caches), that
+concurrent rows single-flight, that a non-UUID or an impossible entity/kind pair is a *bad request*
+rather than a provider failure, and that an unconfigured provider is `ErrNoArtwork` rather than an
+error — a keyless fanart.tv is opt-out, not broken.
 
 `collection/` covers the rebuild, the disk/catalog separation, the Lidarr mapping (against a mock
 Lidarr), per-edition ownership and pruning, and that desires survive the most destructive rebuild.

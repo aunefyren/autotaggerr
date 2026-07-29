@@ -7,6 +7,9 @@ import { EmptyState, ErrorNote, Pill } from "../components/ui";
 import { useToast } from "../toast";
 import { MBLink } from "../components/MBLink";
 import { AddArtistModal } from "../components/AddArtistModal";
+import { Artwork } from "../components/Artwork";
+import { CoverageBar } from "../components/CoverageBar";
+import { FilterChip, SortHeader, TableToolbar, matches, useBrowse, useSorted } from "../components/browse";
 
 function ManagedBy({ managed_by }: { managed_by: string }) {
   if (managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
@@ -20,8 +23,6 @@ function ManagedBy({ managed_by }: { managed_by: string }) {
     </Pill>
   );
 }
-
-
 
 /**
  * What this artist is set to want, in one glance. Following and picking are the two
@@ -52,11 +53,20 @@ function WantedSummary({ artist }: { artist: CollectionArtist }) {
   return <span className="dim">—</span>;
 }
 
+/** Sort keys, kept next to the accessors so a header and its ordering cannot drift. */
+const SORT: Record<string, (ar: CollectionArtist) => string | number> = {
+  name: (ar) => ar.name,
+  albums: (ar) => ar.owned_count ?? 0,
+  missing: (ar) => ar.missing_count ?? 0,
+  mismatch: (ar) => ar.mismatch_count ?? 0,
+};
+
 export default function Collection() {
   const toast = useToast();
   const { data, err, loading, reload } = useFetch<CollectionArtist[]>(() => api.get("/artists"));
   const [rebuilding, setRebuilding] = useState(false);
   const [adding, setAdding] = useState(false);
+  const browse = useBrowse("name");
 
   const rebuild = async () => {
     setRebuilding(true);
@@ -87,6 +97,14 @@ export default function Collection() {
   const hasWanted = (ar: CollectionArtist) =>
     !ar.follow_governs || ar.monitored || (ar.picked_count ?? 0) > 0;
 
+  const onlyMismatched = browse.flag("mismatch") === "1";
+  const mismatchedCount = artists.filter((ar) => (ar.mismatch_count ?? 0) > 0).length;
+
+  const filtered = artists.filter(
+    (ar) => matches(browse.query, ar.name) && (!onlyMismatched || (ar.mismatch_count ?? 0) > 0)
+  );
+  const shown = useSorted(filtered, SORT[browse.sort] ?? SORT.name, browse.dir);
+
   return (
     <div className="stack">
       <div className="page-head">
@@ -100,7 +118,7 @@ export default function Collection() {
         </div>
       </div>
       <p className="muted" style={{ margin: 0, maxWidth: "70ch" }}>
-        Album counts are what Autotaggerr found on disk. <strong>Wanted</strong> is what you asked
+        The bar is what Autotaggerr found on disk. <strong>Wanted</strong> is what you asked
         for but do not have yet — either by following an artist, or by picking individual albums.
         Where disk and manager disagree, the album is flagged as a mismatch rather than one side
         silently winning.
@@ -116,52 +134,97 @@ export default function Collection() {
       )}
 
       {artists.length > 0 && (
-        <div className="tablewrap">
-          <table className="data">
-            <thead>
-              <tr>
-                <th>Artist</th>
-                <th>Managed by</th>
-                <th style={{ textAlign: "right" }}>Albums</th>
-                <th style={{ textAlign: "right" }}>Partial</th>
-                <th style={{ textAlign: "right" }}>Missing</th>
-                <th style={{ textAlign: "right" }}>Mismatch</th>
-                <th>Wanted</th>
-              </tr>
-            </thead>
-            <tbody>
-              {artists.map((ar) => (
-                <tr key={ar.mb_id}>
-                  <td style={{ color: "var(--text)" }}>
-                    <div className="row" style={{ gap: 8 }}>
-                      <Link to={`/collection/${ar.mb_id}`} style={{ color: "var(--text)" }}>{ar.name}</Link>
-                      {ar.origin === "manual" && (
-                        <span className="dim" style={{ fontSize: 11 }} title="Added by hand; no files owned yet">added</span>
-                      )}
-                      <MBLink entity="artist" mbid={ar.mb_id} />
-                    </div>
-                  </td>
-                  <td><ManagedBy managed_by={ar.managed_by} /></td>
-                  <td className="num">{ar.owned_count ?? 0}</td>
-                  <td className="num" style={{ color: (ar.partial_count ?? 0) > 0 ? "var(--warning-text)" : "var(--text-dim)" }}>
-                    {(ar.partial_count ?? 0) > 0 ? ar.partial_count : "—"}
-                  </td>
-                  <td className="num" style={{ color: (ar.missing_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}>
-                    {hasWanted(ar) ? (ar.missing_count ?? 0) : "—"}
-                  </td>
-                  <td
-                    className="num"
-                    style={{ color: (ar.mismatch_count ?? 0) > 0 ? "var(--warning-text)" : "var(--text-dim)" }}
-                    title={(ar.mismatch_count ?? 0) > 0 ? "Disk and manager disagree on some albums — open the artist for details" : undefined}
-                  >
-                    {(ar.mismatch_count ?? 0) > 0 ? ar.mismatch_count : "—"}
-                  </td>
-                  <td><WantedSummary artist={ar} /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <>
+          <TableToolbar
+            browse={browse}
+            placeholder="Filter artists"
+            showing={`${shown.length} of ${artists.length}`}
+          >
+            <FilterChip
+              on={onlyMismatched}
+              count={mismatchedCount}
+              label="Mismatched"
+              tone="warn"
+              title="Only artists where disk and manager disagree about some album"
+              onClick={() => browse.setFlag("mismatch", onlyMismatched ? null : "1")}
+            />
+          </TableToolbar>
+
+          {shown.length === 0 ? (
+            <div className="card">
+              <div className="dim" style={{ fontSize: 12 }}>No artist matches this filter.</div>
+            </div>
+          ) : (
+            <div className="tablewrap">
+              <table className="data">
+                <thead>
+                  <tr>
+                    <th style={{ width: 28 }}></th>
+                    <SortHeader browse={browse} sortKey="name">Artist</SortHeader>
+                    <th>Managed by</th>
+                    {/* One bar replaces the four bare count columns: "9 of 12 on disk"
+                        is the question those numbers were being read to answer. */}
+                    <th style={{ width: 190 }}>On disk</th>
+                    <SortHeader browse={browse} sortKey="missing" align="right" defaultDir="desc">Missing</SortHeader>
+                    <SortHeader browse={browse} sortKey="mismatch" align="right" defaultDir="desc">Mismatch</SortHeader>
+                    <th>Wanted</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((ar) => {
+                    const owned = ar.owned_count ?? 0;
+                    const complete = ar.complete_count ?? 0;
+                    const partial = ar.partial_count ?? 0;
+                    const total = owned + (hasWanted(ar) ? ar.missing_count ?? 0 : 0);
+                    return (
+                      <tr key={ar.mb_id}>
+                        <td>
+                          <Artwork entity="artist" mbid={ar.mb_id} name={ar.name} px={24} />
+                        </td>
+                        <td style={{ color: "var(--text)" }}>
+                          <div className="row" style={{ gap: 8 }}>
+                            <Link to={`/collection/${ar.mb_id}`} style={{ color: "var(--text)" }}>{ar.name}</Link>
+                            {ar.origin === "manual" && (
+                              <span className="dim" style={{ fontSize: 11 }} title="Added by hand; no files owned yet">added</span>
+                            )}
+                            <MBLink entity="artist" mbid={ar.mb_id} />
+                          </div>
+                        </td>
+                        <td><ManagedBy managed_by={ar.managed_by} /></td>
+                        <td>
+                          <div className="row" style={{ gap: 8 }}>
+                            <CoverageBar
+                              total={total}
+                              owned={complete}
+                              partial={partial}
+                              label={`${ar.name} albums`}
+                              width={90}
+                            />
+                            <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                              {owned}
+                              {total > owned && <span className="dim">/{total}</span>}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="num" style={{ color: (ar.missing_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}>
+                          {hasWanted(ar) ? (ar.missing_count ?? 0) : "—"}
+                        </td>
+                        <td
+                          className="num"
+                          style={{ color: (ar.mismatch_count ?? 0) > 0 ? "var(--warning-text)" : "var(--text-dim)" }}
+                          title={(ar.mismatch_count ?? 0) > 0 ? "Disk and manager disagree on some albums — open the artist for details" : undefined}
+                        >
+                          {(ar.mismatch_count ?? 0) > 0 ? ar.mismatch_count : "—"}
+                        </td>
+                        <td><WantedSummary artist={ar} /></td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
       )}
 
       {adding && <AddArtistModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}

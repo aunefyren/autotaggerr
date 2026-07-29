@@ -79,6 +79,77 @@ func GetMusicBrainzArtistReleaseGroups(artistID string) ([]models.MusicBrainzArt
 	return all, nil
 }
 
+// Artist entity lookups are cached the same way as discographies, and for the same
+// reason: the artist page asks for this on every visit, and it is the kind of
+// reference data that changes once a decade.
+var (
+	artistLookupTTL     = 24 * time.Hour
+	artistLookupCache   = map[string]cachedArtistLookup{}
+	artistLookupCacheMu sync.RWMutex
+)
+
+type cachedArtistLookup struct {
+	artist  models.MusicBrainzArtistLookup
+	expires time.Time
+}
+
+// GetMusicBrainzArtist fetches who an artist is — kind, origin, active years,
+// genres. Rate limited like every other MusicBrainz call.
+//
+// Failure is not fatal to anything: the artist page renders from the database
+// without it, so callers log and carry on rather than surfacing an error.
+func GetMusicBrainzArtist(artistID string) (models.MusicBrainzArtistLookup, error) {
+	artistLookupCacheMu.RLock()
+	cached, ok := artistLookupCache[artistID]
+	artistLookupCacheMu.RUnlock()
+	if ok && time.Now().Before(cached.expires) {
+		return cached.artist, nil
+	}
+
+	if err := RateLimit(); err != nil {
+		return models.MusicBrainzArtistLookup{}, err
+	}
+
+	url := fmt.Sprintf("%s/artist/%s?inc=genres+tags&fmt=json", musicbrainzBaseURL, artistID)
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return models.MusicBrainzArtistLookup{}, err
+	}
+	req.Header.Set("User-Agent", "Autotaggerr/"+files.ConfigFile.AutotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if ok {
+			// Stale beats blank: these are facts about a person, not live data.
+			return cached.artist, nil
+		}
+		return models.MusicBrainzArtistLookup{}, fmt.Errorf("MusicBrainz request failed for artist %q: %w", artistID, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		if ok {
+			return cached.artist, nil
+		}
+		return models.MusicBrainzArtistLookup{}, fmt.Errorf("MusicBrainz returned HTTP %d for artist %q: %s",
+			resp.StatusCode, artistID, readBodySnippet(resp.Body))
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return models.MusicBrainzArtistLookup{}, err
+	}
+	var parsed models.MusicBrainzArtistLookup
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return models.MusicBrainzArtistLookup{}, fmt.Errorf("failed to parse artist %q: %w", artistID, err)
+	}
+
+	artistLookupCacheMu.Lock()
+	artistLookupCache[artistID] = cachedArtistLookup{artist: parsed, expires: time.Now().Add(artistLookupTTL)}
+	artistLookupCacheMu.Unlock()
+	return parsed, nil
+}
+
 // Discography lookups are cached in memory: browsing an artist pages through up to
 // five rate-limited requests, so re-opening the same artist would otherwise stall
 // the UI for seconds at a time. The cache is process-local and short-lived — a

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
@@ -13,6 +13,9 @@ import { ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { mediaSummary } from "../components/mediaSummary";
 import { useToast } from "../toast";
+import { Artwork } from "../components/Artwork";
+import { CoverageBar, DiskMarker } from "../components/CoverageBar";
+import { Browse, FilterChip, matches, sortRows, useBrowse } from "../components/browse";
 
 interface Detail {
   artist: CollectionArtist;
@@ -21,23 +24,22 @@ interface Detail {
   desires: CollectionDesire[];
 }
 
-/** The three shapes a want can take. Chosen explicitly so nothing is inferred. */
-type Scope = "any-whole" | "any-tracks" | "editions";
-
 /**
- * Seeds the scope from what is stored — and, when nothing is stored but the album
- * is wanted anyway (followed artist, or the manager monitors it), from what that
- * derived want *means*: any release, whole album. It has no desire rows, but it is
- * not "nothing wanted"; showing an empty scope next to a wanted album was the page
- * contradicting itself.
+ * What you want, on this album, is expressed by ticking things — not by first
+ * choosing a mode and then ticking things.
+ *
+ * An earlier version put three scope buttons above the panes ("any release · whole
+ * album", "any release · specific tracks", "specific editions") and left the panes
+ * interactive underneath. Two controls for one intention, and the buttons were the
+ * weaker of the two: they could not say *which* edition or *which* track, so the
+ * panes had to be used anyway. They are gone. The checkboxes are the only input,
+ * and the summary line under the header reports what they add up to.
+ *
+ * Both defaults are now visible rather than implied: "Any edition" is a real row at
+ * the top of the edition list, and "All tracks" is a real row at the top of the
+ * tracklist. That is what the modes were standing in for — and unlike the modes,
+ * a checkbox cannot be in a state the stored rows do not hold.
  */
-function scopeOf(desires: CollectionDesire[], derivedWant: boolean): Scope | null {
-  if (desires.length === 0) return derivedWant ? "any-whole" : null;
-  const any = desires.find((d) => !d.release_mb_id);
-  if (any) return (any.recording_mb_ids?.length ?? 0) > 0 ? "any-tracks" : "any-whole";
-  return "editions";
-}
-
 export default function ReleaseGroup() {
   const { mbid = "", rgid = "" } = useParams();
   const toast = useToast();
@@ -47,37 +49,52 @@ export default function ReleaseGroup() {
   );
 
   const [busy, setBusy] = useState(false);
+  const browse = useBrowse("date", "asc");
 
   const artist = data?.artist;
   const rg = data?.release_group;
   const editions = data?.editions ?? [];
   const desires = data?.desires ?? [];
 
-  // Scope is *intent*, and intent has empty states the database cannot hold:
-  // "specific tracks, none picked yet" stores exactly like "whole album", and
-  // "specific editions, none marked yet" stores like nothing at all. Deriving it
-  // from the rows made both choices un-selectable. So it is UI state, seeded once
-  // per release-group from what is stored, and the user owns it after that.
-  const [scope, setScope] = useState<Scope | null>(null);
-  const [seededFor, setSeededFor] = useState<string>("");
-  useEffect(() => {
-    if (!data || seededFor === rgid) return;
-    setScope(scopeOf(data.desires, data.release_group.wanted && data.desires.length === 0));
-    setSeededFor(rgid);
-  }, [data, rgid, seededFor]);
+  // The two shapes a stored want takes. "Any edition" and "these editions" are
+  // mutually exclusive: marking an edition is a narrowing of the want, not a second
+  // unrelated one.
+  const anyDesire = desires.find((d) => !d.release_mb_id);
+  const editionDesires = desires.filter((d) => d.release_mb_id);
 
-  // Which edition's tracklist is on screen. For "any release" this is only the
-  // list songs are being *picked from* — it does not narrow the want.
-  const [detailRelease, setDetailRelease] = useState<string | null>(null);
+  // A want with no desire rows behind it is derived — from following the artist or
+  // from the manager — so this page can display and narrow it, but not switch it off.
+  const derivedWant = !!rg?.wanted && desires.length === 0;
+  const isWanted = desires.length > 0 || !!rg?.wanted;
+  // A derived want *means* any edition, whole album, so the row reads as ticked even
+  // though nothing is stored. Showing it unticked next to a wanted album was the
+  // page contradicting itself.
+  const anyEditionOn = !!anyDesire || (derivedWant && editionDesires.length === 0);
 
-  // Default the detail pane to something useful: the first edition already wanted,
-  // else the earliest release (the most canonical tracklist for the album).
-  useEffect(() => {
-    if (detailRelease || editions.length === 0) return;
-    const wanted = desires.find((d) => d.release_mb_id)?.release_mb_id;
-    setDetailRelease(wanted || earliest(editions)?.id || editions[0].id);
-  }, [editions, desires, detailRelease]);
+  const managerLabel =
+    artist?.managed_by === "lidarr" || artist?.managed_by === "mixed" ? "Lidarr" : "the manager";
+  const derivedReason =
+    rg?.wanted_source === "manager"
+      ? `Wanted because ${managerLabel} monitors it.`
+      : "Wanted because you follow this artist.";
 
+  // Which edition's tracklist is on screen. Kept in the URL so coming back from
+  // elsewhere returns to the same one.
+  const selected = browse.flag("edition");
+  const detailRelease =
+    selected ||
+    editionDesires[0]?.release_mb_id ||
+    earliest(editions)?.id ||
+    editions[0]?.id ||
+    null;
+
+  /**
+   * Records a want. Widening back to "any edition" and narrowing to a specific one
+   * are both just this call: the server holds the rule that a release-group is
+   * either "any edition" or a set of specific ones, and clears the other side
+   * itself (see collection.SetDesire). Doing it here too would be a second copy of
+   * a rule that only needs one.
+   */
   const save = async (releaseMbid: string, recordings: string[]) => {
     if (!rg) return;
     setBusy(true);
@@ -127,35 +144,9 @@ export default function ReleaseGroup() {
     }
   };
 
-  // What is actually stored, so the helper text never claims a state the database
-  // does not hold yet.
-  const anyRelease = desires.find((d) => !d.release_mb_id);
-  const hasAnyRelease = !!anyRelease;
-  const anyRecordings = anyRelease?.recording_mb_ids?.length ?? 0;
-  const editionCount = desires.filter((d) => d.release_mb_id).length;
-
-  // A want with no desire rows behind it is derived — from following the artist or
-  // from the manager — so this page can display and narrow it, but not switch it off.
-  const derivedWant = !!rg?.wanted && desires.length === 0;
-  const isWanted = desires.length > 0 || !!rg?.wanted;
-  const managerLabel =
-    artist?.managed_by === "lidarr" || artist?.managed_by === "mixed" ? "Lidarr" : "the manager";
-  const derivedReason =
-    rg?.wanted_source === "manager"
-      ? `Wanted because ${managerLabel} monitors it.`
-      : "Wanted because you follow this artist.";
-
-  const chooseScope = async (next: Scope) => {
-    setScope(next);
-    // Only "any release · whole album" is fully expressed the moment it is chosen,
-    // so it is the only one that writes immediately. The other two persist when the
-    // user actually picks something — a track, or an edition. Writing on click
-    // would either store a row identical to whole-album or throw away an existing
-    // want before the replacement exists.
-    if (next === "any-whole") await save("", []);
-  };
-
   if (err) return <ErrorNote message={err} />;
+
+  const summary = wantSummary({ isWanted, anyEditionOn, anyDesire, editionDesires, derivedWant, derivedReason });
 
   return (
     <div className="stack">
@@ -165,17 +156,50 @@ export default function ReleaseGroup() {
         </Link>
       </div>
 
-      <div className="page-head">
-        <div className="row" style={{ gap: 10 }}>
-          <h1>{rg?.title ?? "Release group"}</h1>
-          <span className="dim mono" style={{ fontSize: 11 }}>
-            {[rg?.primary_type, rg?.secondary_types, (rg?.first_release_date || "").slice(0, 4)]
+      <div className="entity-head">
+        <Artwork
+          entity="release-group"
+          mbid={rgid}
+          name={rg?.title ?? "Album"}
+          px={120}
+          size={500}
+          className="artwork-lg"
+        />
+        <div className="entity-body">
+          <div className="eyebrow">
+            {[rg?.primary_type, rg?.secondary_types, (rg?.first_release_date || "").slice(0, 4), artist?.name]
               .filter(Boolean)
-              .join(" · ")}
-          </span>
-          <MBLink entity="release-group" mbid={rgid} />
+              .join(" · ") || "Album"}
+          </div>
+          <div className="entity-title">
+            <h1>{rg?.title ?? "Release group"}</h1>
+          </div>
+
+          {rg && rg.total_tracks > 0 && (
+            <div className="entity-coverage">
+              <CoverageBar
+                total={rg.total_tracks}
+                owned={rg.owned_tracks}
+                label="Tracks"
+                width={220}
+              />
+              <span className="cov-label">
+                {rg.owned_tracks}/{rg.total_tracks} tracks on disk
+                {rg.owned_editions > 1 && ` · ${rg.owned_editions} editions`}
+              </span>
+            </div>
+          )}
+
+          <div className="entity-meta">
+            {/* What is stored, in one sentence. This replaces the scope buttons:
+                the checkboxes below are the control, and this is the readout. */}
+            <span style={{ color: isWanted ? "var(--accent-text)" : "var(--text-dim)" }}>{summary}</span>
+            <span className="sep">·</span>
+            <MBLink entity="release-group" mbid={rgid} />
+          </div>
         </div>
-        <div className="row" style={{ gap: 8 }}>
+
+        <div className="entity-actions">
           {derivedWant && (
             <Pill kind="off">
               <span title={derivedReason}>{rg?.wanted_source === "manager" ? managerLabel : "auto"}</span>
@@ -193,17 +217,9 @@ export default function ReleaseGroup() {
                 ? `${derivedReason} Pin it, or narrow it below, to make it yours.`
                 : isWanted
                   ? "Wanted. Click to remove."
-                  : "Not wanted. Click to want any release, whole album."
+                  : "Not wanted. Click to want any edition, whole album."
             }
-            onClick={() => {
-              if (desires.length > 0) {
-                setScope(null);
-                dropAll();
-              } else {
-                setScope("any-whole");
-                save("", []);
-              }
-            }}
+            onClick={() => (desires.length > 0 ? dropAll() : save("", []))}
           >
             {isWanted ? "Wanted" : "Want"}
           </button>
@@ -212,52 +228,11 @@ export default function ReleaseGroup() {
               className="btn btn-secondary btn-sm"
               disabled={busy || loading}
               title="Ask for this album explicitly, so it stays wanted even if the reason above goes away"
-              onClick={() => { setScope("any-whole"); save("", []); }}
+              onClick={() => save("", [])}
             >
               Pin
             </button>
           )}
-        </div>
-      </div>
-
-      {rg?.owned && (
-        <div className="dim" style={{ fontSize: 12 }}>
-          On disk: {rg.owned_tracks}/{rg.total_tracks} tracks of the best-owned edition
-          {rg.owned_editions > 1 &&
-            `, across ${rg.owned_editions} editions — each is marked in the list below`}
-          .
-        </div>
-      )}
-
-      <div className="card">
-        <div className="eyebrow" style={{ marginBottom: 8 }}>What you want</div>
-        <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-          <ScopeChoice on={scope === "any-whole"} disabled={busy} onClick={() => chooseScope("any-whole")}>
-            Any release · whole album
-          </ScopeChoice>
-          <ScopeChoice on={scope === "any-tracks"} disabled={busy} onClick={() => chooseScope("any-tracks")}>
-            Any release · specific tracks
-          </ScopeChoice>
-          <ScopeChoice on={scope === "editions"} disabled={busy} onClick={() => chooseScope("editions")}>
-            Specific editions
-          </ScopeChoice>
-        </div>
-        <div className="dim" style={{ fontSize: 11, marginTop: 8 }}>
-          {scope === null && "Nothing wanted yet."}
-          {scope === "any-whole" &&
-            (derivedWant
-              ? `${derivedReason} That means any release, whole album. Narrowing it below records the choice as yours.`
-              : "Whichever pressing turns up counts. This is what most people want.")}
-          {scope === "any-tracks" &&
-            (anyRecordings > 0
-              ? `${anyRecordings} song${anyRecordings === 1 ? "" : "s"} wanted from any pressing that contains them.`
-              : "No songs picked yet, so the whole album is still wanted. Tick tracks on the right to narrow it.")}
-          {scope === "editions" &&
-            (editionCount > 0
-              ? `Only the ${editionCount} marked edition${editionCount === 1 ? "" : "s"} count.`
-              : hasAnyRelease
-                ? "No editions marked yet, so any release still counts. Marking one narrows it to that edition."
-                : "Mark the editions you want on the left. Each carries its own choice of whole album or specific tracks.")}
         </div>
       </div>
 
@@ -275,20 +250,28 @@ export default function ReleaseGroup() {
         <div className="rg-split">
           <EditionList
             editions={editions}
-            desires={desires}
-            scope={scope}
+            editionDesires={editionDesires}
+            anyEditionOn={anyEditionOn}
+            derivedWant={derivedWant}
+            derivedReason={derivedReason}
             selected={detailRelease}
             busy={busy}
-            onSelect={setDetailRelease}
-            onWantWhole={(id) => save(id, [])}
+            browse={browse}
+            onSelect={(id) => browse.setFlag("edition", id)}
+            onChooseAny={() => save("", [])}
+            onWantEdition={(id) => save(id, [])}
             onDrop={drop}
           />
           <TrackPane
             releaseMbid={detailRelease}
-            scope={scope}
-            desires={desires}
+            anyDesire={anyDesire}
+            anyEditionOn={anyEditionOn}
+            editionDesires={editionDesires}
+            derivedWant={derivedWant}
+            derivedReason={derivedReason}
             busy={busy}
-            onSave={save}
+            onSaveAny={(recordings) => save("", recordings)}
+            onSaveEdition={save}
             onDrop={drop}
           />
         </div>
@@ -297,146 +280,212 @@ export default function ReleaseGroup() {
   );
 }
 
-/** Earliest-dated release: the most canonical tracklist to pick songs from. */
-/** Disk marker colour, matching the artist page: ○ none, ◐ partial, ● complete. */
-function ownedColor(e: Edition): string {
-  if (!e.owned) return "var(--text-muted)";
-  return e.complete ? "var(--diff-add-text)" : "var(--warning-text)";
+/**
+ * The stored want in one sentence, in the same vocabulary as the checkboxes. The
+ * empty case says what the album *is* rather than what it is not.
+ */
+function wantSummary({
+  isWanted,
+  anyEditionOn,
+  anyDesire,
+  editionDesires,
+  derivedWant,
+  derivedReason,
+}: {
+  isWanted: boolean;
+  anyEditionOn: boolean;
+  anyDesire?: CollectionDesire;
+  editionDesires: CollectionDesire[];
+  derivedWant: boolean;
+  derivedReason: string;
+}): string {
+  if (!isWanted) return "Not wanted";
+  if (derivedWant) return `${derivedReason} Any edition, whole album.`;
+  if (anyEditionOn) {
+    const picked = anyDesire?.recording_mb_ids?.length ?? 0;
+    return picked > 0
+      ? `Wanted: ${picked} track${picked === 1 ? "" : "s"} from any edition`
+      : "Wanted: any edition, whole album";
+  }
+  const tracks = editionDesires.reduce((n, d) => n + (d.recording_mb_ids?.length ?? 0), 0);
+  const where = `${editionDesires.length} edition${editionDesires.length === 1 ? "" : "s"}`;
+  return tracks > 0 ? `Wanted: ${where}, ${tracks} track${tracks === 1 ? "" : "s"}` : `Wanted: ${where}, whole edition`;
 }
 
+/** Earliest-dated release: the most canonical tracklist to pick songs from. */
 function earliest(editions: Edition[]): Edition | undefined {
   return [...editions].sort((a, b) => (a.date || "9999").localeCompare(b.date || "9999"))[0];
 }
 
-function ScopeChoice({
-  on,
-  disabled,
-  onClick,
-  children,
-}: {
-  on: boolean;
-  disabled: boolean;
-  onClick: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <button
-      className={on ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
-      aria-pressed={on}
-      disabled={disabled}
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
-}
+const EDITION_SORT: Record<string, (e: Edition) => string | number> = {
+  date: (e) => e.date || "",
+  title: (e) => e.title,
+  tracks: (e) => e.media?.reduce((n, m) => n + (m["track-count"] ?? 0), 0) ?? 0,
+};
 
-/** Master: every edition, each carrying its own want state. */
+/**
+ * Master: every edition, each with a checkbox that *is* the want for it, and a row
+ * body that selects it for inspection. Two different jobs, so two different hit
+ * areas — conflating them is what made the old page need a mode switch to explain
+ * whether a click meant "want" or "look at".
+ */
 function EditionList({
   editions,
-  desires,
-  scope,
+  editionDesires,
+  anyEditionOn,
+  derivedWant,
+  derivedReason,
   selected,
   busy,
+  browse,
   onSelect,
-  onWantWhole,
+  onChooseAny,
+  onWantEdition,
   onDrop,
 }: {
   editions: Edition[];
-  desires: CollectionDesire[];
-  scope: Scope | null;
+  editionDesires: CollectionDesire[];
+  anyEditionOn: boolean;
+  derivedWant: boolean;
+  derivedReason: string;
   selected: string | null;
   busy: boolean;
+  browse: Browse;
   onSelect: (id: string) => void;
-  onWantWhole: (id: string) => void;
+  onChooseAny: () => void;
+  onWantEdition: (id: string) => void;
   onDrop: (id: string) => void;
 }) {
-  const perEdition = scope === "editions";
+  const ownedOnly = browse.flag("owned") === "1";
   const ownedCount = editions.filter((e) => e.owned).length;
+
+  const filtered = editions.filter(
+    (e) =>
+      matches(browse.query, e.title, e.disambiguation, e.country, e.status, (e.date || "").slice(0, 4)) &&
+      (!ownedOnly || e.owned)
+  );
+  const shown = sortRows(filtered, EDITION_SORT[browse.sort] ?? EDITION_SORT.date, browse.dir);
 
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-      <div className="row" style={{ justifyContent: "space-between", padding: "10px 12px 6px" }}>
-        <span className="eyebrow">Editions · {editions.length}</span>
-        {ownedCount > 0 && (
-          <span className="dim mono" style={{ fontSize: 11 }}>{ownedCount} on disk</span>
-        )}
+      <div style={{ padding: "10px 12px" }}>
+        <div className="row" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+          <span className="eyebrow">Editions · {editions.length}</span>
+          <div className="row" style={{ gap: 6 }}>
+            <select
+              className="select"
+              style={{ height: 28, width: "auto", fontSize: 12 }}
+              aria-label="Sort editions by"
+              value={browse.sort}
+              onChange={(e) => browse.setSort(e.target.value)}
+            >
+              <option value="date">Year</option>
+              <option value="title">Title</option>
+              <option value="tracks">Tracks</option>
+            </select>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm"
+              title={browse.dir === "asc" ? "Ascending — click for descending" : "Descending — click for ascending"}
+              aria-label={`Sort direction: ${browse.dir === "asc" ? "ascending" : "descending"}`}
+              onClick={() => browse.setSort(browse.sort, browse.dir === "asc" ? "desc" : "asc")}
+            >
+              {browse.dir === "asc" ? "▲" : "▼"}
+            </button>
+            <FilterChip
+              on={ownedOnly}
+              count={ownedCount}
+              label="On disk"
+              title="Only editions you have files for"
+              onClick={() => browse.setFlag("owned", ownedOnly ? null : "1")}
+            />
+          </div>
+        </div>
+        <input
+          className="input"
+          type="search"
+          style={{ height: 28, fontSize: 12 }}
+          placeholder="Filter by title, year, country"
+          aria-label="Filter editions"
+          value={browse.query}
+          onChange={(e) => browse.setQuery(e.target.value)}
+        />
       </div>
+
+      {/* The default, as a row you can see and click. It used to be implied by the
+          absence of marked editions, which meant the most common want was the one
+          state the page never showed. */}
+      <label
+        className="edition-row any-row"
+        title={
+          derivedWant
+            ? `${derivedReason} Any edition counts. Mark a specific edition below to narrow it.`
+            : "Any edition counts — whichever pressing turns up. This is what most people want."
+        }
+      >
+        <input
+          type="checkbox"
+          checked={anyEditionOn}
+          disabled={busy || derivedWant}
+          onChange={() => onChooseAny()}
+        />
+        <div style={{ minWidth: 0 }}>
+          <div style={{ color: "var(--text)", fontSize: 12 }}>Any edition</div>
+          <div className="dim" style={{ fontSize: 11 }}>Whichever pressing turns up counts</div>
+        </div>
+      </label>
+
       <div style={{ maxHeight: 420, overflowY: "auto" }}>
-        {editions.map((r) => {
-          const desire = desires.find((d) => d.release_mb_id === r.id);
+        {shown.length === 0 && (
+          <div className="dim" style={{ fontSize: 11, padding: 12 }}>No edition matches this filter.</div>
+        )}
+        {shown.map((r) => {
+          const desire = editionDesires.find((d) => d.release_mb_id === r.id);
           const tracks = desire?.recording_mb_ids?.length ?? 0;
-          const state = !desire ? "none" : tracks > 0 ? `${tracks} tracks` : "whole edition";
           const active = selected === r.id;
           return (
-            <div
-              key={r.id}
-              onClick={() => onSelect(r.id)}
-              style={{
-                padding: "8px 12px",
-                borderTop: "1px solid var(--border)",
-                background: active ? "var(--accent-subtle)" : undefined,
-                cursor: "pointer",
-              }}
-            >
-              <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
-                <div>
-                  <div className="row" style={{ gap: 6 }}>
-                    {/* Ownership is per edition: the release-group headline reports
-                        only its best-owned one, which is exactly what hid a second
-                        pressing before. */}
-                    <span
-                      style={{ color: ownedColor(r), fontSize: 12 }}
-                      title={
-                        !r.owned
-                          ? "No files of this edition"
-                          : r.complete
-                            ? "Every track of this edition is on disk"
-                            : "Some tracks of this edition are on disk"
-                      }
-                    >
-                      {!r.owned ? "\u25cb" : r.complete ? "\u25cf" : "\u25d0"}
-                    </span>
-                    <span style={{ color: "var(--text)", fontSize: 12 }}>
-                      {r.title}
-                      {r.disambiguation && <span className="dim"> ({r.disambiguation})</span>}
-                    </span>
-                  </div>
-                  <div className="dim mono" style={{ fontSize: 11 }}>
-                    {[
-                      (r.date || "").slice(0, 4),
-                      r.country,
-                      r.status,
-                      mediaSummary(r.media),
-                      r.owned ? `${r.owned_tracks}/${r.owned_total_tracks} on disk` : "",
-                    ]
-                      .filter(Boolean)
-                      .join(" \u00b7 ")}
-                  </div>
-                </div>
+            <div key={r.id} className={`edition-row${active ? " active" : ""}`}>
+              {/* Checkbox = want this edition. Deliberately outside the button
+                  below, so ticking never also re-selects and re-fetches. */}
+              <input
+                type="checkbox"
+                checked={!!desire}
+                disabled={busy}
+                aria-label={`Want the ${r.title} edition${r.date ? ` from ${r.date.slice(0, 4)}` : ""}`}
+                title={desire ? "Wanted. Untick to drop this edition." : "Want this edition — only marked editions will count."}
+                onChange={() => (desire ? onDrop(r.id) : onWantEdition(r.id))}
+              />
+              {/* Row body = inspect. A button so it is keyboard-reachable; the
+                  tracklist on the right follows it. */}
+              <button type="button" className="edition-pick" onClick={() => onSelect(r.id)}>
                 <div className="row" style={{ gap: 6 }}>
-                  <MBLink entity="release" mbid={r.id} />
-                  {perEdition && (
-                    <button
-                      className={desire ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
-                      aria-pressed={!!desire}
-                      disabled={busy}
-                      title={desire ? "Wanted. Click to remove this edition." : "Want this whole edition."}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        desire ? onDrop(r.id) : onWantWhole(r.id);
-                      }}
-                    >
-                      Wanted
-                    </button>
-                  )}
+                  {/* Ownership is per edition: the release-group headline reports
+                      only its best-owned one, which is exactly what hid a second
+                      pressing before. */}
+                  <DiskMarker owned={r.owned} complete={r.complete} what="files of this edition" />
+                  <span style={{ color: "var(--text)", fontSize: 12 }}>
+                    {r.title}
+                    {r.disambiguation && <span className="dim"> ({r.disambiguation})</span>}
+                  </span>
                 </div>
-              </div>
-              {perEdition && desire && (
-                <div className="dim mono" style={{ fontSize: 11, marginTop: 2, color: "var(--accent-text)" }}>
-                  {state}
+                <div className="dim mono" style={{ fontSize: 11 }}>
+                  {[
+                    (r.date || "").slice(0, 4),
+                    r.country,
+                    r.status,
+                    mediaSummary(r.media),
+                    r.owned ? `${r.owned_tracks}/${r.owned_total_tracks} on disk` : "",
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
                 </div>
-              )}
+                {desire && (
+                  <div className="mono" style={{ fontSize: 11, marginTop: 2, color: "var(--accent-text)" }}>
+                    {tracks > 0 ? `${tracks} tracks wanted` : "whole edition wanted"}
+                  </div>
+                )}
+              </button>
+              <MBLink entity="release" mbid={r.id} />
             </div>
           );
         })}
@@ -445,20 +494,37 @@ function EditionList({
   );
 }
 
-/** Detail: the selected edition's tracklist, with per-edition selection. */
+/**
+ * Detail: the selected edition's tracklist.
+ *
+ * Which want it edits depends on what is ticked on the left, and the header says
+ * which — the pane never silently writes to a row the user is not looking at:
+ *
+ *   this edition is marked  -> that edition's tracks
+ *   any edition is marked   -> the any-edition want's tracks
+ *   nothing is marked       -> ticking a track wants it from any edition
+ */
 function TrackPane({
   releaseMbid,
-  scope,
-  desires,
+  anyDesire,
+  anyEditionOn,
+  editionDesires,
+  derivedWant,
+  derivedReason,
   busy,
-  onSave,
+  onSaveAny,
+  onSaveEdition,
   onDrop,
 }: {
   releaseMbid: string | null;
-  scope: Scope | null;
-  desires: CollectionDesire[];
+  anyDesire?: CollectionDesire;
+  anyEditionOn: boolean;
+  editionDesires: CollectionDesire[];
+  derivedWant: boolean;
+  derivedReason: string;
   busy: boolean;
-  onSave: (releaseMbid: string, recordings: string[]) => void;
+  onSaveAny: (recordings: string[]) => void;
+  onSaveEdition: (releaseMbid: string, recordings: string[]) => void;
   onDrop: (releaseMbid: string) => void;
 }) {
   const tracks = useFetch<ReleaseTracks>(
@@ -466,41 +532,74 @@ function TrackPane({
     [releaseMbid]
   );
 
-  if (!releaseMbid) return <div className="card"><div className="dim" style={{ fontSize: 12 }}>Pick an edition.</div></div>;
+  if (!releaseMbid) {
+    return <div className="card"><div className="dim" style={{ fontSize: 12 }}>Pick an edition.</div></div>;
+  }
 
-  // Which desire row this pane edits: the edition's own when picking editions, the
-  // any-release row when songs are wanted from any pressing.
-  const target = scope === "editions" ? releaseMbid : "";
-  const desire = desires.find((d) => d.release_mb_id === target);
-  const selected = desire?.recording_mb_ids ?? [];
+  const editionDesire = editionDesires.find((d) => d.release_mb_id === releaseMbid);
+  const target: CollectionDesire | undefined = editionDesire ?? (anyEditionOn ? anyDesire : undefined);
+  const perEdition = !!editionDesire;
+  const selected = target?.recording_mb_ids ?? [];
   const list = tracks.data?.tracks ?? [];
 
-  // Ticking a track on an edition that is not yet marked simply wants it, with that
-  // track — requiring two clicks to express one intention is just friction.
-  const editable = scope === "any-tracks" || scope === "editions";
+  // Nothing picked means the whole thing — which is why "All tracks" is ticked and
+  // every track under it reads as ticked too. A derived want has no rows at all, yet
+  // it *means* the whole thing, so it reads the same: showing an unticked tracklist
+  // beside a header claiming "whole album" was the page arguing with itself.
+  const wholeThing = derivedWant || (!!target && selected.length === 0);
+  const isOn = (recordingId: string) => wholeThing || selected.includes(recordingId);
+
+  const write = (recordings: string[]) =>
+    perEdition ? onSaveEdition(releaseMbid, recordings) : onSaveAny(recordings);
+
+  const dropTarget = () => (perEdition ? onDrop(releaseMbid) : onDrop(""));
 
   const toggle = (recordingId: string) => {
+    if (wholeThing) {
+      // First narrowing: everything was wanted, so unticking one track means "all
+      // the others" — unless there are no others, on a single-track release, where
+      // it means the same as unticking "All tracks".
+      const rest = list.filter((t) => t.recording_id !== recordingId).map((t) => t.recording_id);
+      if (rest.length === 0) dropTarget();
+      else write(rest);
+      return;
+    }
     const next = selected.includes(recordingId)
       ? selected.filter((x) => x !== recordingId)
       : [...selected, recordingId];
-    // Clearing every track means the edition is no longer wanted at all — not
-    // "the whole edition", which would silently widen what was asked for.
-    if (next.length === 0 && scope === "editions") onDrop(releaseMbid);
-    else onSave(target, next);
+    // Clearing every track means it is no longer wanted at all — not "the whole
+    // thing", which would silently widen what was asked for.
+    if (next.length === 0) {
+      dropTarget();
+      return;
+    }
+    // A subset that happens to cover the entire tracklist is stored as the whole
+    // thing, so the want does not quietly become pressing-specific.
+    write(next.length === list.length ? [] : next);
   };
 
+  const toggleAll = () => {
+    // Unticking "All tracks" leaves nothing asked for, so the want goes.
+    if (wholeThing) dropTarget();
+    else write([]);
+  };
+
+  const partial = !!target && !wholeThing && selected.length > 0;
   // Recordings asked for that this edition does not carry — a deluxe and a
   // standard pressing do not share a tracklist. Surfaced rather than dropped.
   const absent = selected.filter((id) => !list.some((t) => t.recording_id === id));
 
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
-      <div style={{ padding: "10px 12px 6px" }}>
+      <div style={{ padding: "10px 12px 8px" }}>
         <div className="eyebrow">Tracks</div>
         <div className="dim" style={{ fontSize: 11, marginTop: 2 }}>
           {tracks.data?.release.title}
-          {scope === "any-tracks" && " · picking from this edition does not narrow the want"}
-          {scope === "editions" && !desire && " · tick a track to want this edition"}
+          {perEdition
+            ? " · ticks apply to this edition"
+            : anyEditionOn
+              ? " · ticks apply to any edition"
+              : " · ticking a track wants it from any edition"}
         </div>
         {absent.length > 0 && (
           <div style={{ fontSize: 11, marginTop: 4, color: "var(--warning-text)" }}>
@@ -508,24 +607,51 @@ function TrackPane({
           </div>
         )}
       </div>
+
+      {/* The other default made visible. "Whole album" was previously the absence
+          of track rows — a state with no control of its own. */}
+      <label
+        className="track-row all-row"
+        title={
+          derivedWant
+            ? `${derivedReason} That means every track. Untick individual tracks to narrow it and make it yours.`
+            : wholeThing
+              ? "Every track is wanted. Untick to stop wanting this."
+              : "Want every track, rather than the ones ticked below."
+        }
+      >
+        <input
+          type="checkbox"
+          checked={wholeThing}
+          ref={(el) => {
+            // Indeterminate is the honest state for a subset: neither all nor none.
+            if (el) el.indeterminate = partial;
+          }}
+          // Frozen for a derived want, like every other control that would otherwise
+          // claim to switch off a want whose reason lives elsewhere. Narrowing by
+          // individual track still works, and that is what makes the want yours.
+          disabled={busy || list.length === 0 || derivedWant}
+          onChange={toggleAll}
+        />
+        <span style={{ color: "var(--text)", fontSize: 12 }}>All tracks</span>
+        {partial && (
+          <span className="mono" style={{ fontSize: 11, color: "var(--accent-text)", marginLeft: "auto" }}>
+            {selected.length} of {list.length}
+          </span>
+        )}
+      </label>
+
       <div style={{ maxHeight: 420, overflowY: "auto", borderTop: "1px solid var(--border)" }}>
         {tracks.loading && <div className="dim" style={{ fontSize: 11, padding: 12 }}>Loading tracklist…</div>}
         {tracks.err && <div className="dim" style={{ fontSize: 11, padding: 12 }}>Could not load this tracklist.</div>}
         {list.map((t) => {
           const multiDisc = list.some((x) => x.medium !== t.medium);
           return (
-            <label
-              key={t.track_id}
-              className="row"
-              style={{
-                gap: 8, padding: "4px 12px", cursor: editable ? "pointer" : "default",
-                opacity: editable ? 1 : 0.5,
-              }}
-            >
+            <label key={t.track_id} className="track-row">
               <input
                 type="checkbox"
-                checked={selected.includes(t.recording_id)}
-                disabled={busy || !editable}
+                checked={isOn(t.recording_id)}
+                disabled={busy}
                 onChange={() => toggle(t.recording_id)}
               />
               <span className="dim mono" style={{ fontSize: 11, minWidth: 28, textAlign: "right" }}>

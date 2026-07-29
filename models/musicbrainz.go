@@ -191,6 +191,43 @@ type MusicBrainzArtistReleaseGroup struct {
 	FirstReleaseDate string   `json:"first-release-date"`
 }
 
+// MusicBrainzArtistLookup is the /artist/<id> entity lookup: who the artist is,
+// as opposed to what they released. It exists so the artist page can open with
+// facts (kind, origin, active years, genres) instead of only a name — none of this
+// is derivable from the files on disk, and none of it is worth persisting, since
+// it is reference data one rate-limited call away.
+type MusicBrainzArtistLookup struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	SortName       string `json:"sort-name"`
+	Disambiguation string `json:"disambiguation"`
+	// Type is "Person", "Group", "Orchestra", … — MusicBrainz's own vocabulary,
+	// passed through rather than translated.
+	Type    string `json:"type"`
+	Gender  string `json:"gender"`
+	Country string `json:"country"`
+	Area    struct {
+		Name string `json:"name"`
+	} `json:"area"`
+	BeginArea struct {
+		Name string `json:"name"`
+	} `json:"begin-area"`
+	LifeSpan struct {
+		Begin string `json:"begin"`
+		End   string `json:"end"`
+		Ended bool   `json:"ended"`
+	} `json:"life-span"`
+	Genres []MusicBrainzNamedCount `json:"genres"`
+	Tags   []MusicBrainzNamedCount `json:"tags"`
+}
+
+// MusicBrainzNamedCount is a genre or tag with its community vote count, which is
+// what makes it rankable — MusicBrainz returns them unsorted.
+type MusicBrainzNamedCount struct {
+	Name  string `json:"name"`
+	Count int    `json:"count"`
+}
+
 // MusicBrainzReleaseSearchResponse is the /release?query= search result, used by
 // manual attach to let a human find the right release for an unmatched file.
 type MusicBrainzReleaseSearchResponse struct {

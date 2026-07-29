@@ -100,8 +100,18 @@ func TestSeedFromConfig(t *testing.T) {
 		t.Fatalf("Seed: %v", err)
 	}
 
-	if got := count(t, db, &models.DataSource{}); got != 1 {
-		t.Errorf("data sources = %d, want 1", got)
+	// MusicBrainz (metadata) and the Cover Art Archive (album covers). Both are
+	// credential-free, so both are usable the moment they exist; fanart.tv is not
+	// seeded because it cannot work without a user's own API key.
+	if got := count(t, db, &models.DataSource{}); got != 2 {
+		t.Errorf("data sources = %d, want 2", got)
+	}
+	for _, want := range []string{models.DataSourceTypeMusicBrainz, models.DataSourceTypeCoverArtArchive} {
+		var n int64
+		db.Model(&models.DataSource{}).Where("type = ? AND enabled = ?", want, true).Count(&n)
+		if n != 1 {
+			t.Errorf("enabled %q data sources = %d, want 1", want, n)
+		}
 	}
 	if got := count(t, db, &models.TaggerProfile{}); got != 1 {
 		t.Errorf("tagger profiles = %d, want 1", got)
@@ -168,8 +178,8 @@ func TestSeedIdempotent(t *testing.T) {
 		t.Error("second seed should not recreate the admin user")
 	}
 
-	if got := count(t, db, &models.DataSource{}); got != 1 {
-		t.Errorf("data sources after re-seed = %d, want 1", got)
+	if got := count(t, db, &models.DataSource{}); got != 2 {
+		t.Errorf("data sources after re-seed = %d, want 2", got)
 	}
 	if got := count(t, db, &models.Manager{}); got != 1 {
 		t.Errorf("managers after re-seed = %d, want 1", got)

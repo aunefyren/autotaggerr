@@ -18,6 +18,14 @@ const (
 	// not releases, so it never replaces MusicBrainz — it suggests what a file is
 	// when nothing else can.
 	DataSourceTypeAcoustID = "acoustid"
+	// DataSourceTypeCoverArtArchive is album covers, keyed by release-group or
+	// release MBID. It needs no credential, so it is seeded enabled — artwork is
+	// browsing chrome, and nothing in the pipeline depends on it.
+	DataSourceTypeCoverArtArchive = "coverartarchive"
+	// DataSourceTypeFanart is artist portraits and backdrops. MusicBrainz has no
+	// artist images at all, so this is the only source for them — and it is useless
+	// without a personal API key, which is why it is not seeded.
+	DataSourceTypeFanart = "fanart"
 
 	ManagerTypeLidarr      = "lidarr"
 	ManagerTypeAutotaggerr = "autotaggerr"

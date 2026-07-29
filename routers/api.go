@@ -39,6 +39,14 @@ func (a *API) Register(rg *gin.RouterGroup) {
 	rg.GET("/auth/oidc/:id/start", a.startOIDCLogin)
 	rg.GET("/auth/oidc/:id/callback", a.completeOIDCLogin)
 
+	// Artwork is public, and has to be: it is loaded by <img> tags, which cannot
+	// send an Authorization header. It leaks nothing — every response is an album
+	// cover or artist photo keyed by a MusicBrainz ID, the endpoint answers for any
+	// MBID rather than only ones in this collection, and the providers' credentials
+	// stay server-side. See modules/artwork.go for the caching and rate limits that
+	// keep it from being a useful proxy to abuse.
+	rg.GET("/artwork/:entity/:mbid", a.artwork)
+
 	protected := rg.Group("")
 	protected.Use(auth.Middleware(a.DB, a.SigningKey))
 	{
@@ -116,6 +124,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/search/artists", a.searchArtists)
 		protected.POST("/artists", a.addArtist)
 		protected.GET("/release-groups/:mbid/releases", a.releaseGroupEditions)
+		protected.GET("/artists/:mbid/info", a.artistInfo)
 		protected.GET("/artists/:mbid/discography", a.discography)
 		protected.GET("/artists/:mbid/release-groups/:rgid", a.releaseGroupDetail)
 		protected.POST("/artists/:mbid/follow", a.updateFollow)

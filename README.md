@@ -34,6 +34,13 @@ There are other solutions that try to fix this, like a Beets plugin that can run
   - FLAC via [`metaflac`](https://xiph.org/flac/)
   - MP3 via [`ffmpeg`](https://ffmpeg.org/)
 
+- 🖼️ **Album & Artist Artwork**  
+  Covers come from the [Cover Art Archive](https://coverartarchive.org) with no setup at all. For
+  artist portraits and backdrops, add a **fanart.tv** data source with your own free API key — MusicBrainz
+  has no artist images, so that is the only source for them. Without a key, artists simply show
+  monogram tiles. All artwork is proxied and cached by Autotaggerr, so nothing is hot-linked and your
+  key never reaches the browser.
+
 - 🧠 **Rate-Limited & Cached API Calls**  
   Avoid API abuse and repeated lookups with built-in caching and configurable request throttling.
 

@@ -33,6 +33,10 @@ func Seed(db *gorm.DB, cfg models.ConfigStruct) (*AdminCredentials, error) {
 		return nil, fmt.Errorf("seed data source: %w", err)
 	}
 
+	if err := seedCoverArtDataSource(db); err != nil {
+		return nil, fmt.Errorf("seed cover art data source: %w", err)
+	}
+
 	taggerID, err := seedDefaultTaggerProfile(db, cfg)
 	if err != nil {
 		return nil, fmt.Errorf("seed tagger profile: %w", err)
@@ -76,6 +80,31 @@ func seedMusicBrainzDataSource(db *gorm.DB) (*uuid.UUID, error) {
 		return nil, err
 	}
 	return &ds.ID, nil
+}
+
+// seedCoverArtDataSource enables album covers out of the box. It needs no
+// credential and no configuration, and the collection pages are far harder to
+// browse without it, so it is on by default — unlike fanart.tv, which cannot work
+// until a user supplies their own API key and is therefore left to be added by
+// hand. No ID is returned: nothing references artwork the way a library
+// references its metadata source.
+func seedCoverArtDataSource(db *gorm.DB) error {
+	var existing models.DataSource
+	err := db.Where("type = ?", models.DataSourceTypeCoverArtArchive).First(&existing).Error
+	if err == nil {
+		return nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return err
+	}
+
+	return db.Create(&models.DataSource{
+		Name:      "Cover Art Archive",
+		Type:      models.DataSourceTypeCoverArtArchive,
+		BaseURL:   "https://coverartarchive.org",
+		RateLimit: 2,
+		Enabled:   true,
+	}).Error
 }
 
 func seedDefaultTaggerProfile(db *gorm.DB, cfg models.ConfigStruct) (*uuid.UUID, error) {

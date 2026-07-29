@@ -27,7 +27,16 @@ code editor — not a generic admin template.
 - **Quiet chrome, loud data.** Surfaces, borders, and nav stay understated; color is spent on status
   and the accent, so the data and its state read instantly.
 - **Restraint.** One accent, a disciplined neutral scale, minimal shadow, purposeful motion. No
-  gradients-as-decoration, no ornament that doesn't encode meaning.
+  gradients-as-decoration, no ornament that doesn't encode meaning. The artist backdrop is the one
+  named exception, and it is fenced (see *Artwork*).
+- **Artwork is structure, not decoration.** A cover is what makes a hundred rows of releases
+  scannable, so it is treated as a column with a fixed square — never as a flourish, never allowed
+  to shift a layout or delay a render. Covers earn their place on browsing surfaces (collection,
+  artist, album) and stay off working surfaces (items, scans, settings).
+- **Direct manipulation beats a mode switch.** If a user can express something by ticking the thing
+  itself, do not also give them a control that says which *kind* of thing they are about to tick.
+  Two controls for one intention means one of them is always the weaker, and the weaker one is what
+  people click first. State the result in words instead (see *Derived summary line*).
 
 Dark theme only.
 
@@ -144,6 +153,16 @@ Line-height: 1.35 data/UI, 1.55 prose. Eyebrows/section labels: `--text-xs`, upp
 --dur-fast:120ms; --dur:160ms; --dur-slow:220ms; --ease:cubic-bezier(.2,.6,.2,1);
 ```
 
+### Artwork sizes
+```
+26px  table row thumb (release rows)      --radius-sm
+24px  collection row artist avatar        --radius-sm
+96px  artist page header                  --radius
+120px album page header                   --radius
+```
+Requested pixel size is separate from rendered size (a 26px thumb fetches the 250px cover), and the
+fetched size is part of the cache key, so a thumbnail and a header image never evict each other.
+
 ### Density metrics
 - Table row height: **34px** (compact). A future "comfortable" toggle uses 40px.
 - Control height: **32px** default, **28px** small, **38px** large.
@@ -179,9 +198,62 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   `--accent-text` label, 2px `--accent` left marker. Hover = `--surface-2`.
 - **Tabs** — underline style; active tab `--text` + 2px `--accent` underline; others `--text-muted`.
 - **Master/detail split** (`.rg-split`) — a two-pane grid for two-level data: the list of things
-  on the left, the selected thing's contents on the right. Selection is an `--accent-subtle` fill on
-  the master row. Detail loads lazily on selection, never up front, when each item costs a
-  rate-limited fetch. Stacks to one column below 900px.
+  on the left, the selected thing's contents on the right. Selection is an `--accent-subtle` fill plus
+  a 2px `--accent` inset on the master row. Detail loads lazily on selection, never up front, when
+  each item costs a rate-limited fetch. Stacks to one column below 900px.
+  **Two jobs, two hit areas:** where a row is both selectable *and* has state, the checkbox owns the
+  state and the row body owns the selection (`.edition-row` / `.edition-pick`). Ticking must never
+  also re-select, or every state change triggers a fetch. The row body is a `<button>`, not a div, so
+  the detail pane is reachable without a mouse.
+- **Artwork** (`.artwork`, `Artwork.tsx`) — square, `object-fit: cover`, `--surface-2` behind it,
+  `loading="lazy"`, fixed width/height always set. A missing image falls back to a **monogram tile**
+  (`.artwork-fallback`): one or two initials, `--font-mono`, `--text-dim`, `--surface-2`, hairline
+  border. The monogram is deliberately **neutral** — a per-artist hue would break the one-accent rule
+  and turn a browsing aid into confetti. Sources: Cover Art Archive for covers (no credential),
+  fanart.tv for artist images (needs a key; absent means monograms, never an error state). Both are
+  proxied and cached by the app, never hot-linked. Nothing waits on artwork.
+- **Coverage meter** (`.coverage`, `CoverageBar.tsx`) — see *Signature* below.
+- **Disk marker** (`.disk-marker`, `DiskMarker`) — `○` none, `◐` partial, `●` complete, coloured
+  `--text-muted` / `--warning-text` / `--diff-add-text`. Always paired with a `title`; it is what
+  keeps ownership from being conveyed by colour alone.
+- **Entity header** (`.entity-head`) — how an artist or album page opens: artwork, an eyebrow of
+  facts, the title, a coverage meter, a meta line, and the actions. It replaces a row of stat cards —
+  five 28px hero numbers for one artist read as an admin dashboard, and the numbers are more useful
+  as filter chips over the list they describe.
+  **Backdrop exception** (`.entity-backdrop`): the artist header may carry a fanart.tv background
+  image. This is the only ornamental image in the app, and it is fenced — `opacity` ≤ 0.18, a
+  mandatory `::after` scrim so header text keeps its contrast whatever the image is, a
+  `mask-image` fade so it never reads as a photo with a caption, and **nothing rendered at all** when
+  there is no image (never an empty tinted band). Do not reuse this treatment elsewhere.
+- **Sortable header** (`.sortbtn`, `SortHeader`) — a `<button>` inside the `<th>`, with `aria-sort` on
+  the `th` and a caret carrying direction visually (`•` when inactive). Clicking the active column
+  flips direction; a new column starts at its own sensible default (year → descending). Numeric and
+  date columns default descending, text ascending.
+- **Table toolbar** (`.table-toolbar`, `TableToolbar`) — one free-text filter, the chips that narrow
+  the same list, and a `first–last of total` count so "no matches" is distinguishable from "empty
+  list". Sits above the table, outside its border.
+- **Filter chip** (`.chip`, `FilterChip`) — a count that is also a control: label plus a mono number,
+  `aria-pressed`, `--accent-subtle` fill when on (`--warning-bg` for drift-shaped filters). Disabled
+  at zero unless already active. Counts on a browsing page should nearly always be chips — "3 partial"
+  is only ever read as a prelude to "show me which three".
+- **Grouped table sections** (`.group-section` / `.group-head`) — a collapsible section per real
+  category, with its count and its own coverage meter in the header. Grouping must encode data (the
+  MusicBrainz primary type), never visual chunking. Sections that are numerous and rarely the reason
+  you opened the page start closed. One sort and one filter apply across every section.
+- **Browse state lives in the URL** (`useBrowse`) — query, sort key, direction, active filter, open
+  sections, selected detail row. Written with `replace`, not `push`, so sorting a table is not a
+  history entry. The reason is concrete: opening an album and coming back must not reset the list.
+  A flag whose empty value is meaningful needs a sentinel (`closed=-` for "every section closed"),
+  because an empty string reads as unset and springs the defaults back.
+- **Derived summary line** — where direct manipulation replaced a mode switch, one sentence states
+  what the ticked boxes add up to, in the same vocabulary as the boxes ("Wanted: any edition, whole
+  album" / "Wanted: 2 editions, 5 tracks"). The empty case says what the thing *is*, not what it is
+  not ("Not wanted").
+- **Visible defaults** — when the default state is "no rows stored", give it a real row with a real
+  checkbox ("Any edition", "All tracks") rather than leaving it implied by absence. A default that
+  has no control is a state the user can neither see nor return to. A master checkbox over a list is
+  `indeterminate` for a subset — the honest third state — and unticking it drops the want rather than
+  silently widening it.
 - **Toggle button** — a control that *is* a state, not a command. **The label carries the state,
   not just the fill**: participle when on, verb when off — `Wanted`/`Want`, `Following`/`Follow`.
   On = `btn-primary` (accent fill); off = `btn-secondary`. Always set `aria-pressed`, and put the
@@ -216,7 +288,9 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   of a follow is marked `auto`, so an automatic want never looks like a deliberate one. Editions
   read as a narrowing of an existing want ("any edition counts" -> "want this one"), never as a
   second, unrelated toggle. Never use "monitor" in the UI: it is the DB field name, and having two
-  words for one idea is what made the earlier version unreadable.
+  words for one idea is what made the earlier version unreadable. The default breadth is
+  **"any edition"** — not "any release", which was the same idea in a second vocabulary; what
+  MusicBrainz calls a *release* the UI calls an **edition**, everywhere.
 - **Fielded search** (`.field-grid`) — a responsive grid of short, labelled inputs (eyebrow label
   above, `auto-fit` at 150px) that are read as **one** query, not a sequence of steps. Use it when
   free text cannot separate the results that matter: the common fields stay visible, the rest sit
@@ -240,6 +314,25 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Empty state** — centered, muted icon, one-line explanation, and a primary action. An empty
   screen is an invitation to act ("No libraries yet — add your first music folder").
 - **Modal** — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop `rgba(13,11,20,.7)`; focus-trapped.
+
+### Signature: the coverage meter
+The browsing counterpart to the tag-diff row, and the same colour language. One cell per item —
+filled `--diff-add-text` = on disk, `--warning` = partial, `--surface-2` + hairline = missing:
+
+```
+Albums   ████████████████░░░░░░   32 of 41 on disk
+Tracks   ██████████▓▓░░           10/12 tracks on disk
+```
+
+- Same shape at every level — albums of an artist, tracks of an album, tracks of one edition, albums
+  in a section header — so it is learned once and read everywhere.
+- Below 30 items it is **segmented**, because a cell count answers "how many" as well as "how much":
+  9 of 12 albums reads differently from 75%. Above 30 it collapses to a proportional bar
+  (`.coverage-track`), since 200 two-pixel slivers are noise.
+- Always paired with the numbers in `--font-mono` (`32 of 41`, `10/12`) and an `aria-label` saying
+  what the items are. The bar is never the only carrier of the count.
+- It replaces columns of bare counts. Four numeric columns were being read as one question — how much
+  of this do I have — and the bar answers it directly.
 
 ### Signature: the tag-diff row
 The recurring element that makes Autotaggerr recognizable. One row per tag on the file/scan-detail

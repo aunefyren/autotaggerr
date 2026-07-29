@@ -3,6 +3,7 @@ package routers
 import (
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/collection"
@@ -469,6 +470,82 @@ func (a *API) clearDesire(c *gin.Context) {
 // would mark every single, live album and reissue as "should exist", inflating the
 // missing count with things the user never asked for. Browsing a catalog is not the
 // same as wanting it.
+// artistInfoView is who an artist is, flattened for the artist page header. Kept
+// separate from the artist row because none of it is stored: it is a live
+// MusicBrainz read, and the page must render without it.
+type artistInfoView struct {
+	Type           string   `json:"type"`
+	Disambiguation string   `json:"disambiguation"`
+	Country        string   `json:"country"`
+	Area           string   `json:"area"`
+	Begin          string   `json:"begin"`
+	End            string   `json:"end"`
+	Ended          bool     `json:"ended"`
+	Genres         []string `json:"genres"`
+}
+
+// artistInfoGenreLimit is how many genres the header shows. Enough to characterise
+// an artist, few enough that the header stays a header.
+const artistInfoGenreLimit = 4
+
+// artistInfo returns the MusicBrainz artist entity behind a collection artist.
+//
+// Its own endpoint rather than part of getArtist: this is a rate-limited external
+// call, and the page's own data must not wait on it. A failure is a 502 the UI
+// ignores — the header simply shows less.
+func (a *API) artistInfo(c *gin.Context) {
+	mbid := c.Param("mbid")
+
+	var artist models.CollectionArtist
+	if err := a.DB.Where("mb_id = ?", mbid).First(&artist).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+		return
+	}
+
+	info, err := modules.GetMusicBrainzArtist(mbid)
+	if err != nil {
+		logger.Log.Warnf("failed to load artist info for %s: %s", mbid, err.Error())
+		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load the artist from MusicBrainz"})
+		return
+	}
+
+	// Genres beat tags: tags are a free-for-all ("seen live", "favourites"), while
+	// genres are a curated vocabulary. Tags are the fallback only when an artist has
+	// no genres at all, which is common for smaller artists.
+	ranked := info.Genres
+	if len(ranked) == 0 {
+		ranked = info.Tags
+	}
+	sort.SliceStable(ranked, func(i, j int) bool { return ranked[i].Count > ranked[j].Count })
+	genres := make([]string, 0, artistInfoGenreLimit)
+	for _, g := range ranked {
+		if len(genres) == artistInfoGenreLimit {
+			break
+		}
+		if g.Name != "" {
+			genres = append(genres, g.Name)
+		}
+	}
+
+	// Begin area is more specific than country and is what people actually mean by
+	// where a band is from; country is the fallback.
+	area := info.BeginArea.Name
+	if area == "" {
+		area = info.Area.Name
+	}
+
+	c.JSON(http.StatusOK, artistInfoView{
+		Type:           info.Type,
+		Disambiguation: info.Disambiguation,
+		Country:        info.Country,
+		Area:           area,
+		Begin:          info.LifeSpan.Begin,
+		End:            info.LifeSpan.End,
+		Ended:          info.LifeSpan.Ended,
+		Genres:         genres,
+	})
+}
+
 func (a *API) discography(c *gin.Context) {
 	mbid := c.Param("mbid")
 
