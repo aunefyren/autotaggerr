@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/models"
@@ -75,4 +77,45 @@ func GetMusicBrainzArtistReleaseGroups(artistID string) ([]models.MusicBrainzArt
 	}
 
 	return all, nil
+}
+
+// Discography lookups are cached in memory: browsing an artist pages through up to
+// five rate-limited requests, so re-opening the same artist would otherwise stall
+// the UI for seconds at a time. The cache is process-local and short-lived — a
+// discography is reference data that changes rarely, and a restart costs one refetch.
+var (
+	artistDiscographyTTL     = 6 * time.Hour
+	artistDiscographyCache   = map[string]cachedDiscography{}
+	artistDiscographyCacheMu sync.RWMutex
+)
+
+type cachedDiscography struct {
+	groups  []models.MusicBrainzArtistReleaseGroup
+	expires time.Time
+}
+
+// GetArtistDiscography returns an artist's full release-group list, cached. Unlike
+// the sync path it filters nothing: browsing a catalog should show the catalog, and
+// deciding what counts as wanted is a separate question.
+func GetArtistDiscography(artistID string) ([]models.MusicBrainzArtistReleaseGroup, error) {
+	artistDiscographyCacheMu.RLock()
+	cached, ok := artistDiscographyCache[artistID]
+	artistDiscographyCacheMu.RUnlock()
+	if ok && time.Now().Before(cached.expires) {
+		return cached.groups, nil
+	}
+
+	groups, err := GetMusicBrainzArtistReleaseGroups(artistID)
+	if err != nil {
+		// Serve a stale copy rather than an empty page when MusicBrainz is down.
+		if ok {
+			return cached.groups, nil
+		}
+		return nil, err
+	}
+
+	artistDiscographyCacheMu.Lock()
+	artistDiscographyCache[artistID] = cachedDiscography{groups: groups, expires: time.Now().Add(artistDiscographyTTL)}
+	artistDiscographyCacheMu.Unlock()
+	return groups, nil
 }

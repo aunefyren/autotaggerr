@@ -16,6 +16,7 @@
 package collection
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -45,10 +46,16 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		return 0, 0, err
 	}
 	for _, l := range libraries {
-		if l.ManagerID != nil {
-			libraryManager[l.ID] = managerType[*l.ManagerID]
-		} else {
+		switch {
+		case l.ManagerID == nil:
+			// No manager assigned is the documented native default, not unknown.
 			libraryManager[l.ID] = models.ManagerTypeAutotaggerr
+		case managerType[*l.ManagerID] != "":
+			libraryManager[l.ID] = managerType[*l.ManagerID]
+		default:
+			// Dangling reference: the manager row is gone. Say so rather than
+			// letting it fall through to "native".
+			libraryManager[l.ID] = models.ManagedByUnknown
 		}
 	}
 
@@ -91,17 +98,24 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		if artistManagers[artistID] == nil {
 			artistManagers[artistID] = map[string]bool{}
 		}
-		if mt := libraryManager[r.LibraryID]; mt != "" {
-			artistManagers[artistID][mt] = true
+		mt := libraryManager[r.LibraryID]
+		if mt == "" {
+			// The item points at a library that no longer exists.
+			mt = models.ManagedByUnknown
 		}
+		artistManagers[artistID][mt] = true
 	}
 
-	// Pass 2: per release-group, keep the best-owned edition and its track counts.
+	// Pass 2: per release-group, keep the best-owned edition and its track counts —
+	// and, separately, every owned edition. The release-group summary stays
+	// best-edition (that is the useful headline: "how close am I to having this
+	// album"), while the per-edition rows keep the detail that summary hides.
 	type rgInfo struct {
 		artistID, title, primary, secondary, date string
 		owned, total                              int
 	}
 	rgBest := map[string]rgInfo{}
+	ownedEditions := make([]models.CollectionRelease, 0, len(releaseOwned))
 	for relID, ownedTracks := range releaseOwned {
 		release, ok := modules.CachedRelease(relID)
 		if !ok {
@@ -115,9 +129,18 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		for _, m := range release.Media {
 			total += len(m.Tracks)
 		}
+		artistID := release.ArtistCredit[0].Artist.ID
+
+		ownedEditions = append(ownedEditions, models.CollectionRelease{
+			MBID: relID, ReleaseGroupMBID: rgID, ArtistMBID: artistID,
+			Title: release.Title, Date: release.Date, Country: release.Country,
+			Disambiguation: release.Disambiguation, Format: mediaSummary(release),
+			OwnedTracks: ownedTracks, TotalTracks: total,
+		})
+
 		if cur, exists := rgBest[rgID]; !exists || ownedTracks > cur.owned {
 			rgBest[rgID] = rgInfo{
-				artistID:  release.ArtistCredit[0].Artist.ID,
+				artistID:  artistID,
 				title:     release.ReleaseGroup.Title,
 				primary:   release.ReleaseGroup.PrimaryType,
 				secondary: strings.Join(release.ReleaseGroup.SecondaryTypes, ", "),
@@ -127,6 +150,7 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 			}
 		}
 	}
+	syncOwnedReleases(db, ownedEditions)
 
 	for artistID, mgrs := range artistManagers {
 		upsertArtist(db, artistID, artistName[artistID], managedByLabel(mgrs))
@@ -142,15 +166,101 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	return len(artistManagers), len(rgBest), nil
 }
 
-// SyncArtist fetches an artist's discography and records the wanted-type
-// release-groups it is missing. Owned rows keep their owned flag.
+// syncOwnedReleases makes the per-edition disk table match exactly the editions
+// currently owned: upsert what is owned, delete what is not.
+//
+// Pruning matters more here than upserting. A file re-attached from the original to
+// the remaster (which manual attach now makes easy) leaves the original owning
+// nothing, and a stale row would keep claiming files that moved — the same class of
+// bug as the release-group counts that used to survive losing their files.
+func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease) {
+	keep := make([]string, 0, len(owned))
+	for _, rel := range owned {
+		keep = append(keep, rel.MBID)
+
+		var existing models.CollectionRelease
+		if err := db.Where("mb_id = ?", rel.MBID).First(&existing).Error; err == nil {
+			if err := db.Model(&existing).Updates(map[string]any{
+				"release_group_mb_id": rel.ReleaseGroupMBID,
+				"artist_mb_id":        rel.ArtistMBID,
+				"title":               rel.Title,
+				"date":                rel.Date,
+				"country":             rel.Country,
+				"disambiguation":      rel.Disambiguation,
+				"format":              rel.Format,
+				"owned_tracks":        rel.OwnedTracks,
+				"total_tracks":        rel.TotalTracks,
+			}).Error; err != nil {
+				logger.Log.Warnf("failed to update owned edition %s: %s", rel.MBID, err.Error())
+			}
+			continue
+		}
+		if err := db.Create(&rel).Error; err != nil {
+			logger.Log.Warnf("failed to record owned edition %s: %s", rel.MBID, err.Error())
+		}
+	}
+
+	// Owning nothing is a real state, and it must still clear the table — a
+	// "NOT IN ()" with no values would delete nothing at all.
+	prune := db.Session(&gorm.Session{AllowGlobalUpdate: true})
+	if len(keep) > 0 {
+		prune = prune.Where("mb_id NOT IN ?", keep)
+	}
+	if err := prune.Delete(&models.CollectionRelease{}).Error; err != nil {
+		logger.Log.Warnf("failed to prune owned editions: %s", err.Error())
+	}
+}
+
+// mediaSummary describes a release's media the way an edition list needs it:
+// "2×CD", "CD + DVD", "Digital Media". It is what distinguishes one edition from
+// another at a glance, alongside the year.
+func mediaSummary(release models.MusicBrainzReleaseResponse) string {
+	if len(release.Media) == 0 {
+		return ""
+	}
+	// Consecutive identical formats collapse to a count; a mixed set is listed.
+	var parts []string
+	count := 0
+	current := ""
+	flush := func() {
+		if current == "" && count == 0 {
+			return
+		}
+		name := current
+		if name == "" {
+			name = "Unknown"
+		}
+		if count > 1 {
+			name = fmt.Sprintf("%d×%s", count, name)
+		}
+		parts = append(parts, name)
+	}
+	for _, m := range release.Media {
+		if m.Format != current {
+			flush()
+			current, count = m.Format, 0
+		}
+		count++
+	}
+	flush()
+	return strings.Join(parts, " + ")
+}
+
+// SyncArtist fetches an artist's discography and records the release-groups that
+// following the artist wants but does not own. Owned rows keep their owned flag.
+// The artist's own follow settings decide which types count.
 func SyncArtist(db *gorm.DB, artistMBID string) (wanted int, err error) {
+	var artist models.CollectionArtist
+	if err := db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
+		return 0, err
+	}
+
 	groups, err := modules.GetMusicBrainzArtistReleaseGroups(artistMBID)
 	if err != nil {
 		return 0, err
 	}
 	for _, rg := range groups {
-		if !wantedType(rg.PrimaryType, rg.SecondaryTypes) {
+		if !FollowWants(artist, rg.PrimaryType, rg.SecondaryTypes) {
 			continue
 		}
 		// The MusicBrainz discography is the native manager's catalog. Track counts
@@ -170,17 +280,65 @@ func SyncArtist(db *gorm.DB, artistMBID string) (wanted int, err error) {
 	return wanted, nil
 }
 
-// wantedType is the default "what counts as an album I'd want" filter: studio
-// albums and EPs (primary Album/EP with no secondary types). A configurable filter
-// is a later refinement; without one the missing list is unusable.
-func wantedType(primary string, secondary []string) bool {
-	p := strings.ToLower(primary)
-	if p != "album" && p != "ep" {
+// FollowWants reports whether following this artist auto-wants a release-group of
+// the given types. It is the single definition of that rule — the discography
+// sync, the API's "why is this wanted" label, and the UI all go through it, so
+// changing an artist's follow settings changes every view at once.
+//
+// Unset FollowTypes means the default (studio albums + EPs), which is what keeps a
+// missing list readable; a discography is mostly singles and reissues.
+func FollowWants(artist models.CollectionArtist, primaryType string, secondaryTypes []string) bool {
+	if !artist.FollowSecondary && len(secondaryTypes) > 0 {
 		return false
 	}
-	return len(secondary) == 0
+
+	wanted := strings.TrimSpace(artist.FollowTypes)
+	if wanted == "" {
+		wanted = models.DefaultFollowTypes
+	}
+	primary := strings.ToLower(strings.TrimSpace(primaryType))
+	for _, t := range strings.Split(wanted, ",") {
+		if strings.ToLower(strings.TrimSpace(t)) == primary {
+			return true
+		}
+	}
+	return false
 }
 
+// FollowGoverns reports whether the *native* follow settings decide what is wanted
+// for this artist. They do not when a manager owns the artist: Lidarr is the
+// authority on wanted there, and the artist page says so.
+//
+// Without this, a stale Monitored flag — set before the artist became
+// Lidarr-managed, or by the old artist-level "Monitored" toggle — kept producing
+// automatic wants on a page that offers no follow control to turn them off. The
+// state was real, but nothing on screen could explain or change it. Following is
+// still recorded for such an artist; it just does not govern until the artist is
+// natively managed again.
+func FollowGoverns(artist models.CollectionArtist) bool {
+	return artist.ManagedBy != models.ManagedByLidarr && artist.ManagedBy != models.ManagedByMixed
+}
+
+// FollowWantsStored is FollowWants for a stored CollectionReleaseGroup row, whose
+// secondary types are comma-joined rather than a slice.
+func FollowWantsStored(artist models.CollectionArtist, primary, secondaryCSV string) bool {
+	return FollowWants(artist, primary, splitTypes(secondaryCSV))
+}
+
+func splitTypes(csv string) []string {
+	var out []string
+	for _, part := range strings.Split(csv, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// managedByLabel summarises which managers own an artist's files. Unknown is a
+// real answer, not a fallback: an artist whose provenance cannot be determined must
+// not be reported as natively managed, because that is a claim rather than an
+// absence of one.
 func managedByLabel(mgrs map[string]bool) string {
 	lidarr := mgrs[models.ManagerTypeLidarr]
 	native := mgrs[models.ManagerTypeAutotaggerr]
@@ -189,19 +347,26 @@ func managedByLabel(mgrs map[string]bool) string {
 		return models.ManagedByMixed
 	case lidarr:
 		return models.ManagedByLidarr
-	default:
+	case native:
 		return models.ManagedByAutotaggerr
+	default:
+		return models.ManagedByUnknown
 	}
 }
 
 func upsertArtist(db *gorm.DB, mbID, name, managedBy string) {
 	var a models.CollectionArtist
 	if err := db.Where("mb_id = ?", mbID).First(&a).Error; err == nil {
-		// Preserve Monitored / LastSyncedAt; refresh name + provenance.
+		// Preserve Monitored / LastSyncedAt / Origin; refresh name + provenance.
+		// Origin records how the artist *entered* the collection, so an artist added
+		// by hand keeps that origin once files for it show up.
 		db.Model(&a).Updates(map[string]any{"name": name, "managed_by": managedBy})
 		return
 	}
-	if err := db.Create(&models.CollectionArtist{MBID: mbID, Name: name, ManagedBy: managedBy}).Error; err != nil {
+	if err := db.Create(&models.CollectionArtist{
+		MBID: mbID, Name: name, ManagedBy: managedBy,
+		Origin: models.CollectionOriginLibrary,
+	}).Error; err != nil {
 		logger.Log.Warnf("failed to upsert artist %s: %s", mbID, err.Error())
 	}
 }

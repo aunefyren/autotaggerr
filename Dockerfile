@@ -17,7 +17,10 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM alpine:3.21
 ENV PUID=1000 PGID=1000 LANG=C.UTF-8 LC_ALL=C.UTF-8
 WORKDIR /app
-RUN apk add --no-cache ffmpeg flac ca-certificates tzdata su-exec
+# chromaprint provides fpcalc, used only by the optional AcoustID identification.
+# Bundling it means the feature works out of the box once a data source is added;
+# without it Autotaggerr logs the absence once and behaves exactly as before.
+RUN apk add --no-cache ffmpeg flac chromaprint ca-certificates tzdata su-exec
 COPY --from=builder /app/autotaggerr /app/autotaggerr
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /app/web/ /app/web/

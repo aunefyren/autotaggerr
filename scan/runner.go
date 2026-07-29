@@ -4,6 +4,7 @@
 package scan
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -338,4 +339,65 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 		logger.Log.Warnf("failed to update item after re-tag: %s", err.Error())
 	}
 	return written, nil
+}
+
+// RetagItem rewrites one indexed file from its stored correlation, using its
+// library's tagger. It is the manual-attach counterpart to the drift sync's re-tag:
+// once a file's correlation is pinned by hand, this is what actually writes the
+// tags so the file stops being unmatched.
+//
+// It deliberately refuses while a scan or drift sync is running rather than
+// queueing: both would be writing tags to the same file from another goroutine,
+// and a single file is not worth the coordination.
+func (r *Runner) RetagItem(itemID uuid.UUID) (int, error) {
+	results, err := r.RetagItems([]uuid.UUID{itemID})
+	if err != nil {
+		return 0, err
+	}
+	if len(results) == 0 {
+		return 0, errors.New("item not found")
+	}
+	return results[0].Written, results[0].Err
+}
+
+// RetagResult is one file's outcome from a bulk re-tag. Err is per item: one
+// unreadable file must not abandon the rest of an album the user just attached.
+type RetagResult struct {
+	ItemID  uuid.UUID
+	Path    string
+	Written int
+	Err     error
+}
+
+// RetagItems rewrites several indexed files from their stored correlations. It
+// takes the scan run-guard for the whole batch rather than checking it per file:
+// a bulk attach writes a whole folder, and a scan starting halfway through would
+// be tagging the same files from another goroutine.
+//
+// Libraries and taggers are resolved once and reused across the batch, which is
+// what makes attaching a 20-track album one unit of work rather than 20.
+func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
+	if len(itemIDs) == 0 {
+		return nil, nil
+	}
+	if !r.running.CompareAndSwap(false, true) {
+		return nil, errors.New("a scan is already running — try again once it finishes")
+	}
+	defer r.running.Store(false)
+
+	r.jobMu.Lock()
+	defer r.jobMu.Unlock()
+
+	libraries := map[uuid.UUID]models.Library{}
+	results := make([]RetagResult, 0, len(itemIDs))
+	for _, id := range itemIDs {
+		var item models.LibraryItem
+		if err := r.db.First(&item, "id = ?", id).Error; err != nil {
+			results = append(results, RetagResult{ItemID: id, Err: err})
+			continue
+		}
+		written, err := r.retagItem(item, libraries, nil)
+		results = append(results, RetagResult{ItemID: id, Path: item.Path, Written: written, Err: err})
+	}
+	return results, nil
 }

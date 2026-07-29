@@ -64,6 +64,8 @@ type dataSourceInput struct {
 	Contact   *string  `json:"contact"`
 	RateLimit *float64 `json:"rate_limit"`
 	Enabled   *bool    `json:"enabled"`
+	// APIKey is write-only: settable here, never returned (json:"-" on the model).
+	APIKey *string `json:"api_key"`
 }
 
 func (in dataSourceInput) apply(ds *models.DataSource) {
@@ -85,6 +87,9 @@ func (in dataSourceInput) apply(ds *models.DataSource) {
 	if in.Enabled != nil {
 		ds.Enabled = *in.Enabled
 	}
+	if in.APIKey != nil {
+		ds.APIKey = *in.APIKey
+	}
 }
 
 func (a *API) getDataSource(c *gin.Context)    { getEntity[models.DataSource](a, c) }
@@ -100,7 +105,7 @@ func (a *API) createDataSource(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name and type are required"})
 		return
 	}
-	if *in.Type != models.DataSourceTypeMusicBrainz {
+	if *in.Type != models.DataSourceTypeMusicBrainz && *in.Type != models.DataSourceTypeAcoustID {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported data source type"})
 		return
 	}
@@ -320,6 +325,7 @@ type libraryInput struct {
 	TaggerProfileID *uuid.UUID `json:"tagger_profile_id"`
 	Enabled         *bool      `json:"enabled"`
 	Cron            *string    `json:"cron"`
+	UseAcoustID     *bool      `json:"use_acoustid"`
 }
 
 func (in libraryInput) apply(l *models.Library) {
@@ -343,6 +349,9 @@ func (in libraryInput) apply(l *models.Library) {
 	}
 	if in.Cron != nil {
 		l.Cron = *in.Cron
+	}
+	if in.UseAcoustID != nil {
+		l.UseAcoustID = *in.UseAcoustID
 	}
 }
 

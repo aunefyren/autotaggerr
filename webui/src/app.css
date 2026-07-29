@@ -98,3 +98,13 @@
   .app { grid-template-columns: 1fr; }
   .sidebar { display: none; }
 }
+
+/* Release-group master/detail: editions beside the selected edition's tracklist.
+   Two-level data needs two panes; below 900px they stack rather than squeeze. */
+.rg-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
+@media (max-width: 900px) { .rg-split { grid-template-columns: 1fr; } }
+
+/* Fielded search: several short, labelled inputs that are read as one query.
+   A vertical stack of .field would push the results below the fold, and these
+   fields are peers (artist + title + year), not a sequence. */
+.field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }

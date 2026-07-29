@@ -10,6 +10,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -189,7 +190,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	}
 
 	db := testDB(t)
-	mgr := models.Manager{Name: "Native", Type: models.ManagerTypeAutotaggerr}
+	mgr := models.Manager{Name: "Native", Type: models.ManagerTypeAutotaggerr, Enabled: true}
 	profile := models.TaggerProfile{Name: "NoWrite", WriteTags: false}
 	if err := db.Create(&mgr).Error; err != nil {
 		t.Fatalf("create manager: %v", err)
@@ -243,7 +244,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 
 func TestBuildForFile(t *testing.T) {
 	db := testDB(t)
-	mgr := models.Manager{Name: "Native", Type: models.ManagerTypeAutotaggerr}
+	mgr := models.Manager{Name: "Native", Type: models.ManagerTypeAutotaggerr, Enabled: true}
 	if err := db.Create(&mgr).Error; err != nil {
 		t.Fatalf("create manager: %v", err)
 	}
@@ -272,5 +273,61 @@ func TestBuildForFile(t *testing.T) {
 	_, manager, _, err = BuildForFile(db, "/elsewhere/x.flac", "/elsewhere")
 	if err != nil || manager == nil {
 		t.Fatalf("fallback BuildForFile failed: %v", err)
+	}
+}
+
+// TestResolveManagerRowRejectsDisabled: a library assigned a disabled manager must
+// fail loudly rather than silently falling back to native correlation. Swapping the
+// correlation authority behind the user's back changes which MB IDs get written
+// into their files.
+func TestResolveManagerRowRejectsDisabled(t *testing.T) {
+	db := testDB(t)
+	mgr := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: false}
+	if err := db.Create(&mgr).Error; err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true, ManagerID: &mgr.ID}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+
+	if _, err := resolveManagerRow(db, lib, true); err == nil {
+		t.Fatal("resolveManagerRow accepted a disabled manager")
+	}
+}
+
+// TestResolveManagerRowRejectsDanglingManager: an assigned manager that no longer
+// exists is a configuration error, not a reason to pick a different authority.
+func TestResolveManagerRowRejectsDanglingManager(t *testing.T) {
+	db := testDB(t)
+	missing := uuid.New()
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true, ManagerID: &missing}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+
+	if _, err := resolveManagerRow(db, lib, true); err == nil {
+		t.Fatal("resolveManagerRow accepted a dangling manager reference")
+	}
+}
+
+// TestResolveManagerRowSkipsDisabledFallback: a library with *no* manager assigned
+// keeps the permissive fallback, but must not be handed a disabled manager.
+func TestResolveManagerRowSkipsDisabledFallback(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&models.Manager{Name: "Off", Type: models.ManagerTypeLidarr, Enabled: false}).Error; err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+
+	got, err := resolveManagerRow(db, lib, true)
+	if err != nil {
+		t.Fatalf("resolveManagerRow: %v", err)
+	}
+	if got.Type != models.ManagerTypeAutotaggerr {
+		t.Errorf("fell back to %+v; want the native default, never a disabled manager", got)
 	}
 }

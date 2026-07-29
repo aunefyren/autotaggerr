@@ -7,6 +7,8 @@ import Libraries from "./pages/Libraries";
 import Managers from "./pages/Managers";
 import DataSources from "./pages/DataSources";
 import AuthProviders from "./pages/AuthProviders";
+import Artist from "./pages/Artist";
+import ReleaseGroup from "./pages/ReleaseGroup";
 import TaggerProfiles from "./pages/TaggerProfiles";
 import Items from "./pages/Items";
 import Collection from "./pages/Collection";
@@ -43,6 +45,8 @@ export default function App() {
         <Route path="/tagger-profiles" element={<TaggerProfiles />} />
         <Route path="/items" element={<Items />} />
         <Route path="/collection" element={<Collection />} />
+        <Route path="/collection/:mbid" element={<Artist />} />
+        <Route path="/collection/:mbid/:rgid" element={<ReleaseGroup />} />
         <Route path="/activity" element={<Activity />} />
         <Route path="/login-providers" element={<AuthProviders />} />
         <Route path="*" element={<Navigate to="/" replace />} />

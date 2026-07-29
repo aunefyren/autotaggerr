@@ -70,5 +70,6 @@ join-phrase rules.
 ## Related
 
 - Plex only supports a single **album** artist, so multi-artist *album* credits still tag only
-  the primary one — see the "Known issues" note in `wip.md`. This feature governs the per-track
-  artist string, which is where featuring credits actually show up.
+  the primary one. This feature governs the per-track artist string, which is where featuring
+  credits actually show up.
+- `tagging.md` — the write path this string ends up in.

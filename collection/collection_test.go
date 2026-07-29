@@ -14,6 +14,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
 	"gorm.io/gorm"
 )
@@ -32,7 +33,11 @@ func testDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestWantedType(t *testing.T) {
+// TestFollowWantsDefaults: with no follow settings, following an artist wants
+// studio albums and EPs only — a full discography is mostly singles and reissues,
+// which would make the missing list unreadable.
+func TestFollowWantsDefaults(t *testing.T) {
+	artist := models.CollectionArtist{}
 	cases := []struct {
 		primary   string
 		secondary []string
@@ -46,9 +51,47 @@ func TestWantedType(t *testing.T) {
 		{"Broadcast", nil, false},
 	}
 	for _, c := range cases {
-		if got := wantedType(c.primary, c.secondary); got != c.want {
-			t.Errorf("wantedType(%q,%v) = %v, want %v", c.primary, c.secondary, got, c.want)
+		if got := FollowWants(artist, c.primary, c.secondary); got != c.want {
+			t.Errorf("FollowWants(default, %q,%v) = %v, want %v", c.primary, c.secondary, got, c.want)
 		}
+	}
+}
+
+// TestFollowWantsConfigured: the per-artist settings actually govern. Someone who
+// follows an artist for their singles must get singles.
+func TestFollowWantsConfigured(t *testing.T) {
+	singles := models.CollectionArtist{FollowTypes: "Single"}
+	if !FollowWants(singles, "Single", nil) {
+		t.Error("configured Single should be wanted")
+	}
+	if FollowWants(singles, "Album", nil) {
+		t.Error("Album should not be wanted when only Single is followed")
+	}
+
+	// Secondary types stay excluded until explicitly allowed.
+	live := models.CollectionArtist{FollowTypes: "Album"}
+	if FollowWants(live, "Album", []string{"Live"}) {
+		t.Error("live album should be excluded by default")
+	}
+	live.FollowSecondary = true
+	if !FollowWants(live, "Album", []string{"Live"}) {
+		t.Error("live album should be included once secondary types are allowed")
+	}
+
+	// Case and spacing in the stored CSV must not matter.
+	messy := models.CollectionArtist{FollowTypes: " album , ep "}
+	if !FollowWants(messy, "Album", nil) || !FollowWants(messy, "EP", nil) {
+		t.Error("follow types should be matched case- and space-insensitively")
+	}
+}
+
+func TestFollowWantsStored(t *testing.T) {
+	artist := models.CollectionArtist{}
+	if FollowWantsStored(artist, "Album", "Live") {
+		t.Error("stored secondary types should exclude by default")
+	}
+	if !FollowWantsStored(artist, "Album", "") {
+		t.Error("stored album with no secondary types should be wanted")
 	}
 }
 
@@ -349,5 +392,66 @@ func TestSyncLidarrDropsRemovedAlbums(t *testing.T) {
 	}
 	if got := rg.Discrepancy(true); got != models.DiscrepancyUnmapped {
 		t.Errorf("Discrepancy() = %q, want unmapped", got)
+	}
+}
+
+// TestManagedByLabelUnknown: an artist whose provenance cannot be determined must
+// report unknown, not native. Reporting native would turn missing information into
+// a positive claim about who manages the files.
+func TestManagedByLabelUnknown(t *testing.T) {
+	if got := managedByLabel(map[string]bool{}); got != models.ManagedByUnknown {
+		t.Errorf("empty = %q, want unknown", got)
+	}
+	if got := managedByLabel(map[string]bool{models.ManagedByUnknown: true}); got != models.ManagedByUnknown {
+		t.Errorf("unknown-only = %q, want unknown", got)
+	}
+}
+
+// TestRebuildReportsUnknownProvenance: a library whose manager row has been deleted
+// leaves a dangling ManagerID; its artists must surface as unknown rather than
+// silently becoming "native".
+func TestRebuildReportsUnknownProvenance(t *testing.T) {
+	db := testDB(t)
+	modules.SetDB(db)
+	defer modules.SetDB(nil)
+
+	release := models.MusicBrainzReleaseResponse{
+		ID:           "rel-1",
+		ArtistCredit: []models.ArtistCredit{{Artist: models.Artist{ID: "art-1", Name: "The Band"}}},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-1", Title: "Album", PrimaryType: "Album"},
+		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}}}},
+	}
+	payload, _ := json.Marshal(release)
+	if err := db.Create(&models.MusicbrainzReleaseCache{
+		MBID: "rel-1", Payload: string(payload),
+		FetchedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}).Error; err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if err := modules.MusicbrainzLoadCache(); err != nil {
+		t.Fatalf("load cache: %v", err)
+	}
+
+	dangling := uuid.New() // no Manager row with this ID
+	lib := models.Library{Name: "L", Path: "/m", ManagerID: &dangling}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	if err := db.Create(&models.LibraryItem{
+		LibraryID: lib.ID, Path: "/m/a.flac", Status: "ok", MBReleaseID: "rel-1",
+	}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	if _, _, err := Rebuild(db); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	var a models.CollectionArtist
+	if err := db.Where("mb_id = ?", "art-1").First(&a).Error; err != nil {
+		t.Fatalf("artist: %v", err)
+	}
+	if a.ManagedBy != models.ManagedByUnknown {
+		t.Errorf("managed_by = %q, want unknown", a.ManagedBy)
 	}
 }

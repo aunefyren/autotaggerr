@@ -85,6 +85,21 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/library-items", a.listLibraryItems)
 		protected.GET("/library-items/:id/tags", a.itemTags)
 
+		// Manual attach — identify a file MusicBrainz/Lidarr could not
+		protected.GET("/search/releases", a.searchReleases)
+		protected.GET("/releases/:mbid/tracks", a.releaseTracks)
+		protected.POST("/library-items/:id/attach", a.attachItem)
+		protected.DELETE("/library-items/:id/attach", a.detachItem)
+		// Bulk attach lives under its own prefix rather than /library-items/bulk,
+		// which would collide with the :id parameter above.
+		protected.POST("/attach/preview", a.previewBulkAttach)
+		protected.POST("/attach/bulk", a.attachBulk)
+
+		// AcoustID: suggests what an unmatched file is. Suggestion only — it never
+		// writes a correlation, so it feeds the attach picker above.
+		protected.GET("/identify", a.identifyAvailability)
+		protected.POST("/library-items/:id/identify", a.identifyItem)
+
 		// Scans + metadata sync
 		protected.POST("/scan", a.triggerScan)
 		protected.POST("/sync", a.triggerSync)
@@ -98,6 +113,14 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artists", a.listArtists)
 		protected.GET("/artists/:mbid", a.getArtist)
 		protected.POST("/artists/:mbid/monitor", a.setArtistMonitored)
+		protected.GET("/search/artists", a.searchArtists)
+		protected.POST("/artists", a.addArtist)
+		protected.GET("/release-groups/:mbid/releases", a.releaseGroupEditions)
+		protected.GET("/artists/:mbid/discography", a.discography)
+		protected.GET("/artists/:mbid/release-groups/:rgid", a.releaseGroupDetail)
+		protected.POST("/artists/:mbid/follow", a.updateFollow)
+		protected.POST("/artists/:mbid/desires", a.setDesire)
+		protected.DELETE("/artists/:mbid/desires", a.clearDesire)
 		protected.POST("/collection/rebuild", a.rebuildCollection)
 		protected.POST("/collection/sync-lidarr", a.syncLidarr)
 	}

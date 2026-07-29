@@ -1,7 +1,8 @@
 # Development
 
 Conventions and instructions for working in this repository. Read this alongside `CLAUDE.md`
-(architecture) and `wip.md` (current work) before making changes.
+(architecture), `docs/media-manager.md` (how the components fit together) and `wip.md` (what is
+still open) before making changes.
 
 ## Local setup
 
@@ -77,7 +78,7 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
 - **UI follows the style guide.** Once `docs/style-guide.md` exists, *every* UI change must consult it
   and either follow it or deliberately reshape it (updating the guide in the same change). Reuse the
   shared design tokens, colors, elements, and principles as much as possible — do not introduce
-  one-off styles. See the "Standalone media manager" epic in `wip.md`.
+  one-off styles. See `docs/media-manager.md` for the component model the UI is built around.
 
 ## Versioning & release
 
@@ -89,11 +90,22 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
 
 ## Documentation layout (`docs/`)
 
-- `wip.md` — roadmap, ideas, known issues, in-flight work.
+- `wip.md` — **only what is not done yet**: roadmap, ideas, known issues, in-flight work. When
+  something ships, move what is worth keeping into its feature doc and delete the rest from `wip.md`
+  — it is not a changelog, and git already remembers the history.
 - `development.md` — this file.
-- One `*.md` per feature as features grow. Keep feature docs focused; link from `wip.md` when a
-  roadmap item graduates into a real feature doc.
+- `style-guide.md` — the design system every UI change consults (see above).
+- One `*.md` per feature as features grow. Keep feature docs focused and written as *reference*
+  ("how it works, and why it is that way"), not as a diary of passes.
 
 Feature docs:
+- `media-manager.md` — the component model (managers, data sources, libraries, tagger profiles),
+  the pipeline, and the DB/config/SPA infrastructure. Start here.
+- `collection.md` — present vs wanted: ownership, the disk/catalog split, and the desire model.
+- `attach.md` — identifying files by hand, single and per folder, plus release search.
+- `scanning.md` — scans, skip-unchanged, drift sync, activity events, caching and concurrency.
+- `tagging.md` — what gets written to a file, and why idempotency is the property that matters.
 - `artist-credit-tagging.md` — how MusicBrainz artist credits (incl. featuring artists) become
   the track's artist tag.
+- `fingerprinting.md` — optional AcoustID identification.
+- `authentication.md` — local login, API keys, OIDC.

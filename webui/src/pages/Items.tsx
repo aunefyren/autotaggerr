@@ -1,11 +1,21 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useFetch } from "../hooks";
 import { ItemsPage, Library, LibraryItem } from "../types";
 import { EmptyState, ErrorNote, IdChip, StatusPill } from "../components/ui";
 import { ItemDiffModal } from "../components/ItemDiff";
+import { AttachModal } from "../components/AttachModal";
+import { BulkAttachModal } from "../components/BulkAttachModal";
+import { MBLink } from "../components/MBLink";
 
 const PAGE = 50;
+
+/** The directory holding a file — the unit an album is actually attached in. */
+function folderOf(path: string): string {
+  const parts = path.split(/[\\/]/);
+  parts.pop();
+  return parts.join("/");
+}
 
 export default function Items() {
   const libs = useFetch<Library[]>(() => api.get("/libraries"));
@@ -14,6 +24,9 @@ export default function Items() {
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<LibraryItem | null>(null);
+  const [attaching, setAttaching] = useState<LibraryItem | null>(null);
+  const [picked, setPicked] = useState<string[]>([]);
+  const [bulk, setBulk] = useState(false);
 
   const query = new URLSearchParams();
   if (libraryId) query.set("library_id", libraryId);
@@ -31,6 +44,16 @@ export default function Items() {
 
   const total = page.data?.total ?? 0;
   const items = page.data?.items ?? [];
+
+  // Selection is dropped whenever the view changes: a bulk attach writes tags to
+  // every picked file, so it must never include files the user can no longer see.
+  useEffect(() => setPicked([]), [libraryId, status, q, offset]);
+
+  const toggle = (id: string) =>
+    setPicked((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]));
+
+  const allPicked = items.length > 0 && picked.length === items.length;
+  const pickedItems = items.filter((it) => picked.includes(it.id));
 
   return (
     <div className="stack">
@@ -53,6 +76,18 @@ export default function Items() {
         <input className="input mono" style={{ width: 240 }} placeholder="Filter by path…" value={q} onChange={(e) => resetAnd(() => setQ(e.target.value))} />
       </div>
 
+      {picked.length > 0 && (
+        <div className="row" style={{ justifyContent: "space-between" }}>
+          <span className="dim" style={{ fontSize: 12 }}>{picked.length} selected</span>
+          <div className="row">
+            <button className="btn btn-ghost btn-sm" onClick={() => setPicked([])}>Clear</button>
+            <button className="btn btn-primary btn-sm" onClick={() => setBulk(true)}>
+              Attach {picked.length} to one release…
+            </button>
+          </div>
+        </div>
+      )}
+
       {page.err && <ErrorNote message={page.err} />}
       {!page.err && !page.loading && items.length === 0 && (
         <EmptyState icon="≣" message="No items match. Run a scan to populate the index." />
@@ -63,15 +98,56 @@ export default function Items() {
           <div className="tablewrap">
             <table className="data">
               <thead>
-                <tr><th>Path</th><th>MB release id</th><th>Source</th><th>Status</th></tr>
+                <tr>
+                  <th style={{ width: 28 }}>
+                    <input
+                      type="checkbox"
+                      checked={allPicked}
+                      title="Select every file on this page"
+                      onChange={() => setPicked(allPicked ? [] : items.map((it) => it.id))}
+                    />
+                  </th>
+                  <th>Path</th>
+                  <th>MB release id</th>
+                  <th>Source</th>
+                  <th>Status</th>
+                  <th style={{ textAlign: "right" }}>Actions</th>
+                </tr>
               </thead>
               <tbody>
                 {items.map((it) => (
                   <tr key={it.id} style={{ cursor: "pointer" }} onClick={() => setSelected(it)}>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <input type="checkbox" checked={picked.includes(it.id)} onChange={() => toggle(it.id)} />
+                    </td>
                     <td><span className="path">{it.path}</span></td>
-                    <td onClick={(e) => e.stopPropagation()}><IdChip value={it.mb_release_id} /></td>
-                    <td className="mono dim" style={{ fontSize: 11 }}>{it.correlation_source || "—"}</td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div className="row" style={{ gap: 6 }}>
+                        <IdChip value={it.mb_release_id} />
+                        <MBLink entity="release" mbid={it.mb_release_id} />
+                      </div>
+                    </td>
+                    <td className="mono dim" style={{ fontSize: 11 }}>
+                      {it.correlation_source || "—"}
+                      {it.pinned && <span title="Manually attached; automatic resolution will not override it"> 📌</span>}
+                    </td>
                     <td><StatusPill status={it.status} /></td>
+                    <td onClick={(e) => e.stopPropagation()}>
+                      <div className="row" style={{ justifyContent: "flex-end" }}>
+                        {/* Albums are attached per folder, so filtering to one is the
+                            first step of the bulk workflow. */}
+                        <button
+                          className="btn btn-ghost btn-sm"
+                          title="Filter to this folder, then select all"
+                          onClick={() => resetAnd(() => setQ(folderOf(it.path)))}
+                        >
+                          Folder
+                        </button>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setAttaching(it)}>
+                          {it.mb_release_id ? "Re-attach" : "Attach"}
+                        </button>
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -88,6 +164,22 @@ export default function Items() {
       )}
 
       {selected && <ItemDiffModal item={selected} onClose={() => setSelected(null)} />}
+
+      {attaching && (
+        <AttachModal
+          item={attaching}
+          onClose={() => setAttaching(null)}
+          onAttached={() => { setAttaching(null); page.reload(); }}
+        />
+      )}
+
+      {bulk && pickedItems.length > 0 && (
+        <BulkAttachModal
+          items={pickedItems}
+          onClose={() => setBulk(false)}
+          onAttached={() => { setBulk(false); setPicked([]); page.reload(); }}
+        />
+      )}
     </div>
   );
 }

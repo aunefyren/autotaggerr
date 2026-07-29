@@ -1,6 +1,7 @@
 package components
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -60,21 +61,36 @@ func findLibraryForFile(db *gorm.DB, filePath, fileRoot string) (models.Library,
 	return models.Library{}, false
 }
 
+// resolveManagerRow picks the manager that governs a library.
+//
+// A library with an explicit manager must get *that* manager: if it is disabled or
+// missing, the scan fails for that library rather than quietly falling back. The
+// manager is the correlation authority, so silently swapping it changes which MB
+// IDs get written into the user's files — the one outcome worth erroring over.
+// Disabling a manager is a deliberate act, so a loud, recoverable failure is the
+// honest response; re-enable it or point the library elsewhere.
+//
+// A library with no manager assigned keeps the permissive behavior: the first
+// enabled manager, or the native default when none is configured.
 func resolveManagerRow(db *gorm.DB, library models.Library, found bool) (models.Manager, error) {
 	if db != nil {
 		if found && library.ManagerID != nil {
 			var m models.Manager
-			if err := db.First(&m, "id = ?", *library.ManagerID).Error; err == nil {
+			if err := db.First(&m, "id = ?", *library.ManagerID).Error; err != nil {
+				return models.Manager{}, fmt.Errorf("library %q is assigned a manager that no longer exists (%s) — reassign or remove it", library.Name, *library.ManagerID)
+			} else if !m.Enabled {
+				return models.Manager{}, fmt.Errorf("library %q is assigned the disabled manager %q — re-enable it, or assign the library a different manager", library.Name, m.Name)
+			} else {
 				return m, nil
 			}
 		}
 		var first models.Manager
-		if err := db.Order("id").First(&first).Error; err == nil {
+		if err := db.Where("enabled = ?", true).Order("id").First(&first).Error; err == nil {
 			return first, nil
 		}
 	}
-	// No managers configured — default to the native Autotaggerr manager.
-	return models.Manager{Type: models.ManagerTypeAutotaggerr}, nil
+	// No enabled managers configured — default to the native Autotaggerr manager.
+	return models.Manager{Type: models.ManagerTypeAutotaggerr, Enabled: true}, nil
 }
 
 func resolveTaggerProfile(db *gorm.DB, library models.Library, found bool) models.TaggerProfile {

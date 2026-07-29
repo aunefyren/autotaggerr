@@ -1,50 +1,62 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { ArtistDetail, CollectionArtist, CollectionReleaseGroup, Discrepancy } from "../types";
-import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
+import { CollectionArtist } from "../types";
+import { EmptyState, ErrorNote, Pill } from "../components/ui";
 import { useToast } from "../toast";
+import { MBLink } from "../components/MBLink";
+import { AddArtistModal } from "../components/AddArtistModal";
 
 function ManagedBy({ managed_by }: { managed_by: string }) {
   if (managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
   if (managed_by === "mixed") return <Pill kind="scan">Lidarr + native</Pill>;
-  return <Pill kind="chg">Native</Pill>;
+  if (managed_by === "autotaggerr") return <Pill kind="chg">Native</Pill>;
+  // Provenance could not be determined — the library's manager row is gone. Shown
+  // as its own state so missing information is not read as "natively managed".
+  return (
+    <Pill kind="off">
+      <span title="This artist's library has no resolvable manager — reassign one on the Libraries page">Unknown</span>
+    </Pill>
+  );
 }
 
+
+
 /**
- * How a disk-vs-catalog disagreement reads. Autotaggerr walked the files, so the
- * disk count is the one to trust; the note explains what the manager thinks and
- * what to do about it. `manager` names the authority for the message.
+ * What this artist is set to want, in one glance. Following and picking are the two
+ * ways to want something, so both are named here rather than only the toggle state.
  */
-function discrepancyNote(
-  g: CollectionReleaseGroup,
-  manager: string
-): { label: string; title: string } | null {
-  const d: Discrepancy = g.discrepancy;
-  const cat = `${g.catalog_owned_tracks}/${g.catalog_total_tracks}`;
-  if (d === "stale_catalog")
-    return {
-      label: `${manager} ${cat}`,
-      title: `${manager} reports ${cat} files, but ${g.owned_tracks} are on disk. ${manager} probably needs a rescan.`,
-    };
-  if (d === "not_indexed")
-    return {
-      label: `${manager} ${cat}`,
-      title: `${manager} reports ${cat} files, but only ${g.owned_tracks} are indexed here — they may sit outside your configured libraries, or have not been scanned yet.`,
-    };
-  if (d === "unmapped")
-    return {
-      label: `not in ${manager}`,
-      title: `These files are on disk but ${manager} has no matching album, so it is not tracking them.`,
-    };
-  return null;
+function WantedSummary({ artist }: { artist: CollectionArtist }) {
+  const picked = artist.picked_count ?? 0;
+  // A manager-owned artist is not "following", whatever the stored flag says — the
+  // manager decides. Reporting Following here is what made albums look auto-wanted
+  // by a follow the user never set.
+  if (!artist.follow_governs) {
+    return (
+      <div className="row" style={{ gap: 6 }}>
+        <Pill kind="off">Managed</Pill>
+        {picked > 0 && <span className="dim" style={{ fontSize: 11 }}>+{picked} picked</span>}
+      </div>
+    );
+  }
+  if (artist.monitored) {
+    return (
+      <div className="row" style={{ gap: 6 }}>
+        <Pill kind="ok">Following</Pill>
+        {picked > 0 && <span className="dim" style={{ fontSize: 11 }}>+{picked} picked</span>}
+      </div>
+    );
+  }
+  if (picked > 0) return <Pill kind="chg">{picked} picked</Pill>;
+  return <span className="dim">—</span>;
 }
 
 export default function Collection() {
   const toast = useToast();
   const { data, err, loading, reload } = useFetch<CollectionArtist[]>(() => api.get("/artists"));
-  const [selected, setSelected] = useState<string | null>(null);
   const [rebuilding, setRebuilding] = useState(false);
+  const [adding, setAdding] = useState(false);
 
   const rebuild = async () => {
     setRebuilding(true);
@@ -70,13 +82,17 @@ export default function Collection() {
   };
 
   const artists = data ?? [];
-  const hasWanted = (ar: CollectionArtist) => ar.monitored || ar.managed_by === "lidarr" || ar.managed_by === "mixed";
+  // A missing count only means something when something decides what is wanted:
+  // the manager, or a follow that actually governs.
+  const hasWanted = (ar: CollectionArtist) =>
+    !ar.follow_governs || ar.monitored || (ar.picked_count ?? 0) > 0;
 
   return (
     <div className="stack">
       <div className="page-head">
         <h1>Collection</h1>
         <div className="row">
+          <button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>Add artist</button>
           <button className="btn btn-secondary btn-sm" onClick={syncLidarr}>Sync from Lidarr</button>
           <button className="btn btn-secondary btn-sm" onClick={rebuild} disabled={rebuilding}>
             {rebuilding ? "Rebuilding…" : "Rebuild from library"}
@@ -84,9 +100,10 @@ export default function Collection() {
         </div>
       </div>
       <p className="muted" style={{ margin: 0, maxWidth: "70ch" }}>
-        Artists in your library. Album counts are what Autotaggerr found on disk; Lidarr and
-        monitored discographies supply what <em>should</em> be there. Where the two disagree the
-        album is flagged as a mismatch rather than one side silently winning.
+        Album counts are what Autotaggerr found on disk. <strong>Wanted</strong> is what you asked
+        for but do not have yet — either by following an artist, or by picking individual albums.
+        Where disk and manager disagree, the album is flagged as a mismatch rather than one side
+        silently winning.
       </p>
 
       {err && <ErrorNote message={err} />}
@@ -109,13 +126,21 @@ export default function Collection() {
                 <th style={{ textAlign: "right" }}>Partial</th>
                 <th style={{ textAlign: "right" }}>Missing</th>
                 <th style={{ textAlign: "right" }}>Mismatch</th>
-                <th>Monitored</th>
+                <th>Wanted</th>
               </tr>
             </thead>
             <tbody>
               {artists.map((ar) => (
-                <tr key={ar.mb_id} style={{ cursor: "pointer" }} onClick={() => setSelected(ar.mb_id)}>
-                  <td style={{ color: "var(--text)" }}>{ar.name}</td>
+                <tr key={ar.mb_id}>
+                  <td style={{ color: "var(--text)" }}>
+                    <div className="row" style={{ gap: 8 }}>
+                      <Link to={`/collection/${ar.mb_id}`} style={{ color: "var(--text)" }}>{ar.name}</Link>
+                      {ar.origin === "manual" && (
+                        <span className="dim" style={{ fontSize: 11 }} title="Added by hand; no files owned yet">added</span>
+                      )}
+                      <MBLink entity="artist" mbid={ar.mb_id} />
+                    </div>
+                  </td>
                   <td><ManagedBy managed_by={ar.managed_by} /></td>
                   <td className="num">{ar.owned_count ?? 0}</td>
                   <td className="num" style={{ color: (ar.partial_count ?? 0) > 0 ? "var(--warning-text)" : "var(--text-dim)" }}>
@@ -131,7 +156,7 @@ export default function Collection() {
                   >
                     {(ar.mismatch_count ?? 0) > 0 ? ar.mismatch_count : "—"}
                   </td>
-                  <td>{ar.monitored ? <Pill kind="ok">Monitored</Pill> : <span className="dim">no</span>}</td>
+                  <td><WantedSummary artist={ar} /></td>
                 </tr>
               ))}
             </tbody>
@@ -139,127 +164,7 @@ export default function Collection() {
         </div>
       )}
 
-      {selected && <ArtistModal mbid={selected} onClose={() => setSelected(null)} onChanged={reload} />}
-    </div>
-  );
-}
-
-function ArtistModal({ mbid, onClose, onChanged }: { mbid: string; onClose: () => void; onChanged: () => void }) {
-  const toast = useToast();
-  const { data, err, loading, reload } = useFetch<ArtistDetail>(() => api.get(`/artists/${mbid}`), [mbid]);
-  const [busy, setBusy] = useState(false);
-
-  const artist = data?.artist;
-  const groups = data?.release_groups ?? [];
-  const owned = groups.filter((g) => g.owned);
-  const missing = groups.filter((g) => !g.owned);
-  const partial = owned.filter((g) => !g.complete).length;
-  const mismatched = groups.filter((g) => g.discrepancy !== "").length;
-  const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
-  const showMissing = !!artist && (artist.monitored || isLidarr);
-  const managerLabel = isLidarr ? "Lidarr" : "MusicBrainz";
-
-  const setMonitored = async (monitored: boolean) => {
-    setBusy(true);
-    try {
-      await api.post(`/artists/${mbid}/monitor`, { monitored });
-      toast("ok", monitored ? "Monitoring — discography synced" : "Stopped monitoring");
-      reload();
-      onChanged();
-    } catch (e) {
-      toast("err", errMsg(e));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <Modal title={artist?.name ?? "Artist"} onClose={onClose} wide>
-      {loading && <div className="muted">Loading…</div>}
-      {err && <div className="help-err">{err}</div>}
-      {artist && (
-        <div className="stack">
-          <div className="row" style={{ justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-            <div className="row" style={{ gap: 10 }}>
-              <ManagedBy managed_by={artist.managed_by} />
-              <span className="muted">
-                {owned.length} on disk{partial > 0 ? ` (${partial} partial)` : ""}
-                {showMissing ? ` · ${missing.length} missing` : ""}
-              </span>
-              {mismatched > 0 && <Pill kind="warn">{mismatched} mismatch</Pill>}
-            </div>
-            {isLidarr ? (
-              <span className="dim" style={{ fontSize: 12 }}>Monitoring is managed by Lidarr.</span>
-            ) : (
-              <button
-                className={artist.monitored ? "btn btn-ghost btn-sm" : "btn btn-primary btn-sm"}
-                disabled={busy}
-                onClick={() => setMonitored(!artist.monitored)}
-              >
-                {busy ? "Syncing…" : artist.monitored ? "Stop monitoring" : "Monitor artist"}
-              </button>
-            )}
-          </div>
-
-          {!artist.monitored && !isLidarr && (
-            <div className="dim" style={{ fontSize: 12 }}>Monitor this artist to discover the studio albums and EPs you're missing.</div>
-          )}
-
-          <div className="scroll">
-            <ReleaseGroupList title="On disk" groups={owned} manager={managerLabel} owned />
-            {showMissing && <ReleaseGroupList title="Missing" groups={missing} manager={managerLabel} />}
-          </div>
-        </div>
-      )}
-    </Modal>
-  );
-}
-
-function ReleaseGroupList({
-  title,
-  groups,
-  manager,
-  owned,
-}: {
-  title: string;
-  groups: CollectionReleaseGroup[];
-  manager: string;
-  owned?: boolean;
-}) {
-  if (groups.length === 0) return null;
-  return (
-    <div style={{ marginTop: 8 }}>
-      <div className="eyebrow" style={{ marginBottom: 6 }}>{title} · {groups.length}</div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-        {groups.map((g) => {
-          const partial = owned && !g.complete;
-          const marker = !owned ? "○" : partial ? "◐" : "●";
-          const markerColor = !owned ? "var(--text-muted)" : partial ? "var(--warning-text)" : "var(--diff-add-text)";
-          const note = discrepancyNote(g, manager);
-          return (
-            <div key={g.mb_id} className="row" style={{ justifyContent: "space-between", padding: "4px 0", borderBottom: "1px solid var(--border)" }}>
-              <div className="row" style={{ gap: 8 }}>
-                <span style={{ color: markerColor }}>{marker}</span>
-                <span style={{ color: "var(--text)" }}>{g.title}</span>
-                <span className="dim mono" style={{ fontSize: 11 }}>{g.primary_type}</span>
-              </div>
-              <div className="row" style={{ gap: 10 }}>
-                {note && (
-                  <span className="mono" style={{ fontSize: 11, color: "var(--warning-text)" }} title={note.title}>
-                    ⚠ {note.label}
-                  </span>
-                )}
-                {owned && g.total_tracks > 0 && (
-                  <span className="mono" style={{ fontSize: 11, color: partial ? "var(--warning-text)" : "var(--text-dim)" }}>
-                    {g.owned_tracks}/{g.total_tracks}
-                  </span>
-                )}
-                <span className="dim mono" style={{ fontSize: 11 }}>{(g.first_release_date || "").slice(0, 4)}</span>
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      {adding && <AddArtistModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
     </div>
   );
 }

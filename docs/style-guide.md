@@ -178,6 +178,58 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Sidebar nav** — `--bg`, item height 34px, icon + label. Active = `--accent-subtle` fill,
   `--accent-text` label, 2px `--accent` left marker. Hover = `--surface-2`.
 - **Tabs** — underline style; active tab `--text` + 2px `--accent` underline; others `--text-muted`.
+- **Master/detail split** (`.rg-split`) — a two-pane grid for two-level data: the list of things
+  on the left, the selected thing's contents on the right. Selection is an `--accent-subtle` fill on
+  the master row. Detail loads lazily on selection, never up front, when each item costs a
+  rate-limited fetch. Stacks to one column below 900px.
+- **Toggle button** — a control that *is* a state, not a command. **The label carries the state,
+  not just the fill**: participle when on, verb when off — `Wanted`/`Want`, `Following`/`Follow`.
+  On = `btn-primary` (accent fill); off = `btn-secondary`. Always set `aria-pressed`, and put the
+  current state plus what a click does in the `title`. Two forms of *one* word is the point: it
+  keeps the vocabulary rule below intact while making the state legible. (An earlier version fixed
+  the label — a filled, accent-coloured "Follow" — and it was consistently read as an invitation to
+  follow rather than as "you are following"; the fill alone cannot carry state.) Still avoid
+  one-directional *action* phrases ("Add to wanted"): they describe a transition, not a state, and
+  read as a different control once it flips. Controls that depend on a toggle being on stay
+  **disabled, not hidden** — a vanishing control shifts the row and is harder to find than a dimmed
+  one.
+- **Derived state is never a toggle** — when a state is computed from something else (an album
+  wanted because you follow the artist, or because Lidarr monitors it), render it as **state**: a
+  `pill-off` pill naming the authority, plus a disabled toggle whose `title` says what governs it
+  and where to change it. A toggle whose off direction silently does nothing is worse than a
+  disabled one. If there is a way to take ownership of the state, give it its **own labelled
+  action** ("Pin") rather than overloading the toggle — pressing an on-toggle and having it stay on
+  while its meaning changes is not a state change anyone can predict. The control that explains a
+  state must stay on the page **even when it cannot be used**: replacing it with a note hides the
+  cause of the state it was explaining.
+- **State must be readable without hover** — never leave it to the `title`. The toggle's own label
+  does this job (see above); add a `pill-off` pill only for what the label cannot say, such as *why*
+  a control is frozen (**Managed by Lidarr**). Do not do both for the same fact: a "Following" pill
+  next to a "Following" button is one signal too many.
+- **A derived state still has a value, so show it** — a want with no stored rows behind it is not
+  "nothing wanted"; it means *any release, whole album*, and the editor must open on that. Seed the
+  editor from what the derived state means, not from the empty table behind it, or the page
+  contradicts the row that linked to it.
+- **Collection vocabulary** — one word per concept, used everywhere. **Wanted** is anything asked
+  for but not owned; it is reached two ways: **Follow** an artist (auto-wants their studio albums
+  and EPs, including future ones) or **Add to wanted** on a single album. An album wanted because
+  of a follow is marked `auto`, so an automatic want never looks like a deliberate one. Editions
+  read as a narrowing of an existing want ("any edition counts" -> "want this one"), never as a
+  second, unrelated toggle. Never use "monitor" in the UI: it is the DB field name, and having two
+  words for one idea is what made the earlier version unreadable.
+- **Fielded search** (`.field-grid`) — a responsive grid of short, labelled inputs (eyebrow label
+  above, `auto-fit` at 150px) that are read as **one** query, not a sequence of steps. Use it when
+  free text cannot separate the results that matter: the common fields stay visible, the rest sit
+  behind a **More fields** toggle, and paging shows `first–last of total` so "not found" is
+  distinguishable from "not on this page". Always keep the free-text box too, and let it accept a
+  pasted URL/ID — an external site will usually out-search an in-app form, and refusing the paste
+  makes the user retype what they already found.
+- **Review step** — any bulk action that writes to files renders every proposed change as an
+  editable table *before* it commits, with per-row escape hatches (a **Skip** option) and the
+  provenance of each guess shown (`№` = read from the filename, `order` = inferred). No
+  "apply and see what happened": the review table **is** the confirmation, so there is no second
+  dialog. Conflicts (two rows claiming one target) block the commit and highlight the rows with
+  `--danger` rather than silently picking a winner.
 - **Labelled divider** (`.or-divider`) — hairline `--border` rules flanking an eyebrow-styled label
   (11px, uppercase, `.06em`, `--text-dim`). Separates alternative paths that are equally valid, not
   a section boundary — currently password login vs. external identity providers.

@@ -190,3 +190,61 @@ type MusicBrainzArtistReleaseGroup struct {
 	SecondaryTypes   []string `json:"secondary-types"`
 	FirstReleaseDate string   `json:"first-release-date"`
 }
+
+// MusicBrainzReleaseSearchResponse is the /release?query= search result, used by
+// manual attach to let a human find the right release for an unmatched file.
+type MusicBrainzReleaseSearchResponse struct {
+	Count    int                              `json:"count"`
+	Releases []MusicBrainzReleaseSearchResult `json:"releases"`
+}
+
+// MusicBrainzReleaseSearchResult is one search hit. It is deliberately a lean
+// subset: search results only need to be distinguishable from one another (which
+// edition, which year, how many tracks), not complete — the full release is
+// fetched once the user picks one.
+type MusicBrainzReleaseSearchResult struct {
+	ID             string         `json:"id"`
+	Score          int            `json:"score"`
+	Title          string         `json:"title"`
+	Status         string         `json:"status"`
+	Date           string         `json:"date"`
+	Country        string         `json:"country"`
+	Disambiguation string         `json:"disambiguation"`
+	ArtistCredit   []ArtistCredit `json:"artist-credit"`
+	ReleaseGroup   struct {
+		ID             string   `json:"id"`
+		Title          string   `json:"title"`
+		PrimaryType    string   `json:"primary-type"`
+		SecondaryTypes []string `json:"secondary-types"`
+	} `json:"release-group"`
+	Media []struct {
+		Format     string `json:"format"`
+		TrackCount int    `json:"track-count"`
+	} `json:"media"`
+}
+
+// MusicBrainzArtistSearchResponse is the /artist?query= search result, used to add
+// an artist you own nothing of yet.
+type MusicBrainzArtistSearchResponse struct {
+	Count   int                             `json:"count"`
+	Artists []MusicBrainzArtistSearchResult `json:"artists"`
+}
+
+type MusicBrainzArtistSearchResult struct {
+	ID             string `json:"id"`
+	Score          int    `json:"score"`
+	Name           string `json:"name"`
+	SortName       string `json:"sort-name"`
+	Disambiguation string `json:"disambiguation"`
+	Type           string `json:"type"`
+	Country        string `json:"country"`
+}
+
+// MusicBrainzReleaseBrowseResponse is the /release?release-group= browse result:
+// every edition of one release-group. Note the count key differs from the search
+// endpoint's ("release-count" vs "count") — MusicBrainz browse and search are
+// different APIs that happen to return the same entity.
+type MusicBrainzReleaseBrowseResponse struct {
+	Count    int                              `json:"release-count"`
+	Releases []MusicBrainzReleaseSearchResult `json:"releases"`
+}

@@ -14,6 +14,10 @@ import (
 // forward-compatibility; validated at the API layer).
 const (
 	DataSourceTypeMusicBrainz = "musicbrainz"
+	// DataSourceTypeAcoustID is audio fingerprinting. It identifies *recordings*,
+	// not releases, so it never replaces MusicBrainz — it suggests what a file is
+	// when nothing else can.
+	DataSourceTypeAcoustID = "acoustid"
 
 	ManagerTypeLidarr      = "lidarr"
 	ManagerTypeAutotaggerr = "autotaggerr"
@@ -41,6 +45,11 @@ const (
 	ManagedByAutotaggerr = "autotaggerr"
 	ManagedByLidarr      = "lidarr"
 	ManagedByMixed       = "mixed"
+	// ManagedByUnknown: the artist's files live in a library whose manager cannot
+	// be resolved (deleted row, dangling ManagerID). Reported as its own state
+	// rather than folded into "autotaggerr", so missing information is never
+	// presented as a positive claim about who manages the artist.
+	ManagedByUnknown = "unknown"
 )
 
 // Base is the shared primary-key + timestamp mixin for domain models. IDs are
@@ -70,10 +79,13 @@ func (b *Base) BeforeCreate(*gorm.DB) error {
 // every manager to fetch the tag-payload data for a release.
 type DataSource struct {
 	Base
-	Name      string  `gorm:"uniqueIndex;not null" json:"name"`
-	Type      string  `gorm:"not null" json:"type"`
-	BaseURL   string  `json:"base_url"`
-	Contact   string  `json:"contact"`
+	Name    string `gorm:"uniqueIndex;not null" json:"name"`
+	Type    string `gorm:"not null" json:"type"`
+	BaseURL string `json:"base_url"`
+	Contact string `json:"contact"`
+	// APIKey is the provider credential (AcoustID's client key). Write-only, like
+	// the Lidarr secrets: settable through the API, never returned by it.
+	APIKey    string  `json:"-"`
 	RateLimit float64 `json:"rate_limit"` // requests per second
 	// No gorm default on bool fields: GORM omits a Go zero value (false) from the
 	// INSERT when a column default is set, so a user-chosen false would be silently
@@ -132,6 +144,15 @@ type Library struct {
 	Enabled         bool       `json:"enabled"`
 	Cron            string     `json:"cron"`
 	LastScan        *time.Time `json:"last_scan"`
+	// UseAcoustID opts this library in to fingerprint identification. Off by
+	// default and the third of three independent switches (a configured AcoustID
+	// data source, fpcalc on PATH, this flag) — any one of them off and the library
+	// behaves exactly as it did before the feature existed.
+	//
+	// The column name is pinned: GORM's default naming turns "AcoustID" into
+	// "use_acoust_id", which reads like a typo and silently breaks any raw column
+	// reference written from the Go field or JSON name.
+	UseAcoustID bool `gorm:"column:use_acoustid" json:"use_acoustid"`
 }
 
 // LibraryItem is the owned correlation index: one row per file, recording which
@@ -247,11 +268,60 @@ type Event struct {
 // (Named Collection* to avoid clashing with the MusicBrainz response types.)
 type CollectionArtist struct {
 	Base
-	MBID         string     `gorm:"uniqueIndex;not null" json:"mb_id"`
-	Name         string     `json:"name"`
-	Monitored    bool       `json:"monitored"`
-	ManagedBy    string     `json:"managed_by"`
+	MBID      string `gorm:"uniqueIndex;not null" json:"mb_id"`
+	Name      string `json:"name"`
+	Monitored bool   `json:"monitored"`
+	ManagedBy string `json:"managed_by"`
+	// Origin distinguishes artists discovered from files on disk (rebuilt, and
+	// re-derived on every scan) from artists a user added by hand. A manually added
+	// artist has no files yet, so without this it would look like an anomaly and
+	// Rebuild could not tell "not owned yet" from "stale row".
+	Origin string `json:"origin"`
+
+	// FollowTypes is the comma-separated set of MusicBrainz primary types that
+	// following this artist auto-wants, e.g. "Album,EP". Empty means the default
+	// (album + EP). Following always includes releases that appear later — that is
+	// what distinguishes it from picking albums by hand.
+	FollowTypes string `json:"follow_types"`
+	// FollowSecondary lets live albums, compilations, remixes and soundtracks count.
+	// Off by default: including them buries the missing list under reissues.
+	FollowSecondary bool `json:"follow_secondary"`
+
 	LastSyncedAt *time.Time `json:"last_synced_at"`
+}
+
+// DefaultFollowTypes is what following an artist wants when nothing is configured.
+const DefaultFollowTypes = "Album,EP"
+
+// Collection artist origins.
+const (
+	CollectionOriginLibrary = "library" // materialised from files on disk
+	CollectionOriginManual  = "manual"  // added by a user who owns none of it yet
+)
+
+// CollectionDesire is *authored* intent: something the user asked for. It is kept
+// in its own table rather than as flags on CollectionReleaseGroup because desire is
+// sparse and human-entered while ownership is derived and rebuilt on every scan —
+// mixing the two is what let a scan silently wipe the Lidarr mirror in M5.
+//
+// One row expresses all five wanted-cases (see docs/wip.md, M6 desire model):
+//
+//	release_mb_id empty  -> any release of the group will do (the default)
+//	release_mb_id set    -> only that edition satisfies it
+//	recordings empty     -> the whole thing
+//	recordings non-empty -> only those songs
+//
+// Songs are identified by *recording* MBID, not release-scoped track MBID, so a
+// song desire survives without a release having been chosen. Recordings are unused
+// until M6 pass C; pass B writes album-level desires only.
+type CollectionDesire struct {
+	Base
+	ArtistMBID       string `gorm:"index;not null" json:"artist_mb_id"`
+	ReleaseGroupMBID string `gorm:"index;not null" json:"release_group_mb_id"`
+	ReleaseMBID      string `json:"release_mb_id"`
+	// RecordingMBIDs is the desired-song set; empty means the whole release-group
+	// or release. Stored as JSON so it needs no join table.
+	RecordingMBIDs []string `gorm:"serializer:json" json:"recording_mb_ids"`
 }
 
 // CollectionReleaseGroup is an album/EP/etc for an artist.
@@ -293,6 +363,66 @@ type CollectionReleaseGroup struct {
 	CatalogOwnedTracks int  `json:"catalog_owned_tracks"`
 	CatalogTotalTracks int  `json:"catalog_total_tracks"`
 	CatalogMonitored   bool `json:"catalog_monitored"`
+}
+
+// AcoustIDLookup caches one file's fingerprint and the candidates AcoustID
+// returned for it.
+//
+// Fingerprinting decodes the whole audio file, so re-doing it per scan is not
+// viable — this table is what makes the feature affordable at all. The cache is
+// keyed by path and invalidated by size/mtime, the same identity rule the scan
+// uses to skip unchanged files, so re-encoding a file re-fingerprints it.
+type AcoustIDLookup struct {
+	Path    string     `gorm:"primarykey" json:"path"`
+	Size    int64      `json:"size"`
+	ModTime *time.Time `json:"mod_time"`
+
+	// Fingerprint and Duration are what fpcalc produced; keeping them means a
+	// changed API key or a failed lookup does not cost another full decode.
+	Fingerprint string `gorm:"type:text" json:"-"`
+	Duration    int    `json:"duration"`
+
+	// Candidates is the serialized lookup response, empty when AcoustID knew
+	// nothing about the fingerprint. LookedUpAt is nil when only the fingerprint
+	// has been computed so far.
+	Candidates string     `gorm:"type:text" json:"-"`
+	LookedUpAt *time.Time `json:"looked_up_at"`
+	FetchedAt  time.Time  `json:"fetched_at"`
+}
+
+// CollectionRelease is one *edition* you own files of, under a release-group.
+//
+// It exists because collapsing a release-group to its best-owned edition throws
+// away the question people actually ask about a reissued album: owning 5 tracks of
+// the 1977 original and 7 of the 2017 remaster is two partial editions, not one
+// album that is 12/17 complete. The release-group keeps its best-edition summary
+// (that is the useful headline); this table is the detail behind it.
+//
+// It is pure disk state, written only by collection.Rebuild and pruned by it — a
+// row exists exactly while at least one file resolves to that release. Desires
+// reference releases by MBID, never by this row's ID, so rebuilding can never
+// disturb authored intent.
+type CollectionRelease struct {
+	Base
+	MBID             string `gorm:"uniqueIndex;not null" json:"mb_id"`
+	ReleaseGroupMBID string `gorm:"index;not null" json:"release_group_mb_id"`
+	ArtistMBID       string `gorm:"index" json:"artist_mb_id"`
+
+	Title          string `json:"title"`
+	Date           string `json:"date"`
+	Country        string `json:"country"`
+	Disambiguation string `json:"disambiguation"`
+	// Format summarises the media, e.g. "2×CD" — what actually distinguishes one
+	// edition from another in a list.
+	Format string `json:"format"`
+
+	OwnedTracks int `json:"owned_tracks"`
+	TotalTracks int `json:"total_tracks"`
+}
+
+// Complete reports whether every track of this edition is on disk.
+func (r CollectionRelease) Complete() bool {
+	return r.TotalTracks > 0 && r.OwnedTracks >= r.TotalTracks
 }
 
 // Discrepancy classifications between the disk and catalog views.
@@ -350,5 +480,8 @@ func AllDBModels() []any {
 		&Event{},
 		&CollectionArtist{},
 		&CollectionReleaseGroup{},
+		&CollectionRelease{},
+		&CollectionDesire{},
+		&AcoustIDLookup{},
 	}
 }

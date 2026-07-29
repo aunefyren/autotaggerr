@@ -5,11 +5,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Read on startup
 
 At the start of every session, read these before doing work:
-- **`docs/wip.md`** — current roadmap, known issues, ideas, and in-flight work.
+- **`docs/wip.md`** — what is *not done yet*: roadmap, known issues, ideas, in-flight work.
 - **`docs/development.md`** — code conventions, CI gates, and dev instructions to follow.
 
-`docs/` holds all project documentation (one `*.md` per feature as they grow). Keep `docs/wip.md`
-updated as work starts and finishes.
+`docs/` holds all project documentation, one `*.md` per feature — start with
+**`docs/media-manager.md`** for how the components fit together; `docs/development.md` indexes the
+rest. Keep `wip.md` current as work starts, and when something ships move what is worth keeping
+into its feature doc and delete it from `wip.md` (it is a backlog, not a changelog).
 
 ## What this is
 

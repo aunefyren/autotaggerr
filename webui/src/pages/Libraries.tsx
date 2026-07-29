@@ -137,13 +137,14 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const [managerId, setManagerId] = useState(initial?.manager_id ?? "");
   const [dataSourceId, setDataSourceId] = useState(initial?.data_source_id ?? "");
   const [taggerProfileId, setTaggerProfileId] = useState(initial?.tagger_profile_id ?? "");
+  const [useAcoustID, setUseAcoustID] = useState(initial?.use_acoustid ?? false);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { name, path };
+      const body: Record<string, unknown> = { name, path, use_acoustid: useAcoustID };
       if (editing) body.cron = cron;
       // Only send an ID when one is chosen; "None" leaves the field unset.
       if (managerId) body.manager_id = managerId;
@@ -202,6 +203,15 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
             ))}
           </select>
         </div>
+
+        <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={useAcoustID} onChange={(e) => setUseAcoustID(e.target.checked)} />
+          <span style={{ fontSize: 12 }}>Allow audio fingerprint identification</span>
+        </label>
+        <span className="dim" style={{ fontSize: 11, marginTop: -6 }}>
+          Lets you identify an unmatched file from its audio when attaching it. Needs an AcoustID
+          data source and fpcalc on the server; it only ever suggests, never tags on its own.
+        </span>
 
         {editing && (
           <div className="field">
