@@ -123,7 +123,7 @@ func TestDesireAnyAndSpecificAreExclusive(t *testing.T) {
 	if _, err := SetDesire(db, specific); err != nil {
 		t.Fatalf("specific-release desire: %v", err)
 	}
-	desires, err := DesiresForArtist(db, "art-1")
+	desires, err := DesiresForArtist(db, "art-1", nil)
 	if err != nil {
 		t.Fatalf("DesiresForArtist: %v", err)
 	}
@@ -135,7 +135,7 @@ func TestDesireAnyAndSpecificAreExclusive(t *testing.T) {
 	if _, err := SetDesire(db, any); err != nil {
 		t.Fatalf("widening: %v", err)
 	}
-	desires, _ = DesiresForArtist(db, "art-1")
+	desires, _ = DesiresForArtist(db, "art-1", nil)
 	if len(desires) != 1 || desires[0].ReleaseMBID != "" {
 		t.Fatalf("widening left %d desires (%+v); want only the any-release want", len(desires), desires)
 	}
@@ -152,7 +152,7 @@ func TestDesireSeveralEditionsCoexist(t *testing.T) {
 			t.Fatalf("desire %s: %v", rel, err)
 		}
 	}
-	desires, _ := DesiresForArtist(db, "art-1")
+	desires, _ := DesiresForArtist(db, "art-1", nil)
 	if len(desires) != 2 {
 		t.Fatalf("got %d desires, want 2 specific editions", len(desires))
 	}
@@ -176,7 +176,7 @@ func TestDesireRecordingsAreStoredAndUpdatable(t *testing.T) {
 		t.Fatalf("SetDesire (update): %v", err)
 	}
 
-	desires, _ := DesiresForArtist(db, "art-1")
+	desires, _ := DesiresForArtist(db, "art-1", nil)
 	if len(desires) != 1 {
 		t.Fatalf("got %d desires, want 1", len(desires))
 	}

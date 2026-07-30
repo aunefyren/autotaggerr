@@ -10,6 +10,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/files"
@@ -29,7 +30,77 @@ var (
 	musicbrainzReleaseCacheJitter   = 7 * 24 * time.Hour // up to +1 week of jitter (7-14 days total)
 	musicbrainzReleaseCache         = map[string]models.CachedMusicBrainzRelease{}
 	musicbrainzReleaseCacheMu       sync.RWMutex
+
+	// inflightFetches coalesces concurrent fetches of the *same* release. The cache
+	// is only populated once a fetch completes, so without this every worker that
+	// starts on a track of the same album during a cold scan misses the cache and
+	// issues its own identical request — each one serialized behind the global 1 req/s
+	// limiter. An album's tracks are adjacent in walk order and therefore land on
+	// different workers at the same time, which made this the common case rather than
+	// a rare one.
+	inflightFetches   = map[string]*inflightFetch{}
+	inflightFetchesMu sync.Mutex
+
+	// Fetch accounting, for measuring what a scan actually cost upstream.
+	statCacheHits atomic.Int64
+	statCoalesced atomic.Int64
+	statFetches   atomic.Int64
 )
+
+// inflightFetch is one in-progress release fetch. The leader fills release/err and
+// closes done; waiters read them only after done is closed, so the close provides
+// the happens-before edge.
+type inflightFetch struct {
+	done    chan struct{}
+	release models.MusicBrainzReleaseResponse
+	err     error
+}
+
+// MusicbrainzFetchStats counts what release lookups did during a run: served from
+// cache, coalesced onto another goroutine's in-flight request, or actually fetched
+// over the network. Fetches are the only ones that pay the rate limiter, so this is
+// what makes a cold-vs-warm scan comparison meaningful.
+type MusicbrainzFetchStats struct {
+	CacheHits int64 `json:"cache_hits"`
+	Coalesced int64 `json:"coalesced"`
+	Fetches   int64 `json:"fetches"`
+}
+
+// MusicbrainzStatsSnapshot returns the counters accumulated so far.
+func MusicbrainzStatsSnapshot() MusicbrainzFetchStats {
+	return MusicbrainzFetchStats{
+		CacheHits: statCacheHits.Load(),
+		Coalesced: statCoalesced.Load(),
+		Fetches:   statFetches.Load(),
+	}
+}
+
+// MusicbrainzResetStats zeroes the counters. Callers that report per-run figures
+// (a scan, a drift sync) reset at the start of the run.
+func MusicbrainzResetStats() {
+	statCacheHits.Store(0)
+	statCoalesced.Store(0)
+	statFetches.Store(0)
+}
+
+// SetMusicBrainzRateLimit sets the minimum interval between MusicBrainz requests
+// from a requests-per-second figure (the `rate_limit` on the MusicBrainz data
+// source row). Non-positive values leave the current interval alone, so a blank or
+// zeroed config cannot accidentally remove the throttle. Raising it above the ~1
+// req/s MusicBrainz permits publicly is only appropriate against a local mirror.
+func SetMusicBrainzRateLimit(perSecond float64) {
+	if perSecond <= 0 {
+		return
+	}
+	interval := time.Duration(float64(time.Second) / perSecond)
+	if interval <= 0 {
+		return
+	}
+
+	queryMutex.Lock()
+	defer queryMutex.Unlock()
+	rateLimit = interval
+}
 
 // musicbrainzCacheExpiry returns a jittered expiry time (base + [0, jitter))
 // so entries fetched together during one scan don't all expire at once.
@@ -52,29 +123,58 @@ func RateLimit() error {
 	return nil
 }
 
+// GetMusicBrainzRelease returns a release from the cache, or fetches it. Concurrent
+// callers asking for the same release share a single fetch (see inflightFetches).
 func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
-	var release models.MusicBrainzReleaseResponse
+	if release, ok := cachedFreshRelease(mbID); ok {
+		statCacheHits.Add(1)
+		logger.Log.Debug("returning cached release for ID: " + mbID)
+		return release, nil
+	}
 
+	inflightFetchesMu.Lock()
+	if leader, ok := inflightFetches[mbID]; ok {
+		inflightFetchesMu.Unlock()
+		statCoalesced.Add(1)
+		logger.Log.Debug("joining in-flight release fetch for ID: " + mbID)
+		<-leader.done
+		return leader.release, leader.err
+	}
+	// Re-check under the in-flight lock: a fetch may have completed and populated the
+	// cache between the lookup above and here.
+	if release, ok := cachedFreshRelease(mbID); ok {
+		inflightFetchesMu.Unlock()
+		statCacheHits.Add(1)
+		return release, nil
+	}
+	fetch := &inflightFetch{done: make(chan struct{})}
+	inflightFetches[mbID] = fetch
+	inflightFetchesMu.Unlock()
+
+	statFetches.Add(1)
+	// propagate the real cause (HTTP status / transport / parse) instead of a
+	// generic message, so the file-level log can tell them apart
+	fetch.release, fetch.err = QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
+
+	inflightFetchesMu.Lock()
+	delete(inflightFetches, mbID)
+	inflightFetchesMu.Unlock()
+	close(fetch.done) // releases every waiter with the leader's result
+
+	return fetch.release, fetch.err
+}
+
+// cachedFreshRelease returns a cached release if it is present and unexpired. A zero
+// ExpiresAt (pre-jitter cache entry) counts as expired so it gets refreshed once and
+// upgraded to the jittered format.
+func cachedFreshRelease(mbID string) (models.MusicBrainzReleaseResponse, bool) {
 	musicbrainzReleaseCacheMu.RLock()
 	cached, ok := musicbrainzReleaseCache[mbID]
 	musicbrainzReleaseCacheMu.RUnlock()
-	if ok {
-		// A zero ExpiresAt (pre-jitter cache entry) is treated as expired so it
-		// gets refreshed once and upgraded to the new jittered format.
-		if time.Now().Before(cached.ExpiresAt) {
-			logger.Log.Debug("returning cached release for ID: " + mbID)
-			return cached.Release, nil
-		}
+	if !ok || !time.Now().Before(cached.ExpiresAt) {
+		return models.MusicBrainzReleaseResponse{}, false
 	}
-
-	release, err := QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
-	if err != nil {
-		// propagate the real cause (HTTP status / transport / parse) instead of a
-		// generic message, so the file-level log can tell them apart
-		return release, err
-	}
-
-	return release, nil
+	return cached.Release, true
 }
 
 // readBodySnippet reads a small, bounded portion of an error response body so it

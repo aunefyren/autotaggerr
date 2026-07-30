@@ -8,8 +8,10 @@ package components
 import (
 	"fmt"
 
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"gorm.io/gorm"
 )
 
 // DataSource is a metadata provider. MusicBrainz is the only implementation
@@ -52,6 +54,31 @@ func NewDataSource(row models.DataSource) (DataSource, error) {
 	default:
 		return nil, fmt.Errorf("unsupported data source type %q", row.Type)
 	}
+}
+
+// ApplyDataSourceRateLimits pushes the configured MusicBrainz request rate into the
+// client's limiter. Until this ran, `rate_limit` was editable through the API and
+// seeded in the DB but never read — the limiter was a hardcoded 1 req/s. It is
+// called at startup and again whenever a data source is edited, so raising the rate
+// (only sensible against a local MusicBrainz mirror) takes effect without a restart.
+//
+// An enabled MusicBrainz row with a non-positive rate is left at the current
+// interval by the setter rather than being treated as "unlimited".
+func ApplyDataSourceRateLimits(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+
+	var row models.DataSource
+	err := db.Where("type = ? AND enabled = ?", models.DataSourceTypeMusicBrainz, true).First(&row).Error
+	if err != nil {
+		return // no enabled MusicBrainz source: keep the safe default
+	}
+	if row.RateLimit <= 0 {
+		return
+	}
+	modules.SetMusicBrainzRateLimit(row.RateLimit)
+	logger.Log.Infof("MusicBrainz rate limit set to %.3g req/s from data source %q", row.RateLimit, row.Name)
 }
 
 // --- Managers ---------------------------------------------------------------

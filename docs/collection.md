@@ -16,6 +16,7 @@ reduced to a provenance badge and which actions are offered.
 |-------|-----------|-------|
 | `CollectionArtist` | `Rebuild` (library) / `AddArtist` (manual) | name, `ManagedBy`, `Origin`, follow settings |
 | `CollectionReleaseGroup` | `Rebuild` (disk block) + `SyncLidarr`/`SyncArtist` (catalog block) | album-level ownership and catalog state |
+| `CollectionReleaseGroupArtist` | every writer, additively | which artists a release-group is credited to |
 | `CollectionRelease` | `Rebuild` only | one row per **owned edition**: per-edition track counts |
 | `CollectionDesire` | the user, via the API | authored intent — never recomputed |
 
@@ -24,6 +25,42 @@ Named `Collection*` to avoid clashing with the MusicBrainz response types.
 `Origin` (`library` \| `manual`) records how an artist *entered* the collection. `Rebuild` stamps
 `library` on create and never overwrites `manual`, so an artist you added by hand keeps that
 provenance once files for them appear — and a file-less artist is not treated as an anomaly.
+
+## A release-group can have more than one artist
+
+`CollectionReleaseGroup.ArtistMBID` holds a single artist, so a collaboration could only belong to
+one. Worse, every writer overwrote that column with whatever artist it happened to be about, and the
+writers disagree: `Rebuild` names the *first* credited artist, `SyncArtist` names the artist whose
+discography it is syncing, `SyncLidarr` names Lidarr's artist. A collaboration therefore belonged to
+whichever ran last — it appeared on one artist's page and vanished from the other's, flipping
+between them as syncs ran, while the release page (keyed by release MBID, no artist involved) kept
+showing it as owned the whole time.
+
+`CollectionReleaseGroupArtist` is the fix: one row per (release-group, artist) with the credit
+`Position`. `ArtistMBID` survives as the **primary** credit, for display and sorting.
+
+Two rules make it work:
+
+- **Links are additive.** Writers know different amounts — only `Rebuild` reads the release's real
+  artist credit; everyone else knows just that *their* artist is credited somehow. If a partial
+  writer could remove links, syncing the second artist would delete the first artist's claim, which
+  is the same bug from the other end.
+- **Only a caller that knows the credit order may write the primary credit.** `rgWrite.credits`
+  carries the full ordered credit and is set by `Rebuild` alone; an empty `credits` means "this
+  artist is credited", never "this is the only artist".
+
+Reads go through `collection.ReleaseGroupsForArtist`, which is the **union** of the link table and
+the primary-credit column. The column is a claim in its own right, so a row with one but no link
+still shows — which makes `BackfillReleaseGroupArtists` (run at startup, idempotent) an optimisation
+rather than something page correctness depends on. The backfill cannot recover the *second* artist
+of a pre-existing collaboration, since nothing stored it; the next `Rebuild` does, from the cached
+release.
+
+Two related per-artist reads were keyed the same way and moved to release-group keys:
+`OwnedReleaseCounts` (an edition is stored under its primary credit, so counting per artist reported
+zero owned editions on the other artist's page) and `DesiresForArtist` (a desire records the page it
+was created from, so wanting a collaboration from one artist left the other offering to want it
+again).
 
 ## The disk/catalog split
 

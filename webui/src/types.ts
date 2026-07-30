@@ -15,6 +15,31 @@ export interface DataSource {
   health: string;
 }
 
+/**
+ * What role each data source type can play. The four types share one table because
+ * they share every field, but they are not interchangeable: only a metadata provider
+ * can be a library's data source. Mirrors `models.DataSourceCategory` in Go — the API
+ * enforces this, so keep the two definitions in step.
+ */
+export const DATA_SOURCE_CATEGORY: Record<string, string> = {
+  musicbrainz: "metadata",
+  acoustid: "fingerprint",
+  coverartarchive: "artwork",
+  fanart: "artwork",
+};
+
+export function dataSourceCategory(type: string): string {
+  return DATA_SOURCE_CATEGORY[type] ?? "";
+}
+
+/** Human names for the provider types, so each one is spelled the same everywhere. */
+export const DATA_SOURCE_LABEL: Record<string, string> = {
+  musicbrainz: "MusicBrainz",
+  acoustid: "AcoustID",
+  coverartarchive: "Cover Art Archive",
+  fanart: "fanart.tv",
+};
+
 export interface Manager {
   id: string;
   name: string;
@@ -185,6 +210,25 @@ export interface ItemTags {
   tags: TagDiffEntry[];
 }
 
+/** One field's before/after from a tag write. */
+export interface TagChange {
+  field: string;
+  old: string;
+  new: string;
+}
+
+/** One file's outcome inside an event: what happened, and exactly what changed. */
+export interface EventItem {
+  id: string;
+  event_id: string;
+  path: string;
+  /** "changed" | "error" */
+  status: string;
+  tags_written: number;
+  error?: string;
+  changes?: TagChange[];
+}
+
 export interface Event {
   id: string;
   type: string;
@@ -194,6 +238,8 @@ export interface Event {
   title: string;
   summary: string;
   details: Record<string, unknown> | null;
+  /** Per-file detail. Only the single-event endpoint returns it, never the feed. */
+  items?: EventItem[];
 }
 
 export interface EventsPage {

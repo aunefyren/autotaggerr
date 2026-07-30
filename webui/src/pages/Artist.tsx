@@ -1,8 +1,8 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup } from "../types";
+import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, ScanStatus } from "../types";
 import { ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
@@ -125,6 +125,37 @@ export default function Artist() {
   const managerLabel = isLidarr ? "Lidarr" : "MusicBrainz";
 
   const refresh = () => { detail.reload(); disco.reload(); };
+
+  // The per-artist actions run on the same single-run guard as a full scan, so the
+  // global scan status is what says whether they can be started — and polling it is
+  // what turns a fire-and-forget POST into visible progress.
+  const status = useFetch<ScanStatus>(() => api.get("/scan/status"));
+  const running = status.data?.running ?? false;
+
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => status.reload(), 3000);
+    return () => clearInterval(t);
+  }, [running, status.reload]);
+
+  // Reload once a run finishes rather than on every poll: a scan or re-tag changes
+  // the coverage and ownership this whole page is built from.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running) refresh();
+    wasRunning.current = running;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  const action = (path: string, started: string) => async () => {
+    try {
+      await api.post(`/artists/${mbid}/${path}`);
+      toast("info", started);
+      setTimeout(() => status.reload(), 300);
+    } catch (e) {
+      toast("err", errMsg(e));
+    }
+  };
 
   const updateFollow = async (body: Record<string, unknown>) => {
     setBusy(true);
@@ -254,6 +285,40 @@ export default function Artist() {
             >
               {settingsOpen ? "Hide settings" : "Settings"}
             </button>
+
+            {/* Commands, not state — and scoped to this artist, so none of them
+                costs a full-library pass. Ordered by what they touch: the disk,
+                then MusicBrainz, then only the files. */}
+            <span className="sep">·</span>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={running}
+              title="Walk this artist's folders and process new or changed files, as a library scan would."
+              onClick={action("scan", "Scan started")}
+            >
+              Scan
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={running}
+              title="Re-read this artist's catalogue and editions from MusicBrainz, ignoring the cache, and re-tag anything that changed upstream."
+              onClick={action("refresh", "Metadata refresh started")}
+            >
+              Refresh metadata
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={running}
+              title="Rewrite the tags of this artist's indexed files from the metadata already known. No disk walk, no MusicBrainz lookups."
+              onClick={action("retag", "Tagging started")}
+            >
+              Tag files
+            </button>
+            {running && (
+              <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A scan or sync is running">
+                Working…
+              </Link>
+            )}
           </div>
         )}
       </div>

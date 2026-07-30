@@ -18,12 +18,40 @@ All four are user-configured DB rows, edited through the API/UI.
   to, and owns library state. `lidarr` reads Lidarr's decision (the original behaviour);
   `autotaggerr` derives it natively from embedded tags and manual pins. Decisions are persisted and
   never silently re-derived.
-- **Data source** — a metadata provider, decoupled from the manager. `musicbrainz` is used by
-  *both* managers for the tag payload, since even Lidarr mode fetches MB directly. `acoustid` is
-  optional (see [fingerprinting.md](fingerprinting.md)).
+- **Data source** — an external provider. `musicbrainz` is used by *both* managers for the tag
+  payload, since even Lidarr mode fetches MB directly.
 - **Library** — a folder plus which manager, data source and tagger profile govern it.
 - **Tagger profile** — the tag-writing settings. One built-in engine consumes it, kept first-class
   so Plex/Jellyfin dialects and an NFO-sidecar writer can be added as siblings.
+
+### Data sources have three roles, and they are not interchangeable
+
+The four provider types share one table because they share every field — URL, credential, rate
+limit, enabled, health — and the same health-check code. What they do *not* share is where they may
+be used, so `models.DataSourceCategory` maps type → role:
+
+| Category | Types | Used for |
+|----------|-------|----------|
+| `metadata` | `musicbrainz` | the tag payload; the only kind a library may point at |
+| `fingerprint` | `acoustid` | suggesting an identity for an unmatched file ([fingerprinting.md](fingerprinting.md)) |
+| `artwork` | `coverartarchive`, `fanart` | covers and artist images on the browsing pages |
+
+Treating all four as one interchangeable list is what made the model confusing: a library's data
+source select offered AcoustID and fanart.tv, which were then accepted and silently ignored, because
+nothing but release metadata is ever read from that field. `checkLibraryDataSource` now rejects a
+non-metadata source with a 400 on both create and update, and the SPA filters the select to match
+(`dataSourceCategory` in `webui/src/types.ts` mirrors the Go map — keep the two in step).
+
+**Singletons.** There is exactly one AcoustID service, one Cover Art Archive and one fanart.tv, and
+only the first row of a type is ever looked up, so a second is dead config: `POST /data-sources`
+returns 409 for a duplicate of a singleton type (`models.DataSourceIsSingleton`). MusicBrainz is
+excluded — a local mirror alongside the public service is legitimate. Seeding was already
+idempotent per type, so it agrees with the rule.
+
+The **Data sources page** is shaped around this: a *Metadata sources* table you can add rows to, plus
+one panel per other role listing its fixed provider(s) as configured-or-not. Rows that predate the
+duplicate check still show, marked as unused duplicates with a Remove action, so nothing is hidden
+behind a panel that renders only the first match.
 
 ### Manager resolution is strict on purpose
 
@@ -48,7 +76,10 @@ correlation index. `components.ScanLibrary` reuses `modules.WalkAndProcess` for 
 `processLibraries` iterates the enabled DB libraries.
 
 `LibraryItem.Pinned` marks a manual correlation. The pipeline never lets automatic resolution
-downgrade a pin (`components/pipeline.go`), which is what makes manual attach durable.
+downgrade a pin (`components/pipeline.go`), which is what makes manual attach durable: `ProcessFile`
+reuses a pinned correlation instead of asking the manager for one, and `recordItem` refuses to write
+MB IDs or a source over a pinned row. Both halves are needed — guarding only the index row still let
+a re-processed file get *tagged* to the manager's answer while the row claimed `manual`.
 
 See [scanning.md](scanning.md) for skip-unchanged, drift sync and performance.
 

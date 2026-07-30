@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { DataSource, Library, Manager, TaggerProfile } from "../types";
+import { DataSource, Library, Manager, TaggerProfile, dataSourceCategory } from "../types";
 import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
 import { useToast } from "../toast";
 
@@ -184,14 +184,20 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
           <span className="dim" style={{ fontSize: 11 }}>Decides which MusicBrainz release each file maps to.</span>
         </div>
 
+        {/* Metadata providers only. Fingerprinting and artwork sources live in the same
+            table but cannot supply tags, and offering them here was the reason this
+            field read as nonsense. The API rejects them too. */}
         <div className="field">
-          <label className="flabel">Data source</label>
+          <label className="flabel">Metadata source</label>
           <select className="select" value={dataSourceId} onChange={(e) => setDataSourceId(e.target.value)}>
-            <option value="">Default</option>
-            {options.dataSources.map((d) => (
-              <option key={d.id} value={d.id}>{d.name}</option>
-            ))}
+            <option value="">Default (first configured)</option>
+            {options.dataSources
+              .filter((d) => dataSourceCategory(d.type) === "metadata")
+              .map((d) => (
+                <option key={d.id} value={d.id}>{d.name}</option>
+              ))}
           </select>
+          <span className="dim" style={{ fontSize: 11 }}>Where this library's release metadata is fetched from.</span>
         </div>
 
         <div className="field">

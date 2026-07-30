@@ -121,6 +121,11 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artists", a.listArtists)
 		protected.GET("/artists/:mbid", a.getArtist)
 		protected.POST("/artists/:mbid/monitor", a.setArtistMonitored)
+		// Per-artist actions: the same scan/refresh/tag work as the library-wide
+		// buttons, narrowed to one artist (see routers/scan_items.go).
+		protected.POST("/artists/:mbid/scan", a.scanArtist)
+		protected.POST("/artists/:mbid/refresh", a.refreshArtist)
+		protected.POST("/artists/:mbid/retag", a.retagArtist)
 		protected.GET("/search/artists", a.searchArtists)
 		protected.POST("/artists", a.addArtist)
 		protected.GET("/release-groups/:mbid/releases", a.releaseGroupEditions)

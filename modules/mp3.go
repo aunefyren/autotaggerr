@@ -68,7 +68,9 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string]string {
 	}
 }
 
-func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, err error) {
+// SetMP3Tags writes ID3 metadata with ffmpeg. The returned changes are the
+// field-level before/after actually applied; see models.TagChange.
+func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	unchanged = false
 	tagsWritten = 0
 
@@ -76,7 +78,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	filePath, err = utilities.NormalizePathForExternalTool(filePath)
 	if err != nil {
 		logger.Log.Error("failed to normalize path. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to normalize path")
+		return unchanged, tagsWritten, nil, errors.New("failed to normalize path")
 	}
 
 	desired := buildMP3DesiredTags(metadata)
@@ -85,7 +87,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 
 	existing, err := GetMP3Tags(filePath)
 	if err != nil {
-		return false, 0, fmt.Errorf("read mp3 tags failed: %w", err)
+		return false, 0, nil, fmt.Errorf("read mp3 tags failed: %w", err)
 	}
 
 	logger.Log.Debug(existing)
@@ -93,7 +95,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	changes, hasChanges := utilities.DiffID3Tags(existing, desired)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes, returning")
-		return true, 0, nil // unchanged
+		return true, 0, nil, nil // unchanged
 	} else {
 		logger.Log.Debug("found tag changes")
 		logger.Log.Debug(changes)
@@ -289,13 +291,28 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	cmd.Stdout = os.Stdout
 
 	if err := cmd.Run(); err != nil {
-		return false, 0, fmt.Errorf("ffmpeg tagging failed: %w", err)
+		return false, 0, nil, fmt.Errorf("ffmpeg tagging failed: %w", err)
 	}
 	if err := os.Rename(tempOutput, originalFilePath); err != nil {
-		return false, 0, fmt.Errorf("failed to replace original file: %w", err)
+		return false, 0, nil, fmt.Errorf("failed to replace original file: %w", err)
 	}
 
-	return false, tagsWritten, nil
+	// The diff is derived from the change set rather than from the write blocks
+	// above: ffmpeg rewrites the whole file in one pass, so there is no per-field
+	// success to report, and `changes` is already exactly the set of fields that
+	// differed. tagsWritten can exceed this count — a changed DISCNUMBER also
+	// rewrites its paired DISCTOTAL.
+	changed = make([]models.TagChange, 0, len(changes))
+	for key, value := range changes {
+		changed = append(changed, models.TagChange{
+			Field: key,
+			Old:   strings.Join(existing[key], "; "),
+			New:   value,
+		})
+	}
+	utilities.SortTagChanges(changed)
+
+	return false, tagsWritten, changed, nil
 }
 
 func GetMP3Tags(filePath string) (map[string][]string, error) {

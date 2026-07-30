@@ -1,7 +1,9 @@
 package routers
 
 import (
+	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -169,5 +171,95 @@ func TestScanEndpointsRequireAuth(t *testing.T) {
 		if w := do(r, "POST", path, "", nil); w.Code != http.StatusUnauthorized {
 			t.Errorf("POST %s = %d, want 401", path, w.Code)
 		}
+	}
+}
+
+// The per-artist actions. Each is a background job, so what the endpoint can be held
+// to is its refusals: an artist that does not exist, and an artist with nothing on
+// disk to act on. Both are cases where a 202 would be a lie.
+
+func seedArtistWithFile(t *testing.T, api *API, root string) string {
+	t.Helper()
+
+	library := models.Library{Name: "L", Path: root, Enabled: true}
+	if err := api.DB.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Artist"}).Error; err != nil {
+		t.Fatalf("create artist: %v", err)
+	}
+	if err := api.DB.Create(&models.CollectionReleaseGroupArtist{ReleaseGroupMBID: "rg-1", ArtistMBID: "artist-1"}).Error; err != nil {
+		t.Fatalf("link release-group: %v", err)
+	}
+	if err := api.DB.Create(&models.CollectionRelease{MBID: "rel-1", ReleaseGroupMBID: "rg-1", ArtistMBID: "artist-1"}).Error; err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	if err := api.DB.Create(&models.LibraryItem{
+		LibraryID:   library.ID,
+		Path:        filepath.Join(root, "Artist", "Album (2020)", "01 track.flac"),
+		MBReleaseID: "rel-1",
+		Status:      models.LibraryItemStatusOK,
+	}).Error; err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	return "artist-1"
+}
+
+func TestArtistActionsRejectUnknownArtist(t *testing.T) {
+	r, _ := setupAPI(t)
+	token := loginToken(t, r)
+
+	for _, action := range []string{"scan", "refresh", "retag"} {
+		if w := do(r, "POST", "/api/v1/artists/nope/"+action, token, nil); w.Code != http.StatusNotFound {
+			t.Errorf("%s of an unknown artist = %d, want 404: %s", action, w.Code, w.Body.String())
+		}
+	}
+}
+
+// Scanning and re-tagging an artist with no indexed files is refused rather than
+// started: there is no folder to walk and nothing to write, so a 202 would report
+// work that never happens.
+func TestArtistScanRefusesWithoutFiles(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Nobody"}).Error; err != nil {
+		t.Fatalf("create artist: %v", err)
+	}
+
+	for _, action := range []string{"scan", "retag"} {
+		w := do(r, "POST", "/api/v1/artists/artist-1/"+action, token, nil)
+		if w.Code != http.StatusConflict {
+			t.Errorf("%s without files = %d, want 409: %s", action, w.Code, w.Body.String())
+		}
+	}
+
+	// Refresh deliberately has no such refusal — an artist with no files still has a
+	// catalogue to re-read, which is how a followed artist's new album is discovered.
+	// It is not asserted here: accepting it starts a real discography fetch in the
+	// background, and MusicBrainz cannot be stubbed from outside modules/ (see
+	// docs/development.md). Only its refusals are covered — the work itself needs a
+	// live session.
+}
+
+func TestArtistScanStarts(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	mbid := seedArtistWithFile(t, api, t.TempDir())
+
+	w := do(r, "POST", "/api/v1/artists/"+mbid+"/scan", token, nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	// The response names what will be walked, so the caller can see the scope was
+	// resolved to a folder rather than to the whole library.
+	var body struct {
+		Artist  string   `json:"artist"`
+		Folders []string `json:"folders"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body.Artist != "Artist" || len(body.Folders) != 1 {
+		t.Errorf("body = %+v, want the artist and one folder", body)
 	}
 }

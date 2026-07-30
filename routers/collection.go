@@ -190,14 +190,34 @@ func newReleaseGroupView(
 
 // hasCatalog reports, per artist MBID, whether any release-group carries catalog
 // state — i.e. whether there is a manager view to compare the disk against.
-func hasCatalog(groups []models.CollectionReleaseGroup) map[string]bool {
+//
+// credits maps release-group -> every credited artist; a nil map falls back to the
+// row's primary credit, which is right for a single-artist release-group and is all
+// the caller has when it did not load the links.
+func hasCatalog(groups []models.CollectionReleaseGroup, credits map[string][]string) map[string]bool {
 	out := map[string]bool{}
 	for _, rg := range groups {
-		if rg.InCatalog {
-			out[rg.ArtistMBID] = true
+		if !rg.InCatalog {
+			continue
+		}
+		for _, artistMBID := range creditedArtists(rg, credits) {
+			out[artistMBID] = true
 		}
 	}
 	return out
+}
+
+// creditedArtists returns every artist a release-group belongs to, falling back to
+// its primary credit when the link map has nothing (an unlinked row, or a caller that
+// did not load them).
+func creditedArtists(rg models.CollectionReleaseGroup, credits map[string][]string) []string {
+	if linked := credits[rg.MBID]; len(linked) > 0 {
+		return linked
+	}
+	if rg.ArtistMBID == "" {
+		return nil
+	}
+	return []string{rg.ArtistMBID}
 }
 
 // listArtists returns the collection: artists with owned/missing counts.
@@ -231,22 +251,35 @@ func (a *API) listArtists(c *gin.Context) {
 		}
 	}
 
-	catalogued := hasCatalog(groups)
+	// A collaboration counts towards every artist credited on it, so it appears on
+	// both artists' rows instead of only the one named in artist_mb_id.
+	rgMBIDs := make([]string, 0, len(groups))
 	for _, rg := range groups {
-		g := byArtist[rg.ArtistMBID]
-		if g == nil {
-			g = &agg{}
-			byArtist[rg.ArtistMBID] = g
-		}
-		g.total++
-		if rg.Owned {
-			g.owned++
-		}
-		if rg.Complete() {
-			g.complete++
-		}
-		if rg.Discrepancy(catalogued[rg.ArtistMBID]) != models.DiscrepancyNone {
-			g.mismatch++
+		rgMBIDs = append(rgMBIDs, rg.MBID)
+	}
+	credits, err := collection.ArtistsByReleaseGroup(a.DB, rgMBIDs)
+	if err != nil {
+		logger.Log.Warnf("failed to load release-group artist links: %s", err.Error())
+	}
+
+	catalogued := hasCatalog(groups, credits)
+	for _, rg := range groups {
+		for _, artistMBID := range creditedArtists(rg, credits) {
+			g := byArtist[artistMBID]
+			if g == nil {
+				g = &agg{}
+				byArtist[artistMBID] = g
+			}
+			g.total++
+			if rg.Owned {
+				g.owned++
+			}
+			if rg.Complete() {
+				g.complete++
+			}
+			if rg.Discrepancy(catalogued[artistMBID]) != models.DiscrepancyNone {
+				g.mismatch++
+			}
 		}
 	}
 
@@ -277,9 +310,19 @@ func (a *API) getArtist(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
 		return
 	}
-	var groups []models.CollectionReleaseGroup
-	a.DB.Where("artist_mb_id = ?", mbid).Order("owned desc, first_release_date desc").Find(&groups)
-	desires, err := collection.DesiresForArtist(a.DB, mbid)
+	// Through the credit links, not artist_mb_id: a collaboration belongs on both
+	// artists' pages, and only one of them can be named in that column.
+	groups, err := collection.ReleaseGroupsForArtist(a.DB, mbid)
+	if err != nil {
+		logger.Log.Warnf("failed to load release-groups for %s: %s", mbid, err.Error())
+	}
+
+	rgMBIDs := make([]string, 0, len(groups))
+	for _, rg := range groups {
+		rgMBIDs = append(rgMBIDs, rg.MBID)
+	}
+
+	desires, err := collection.DesiresForArtist(a.DB, mbid, rgMBIDs)
 	if err != nil {
 		logger.Log.Warnf("failed to load desires for %s: %s", mbid, err.Error())
 	}
@@ -299,8 +342,19 @@ func (a *API) getArtist(c *gin.Context) {
 		recordings[d.ReleaseGroupMBID] = append(recordings[d.ReleaseGroupMBID], d.RecordingMBIDs...)
 	}
 
-	catalogued := hasCatalog(groups)[mbid]
-	editionCounts, err := collection.OwnedReleaseCounts(a.DB, mbid)
+	// Every group here is already this artist's, so catalog state is a plain "does
+	// any of them carry it".
+	catalogued := false
+	for _, rg := range groups {
+		if rg.InCatalog {
+			catalogued = true
+			break
+		}
+	}
+	// Counted by release-group rather than by artist: an edition of a collaboration
+	// is stored under its primary credit, so filtering by artist hid it from the
+	// other one.
+	editionCounts, err := collection.OwnedReleaseCounts(a.DB, rgMBIDs)
 	if err != nil {
 		logger.Log.Warnf("failed to count owned editions for %s: %s", mbid, err.Error())
 	}
@@ -579,16 +633,25 @@ func (a *API) discography(c *gin.Context) {
 		return
 	}
 
-	// Stored state, keyed by release-group, so the live list can be annotated.
-	var stored []models.CollectionReleaseGroup
-	a.DB.Where("artist_mb_id = ?", mbid).Find(&stored)
+	// Stored state, keyed by release-group, so the live list can be annotated. Read
+	// through the credit links so a collaboration this artist is credited on is
+	// annotated here too, rather than looking absent from the collection.
+	stored, err := collection.ReleaseGroupsForArtist(a.DB, mbid)
+	if err != nil {
+		logger.Log.Warnf("failed to load stored release-groups for %s: %s", mbid, err.Error())
+	}
 	byMBID := map[string]models.CollectionReleaseGroup{}
+	storedMBIDs := make([]string, 0, len(stored))
+	catalogued := false
 	for _, rg := range stored {
 		byMBID[rg.MBID] = rg
+		storedMBIDs = append(storedMBIDs, rg.MBID)
+		if rg.InCatalog {
+			catalogued = true
+		}
 	}
-	catalogued := hasCatalog(stored)[mbid]
 
-	desires, err := collection.DesiresForArtist(a.DB, mbid)
+	desires, err := collection.DesiresForArtist(a.DB, mbid, storedMBIDs)
 	if err != nil {
 		logger.Log.Warnf("failed to load desires for %s: %s", mbid, err.Error())
 	}
@@ -604,7 +667,7 @@ func (a *API) discography(c *gin.Context) {
 		recordings[d.ReleaseGroupMBID] = append(recordings[d.ReleaseGroupMBID], d.RecordingMBIDs...)
 	}
 
-	editionCounts, err := collection.OwnedReleaseCounts(a.DB, mbid)
+	editionCounts, err := collection.OwnedReleaseCounts(a.DB, storedMBIDs)
 	if err != nil {
 		logger.Log.Warnf("failed to count owned editions for %s: %s", mbid, err.Error())
 	}
@@ -716,11 +779,20 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 		}
 	}
 
-	var siblings []models.CollectionReleaseGroup
-	a.DB.Where("artist_mb_id = ?", artistMBID).Find(&siblings)
-	catalogued := hasCatalog(siblings)[artistMBID]
+	siblings, err := collection.ReleaseGroupsForArtist(a.DB, artistMBID)
+	if err != nil {
+		logger.Log.Warnf("failed to load release-groups for %s: %s", artistMBID, err.Error())
+	}
+	siblingMBIDs := make([]string, 0, len(siblings))
+	catalogued := false
+	for _, sib := range siblings {
+		siblingMBIDs = append(siblingMBIDs, sib.MBID)
+		if sib.InCatalog {
+			catalogued = true
+		}
+	}
 
-	desires, err := collection.DesiresForArtist(a.DB, artistMBID)
+	desires, err := collection.DesiresForArtist(a.DB, artistMBID, siblingMBIDs)
 	if err != nil {
 		logger.Log.Warnf("failed to load desires for %s: %s", artistMBID, err.Error())
 	}

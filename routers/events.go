@@ -3,6 +3,8 @@ package routers
 import (
 	"net/http"
 
+	"github.com/aunefyren/autotaggerr/events"
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/gin-gonic/gin"
 )
@@ -59,5 +61,16 @@ func (a *API) getEvent(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "event not found"})
 		return
 	}
+
+	// The per-file detail rows come with the single-event fetch, not the feed: they
+	// are the reason to open an event, and a list of 50 events would otherwise carry
+	// thousands of them. Attached to the event rather than returned alongside it, so
+	// the response shape stays what it was.
+	items, err := events.Items(a.DB, ev.ID)
+	if err != nil {
+		logger.Log.Warnf("failed to load detail rows for event %s: %s", ev.ID, err.Error())
+	}
+	ev.Items = items
+
 	c.JSON(http.StatusOK, ev)
 }

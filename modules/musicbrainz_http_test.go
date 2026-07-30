@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -104,6 +105,169 @@ func TestGetMusicBrainzReleaseCaches(t *testing.T) {
 	// jitter keeps expiry within [now+7d, now+14d]
 	if entry.ExpiresAt.After(time.Now().Add(15 * 24 * time.Hour)) {
 		t.Errorf("cache entry ExpiresAt %v exceeds the jitter window", entry.ExpiresAt)
+	}
+}
+
+// TestGetMusicBrainzReleaseCoalescesConcurrent is the cold-scan case: several
+// workers land on tracks of the same album at once, all miss the cache (nothing has
+// been written to it yet), and would each issue the same request — every one of them
+// serialized behind the 1 req/s limiter. They must collapse into a single fetch.
+//
+// The handler holds the fetch open until every caller has arrived, so the test
+// cannot pass by luck because the requests happened to be fast enough to look
+// coalesced. The hold is bounded so that an implementation *without* coalescing
+// fails on the assertions in a few seconds rather than wedging until the package
+// timeout.
+func TestGetMusicBrainzReleaseCoalescesConcurrent(t *testing.T) {
+	const callers = 8
+
+	var hits int32
+	release := make(chan struct{})
+	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		select {
+		case <-release:
+		case <-time.After(10 * time.Second):
+		}
+		_ = json.NewEncoder(w).Encode(models.MusicBrainzReleaseResponse{ID: "rel-c", Title: "Amnesiac"})
+	})
+	MusicbrainzResetStats()
+
+	var wg sync.WaitGroup
+	errs := make([]error, callers)
+	titles := make([]string, callers)
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			got, err := GetMusicBrainzRelease("rel-c")
+			errs[i], titles[i] = err, got.Title
+		}(i)
+	}
+
+	// Wait until all but the leader are parked on the in-flight entry, then let the
+	// single request complete.
+	waitFor(t, func() bool { return MusicbrainzStatsSnapshot().Coalesced == callers-1 })
+	close(release)
+	wg.Wait()
+
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Errorf("server hit %d times, want 1 — concurrent callers should share one fetch", n)
+	}
+	for i := 0; i < callers; i++ {
+		if errs[i] != nil {
+			t.Errorf("caller %d: unexpected error: %v", i, errs[i])
+		}
+		if titles[i] != "Amnesiac" {
+			t.Errorf("caller %d: title = %q, want Amnesiac", i, titles[i])
+		}
+	}
+
+	stats := MusicbrainzStatsSnapshot()
+	if stats.Fetches != 1 || stats.Coalesced != callers-1 {
+		t.Errorf("stats = %+v, want 1 fetch and %d coalesced", stats, callers-1)
+	}
+
+	// The in-flight entry must not leak once the fetch is done.
+	inflightFetchesMu.Lock()
+	leftover := len(inflightFetches)
+	inflightFetchesMu.Unlock()
+	if leftover != 0 {
+		t.Errorf("%d in-flight entries left behind", leftover)
+	}
+}
+
+// TestGetMusicBrainzReleaseCoalescesError checks waiters receive the leader's error
+// rather than a zero value, and that the failure is not cached — the next call must
+// be free to retry.
+func TestGetMusicBrainzReleaseCoalescesError(t *testing.T) {
+	var hits int32
+	release := make(chan struct{})
+	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) == 1 {
+			select {
+			case <-release:
+			case <-time.After(10 * time.Second):
+			}
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	MusicbrainzResetStats()
+
+	var wg sync.WaitGroup
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, errs[i] = GetMusicBrainzRelease("rel-e")
+		}(i)
+	}
+	waitFor(t, func() bool { return MusicbrainzStatsSnapshot().Coalesced == 1 })
+	close(release)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err == nil {
+			t.Errorf("caller %d: expected the leader's error, got nil", i)
+		}
+	}
+	if n := atomic.LoadInt32(&hits); n != 1 {
+		t.Errorf("server hit %d times, want 1", n)
+	}
+
+	// A failed fetch leaves nothing cached, so a later call retries.
+	if _, err := GetMusicBrainzRelease("rel-e"); err == nil {
+		t.Error("expected the retry to hit the server and fail too")
+	}
+	if n := atomic.LoadInt32(&hits); n != 2 {
+		t.Errorf("server hit %d times after retry, want 2 — a failure must not be cached", n)
+	}
+}
+
+// TestSetMusicBrainzRateLimit covers the conversion from the data source's
+// requests-per-second figure to the limiter's interval, and the refusal to accept a
+// non-positive rate — a blank or zeroed config must not silently remove the throttle.
+func TestSetMusicBrainzRateLimit(t *testing.T) {
+	queryMutex.Lock()
+	orig := rateLimit
+	queryMutex.Unlock()
+	t.Cleanup(func() {
+		queryMutex.Lock()
+		rateLimit = orig
+		queryMutex.Unlock()
+	})
+
+	cases := []struct {
+		perSecond float64
+		want      time.Duration
+	}{
+		{1, time.Second},
+		{4, 250 * time.Millisecond},
+		{0.5, 2 * time.Second},
+		{0, 2 * time.Second},  // ignored, previous value kept
+		{-3, 2 * time.Second}, // ignored, previous value kept
+	}
+	for _, c := range cases {
+		SetMusicBrainzRateLimit(c.perSecond)
+		queryMutex.Lock()
+		got := rateLimit
+		queryMutex.Unlock()
+		if got != c.want {
+			t.Errorf("SetMusicBrainzRateLimit(%v): interval = %v, want %v", c.perSecond, got, c.want)
+		}
+	}
+}
+
+// waitFor polls cond until it holds, failing the test on timeout.
+func waitFor(t *testing.T, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for condition")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 

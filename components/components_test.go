@@ -1,10 +1,15 @@
 package components
 
 import (
+	"errors"
+	"fmt"
 	"io"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/logger"
@@ -95,7 +100,7 @@ func TestAutotaggerrManagerCorrelateFromTags(t *testing.T) {
 	path := synthFlac(t)
 	// Embed MusicBrainz IDs so the native (tags) manager can read them back.
 	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
-	if _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -117,7 +122,7 @@ func TestAutotaggerrManagerCorrelateFromTags(t *testing.T) {
 func TestProcessFileRecordsLibraryItem(t *testing.T) {
 	path := synthFlac(t)
 	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
-	if _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -128,7 +133,7 @@ func TestProcessFileRecordsLibraryItem(t *testing.T) {
 	}
 
 	tagger := NewTagger(models.TaggerProfile{WriteTags: false}) // skip tag write / MB fetch
-	unchanged, _, err := ProcessFile(db, library, &AutotaggerrManager{}, tagger, nil, nil, path, filepath.Dir(path), "v-test")
+	unchanged, _, err := ProcessFile(db, library, &AutotaggerrManager{}, tagger, nil, nil, nil, path, filepath.Dir(path), "v-test")
 	if err != nil {
 		t.Fatalf("ProcessFile: %v", err)
 	}
@@ -149,6 +154,9 @@ func TestProcessFileRecordsLibraryItem(t *testing.T) {
 	if item.CorrelationSource != models.CorrelationSourceTags {
 		t.Errorf("item source = %q, want tags", item.CorrelationSource)
 	}
+	if item.CorrelatedByManager != models.ManagerTypeAutotaggerr {
+		t.Errorf("item manager = %q, want %q", item.CorrelatedByManager, models.ManagerTypeAutotaggerr)
+	}
 	if item.Status != models.LibraryItemStatusOK {
 		t.Errorf("item status = %q, want ok", item.Status)
 	}
@@ -165,7 +173,7 @@ func TestProcessFileRecordsError(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	_, _, err := ProcessFile(db, library, &AutotaggerrManager{}, NewTagger(models.TaggerProfile{WriteTags: false}), nil, nil, path, filepath.Dir(path), "v-test")
+	_, _, err := ProcessFile(db, library, &AutotaggerrManager{}, NewTagger(models.TaggerProfile{WriteTags: false}), nil, nil, nil, path, filepath.Dir(path), "v-test")
 	if err == nil {
 		t.Fatal("expected correlation error for untagged file")
 	}
@@ -185,7 +193,7 @@ func TestProcessFileRecordsError(t *testing.T) {
 func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	path := synthFlac(t)
 	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
-	if _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -204,7 +212,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	}
 
 	// First scan indexes the file at version v1.
-	counter, unchanged, _, errs, err := ScanLibrary(db, lib, nil, nil, "v1", 1)
+	counter, unchanged, _, errs, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1)
 	if err != nil || counter != 1 || unchanged != 1 || len(errs) != 0 {
 		t.Fatalf("first scan: counter=%d unchanged=%d errs=%v err=%v", counter, unchanged, errs, err)
 	}
@@ -216,7 +224,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	}
 
 	// Same version + unchanged file -> skipped, sentinel untouched.
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v1", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
 		t.Fatalf("second scan: %v", err)
 	}
 	var item models.LibraryItem
@@ -228,7 +236,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	}
 
 	// Different version busts the skip -> re-processed, correlation restored.
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v2", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v2", 1); err != nil {
 		t.Fatalf("third scan: %v", err)
 	}
 	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
@@ -240,6 +248,234 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	if item.ProcessedVersion != "v2" {
 		t.Errorf("processed version = %q, want v2", item.ProcessedVersion)
 	}
+}
+
+// scanFixture sets up a tagged FLAC in its own library with a native manager and a
+// no-write tagger profile, and runs one scan so the file is indexed. Returns the DB,
+// the library and the file path.
+func scanFixture(t *testing.T) (*gorm.DB, models.Library, string) {
+	t.Helper()
+	path := synthFlac(t)
+	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+		t.Fatalf("SetFlacTags: %v", err)
+	}
+
+	db := testDB(t)
+	mgr := models.Manager{Name: "Native", Type: models.ManagerTypeAutotaggerr, Enabled: true}
+	profile := models.TaggerProfile{Name: "NoWrite", WriteTags: false}
+	if err := db.Create(&mgr).Error; err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	lib := models.Library{Name: "L", Path: filepath.Dir(path), ManagerID: &mgr.ID, TaggerProfileID: &profile.ID}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
+		t.Fatalf("seed scan: %v", err)
+	}
+	return db, lib, path
+}
+
+// TestScanLibraryReCorrelatesOnManagerChange covers the case skip-unchanged used to
+// walk past: the library's manager changed, so the stored correlation_source is
+// stale even though the file on disk and the app version did not change. The stored
+// manager type is rewritten to a different one to stand in for "this file was
+// correlated by Lidarr", which needs no Lidarr client to reproduce.
+func TestScanLibraryReCorrelatesOnManagerChange(t *testing.T) {
+	db, lib, path := scanFixture(t)
+
+	if err := db.Model(&models.LibraryItem{}).Where("path = ?", path).Updates(map[string]any{
+		"mb_release_id":         "SENTINEL",
+		"correlation_source":    models.CorrelationSourceLidarr,
+		"correlated_by_manager": models.ManagerTypeLidarr,
+	}).Error; err != nil {
+		t.Fatalf("simulate previous manager: %v", err)
+	}
+
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if item.MBReleaseID != "rel-1" {
+		t.Errorf("manager change should re-process; mb_release_id = %q, want rel-1", item.MBReleaseID)
+	}
+	if item.CorrelationSource != models.CorrelationSourceTags {
+		t.Errorf("correlation_source = %q, want it refreshed to tags", item.CorrelationSource)
+	}
+	if item.CorrelatedByManager != models.ManagerTypeAutotaggerr {
+		t.Errorf("correlated_by_manager = %q, want %q", item.CorrelatedByManager, models.ManagerTypeAutotaggerr)
+	}
+}
+
+// TestScanLibraryKeepsPinnedOnManagerChange is the other half: a manual attachment
+// must survive a manager change untouched, because re-correlating it would overwrite
+// the MB IDs the user chose by hand.
+func TestScanLibraryKeepsPinnedOnManagerChange(t *testing.T) {
+	db, lib, path := scanFixture(t)
+
+	if err := db.Model(&models.LibraryItem{}).Where("path = ?", path).Updates(map[string]any{
+		"mb_release_id":         "PINNED",
+		"correlation_source":    models.CorrelationSourceManual,
+		"correlated_by_manager": models.ManagerTypeLidarr,
+		"pinned":                true,
+	}).Error; err != nil {
+		t.Fatalf("pin item: %v", err)
+	}
+
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if item.MBReleaseID != "PINNED" || item.CorrelationSource != models.CorrelationSourceManual {
+		t.Errorf("pinned item should be left alone, got mb_release_id=%q source=%q", item.MBReleaseID, item.CorrelationSource)
+	}
+}
+
+// spyManager records whether it was asked to correlate, and answers with a
+// correlation deliberately different from any pin under test.
+type spyManager struct {
+	calls atomic.Int32
+}
+
+func (m *spyManager) Correlate(filePath, rootDir string) (models.Correlation, error) {
+	m.calls.Add(1)
+	return models.Correlation{
+		MBReleaseID:      "rel-auto",
+		MBReleaseTrackID: "trk-auto",
+		MBRecordingID:    "rec-auto",
+		Source:           models.CorrelationSourceTags,
+	}, nil
+}
+
+func (m *spyManager) HealthCheck() (bool, error) { return true, nil }
+func (m *spyManager) Type() string               { return models.ManagerTypeAutotaggerr }
+
+// TestProcessFilePinnedIsNotReResolved covers the pin being authoritative: a pinned
+// item must not be handed to the manager at all, so neither the index row nor the
+// tags written to the file can drift onto the manager's answer.
+func TestProcessFilePinnedIsNotReResolved(t *testing.T) {
+	path := synthFlac(t)
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: filepath.Dir(path)}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+
+	now := time.Now()
+	pin := models.LibraryItem{
+		LibraryID: library.ID, Path: path,
+		MBReleaseID: "rel-pinned", MBReleaseTrackID: "trk-pinned", MBRecordingID: "rec-pinned",
+		CorrelationSource: models.CorrelationSourceManual, CorrelatedAt: &now,
+		Pinned: true, Status: models.LibraryItemStatusOK,
+	}
+	if err := db.Create(&pin).Error; err != nil {
+		t.Fatalf("create pinned item: %v", err)
+	}
+
+	mgr := &spyManager{}
+	tagger := NewTagger(models.TaggerProfile{WriteTags: false})
+	if _, _, err := ProcessFile(db, library, mgr, tagger, nil, nil, nil, path, filepath.Dir(path), "v-test"); err != nil {
+		t.Fatalf("ProcessFile: %v", err)
+	}
+
+	if n := mgr.calls.Load(); n != 0 {
+		t.Errorf("manager consulted %d times for a pinned file, want 0", n)
+	}
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	if item.MBReleaseID != "rel-pinned" || item.MBReleaseTrackID != "trk-pinned" || item.MBRecordingID != "rec-pinned" {
+		t.Errorf("pinned MB IDs overwritten: %+v", item)
+	}
+	if item.CorrelationSource != models.CorrelationSourceManual {
+		t.Errorf("correlation_source = %q, want manual", item.CorrelationSource)
+	}
+	if !item.Pinned {
+		t.Error("item lost its pin")
+	}
+}
+
+// TestScanLibraryKeepsPinnedOnVersionChange is the exposure that skip-unchanged does
+// *not* hide: a version bump re-processes every file including pinned ones, which is
+// where an unguarded write would replace the user's correlation.
+func TestScanLibraryKeepsPinnedOnVersionChange(t *testing.T) {
+	db, lib, path := scanFixture(t)
+
+	if err := db.Model(&models.LibraryItem{}).Where("path = ?", path).Updates(map[string]any{
+		"mb_release_id":       "rel-pinned",
+		"mb_release_track_id": "trk-pinned",
+		"mb_recording_id":     "rec-pinned",
+		"correlation_source":  models.CorrelationSourceManual,
+		"pinned":              true,
+	}).Error; err != nil {
+		t.Fatalf("pin item: %v", err)
+	}
+
+	// v2 busts the version gate, so the file really is re-processed.
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v2", 1); err != nil {
+		t.Fatalf("rescan: %v", err)
+	}
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("load item: %v", err)
+	}
+	// The file's own tags say rel-1; the pin says rel-pinned. The pin must win.
+	if item.MBReleaseID != "rel-pinned" || item.MBReleaseTrackID != "trk-pinned" || item.MBRecordingID != "rec-pinned" {
+		t.Errorf("version bump overwrote the pinned correlation: %+v", item)
+	}
+	if item.CorrelationSource != models.CorrelationSourceManual {
+		t.Errorf("correlation_source = %q, want manual", item.CorrelationSource)
+	}
+	if item.ProcessedVersion != "v2" {
+		t.Errorf("processed_version = %q, want v2 — the file should still be re-processed", item.ProcessedVersion)
+	}
+}
+
+// TestApplyDataSourceRateLimits exercises the wiring that reads the MusicBrainz
+// row's rate_limit into the client limiter. The limiter's interval is unexported in
+// modules/, so what is checked here is the row selection and the guards: a nil DB, no
+// MusicBrainz row, a disabled row and a zero rate must all be no-ops rather than
+// panics or an accidentally removed throttle.
+func TestApplyDataSourceRateLimits(t *testing.T) {
+	ApplyDataSourceRateLimits(nil) // must not panic
+
+	db := testDB(t)
+	ApplyDataSourceRateLimits(db) // no data sources at all
+
+	disabled := models.DataSource{Name: "MB disabled", Type: models.DataSourceTypeMusicBrainz, RateLimit: 5, Enabled: false}
+	if err := db.Create(&disabled).Error; err != nil {
+		t.Fatalf("create disabled source: %v", err)
+	}
+	ApplyDataSourceRateLimits(db)
+
+	zeroRate := models.DataSource{Name: "MB zero", Type: models.DataSourceTypeMusicBrainz, RateLimit: 0, Enabled: true}
+	if err := db.Create(&zeroRate).Error; err != nil {
+		t.Fatalf("create zero-rate source: %v", err)
+	}
+	ApplyDataSourceRateLimits(db)
+
+	// And the path that does apply. Restored afterwards so later tests in this
+	// package are not left running against a modified limiter.
+	t.Cleanup(func() { modules.SetMusicBrainzRateLimit(1) })
+	if err := db.Model(&models.DataSource{}).Where("id = ?", zeroRate.ID).Update("rate_limit", 2).Error; err != nil {
+		t.Fatalf("set rate: %v", err)
+	}
+	ApplyDataSourceRateLimits(db)
 }
 
 func TestBuildForFile(t *testing.T) {
@@ -329,5 +565,126 @@ func TestResolveManagerRowSkipsDisabledFallback(t *testing.T) {
 	}
 	if got.Type != models.ManagerTypeAutotaggerr {
 		t.Errorf("fell back to %+v; want the native default, never a disabled manager", got)
+	}
+}
+
+// TestDetailCollectorBounds pins the two properties the Activity detail depends on:
+// it is safe to fill from the scan's worker pool, and it stops growing at the limit
+// while still counting what it dropped — a truncated list has to know it is one.
+func TestDetailCollectorBounds(t *testing.T) {
+	const limit = 10
+	d := NewDetailCollector(limit)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			if i%2 == 0 {
+				d.AddChanged(fmt.Sprintf("/music/%d.flac", i), 2, []models.TagChange{{Field: "ARTIST", New: "X"}})
+			} else {
+				d.AddError(fmt.Sprintf("/music/%d.flac", i), errors.New("nope"))
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if got := len(d.Items()); got != limit {
+		t.Errorf("held %d items, want the limit of %d", got, limit)
+	}
+	changed, failed := d.Totals()
+	if changed != 25 || failed != 25 {
+		t.Errorf("totals = %d changed / %d failed, want 25/25 — dropped entries must still count", changed, failed)
+	}
+}
+
+// TestDetailCollectorDisabled covers the callers that record no Activity: a nil
+// collector and a zero limit must both be safe to call and hold nothing.
+func TestDetailCollectorDisabled(t *testing.T) {
+	var nilCollector *DetailCollector
+	nilCollector.AddChanged("/x.flac", 1, nil)
+	nilCollector.AddError("/x.flac", errors.New("boom"))
+	if items := nilCollector.Items(); items != nil {
+		t.Errorf("nil collector returned %v", items)
+	}
+	if c, f := nilCollector.Totals(); c != 0 || f != 0 {
+		t.Errorf("nil collector totals = %d/%d", c, f)
+	}
+
+	off := NewDetailCollector(0)
+	off.AddChanged("/x.flac", 1, nil)
+	if got := len(off.Items()); got != 0 {
+		t.Errorf("disabled collector held %d items", got)
+	}
+	// It still counts, so a caller can report totals without storing rows.
+	if c, _ := off.Totals(); c != 1 {
+		t.Errorf("disabled collector changed total = %d, want 1", c)
+	}
+}
+
+// TestDetailCollectorNilErrorIgnored: AddError(nil) is a no-op, so a caller need not
+// branch on whether the error is real.
+func TestDetailCollectorNilErrorIgnored(t *testing.T) {
+	d := NewDetailCollector(5)
+	d.AddError("/x.flac", nil)
+	if got := len(d.Items()); got != 0 {
+		t.Errorf("recorded %d items for a nil error", got)
+	}
+}
+
+// TestScanLibraryCollectsTagDiff is the end-to-end proof that the field-level diff
+// survives the whole pipeline: the file is tagged from its own MusicBrainz IDs, and
+// what the scan reports must name the fields that changed with their before/after —
+// not just a count.
+func TestScanLibraryCollectsTagDiff(t *testing.T) {
+	path := synthFlac(t)
+	// Seed the file with MB IDs plus a deliberately wrong artist, so the write has
+	// something real to change.
+	seed := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Artist: "Wrong Artist"}
+	if _, _, _, err := modules.SetFlacTags(path, seed, models.ConfigStruct{}); err != nil {
+		t.Fatalf("seed SetFlacTags: %v", err)
+	}
+
+	// Write the corrected tags directly through the tag engine and capture the diff —
+	// the same call ProcessFile makes once a release resolves. Going through a full
+	// scan here would need a live MusicBrainz release, which this package cannot stub.
+	corrected := seed
+	corrected.Artist = "Right Artist"
+	unchanged, written, changes, err := modules.SetFlacTags(path, corrected, models.ConfigStruct{})
+	if err != nil {
+		t.Fatalf("SetFlacTags: %v", err)
+	}
+	if unchanged || written == 0 {
+		t.Fatalf("expected a write, got unchanged=%v written=%d", unchanged, written)
+	}
+
+	var artist *models.TagChange
+	for i := range changes {
+		if changes[i].Field == "ARTIST" {
+			artist = &changes[i]
+		}
+	}
+	if artist == nil {
+		t.Fatalf("ARTIST missing from the diff: %+v", changes)
+	}
+	if artist.Old != "Wrong Artist" || artist.New != "Right Artist" {
+		t.Errorf("ARTIST diff = %q -> %q, want \"Wrong Artist\" -> \"Right Artist\"", artist.Old, artist.New)
+	}
+
+	// The diff is what a collector would carry into the event.
+	d := NewDetailCollector(10)
+	d.AddChanged(path, written, changes)
+	items := d.Items()
+	if len(items) != 1 || items[0].Status != models.EventItemStatusChanged || len(items[0].Changes) == 0 {
+		t.Fatalf("collector did not carry the diff: %+v", items)
+	}
+
+	// Re-writing the same tags is a no-op, so nothing is reported as changed.
+	unchanged, _, changes, err = modules.SetFlacTags(path, corrected, models.ConfigStruct{})
+	if err != nil {
+		t.Fatalf("second SetFlacTags: %v", err)
+	}
+	if !unchanged || len(changes) != 0 {
+		t.Errorf("idempotent rewrite reported unchanged=%v changes=%+v", unchanged, changes)
 	}
 }

@@ -71,3 +71,128 @@ func TestPruneKeepsNewest(t *testing.T) {
 		t.Errorf("after prune count = %d, want 2", n)
 	}
 }
+
+// TestAddItemsAndFetch covers the per-file detail round trip: rows are stamped with
+// their parent event, the field-level diff survives JSON serialization, and they come
+// back for that event only.
+func TestAddItemsAndFetch(t *testing.T) {
+	db := testDB(t)
+	ev := Begin(db, models.EventTypeScan, "scan")
+	other := Begin(db, models.EventTypeScan, "another scan")
+
+	AddItems(db, ev, []models.EventItem{
+		{
+			Path:        "/music/A/Album (2020)/01 One.flac",
+			Status:      models.EventItemStatusChanged,
+			TagsWritten: 2,
+			Changes: []models.TagChange{
+				{Field: "ARTIST", Old: "Old Name", New: "New Name"},
+				{Field: "DATE", Old: "", New: "2020"},
+			},
+		},
+		{Path: "/music/A/Album (2020)/02 Two.flac", Status: models.EventItemStatusError, Error: "boom"},
+	})
+	AddItems(db, other, []models.EventItem{{Path: "/elsewhere.flac", Status: models.EventItemStatusChanged}})
+
+	items, err := Items(db, ev.ID)
+	if err != nil {
+		t.Fatalf("Items: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("got %d items, want 2 (the other event's row must not leak in)", len(items))
+	}
+
+	var changed, failed *models.EventItem
+	for i := range items {
+		switch items[i].Status {
+		case models.EventItemStatusChanged:
+			changed = &items[i]
+		case models.EventItemStatusError:
+			failed = &items[i]
+		}
+	}
+	if changed == nil || failed == nil {
+		t.Fatalf("expected one changed and one error row, got %+v", items)
+	}
+	if changed.EventID != ev.ID {
+		t.Errorf("event_id = %v, want %v", changed.EventID, ev.ID)
+	}
+	if changed.TagsWritten != 2 || len(changed.Changes) != 2 {
+		t.Fatalf("changed row lost detail: %+v", changed)
+	}
+	if changed.Changes[0].Field != "ARTIST" || changed.Changes[0].Old != "Old Name" || changed.Changes[0].New != "New Name" {
+		t.Errorf("diff did not round-trip: %+v", changed.Changes[0])
+	}
+	// An absent previous value stays empty rather than becoming a literal.
+	if changed.Changes[1].Old != "" || changed.Changes[1].New != "2020" {
+		t.Errorf("added-field diff wrong: %+v", changed.Changes[1])
+	}
+	if failed.Error != "boom" {
+		t.Errorf("error row lost its message: %+v", failed)
+	}
+}
+
+// TestAddItemsIgnoresUnsavedEvent guards the DB-less paths: a nil DB or an event that
+// was never persisted must be a no-op, not a panic or a row with a nil parent.
+func TestAddItemsIgnoresUnsavedEvent(t *testing.T) {
+	db := testDB(t)
+	items := []models.EventItem{{Path: "/x.flac", Status: models.EventItemStatusChanged}}
+
+	AddItems(nil, &models.Event{}, items)     // no DB
+	AddItems(db, nil, items)                  // no event
+	AddItems(db, &models.Event{}, items)      // event never saved (zero ID)
+	AddItems(db, Begin(db, "scan", "s"), nil) // nothing to add
+
+	var n int64
+	if err := db.Model(&models.EventItem{}).Count(&n).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("wrote %d rows, want 0", n)
+	}
+}
+
+// TestPruneDeletesDetailRows is the retention half. Nothing in the schema cascades,
+// so without an explicit delete the events table would stay capped at 200 while
+// event_items grew forever — orphans no feed would ever show.
+func TestPruneDeletesDetailRows(t *testing.T) {
+	db := testDB(t)
+
+	var kept, dropped uuid.UUID
+	for i := 0; i < 4; i++ {
+		ev := Begin(db, models.EventTypeScan, "scan")
+		Finish(db, ev, models.EventStatusOK, "", nil)
+		AddItems(db, ev, []models.EventItem{{Path: "/f.flac", Status: models.EventItemStatusChanged}})
+		if i == 0 {
+			dropped = ev.ID // oldest
+		}
+		kept = ev.ID // newest wins the loop
+	}
+
+	Prune(db, 1)
+
+	var events int64
+	if err := db.Model(&models.Event{}).Count(&events).Error; err != nil {
+		t.Fatalf("count events: %v", err)
+	}
+	if events != 1 {
+		t.Fatalf("events after prune = %d, want 1", events)
+	}
+
+	var orphans int64
+	if err := db.Model(&models.EventItem{}).Where("event_id = ?", dropped).Count(&orphans).Error; err != nil {
+		t.Fatalf("count orphans: %v", err)
+	}
+	if orphans != 0 {
+		t.Errorf("%d detail rows survived their pruned event", orphans)
+	}
+
+	// The surviving event keeps its own detail.
+	survivors, err := Items(db, kept)
+	if err != nil {
+		t.Fatalf("Items: %v", err)
+	}
+	if len(survivors) != 1 {
+		t.Errorf("kept event has %d detail rows, want 1", len(survivors))
+	}
+}

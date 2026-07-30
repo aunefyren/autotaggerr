@@ -50,14 +50,21 @@ func OwnedReleases(db *gorm.DB, releaseGroupMBID string) ([]models.CollectionRel
 }
 
 // OwnedReleaseCounts returns, per release-group, how many distinct editions are
-// owned. Loaded in one query for a whole artist so the discography list does not
-// issue a query per row.
-func OwnedReleaseCounts(db *gorm.DB, artistMBID string) (map[string]int, error) {
+// owned. Loaded in one query for a whole page so the discography list does not issue
+// a query per row.
+//
+// Keyed by release-group, not by artist: an edition of a collaboration is stored
+// under its primary credit, so counting per artist reported zero owned editions on
+// the other credited artist's page while the release itself was plainly owned.
+func OwnedReleaseCounts(db *gorm.DB, releaseGroupMBIDs []string) (map[string]int, error) {
+	counts := map[string]int{}
+	if len(releaseGroupMBIDs) == 0 {
+		return counts, nil
+	}
 	var rows []models.CollectionRelease
-	if err := db.Where("artist_mb_id = ?", artistMBID).Find(&rows).Error; err != nil {
+	if err := db.Where("release_group_mb_id IN ?", releaseGroupMBIDs).Find(&rows).Error; err != nil {
 		return nil, err
 	}
-	counts := map[string]int{}
 	for _, r := range rows {
 		counts[r.ReleaseGroupMBID]++
 	}
@@ -160,12 +167,20 @@ func ClearDesire(db *gorm.DB, releaseGroupMBID, releaseMBID string) error {
 		Delete(&models.CollectionDesire{}).Error
 }
 
-// DesiresForArtist lists an artist's explicit wants, so the UI can show which
-// release-groups (and which specific editions) were asked for.
-func DesiresForArtist(db *gorm.DB, artistMBID string) ([]models.CollectionDesire, error) {
+// DesiresForArtist lists the explicit wants shown on an artist's page: those recorded
+// against the artist, plus any recorded against a release-group they are credited on.
+//
+// The second half matters for collaborations. A desire stores the artist whose page it
+// was created from, so wanting a collaboration from one artist's page would otherwise
+// leave the other artist's page showing the same album as un-wanted — and offering to
+// want it again.
+func DesiresForArtist(db *gorm.DB, artistMBID string, releaseGroupMBIDs []string) ([]models.CollectionDesire, error) {
 	var out []models.CollectionDesire
-	err := db.Where("artist_mb_id = ?", strings.TrimSpace(artistMBID)).
-		Order("release_group_mb_id").Find(&out).Error
+	q := db.Where("artist_mb_id = ?", strings.TrimSpace(artistMBID))
+	if len(releaseGroupMBIDs) > 0 {
+		q = q.Or("release_group_mb_id IN ?", releaseGroupMBIDs)
+	}
+	err := q.Order("release_group_mb_id").Find(&out).Error
 	return out, err
 }
 

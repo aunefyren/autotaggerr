@@ -121,7 +121,7 @@ func ExtractTrackTitle(filePath string) (string, error) {
 	}
 }
 
-func SetFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
+func SetFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	switch ext {
@@ -130,7 +130,7 @@ func SetFileTags(filePath string, metadata models.FileTags, configFile models.Co
 	case ".flac":
 		return SetFlacTags(filePath, metadata, configFile)
 	default:
-		return false, 0, errors.New("unsupported file type")
+		return false, 0, nil, errors.New("unsupported file type")
 	}
 }
 
@@ -142,7 +142,8 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 	if err != nil {
 		return false, 0, err
 	}
-	return TagResolvedFile(filePath, correlation, plexClient, refreshSet, rootDir, configFile)
+	unchanged, tagsWritten, _, err = TagResolvedFile(filePath, correlation, plexClient, refreshSet, rootDir, configFile)
+	return unchanged, tagsWritten, err
 }
 
 // ResolveCorrelation determines the MusicBrainz release/track/recording IDs for a
@@ -219,13 +220,15 @@ func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 // TagResolvedFile fetches the release for an already-resolved correlation, finds
 // the matching track, and writes the file's tags (diffed). It is the back half of
 // the per-file pipeline, shared by ProcessTrackFile and the component pipeline.
-func TagResolvedFile(filePath string, correlation models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
+// TagResolvedFile writes tags for an already-correlated file. changed is the
+// field-level diff applied, for the Activity feed's per-file detail.
+func TagResolvedFile(filePath string, correlation models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(correlation.MBReleaseID)
 	if err != nil {
 		// wrap the cause; the scan/single-file caller logs this together with the
 		// file path, so no separate log line is needed here
-		return false, 0, fmt.Errorf("failed to get MB release data: %w", err)
+		return false, 0, nil, fmt.Errorf("failed to get MB release data: %w", err)
 	}
 	logger.Log.Debug("MB title response: " + response.Title)
 
@@ -250,7 +253,7 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 
 	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", correlation.MBReleaseTrackID, correlation.MBReleaseID, correlation.TrackTitle, response.ID)
 	logger.Log.Warn("Lidarr metadata data could be outdated")
-	return false, 0, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
+	return false, 0, nil, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
 }
 
 func ProcessTrackFileAfterMatch(
@@ -265,18 +268,19 @@ func ProcessTrackFileAfterMatch(
 ) (
 	unchanged bool,
 	tagsWritten int,
+	changed []models.TagChange,
 	err error,
 ) {
 	metadata, err := BuildFileTags(track, media, response, configFile)
 	if err != nil {
-		return false, 0, err
+		return false, 0, nil, err
 	}
 
 	// re-tag file with new information
-	unchanged, tagsWritten, err = SetFileTags(filePath, metadata, configFile)
+	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, configFile)
 	if err != nil {
 		logger.Log.Error("failed to set file tags. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to set FLAC artist tags")
+		return unchanged, tagsWritten, changed, errors.New("failed to set FLAC artist tags")
 	} else {
 		logger.Log.Debug("file tagger finished")
 	}
@@ -294,7 +298,7 @@ func ProcessTrackFileAfterMatch(
 	}
 
 	logger.Log.Debug("file processed. " + changeString + ". path: '" + filePath + "'")
-	return unchanged, tagsWritten, nil
+	return unchanged, tagsWritten, changed, nil
 
 }
 

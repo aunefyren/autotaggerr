@@ -20,6 +20,7 @@ import (
 
 	"codnect.io/chrono"
 
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/files"
@@ -93,6 +94,15 @@ func main() {
 			adminCreds.Username, adminCreds.Password, adminCreds.APIKey)
 	}
 
+	// Link existing release-groups to their credited artist. Artist pages read the
+	// link table, so rows written before it existed would show nothing until the next
+	// rebuild. Idempotent; a no-op once every row is linked. (Called here rather than
+	// from database.Seed: the collection package's tests import database, so database
+	// cannot import collection back.)
+	if err := collection.BackfillReleaseGroupArtists(db); err != nil {
+		logger.Log.Warnf("failed to link existing release-groups to their artists: %s", err.Error())
+	}
+
 	// Set GIN mode
 	if files.ConfigFile.AutotaggerrEnvironment != "test" {
 		gin.SetMode(gin.ReleaseMode)
@@ -164,6 +174,9 @@ func main() {
 	// in-memory from here on (see modules/cache.go)
 	modules.LoadAllCaches()
 
+	// Apply the configured MusicBrainz request rate to the limiter.
+	components.ApplyDataSourceRateLimits(db)
+
 	// Shared scan runner: the cron job, the startup run, and the API all drive
 	// library scans through this one instance (single-run guard + status).
 	scanRunner = scan.NewRunner(db, plexClient, files.ConfigFile)
@@ -192,7 +205,9 @@ func main() {
 		library, manager, tagger, buildErr := components.BuildForFile(db, *filePath, *fileRootPath)
 		if buildErr != nil {
 			logger.Log.Error("failed to build pipeline for file. error: " + buildErr.Error())
-		} else if _, _, err := components.ProcessFile(db, library, manager, tagger, plexClient, refreshSet, *filePath, *fileRootPath, files.ConfigFile.AutotaggerrVersion); err != nil {
+			// nil detail collector: a one-shot single-file run records no Activity event
+			// for the detail to hang off.
+		} else if _, _, err := components.ProcessFile(db, library, manager, tagger, plexClient, refreshSet, nil, *filePath, *fileRootPath, files.ConfigFile.AutotaggerrVersion); err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
 

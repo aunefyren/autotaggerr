@@ -15,7 +15,11 @@ natively forever after. Attaching is a one-time cost per file, not an annotation
   body. A wrong ID would otherwise be written straight into the file's tags.
 - The recording ID is derived server-side from that release, never taken from the caller.
 - The item is pinned (`CorrelationSource = manual`), which is what stops the next scan from undoing
-  the decision.
+  the decision. A pinned file is never handed to the manager again: `components.pinnedCorrelation`
+  short-circuits resolution and the pipeline re-uses the stored correlation, so a re-process (a
+  version bump, an edited file) re-tags *to the pin* rather than to whatever the manager would have
+  said. The index write is guarded the same way, so the MB IDs and the `manual` label cannot drift
+  apart.
 - Tags are written through `scan.Runner.RetagItem`, which **refuses while a scan is running**
   rather than writing the same file from two goroutines.
 - A tagging failure returns **202 and keeps the correlation** — it is a real decision the user made

@@ -51,7 +51,7 @@ func seedFlac(t *testing.T, path, releaseID, trackID string) {
 		Album:            "Seed Album",
 		Artist:           "Seed Artist",
 	}
-	if _, _, err := SetFlacTags(path, seed, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetFlacTags(path, seed, models.ConfigStruct{}); err != nil {
 		t.Fatalf("seed SetFlacTags: %v", err)
 	}
 }

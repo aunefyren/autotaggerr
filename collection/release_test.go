@@ -118,7 +118,7 @@ func TestRebuildRecordsEveryOwnedEdition(t *testing.T) {
 		t.Errorf("release-group summary = %d/%d, want 7/17", rg.OwnedTracks, rg.TotalTracks)
 	}
 
-	counts, err := OwnedReleaseCounts(db, "art-1")
+	counts, err := OwnedReleaseCounts(db, []string{"rg-1"})
 	if err != nil {
 		t.Fatalf("OwnedReleaseCounts: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestRebuildDoesNotTouchDesires(t *testing.T) {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
-	desires, err := DesiresForArtist(db, "art-1")
+	desires, err := DesiresForArtist(db, "art-1", nil)
 	if err != nil {
 		t.Fatalf("DesiresForArtist: %v", err)
 	}

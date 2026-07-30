@@ -90,20 +90,25 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		if !ok || len(release.ArtistCredit) == 0 {
 			continue
 		}
-		artistID := release.ArtistCredit[0].Artist.ID
-		if artistID == "" {
-			continue
-		}
-		artistName[artistID] = release.ArtistCredit[0].Artist.Name
-		if artistManagers[artistID] == nil {
-			artistManagers[artistID] = map[string]bool{}
-		}
 		mt := libraryManager[r.LibraryID]
 		if mt == "" {
 			// The item points at a library that no longer exists.
 			mt = models.ManagedByUnknown
 		}
-		artistManagers[artistID][mt] = true
+		// Every credited artist, not just the first: on a collaboration the second
+		// artist owns these files just as much, and crediting only the first left them
+		// with no collection artist row and no provenance at all.
+		for _, credit := range release.ArtistCredit {
+			artistID := credit.Artist.ID
+			if artistID == "" {
+				continue
+			}
+			artistName[artistID] = credit.Artist.Name
+			if artistManagers[artistID] == nil {
+				artistManagers[artistID] = map[string]bool{}
+			}
+			artistManagers[artistID][mt] = true
+		}
 	}
 
 	// Pass 2: per release-group, keep the best-owned edition and its track counts —
@@ -112,7 +117,11 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	// album"), while the per-edition rows keep the detail that summary hides.
 	type rgInfo struct {
 		artistID, title, primary, secondary, date string
-		owned, total                              int
+		// credits is the release's full artist credit, in order. Rebuild is the only
+		// writer that reads the release itself, so it is the only one that can record
+		// who else is on a collaboration.
+		credits      []string
+		owned, total int
 	}
 	rgBest := map[string]rgInfo{}
 	ownedEditions := make([]models.CollectionRelease, 0, len(releaseOwned))
@@ -130,6 +139,12 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 			total += len(m.Tracks)
 		}
 		artistID := release.ArtistCredit[0].Artist.ID
+		credits := make([]string, 0, len(release.ArtistCredit))
+		for _, credit := range release.ArtistCredit {
+			if credit.Artist.ID != "" {
+				credits = append(credits, credit.Artist.ID)
+			}
+		}
 
 		ownedEditions = append(ownedEditions, models.CollectionRelease{
 			MBID: relID, ReleaseGroupMBID: rgID, ArtistMBID: artistID,
@@ -141,6 +156,7 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		if cur, exists := rgBest[rgID]; !exists || ownedTracks > cur.owned {
 			rgBest[rgID] = rgInfo{
 				artistID:  artistID,
+				credits:   credits,
 				title:     release.ReleaseGroup.Title,
 				primary:   release.ReleaseGroup.PrimaryType,
 				secondary: strings.Join(release.ReleaseGroup.SecondaryTypes, ", "),
@@ -157,7 +173,7 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	}
 	for rgID, info := range rgBest {
 		upsertReleaseGroup(db, rgWrite{
-			mbID: rgID, artistMBID: info.artistID, title: info.title,
+			mbID: rgID, artistMBID: info.artistID, credits: info.credits, title: info.title,
 			primary: info.primary, secondary: info.secondary, date: info.date,
 			disk: &diskState{owned: true, ownedTracks: info.owned, totalTracks: info.total},
 		})
@@ -389,14 +405,27 @@ type catalogState struct {
 // Rebuild and the manager mirror can run in any order without clobbering each other.
 type rgWrite struct {
 	mbID, artistMBID, title, primary, secondary, date string
-	disk                                              *diskState
-	catalog                                           *catalogState
+	// credits is every credited artist in MusicBrainz credit order. Only a caller
+	// that read the actual release knows it (Rebuild); everyone else leaves it empty,
+	// which means "artistMBID is credited" and must not be read as "artistMBID is the
+	// only artist" — mistaking the two is what made collaborations flip between
+	// artists. See collection/credits.go.
+	credits []string
+	disk    *diskState
+	catalog *catalogState
 }
 
 func upsertReleaseGroup(db *gorm.DB, w rgWrite) {
 	updates := map[string]any{
-		"artist_mb_id": w.artistMBID, "title": w.title, "primary_type": w.primary,
+		"title": w.title, "primary_type": w.primary,
 		"secondary_types": w.secondary, "first_release_date": w.date,
+	}
+	// The primary credit is only rewritten by a caller that knows the real credit
+	// order. A discography sync knows the artist it is syncing is credited, not that
+	// they are credited *first*, so letting it write this column made the second
+	// artist of a collaboration claim an album that is not theirs to head.
+	if len(w.credits) > 0 {
+		updates["artist_mb_id"] = w.credits[0]
 	}
 	if w.disk != nil {
 		updates["owned"] = w.disk.owned
@@ -410,14 +439,29 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) {
 		updates["catalog_monitored"] = w.catalog.monitored
 	}
 
+	// Whoever this write is about is credited, whether or not the caller knows the
+	// full credit. Links are additive, so a partial writer adds its artist without
+	// removing anyone else's claim.
+	credited := w.credits
+	if len(credited) == 0 && w.artistMBID != "" {
+		credited = []string{w.artistMBID}
+	}
+	defer linkReleaseGroupArtists(db, w.mbID, credited, len(w.credits) > 0)
+
 	var rg models.CollectionReleaseGroup
 	if err := db.Where("mb_id = ?", w.mbID).First(&rg).Error; err == nil {
 		db.Model(&rg).Updates(updates)
 		return
 	}
 
+	// On create there is nothing to preserve, so the caller's artist is the best
+	// available primary even when the full credit is unknown.
+	primaryArtist := w.artistMBID
+	if len(w.credits) > 0 {
+		primaryArtist = w.credits[0]
+	}
 	row := models.CollectionReleaseGroup{
-		MBID: w.mbID, ArtistMBID: w.artistMBID, Title: w.title, PrimaryType: w.primary,
+		MBID: w.mbID, ArtistMBID: primaryArtist, Title: w.title, PrimaryType: w.primary,
 		SecondaryTypes: w.secondary, FirstReleaseDate: w.date,
 	}
 	if w.disk != nil {

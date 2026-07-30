@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"testing"
 
+	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/google/uuid"
 )
@@ -64,6 +65,94 @@ func TestDataSourceCreateValidation(t *testing.T) {
 	// bad type
 	if w := do(r, "POST", "/api/v1/data-sources", tok, map[string]any{"name": "x", "type": "spotify"}); w.Code != http.StatusBadRequest {
 		t.Errorf("bad type = %d, want 400", w.Code)
+	}
+}
+
+// TestDataSourceSingletonTypes pins which types may exist more than once. There is
+// one AcoustID service, one Cover Art Archive and one fanart.tv, and a duplicate row
+// is never consulted — only the first match is. MusicBrainz is the deliberate
+// exception, because a local mirror alongside the public service is a real setup.
+func TestDataSourceSingletonTypes(t *testing.T) {
+	r, _ := setupAPI(t)
+	tok := loginToken(t, r)
+
+	for _, dsType := range []string{"acoustid", "coverartarchive", "fanart"} {
+		first := do(r, "POST", "/api/v1/data-sources", tok, map[string]any{"name": dsType + "-1", "type": dsType})
+		if first.Code != http.StatusCreated {
+			t.Fatalf("%s first create = %d: %s", dsType, first.Code, first.Body.String())
+		}
+		second := do(r, "POST", "/api/v1/data-sources", tok, map[string]any{"name": dsType + "-2", "type": dsType})
+		if second.Code != http.StatusConflict {
+			t.Errorf("%s second create = %d, want 409: %s", dsType, second.Code, second.Body.String())
+		}
+	}
+
+	// Two MusicBrainz rows stay legal: public service plus a mirror.
+	if w := do(r, "POST", "/api/v1/data-sources", tok, map[string]any{"name": "MB", "type": "musicbrainz"}); w.Code != http.StatusCreated {
+		t.Fatalf("first musicbrainz = %d: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "POST", "/api/v1/data-sources", tok, map[string]any{"name": "MB mirror", "type": "musicbrainz"}); w.Code != http.StatusCreated {
+		t.Errorf("second musicbrainz = %d, want 201 — a mirror is legitimate: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestLibraryDataSourceMustBeMetadata covers the confusion this fixes at the API
+// level, not just in the UI: AcoustID and the artwork providers were accepted as a
+// library's data source and then silently ignored, because only release metadata is
+// ever read from it.
+func TestLibraryDataSourceMustBeMetadata(t *testing.T) {
+	r, _ := setupAPI(t)
+	tok := loginToken(t, r)
+
+	newSource := func(name, dsType string) string {
+		t.Helper()
+		w := do(r, "POST", "/api/v1/data-sources", tok, map[string]any{"name": name, "type": dsType})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s source = %d: %s", dsType, w.Code, w.Body.String())
+		}
+		return idOf(t, w.Body.Bytes())
+	}
+	metadataID := newSource("MB", "musicbrainz")
+	artworkID := newSource("fanart", "fanart")
+	fingerprintID := newSource("AcoustID", "acoustid")
+
+	// Rejected on create, one case per non-metadata category.
+	for _, bad := range []struct{ label, id string }{
+		{"artwork", artworkID},
+		{"fingerprint", fingerprintID},
+		{"unknown", uuid.New().String()},
+	} {
+		w := do(r, "POST", "/api/v1/libraries", tok, map[string]any{
+			"name": "L-" + bad.label, "path": "/music/" + bad.label, "data_source_id": bad.id,
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Errorf("create with %s source = %d, want 400: %s", bad.label, w.Code, w.Body.String())
+		}
+	}
+
+	// A metadata source is accepted.
+	w := do(r, "POST", "/api/v1/libraries", tok, map[string]any{
+		"name": "Music", "path": "/music", "data_source_id": metadataID,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create with metadata source = %d, want 201: %s", w.Code, w.Body.String())
+	}
+	libID := idOf(t, w.Body.Bytes())
+
+	// And the same rule holds on update — the path a user actually hits, since the
+	// complaint was about the edit-library modal.
+	if w := do(r, "PUT", "/api/v1/libraries/"+libID, tok, map[string]any{"data_source_id": artworkID}); w.Code != http.StatusBadRequest {
+		t.Errorf("update to artwork source = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	// An update that does not mention the data source must still pass.
+	if w := do(r, "PUT", "/api/v1/libraries/"+libID, tok, map[string]any{"enabled": false}); w.Code != http.StatusOK {
+		t.Errorf("unrelated update = %d, want 200: %s", w.Code, w.Body.String())
+	}
+
+	// The library kept the source it was created with.
+	w = do(r, "GET", "/api/v1/libraries/"+libID, tok, nil)
+	if !bytes.Contains(w.Body.Bytes(), []byte(metadataID)) {
+		t.Errorf("library lost its data source: %s", w.Body.String())
 	}
 }
 
@@ -196,5 +285,50 @@ func TestLibraryItemsList(t *testing.T) {
 	w = do(r, "GET", "/api/v1/library-items?q=a.flac", tok, nil)
 	if !bytes.Contains(w.Body.Bytes(), []byte("a.flac")) || bytes.Contains(w.Body.Bytes(), []byte("b.mp3")) {
 		t.Errorf("path filter wrong: %s", w.Body.String())
+	}
+}
+
+// TestEventDetailItems covers the endpoint the Activity detail view reads: opening a
+// single event returns its per-file rows with the tag diff intact, while the feed
+// itself stays free of them (50 events must not drag thousands of rows behind them).
+func TestEventDetailItems(t *testing.T) {
+	r, api := setupAPI(t)
+	tok := loginToken(t, r)
+
+	ev := events.Begin(api.DB, models.EventTypeScan, "Library scan")
+	events.Finish(api.DB, ev, models.EventStatusOK, "1 changed", map[string]any{"changed": 1})
+	events.AddItems(api.DB, ev, []models.EventItem{{
+		Path:        "/music/A/Album (2020)/01 One.flac",
+		Status:      models.EventItemStatusChanged,
+		TagsWritten: 1,
+		Changes:     []models.TagChange{{Field: "ARTIST", Old: "Wrong", New: "Right"}},
+	}})
+
+	w := do(r, "GET", "/api/v1/events/"+ev.ID.String(), tok, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("get event = %d: %s", w.Code, w.Body.String())
+	}
+	var got models.Event
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode event: %v", err)
+	}
+	if len(got.Items) != 1 {
+		t.Fatalf("event carried %d detail rows, want 1: %s", len(got.Items), w.Body.String())
+	}
+	item := got.Items[0]
+	if item.Path == "" || item.Status != models.EventItemStatusChanged {
+		t.Errorf("detail row wrong: %+v", item)
+	}
+	if len(item.Changes) != 1 || item.Changes[0].Old != "Wrong" || item.Changes[0].New != "Right" {
+		t.Errorf("tag diff did not survive the API: %+v", item.Changes)
+	}
+
+	// The list endpoint stays lean.
+	w = do(r, "GET", "/api/v1/events", tok, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("list events = %d", w.Code)
+	}
+	if bytes.Contains(w.Body.Bytes(), []byte(`"changes"`)) {
+		t.Errorf("the feed should not carry per-file detail: %s", w.Body.String())
 	}
 }

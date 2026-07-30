@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/auth"
+	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
@@ -123,6 +124,21 @@ func (a *API) createDataSource(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported data source type"})
 		return
 	}
+	// One AcoustID, one Cover Art Archive, one fanart.tv. A second row of a singleton
+	// type is never used — only the first is looked up — so it is rejected here rather
+	// than accepted and silently ignored.
+	if models.DataSourceIsSingleton(*in.Type) {
+		var existing int64
+		if err := a.DB.Model(&models.DataSource{}).Where("type = ?", *in.Type).Count(&existing).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "create failed"})
+			return
+		}
+		if existing > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "a " + *in.Type + " source already exists — edit that one instead"})
+			return
+		}
+	}
+
 	ds := models.DataSource{Enabled: true}
 	in.apply(&ds)
 	if err := a.DB.Create(&ds).Error; err != nil {
@@ -162,6 +178,10 @@ func (a *API) updateDataSource(c *gin.Context) {
 	// broken until tomorrow.
 	if ds.Type == models.DataSourceTypeFanart || ds.Type == models.DataSourceTypeCoverArtArchive {
 		modules.ResetArtworkNegativeCache()
+	}
+	// A changed request rate has to reach the limiter, which holds it in memory.
+	if ds.Type == models.DataSourceTypeMusicBrainz {
+		components.ApplyDataSourceRateLimits(a.DB)
 	}
 	c.JSON(http.StatusOK, ds)
 }
@@ -383,6 +403,30 @@ func (in libraryInput) apply(l *models.Library) {
 func (a *API) getLibrary(c *gin.Context)    { getEntity[models.Library](a, c) }
 func (a *API) deleteLibrary(c *gin.Context) { deleteEntity[models.Library](a, c) }
 
+// checkLibraryDataSource validates a library's chosen data source: it must exist and
+// must be a *metadata* provider. Assigning AcoustID or an artwork provider here was
+// accepted before and then quietly ignored by the pipeline, because
+// `resolveManagerRow`/tagging only ever want release metadata. Writing a 400 and
+// reporting false keeps the handler bodies flat.
+func (a *API) checkLibraryDataSource(c *gin.Context, id *uuid.UUID) bool {
+	if id == nil {
+		return true // unset means "use the default", which is always allowed
+	}
+
+	var ds models.DataSource
+	if err := a.DB.First(&ds, "id = ?", *id).Error; err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "data source not found"})
+		return false
+	}
+	if models.DataSourceCategory(ds.Type) != models.DataSourceCategoryMetadata {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error": "a library's data source must be a metadata provider, not " + ds.Type,
+		})
+		return false
+	}
+	return true
+}
+
 func (a *API) createLibrary(c *gin.Context) {
 	var in libraryInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -391,6 +435,9 @@ func (a *API) createLibrary(c *gin.Context) {
 	}
 	if in.Name == nil || *in.Name == "" || in.Path == nil || *in.Path == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name and path are required"})
+		return
+	}
+	if !a.checkLibraryDataSource(c, in.DataSourceID) {
 		return
 	}
 	l := models.Library{Enabled: true}
@@ -415,6 +462,9 @@ func (a *API) updateLibrary(c *gin.Context) {
 	var in libraryInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if !a.checkLibraryDataSource(c, in.DataSourceID) {
 		return
 	}
 	in.apply(&l)

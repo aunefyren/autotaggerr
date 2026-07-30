@@ -491,3 +491,61 @@ func TestAnnotateEditionsMarksUnownedEditions(t *testing.T) {
 		}
 	}
 }
+
+// TestArtistPageShowsCollaborations is the reported bug at the API level: a release
+// credited to two artists must appear, owned, on both artists' pages — and count
+// towards both on the collection overview. It used to appear on whichever artist the
+// last sync named, and to look un-owned on the other.
+func TestArtistPageShowsCollaborations(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	first := artistFixture(t, api.DB, "art-1", "First Artist", models.ManagedByAutotaggerr, false)
+	second := artistFixture(t, api.DB, "art-2", "Second Artist", models.ManagedByAutotaggerr, false)
+
+	// One owned collaboration, whose primary credit is the first artist.
+	releaseGroupFixture(t, api.DB, first.MBID, rgFixture{
+		mbid: "rg-collab", title: "The Collaboration", primary: "Single", date: "2021-05-01",
+		owned: true, ownedTracks: 1, totalTracks: 1,
+	})
+	// Both artists are credited on it.
+	for position, artistMBID := range []string{"art-1", "art-2"} {
+		if err := api.DB.Create(&models.CollectionReleaseGroupArtist{
+			ReleaseGroupMBID: "rg-collab", ArtistMBID: artistMBID, Position: position,
+		}).Error; err != nil {
+			t.Fatalf("link %s: %v", artistMBID, err)
+		}
+	}
+
+	for _, artist := range []models.CollectionArtist{first, second} {
+		detail := decodeJSON[struct {
+			ReleaseGroups []map[string]any `json:"release_groups"`
+		}](t, r, "GET", "/api/v1/artists/"+artist.MBID, token, nil)
+
+		if len(detail.ReleaseGroups) != 1 {
+			t.Fatalf("%s sees %d release-groups, want the collaboration", artist.Name, len(detail.ReleaseGroups))
+		}
+		rg := detail.ReleaseGroups[0]
+		if rg["mb_id"] != "rg-collab" {
+			t.Errorf("%s sees %v, want rg-collab", artist.Name, rg["mb_id"])
+		}
+		if rg["owned"] != true {
+			t.Errorf("%s sees the collaboration as not owned: %v", artist.Name, rg["owned"])
+		}
+		if rg["complete"] != true {
+			t.Errorf("%s sees the collaboration as incomplete: %v", artist.Name, rg["complete"])
+		}
+	}
+
+	// And it counts for both on the overview, rather than only for the primary credit.
+	summaries := decodeJSON[[]map[string]any](t, r, "GET", "/api/v1/artists", token, nil)
+	owned := map[string]float64{}
+	for _, s := range summaries {
+		mbid, _ := s["mb_id"].(string)
+		n, _ := s["owned_count"].(float64)
+		owned[mbid] = n
+	}
+	if owned["art-1"] != 1 || owned["art-2"] != 1 {
+		t.Errorf("owned counts = art-1:%v art-2:%v, want 1 each", owned["art-1"], owned["art-2"])
+	}
+}

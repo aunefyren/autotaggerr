@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { Event, EventsPage, ScanStatus } from "../types";
+import { Event, EventItem, EventsPage, ScanStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
 import { useToast } from "../toast";
 
@@ -125,7 +125,11 @@ function num(details: Record<string, unknown> | null, key: string): number {
 }
 
 function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) {
+  // The feed's copy of an event carries no per-file rows — they only come with the
+  // single-event fetch, so opening one loads it.
+  const full = useFetch<Event>(() => api.get(`/events/${event.id}`), [event.id]);
   const d = event.details;
+  const items = full.data?.items ?? [];
   const errorFiles = Array.isArray(d?.error_files) ? (d!.error_files as string[]) : [];
   const libraries = Array.isArray(d?.libraries) ? (d!.libraries as string[]) : [];
 
@@ -147,14 +151,7 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
             <Stat label="Files re-tagged" value={num(d, "files_retagged")} />
             <Stat label="Errors" value={num(d, "errors")} color={num(d, "errors") > 0 ? "var(--danger-text)" : undefined} />
           </div>
-          {errorFiles.length > 0 && (
-            <div>
-              <div className="eyebrow" style={{ marginBottom: 6 }}>Files that failed</div>
-              <div className="scroll mono" style={{ fontSize: 11, color: "var(--danger-text)", display: "flex", flexDirection: "column", gap: 2 }}>
-                {errorFiles.map((f, i) => (<div key={i} style={{ wordBreak: "break-all" }}>{f}</div>))}
-              </div>
-            </div>
-          )}
+          <FileDetail items={items} details={d} loading={full.loading} fallbackErrors={errorFiles} />
         </div>
       ) : event.type === "scan" && d ? (
         <div className="stack">
@@ -170,16 +167,7 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
               Libraries: <span className="mono">{libraries.join(", ")}</span>
             </div>
           )}
-          {errorFiles.length > 0 && (
-            <div>
-              <div className="eyebrow" style={{ marginBottom: 6 }}>Files that failed</div>
-              <div className="scroll mono" style={{ fontSize: 11, color: "var(--danger-text)", display: "flex", flexDirection: "column", gap: 2 }}>
-                {errorFiles.map((f, i) => (
-                  <div key={i} style={{ wordBreak: "break-all" }}>{f}</div>
-                ))}
-              </div>
-            </div>
-          )}
+          <FileDetail items={items} details={d} loading={full.loading} fallbackErrors={errorFiles} />
         </div>
       ) : (
         <pre className="mono scroll" style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
@@ -187,6 +175,100 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
         </pre>
       )}
     </Modal>
+  );
+}
+
+/**
+ * The per-file half of an event: which files changed, the exact fields that changed
+ * on each, and which failed. Counters say twelve files changed; this says which
+ * twelve and what happened to them.
+ *
+ * The list is capped server-side, so when rows were dropped it says so rather than
+ * letting the first N read as the whole story. `fallbackErrors` renders events
+ * recorded before detail rows existed, which still carry an error_files array.
+ */
+function FileDetail({
+  items,
+  details,
+  loading,
+  fallbackErrors,
+}: {
+  items: EventItem[];
+  details: Record<string, unknown> | null;
+  loading: boolean;
+  fallbackErrors: string[];
+}) {
+  const summary = (details?.detail ?? null) as Record<string, unknown> | null;
+  const totalChanged = typeof summary?.changed_files === "number" ? summary.changed_files : 0;
+  const totalFailed = typeof summary?.failed_files === "number" ? summary.failed_files : 0;
+  const truncated = items.length > 0 && items.length < totalChanged + totalFailed;
+
+  if (loading) return <div className="muted" style={{ fontSize: 12 }}>Loading file detail…</div>;
+
+  // Nothing recorded: either an older event, or a run where no file changed.
+  if (items.length === 0) {
+    if (fallbackErrors.length === 0) return null;
+    return (
+      <div>
+        <div className="eyebrow" style={{ marginBottom: 6 }}>Files that failed</div>
+        <div className="scroll mono" style={{ fontSize: 11, color: "var(--danger-text)", display: "flex", flexDirection: "column", gap: 2 }}>
+          {fallbackErrors.map((f, i) => (<div key={i} style={{ wordBreak: "break-all" }}>{f}</div>))}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="row" style={{ marginBottom: 6, gap: 10, alignItems: "baseline" }}>
+        <div className="eyebrow">Files</div>
+        {truncated && (
+          <span className="dim" style={{ fontSize: 11 }}>
+            showing {items.length} of {totalChanged + totalFailed}
+          </span>
+        )}
+      </div>
+      <div className="scroll stack" style={{ gap: 12 }}>
+        {items.map((item) => (
+          <div key={item.id} className="stack" style={{ gap: 5 }}>
+            <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+              <span
+                className="mono"
+                style={{ fontSize: 11, wordBreak: "break-all", color: item.status === "error" ? "var(--danger-text)" : "var(--text)" }}
+              >
+                {item.path}
+              </span>
+              {item.status === "error" ? (
+                <Pill kind="err">Failed</Pill>
+              ) : (
+                <span className="dim" style={{ fontSize: 11 }}>
+                  {item.tags_written} tag{item.tags_written === 1 ? "" : "s"} written
+                </span>
+              )}
+            </div>
+
+            {item.error && (
+              <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>{item.error}</div>
+            )}
+
+            {/* Same old → new language as the file-tags view, so it is learned once. */}
+            {item.changes && item.changes.length > 0 && (
+              <div className="diff">
+                {item.changes.map((c) => (
+                  <div className="diffrow" key={c.field}>
+                    <span className="diffkey">{c.field}</span>
+                    <div className="diffvals">
+                      {c.old ? <span className="diffv rem">{c.old}</span> : <span className="diffv empty">(empty)</span>}
+                      {c.new ? <span className="diffv add">{c.new}</span> : <span className="diffv empty">(removed)</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

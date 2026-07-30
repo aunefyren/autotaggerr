@@ -37,6 +37,14 @@ repeatedly found faults no test could — the UI claiming a state the data did n
 - **fanart.tv artist images** — needs a personal API key from fanart.tv, added as a `fanart` data
   source. Entirely untested against the real service: the thumb/backdrop resolution is covered only
   by a stubbed response. Without a key, artists show monogram tiles, which *is* the tested path.
+- **The per-artist actions** (scan / refresh metadata / tag files on the artist page). The folder
+  resolution is the part to watch: it derives an artist's folders from where their indexed files
+  actually sit, so it is only as good as the correlations already in the index — an artist whose
+  albums live under two differently-spelled folders should produce two walk roots, and one whose
+  files sit outside the `<root>/<ARTIST>/<ALBUM>/…` layout falls back to the file's own directory.
+  "Refresh metadata" is additionally untested end to end: MusicBrainz cannot be stubbed from outside
+  `modules/`, so only its refusals are covered by tests.
+
 - **The reworked browsing pages** (collection / artist / release-group). Rebuilt around artwork,
   coverage meters, sortable-filterable tables and grouped catalogue sections; the release-group page
   lost its three scope buttons in favour of checkboxes on the editions and tracks themselves. Worth a
@@ -52,10 +60,12 @@ repeatedly found faults no test could — the UI claiming a state the data did n
   without a schema change.
 - **Drift sync has no schedule of its own.** It runs on demand only; it should get its own cron
   entry rather than riding the scan.
-- **More activity events** — Plex refresh, health checks, file import. A per-file `tag_write` event
-  could reuse the tag-diff component. Retention is a fixed 200 events; time-based retention could be
-  configurable.
-- **Surface *which* fields changed** in a drift sync, not just that a release changed.
+- **More activity events** — Plex refresh, health checks, file import. Per-file tag detail already
+  exists on scans and drift syncs (see [scanning.md](scanning.md)); what is missing is events for the
+  other things the app does.
+- **Event retention is fixed** at the newest 200 events (detail rows cascade with them), and the
+  per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
+  suit a feed better than a count.
 
 ## Roadmap / ideas
 
@@ -69,22 +79,23 @@ repeatedly found faults no test could — the UI claiming a state the data did n
   `<lockdata>`, `<dateadded>`, artwork paths, AudioDB IDs); Kodi-plain vs. Emby/Jellyfin dialect;
   only useful if Jellyfin's NFO *saver* is off, otherwise it rewrites the file. Would fix the
   duplicate-artist issue below at the source.
+- **Granular actions beyond the artist.** The three per-artist actions have shipped (see
+  [scanning.md](scanning.md)) on a `scan.Scope` built to extend. A release-group or single-album
+  scope needs a new constructor and UI, not new machinery — worth doing once the artist actions have
+  been used against a real library.
 
 ## Known issues / limitations
 
-- **`correlation_source` does not refresh when the manager changes.** Swapping or disabling a
-  library's manager and rescanning leaves items showing the old source, because skip-unchanged
-  (status ok + unchanged size/mtime + same app version) walks past them without re-correlating.
-  Working as designed for scan speed, but surprising: observed as `/items` still reporting `lidarr`
-  after the Lidarr manager was taken out of the loop. Consider treating a manager change as a
-  re-process trigger, the way an app-version change already is.
-
-- **Cold-cache scans are slow.** A large personal library can take ~7 hours. The MusicBrainz
-  1 req/s limiter is global, so a cold scan is floored by it no matter how many workers run; the
-  caching and concurrency work (see [scanning.md](scanning.md)) mainly helps the warm-cache steady
-  state.
-  **Next idea:** measure the real warm-scan speedup and tune the default worker count; consider a
-  separate, higher cap for MP3s than for FLAC, since FLAC rewrites are more disk-bound.
+- **Cold-cache scans are slow.** A large personal library can take ~7 hours. The MusicBrainz limiter
+  is global, so a cold scan is floored at ~1 *distinct release* per second no matter how many workers
+  run; caching and concurrency (see [scanning.md](scanning.md)) mainly help the warm-cache steady
+  state. Duplicate concurrent fetches of the same release used to multiply that floor by the worker
+  count and no longer do, and the rate is now configurable from the data source row — but the floor
+  itself is inherent to the public service's terms and is not going away.
+  **Still open:** measure the real warm-scan speedup (scan events now carry `mb_lookups`, so the
+  cache-hit vs fetch split is finally visible) and tune the default worker count from it; consider a
+  separate, higher cap for MP3s than for FLAC, since FLAC rewrites are more disk-bound. A documented
+  local-mirror setup is the only route to a genuinely fast cold scan.
 
 - **Jellyfin duplicate artists via NFO / online providers.** Jellyfin keys artist identity on the
   *name string*, not the MB ID (which Autotaggerr does tag). When an online provider like TheAudioDB
@@ -93,3 +104,5 @@ repeatedly found faults no test could — the UI claiming a state the data did n
   lines. Autotaggerr's tags are correct — they mirror MusicBrainz — and the split originates in
   Jellyfin. Workaround: disable the NFO reader and/or TheAudioDB in Jellyfin so it trusts the
   embedded tags. See the NFO-sidecar idea above for a possible in-app fix.
+
+

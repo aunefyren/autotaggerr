@@ -477,3 +477,224 @@ func TestFollowGoverns(t *testing.T) {
 		}
 	}
 }
+
+// seedCachedRelease stores a MusicBrainz release in the DB-backed cache and reloads
+// it, so Rebuild (which reads only cached releases) can see it.
+func seedCachedRelease(t *testing.T, db *gorm.DB, release models.MusicBrainzReleaseResponse) {
+	t.Helper()
+	payload, err := json.Marshal(release)
+	if err != nil {
+		t.Fatalf("marshal release: %v", err)
+	}
+	if err := db.Create(&models.MusicbrainzReleaseCache{
+		MBID: release.ID, Payload: string(payload),
+		FetchedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}).Error; err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if err := modules.MusicbrainzLoadCache(); err != nil {
+		t.Fatalf("load cache: %v", err)
+	}
+}
+
+// TestRebuildCreditsEveryArtist is the multi-artist case: a release credited to two
+// artists belongs to both. Before the link table it belonged to whichever sync wrote
+// last — it appeared on one artist's page and vanished from the other's.
+func TestRebuildCreditsEveryArtist(t *testing.T) {
+	db := testDB(t)
+	modules.SetDB(db)
+	defer modules.SetDB(nil)
+
+	seedCachedRelease(t, db, models.MusicBrainzReleaseResponse{
+		ID:    "rel-collab",
+		Title: "The Collaboration",
+		ArtistCredit: []models.ArtistCredit{
+			{Name: "First Artist", Artist: models.Artist{ID: "art-1", Name: "First Artist"}},
+			{Name: "Second Artist", Artist: models.Artist{ID: "art-2", Name: "Second Artist"}},
+		},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-collab", Title: "The Collaboration", PrimaryType: "Single"},
+		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}}}},
+	})
+
+	lib := models.Library{Name: "L", Path: "/m"}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	if err := db.Create(&models.LibraryItem{LibraryID: lib.ID, Path: "/m/collab.flac", Status: "ok", MBReleaseID: "rel-collab"}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	artists, owned, err := Rebuild(db)
+	if err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if artists != 2 {
+		t.Errorf("Rebuild created %d artists, want 2 — the second credit owns these files too", artists)
+	}
+	if owned != 1 {
+		t.Errorf("owned release-groups = %d, want 1", owned)
+	}
+
+	// Both artists exist with provenance, not just the first credit.
+	for _, mbid := range []string{"art-1", "art-2"} {
+		var a models.CollectionArtist
+		if err := db.Where("mb_id = ?", mbid).First(&a).Error; err != nil {
+			t.Fatalf("artist %s not created: %v", mbid, err)
+		}
+		if a.ManagedBy != models.ManagedByAutotaggerr {
+			t.Errorf("artist %s managed_by = %q, want autotaggerr", mbid, a.ManagedBy)
+		}
+	}
+
+	// The release-group is on both artists' pages, owned in both cases.
+	for _, mbid := range []string{"art-1", "art-2"} {
+		groups, err := ReleaseGroupsForArtist(db, mbid)
+		if err != nil {
+			t.Fatalf("ReleaseGroupsForArtist(%s): %v", mbid, err)
+		}
+		if len(groups) != 1 || groups[0].MBID != "rg-collab" {
+			t.Fatalf("artist %s sees %d release-groups, want the collaboration: %+v", mbid, len(groups), groups)
+		}
+		if !groups[0].Owned || groups[0].OwnedTracks != 1 {
+			t.Errorf("artist %s sees the collaboration as not owned: %+v", mbid, groups[0])
+		}
+	}
+
+	// The primary credit is still the first artist — used for display and sorting.
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-collab").First(&rg).Error; err != nil {
+		t.Fatalf("release-group: %v", err)
+	}
+	if rg.ArtistMBID != "art-1" {
+		t.Errorf("primary credit = %q, want art-1", rg.ArtistMBID)
+	}
+
+	// And the credit order is recorded, so a featured artist is not presented as the
+	// album's author.
+	credits, err := ArtistsByReleaseGroup(db, []string{"rg-collab"})
+	if err != nil {
+		t.Fatalf("ArtistsByReleaseGroup: %v", err)
+	}
+	if got := credits["rg-collab"]; len(got) != 2 || got[0] != "art-1" || got[1] != "art-2" {
+		t.Errorf("credit order = %v, want [art-1 art-2]", got)
+	}
+}
+
+// TestSyncArtistDoesNotStealPrimaryCredit is the other half of the bug: syncing the
+// second artist's discography must not rewrite the release-group's primary credit to
+// them, and must not drop the first artist's claim. That overwrite is what made the
+// album flip between the two pages depending on which sync ran last.
+func TestSyncArtistDoesNotStealPrimaryCredit(t *testing.T) {
+	db := testDB(t)
+
+	// A collaboration already known, credited art-1 then art-2.
+	upsertReleaseGroup(db, rgWrite{
+		mbID: "rg-collab", artistMBID: "art-1", credits: []string{"art-1", "art-2"},
+		title: "The Collaboration", primary: "Single",
+		disk: &diskState{owned: true, ownedTracks: 1, totalTracks: 1},
+	})
+
+	// Now a writer that only knows about art-2 — what a discography sync is.
+	upsertReleaseGroup(db, rgWrite{
+		mbID: "rg-collab", artistMBID: "art-2",
+		title: "The Collaboration", primary: "Single",
+		catalog: &catalogState{},
+	})
+
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-collab").First(&rg).Error; err != nil {
+		t.Fatalf("release-group: %v", err)
+	}
+	if rg.ArtistMBID != "art-1" {
+		t.Errorf("primary credit = %q, want art-1 — a partial writer must not claim it", rg.ArtistMBID)
+	}
+	// The catalog state it did know about was still applied.
+	if !rg.InCatalog {
+		t.Error("catalog state from the partial writer was lost")
+	}
+	// Disk state survives untouched.
+	if !rg.Owned || rg.OwnedTracks != 1 {
+		t.Errorf("disk state clobbered: %+v", rg)
+	}
+
+	// Both artists still see it.
+	for _, mbid := range []string{"art-1", "art-2"} {
+		groups, err := ReleaseGroupsForArtist(db, mbid)
+		if err != nil {
+			t.Fatalf("ReleaseGroupsForArtist(%s): %v", mbid, err)
+		}
+		if len(groups) != 1 {
+			t.Errorf("artist %s sees %d release-groups, want 1", mbid, len(groups))
+		}
+	}
+}
+
+// TestBackfillReleaseGroupArtists covers the upgrade path: rows written before the
+// link table get a link from the primary-credit column they already carry, exactly
+// once.
+func TestBackfillReleaseGroupArtists(t *testing.T) {
+	db := testDB(t)
+
+	// Rows as they existed before the link table.
+	for _, rg := range []models.CollectionReleaseGroup{
+		{MBID: "rg-1", ArtistMBID: "art-1", Title: "One"},
+		{MBID: "rg-2", ArtistMBID: "art-2", Title: "Two"},
+		{MBID: "rg-orphan", Title: "No artist"}, // nothing to link from
+	} {
+		if err := db.Create(&rg).Error; err != nil {
+			t.Fatalf("seed release-group: %v", err)
+		}
+	}
+
+	if err := BackfillReleaseGroupArtists(db); err != nil {
+		t.Fatalf("BackfillReleaseGroupArtists: %v", err)
+	}
+
+	var links int64
+	if err := db.Model(&models.CollectionReleaseGroupArtist{}).Count(&links).Error; err != nil {
+		t.Fatalf("count links: %v", err)
+	}
+	if links != 2 {
+		t.Fatalf("created %d links, want 2 (the artist-less row has nothing to link)", links)
+	}
+
+	// Idempotent: running again creates nothing.
+	if err := BackfillReleaseGroupArtists(db); err != nil {
+		t.Fatalf("second BackfillReleaseGroupArtists: %v", err)
+	}
+	if err := db.Model(&models.CollectionReleaseGroupArtist{}).Count(&links).Error; err != nil {
+		t.Fatalf("recount links: %v", err)
+	}
+	if links != 2 {
+		t.Errorf("after a second run there are %d links, want 2", links)
+	}
+}
+
+// TestReleaseGroupsForArtistUnionsUnlinkedRows: a row with a primary credit but no
+// link — an un-backfilled upgrade, or any writer that only set the column — must
+// still appear, so a missing link can never empty an artist page.
+func TestReleaseGroupsForArtistUnionsUnlinkedRows(t *testing.T) {
+	db := testDB(t)
+
+	if err := db.Create(&models.CollectionReleaseGroup{MBID: "rg-unlinked", ArtistMBID: "art-1", Title: "Unlinked"}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// A linked one where the column names someone else, to prove the union is a
+	// union and not just the column.
+	if err := db.Create(&models.CollectionReleaseGroup{MBID: "rg-collab", ArtistMBID: "art-9", Title: "Collab"}).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	linkReleaseGroupArtists(db, "rg-collab", []string{"art-9", "art-1"}, true)
+
+	groups, err := ReleaseGroupsForArtist(db, "art-1")
+	if err != nil {
+		t.Fatalf("ReleaseGroupsForArtist: %v", err)
+	}
+	seen := map[string]bool{}
+	for _, g := range groups {
+		seen[g.MBID] = true
+	}
+	if !seen["rg-unlinked"] || !seen["rg-collab"] {
+		t.Errorf("artist saw %v, want both the unlinked row and the linked collaboration", seen)
+	}
+}

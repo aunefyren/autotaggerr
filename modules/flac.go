@@ -113,15 +113,17 @@ func buildFLACDesiredTags(metadata models.FileTags) map[string]string {
 	}
 }
 
-// SetFlacTags updates multiple Vorbis comment tags on a FLAC file.
-func SetFlacTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
+// SetFlacTags updates multiple Vorbis comment tags on a FLAC file. The returned
+// changes are the field-level before/after of what was written — the Activity feed's
+// per-file detail; see models.TagChange.
+func SetFlacTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	unchanged = false
 	tagsWritten = 0
 
 	filePath, err = utilities.NormalizePathForExternalTool(filePath)
 	if err != nil {
 		logger.Log.Error("failed to normalize path. error: " + err.Error())
-		return unchanged, tagsWritten, errors.New("failed to normalize path")
+		return unchanged, tagsWritten, nil, errors.New("failed to normalize path")
 	}
 
 	desired := buildFLACDesiredTags(metadata)
@@ -129,13 +131,13 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 	existing, err := getFlacTagsMap(filePath)
 	if err != nil {
 		// Optional: keep going even if read fails, or return error
-		return unchanged, tagsWritten, err
+		return unchanged, tagsWritten, nil, err
 	}
 
 	changes, hasChanges := utilities.DiffFlacTags(existing, desired, configFile)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes needed: " + filePath)
-		return true, tagsWritten, nil
+		return true, tagsWritten, nil, nil
 	}
 
 	utf8Env := append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
@@ -146,18 +148,26 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		removeCmd.Env = utf8Env
 		if err := removeCmd.Run(); err != nil {
 			logger.Log.Error(fmt.Sprintf("failed to remove tag %s: %s", key, err.Error()))
-			return unchanged, tagsWritten, errors.New("failed to remove tag")
+			return unchanged, tagsWritten, changed, errors.New("failed to remove tag")
 		}
 
 		setCmd := exec.Command("metaflac", "--set-tag", fmt.Sprintf("%s=%s", key, value), filePath)
 		setCmd.Env = utf8Env
 		if err := setCmd.Run(); err != nil {
 			logger.Log.Error(fmt.Sprintf("failed to set tag %s: %s", key, err.Error()))
-			return unchanged, tagsWritten, errors.New("failed to set tag")
+			return unchanged, tagsWritten, changed, errors.New("failed to set tag")
 		} else {
 			tagsWritten++
+			// Recorded only after the write succeeded, so the diff reports what is on
+			// disk rather than what was intended.
+			changed = append(changed, models.TagChange{
+				Field: key,
+				Old:   strings.Join(existing[key], "; "),
+				New:   value,
+			})
 		}
 	}
 
-	return unchanged, tagsWritten, nil
+	utilities.SortTagChanges(changed)
+	return unchanged, tagsWritten, changed, nil
 }

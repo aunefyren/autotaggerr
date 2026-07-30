@@ -48,8 +48,40 @@ func Finish(db *gorm.DB, ev *models.Event, status, summary string, details map[s
 	}
 }
 
-// Prune keeps only the newest `keep` events, deleting the rest. Retention runs
-// after each recorded action so the table stays bounded.
+// AddItems stores an event's per-file detail rows (see models.EventItem). The rows
+// are written in one batch after the work finishes rather than as each file is
+// processed: a scan would otherwise interleave thousands of small inserts with the
+// tag writes it is timing. Best-effort, like the rest of this package — losing the
+// detail must never fail the scan that produced it.
+func AddItems(db *gorm.DB, ev *models.Event, items []models.EventItem) {
+	if db == nil || ev == nil || ev.ID == uuid.Nil || len(items) == 0 {
+		return
+	}
+	for i := range items {
+		items[i].EventID = ev.ID
+	}
+	if err := db.CreateInBatches(items, 200).Error; err != nil {
+		logger.Log.Warnf("failed to record %d event detail rows: %s", len(items), err.Error())
+	}
+}
+
+// Items returns an event's per-file detail rows, oldest first (the order they were
+// processed in).
+func Items(db *gorm.DB, eventID uuid.UUID) ([]models.EventItem, error) {
+	var items []models.EventItem
+	if db == nil {
+		return items, nil
+	}
+	err := db.Where("event_id = ?", eventID).Order("created_at, path").Find(&items).Error
+	return items, err
+}
+
+// Prune keeps only the newest `keep` events, deleting the rest along with their
+// detail rows. Retention runs after each recorded action so the tables stay bounded.
+//
+// The child rows are deleted explicitly: nothing in the schema cascades, so without
+// this the events table would stay capped while event_items grew without limit —
+// orphaned rows that no feed would ever show again.
 func Prune(db *gorm.DB, keep int) {
 	if db == nil || keep < 1 {
 		return
@@ -61,6 +93,9 @@ func Prune(db *gorm.DB, keep int) {
 	}
 	if len(ids) == 0 {
 		return
+	}
+	if err := db.Where("event_id IN ?", ids).Delete(&models.EventItem{}).Error; err != nil {
+		logger.Log.Warnf("failed to prune event detail rows: %s", err.Error())
 	}
 	if err := db.Where("id IN ?", ids).Delete(&models.Event{}).Error; err != nil {
 		logger.Log.Warnf("failed to prune events: %s", err.Error())

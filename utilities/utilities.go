@@ -481,3 +481,11 @@ func CanonLoose(s string) string {
 
 // Equality helper
 func EqLoose(a, b string) bool { return CanonLoose(a) == CanonLoose(b) }
+
+// SortTagChanges orders a tag diff by field name, in place. Both writers build their
+// diff by iterating a map, so without this the same write reports its fields in a
+// different order every time — which would make an Activity detail view shuffle on
+// each read and any comparison of two diffs meaningless.
+func SortTagChanges(changes []models.TagChange) {
+	sort.Slice(changes, func(i, j int) bool { return changes[i].Field < changes[j].Field })
+}

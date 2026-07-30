@@ -27,6 +27,16 @@ const (
 	// without a personal API key, which is why it is not seeded.
 	DataSourceTypeFanart = "fanart"
 
+	// Data source categories. The four types share a table because they share every
+	// field (URL, key, rate limit, enabled, health) and the same health-check code,
+	// but they are *not* interchangeable: only a metadata provider can be a library's
+	// data source, fingerprinting only ever suggests an identification, and artwork
+	// feeds the browsing pages and nothing in the pipeline. Offering all four
+	// wherever a "data source" is asked for is what made the model confusing.
+	DataSourceCategoryMetadata    = "metadata"
+	DataSourceCategoryFingerprint = "fingerprint"
+	DataSourceCategoryArtwork     = "artwork"
+
 	ManagerTypeLidarr      = "lidarr"
 	ManagerTypeAutotaggerr = "autotaggerr"
 
@@ -101,6 +111,34 @@ type DataSource struct {
 	Enabled     bool       `json:"enabled"`
 	Health      string     `json:"health"`
 	LastChecked *time.Time `json:"last_checked"`
+}
+
+// DataSourceCategory maps a data source type to the role it can play. An unknown
+// type reports "" — callers treat that as "not valid for anything" rather than
+// guessing. This is the single Go-side definition; the SPA has the matching one.
+func DataSourceCategory(sourceType string) string {
+	switch sourceType {
+	case DataSourceTypeMusicBrainz:
+		return DataSourceCategoryMetadata
+	case DataSourceTypeAcoustID:
+		return DataSourceCategoryFingerprint
+	case DataSourceTypeCoverArtArchive, DataSourceTypeFanart:
+		return DataSourceCategoryArtwork
+	}
+	return ""
+}
+
+// DataSourceIsSingleton reports whether a second row of this type is meaningless.
+// There is exactly one AcoustID service, one Cover Art Archive and one fanart.tv, so
+// duplicates are a configuration mistake that silently does nothing — only the first
+// row found is ever used. MusicBrainz is deliberately excluded: running a local
+// mirror alongside the public service is legitimate.
+func DataSourceIsSingleton(sourceType string) bool {
+	switch sourceType {
+	case DataSourceTypeAcoustID, DataSourceTypeCoverArtArchive, DataSourceTypeFanart:
+		return true
+	}
+	return false
 }
 
 // Manager is the correlation authority for a library: it decides which MB
@@ -179,11 +217,18 @@ type LibraryItem struct {
 	MBRecordingID    string `json:"mb_recording_id"`
 	MBReleaseTrackID string `json:"mb_release_track_id"`
 
-	CorrelationSource string     `json:"correlation_source"`
-	CorrelatedAt      *time.Time `json:"correlated_at"`
-	LastScannedAt     *time.Time `json:"last_scanned_at"`
-	LastTaggedAt      *time.Time `json:"last_tagged_at"`
-	TagStateHash      string     `json:"tag_state_hash"`
+	CorrelationSource string `json:"correlation_source"`
+	// CorrelatedByManager is the manager *type* that produced the correlation. A
+	// scan only skips an unchanged file when the library's current manager still
+	// matches, so swapping or disabling a library's manager re-correlates its files
+	// instead of leaving them reporting the old source (the same escape hatch
+	// ProcessedVersion provides for tag-logic changes). Pinned items are exempt —
+	// a manual correlation outlives any manager change.
+	CorrelatedByManager string     `json:"correlated_by_manager"`
+	CorrelatedAt        *time.Time `json:"correlated_at"`
+	LastScannedAt       *time.Time `json:"last_scanned_at"`
+	LastTaggedAt        *time.Time `json:"last_tagged_at"`
+	TagStateHash        string     `json:"tag_state_hash"`
 	// ProcessedVersion records the app version that last processed this file. A
 	// scan only skips an unchanged file when the running version still matches, so
 	// upgrades that change tag logic re-process everything once.
@@ -267,7 +312,54 @@ type Event struct {
 	Details    map[string]any `gorm:"serializer:json" json:"details"`
 	RefType    string         `json:"ref_type,omitempty"`
 	RefID      *uuid.UUID     `gorm:"type:uuid" json:"ref_id,omitempty"`
+
+	// Items is the per-file detail (EventItem rows), attached by the single-event
+	// endpoint only — never stored on this row and never loaded for the feed, where
+	// 50 events would drag thousands of rows behind them.
+	Items []EventItem `gorm:"-" json:"items,omitempty"`
 }
+
+// TagChange is one field's before/after from a tag write. Old is the file's previous
+// value (empty when the field was absent), New the value written. Stored as JSON on
+// the EventItem that owns it: a diff is only ever read together with its file, so it
+// needs no table of its own.
+type TagChange struct {
+	Field string `json:"field"`
+	Old   string `json:"old"`
+	New   string `json:"new"`
+}
+
+// EventItem is one file's outcome within an Event — the per-file detail behind a
+// scan's counters: which file, what happened, and the exact fields that changed.
+//
+// It is a child table rather than more JSON in Event.Details for one reason: a large
+// library produces tens of thousands of per-file results, and a single serialized
+// blob per scan would have to be written and read whole. Rows also let retention
+// cascade (see events.Prune) instead of growing an event row without bound.
+//
+// Only *interesting* files get a row — changed or failed. Recording the unchanged
+// majority would multiply the table by the size of the library to say "nothing
+// happened", which the counters already say.
+type EventItem struct {
+	Base
+	EventID uuid.UUID `gorm:"type:uuid;index;not null" json:"event_id"`
+	Path    string    `json:"path"`
+	// Status is EventItemStatus*: what happened to this one file.
+	Status string `json:"status"`
+	// TagsWritten is the writer's own count. It can exceed len(Changes) for MP3s,
+	// where one changed field forces its paired composite fields to be rewritten too.
+	TagsWritten int    `json:"tags_written"`
+	Error       string `json:"error,omitempty"`
+	// Changes is the field-level diff, empty for a failure that never got as far as
+	// writing.
+	Changes []TagChange `gorm:"serializer:json" json:"changes,omitempty"`
+}
+
+// Per-file outcomes inside an event.
+const (
+	EventItemStatusChanged = "changed"
+	EventItemStatusError   = "error"
+)
 
 // CollectionArtist is a MusicBrainz artist present in (or monitored for) the
 // collection. Monitored artists get their full discography synced so missing
@@ -330,6 +422,26 @@ type CollectionDesire struct {
 	// RecordingMBIDs is the desired-song set; empty means the whole release-group
 	// or release. Stored as JSON so it needs no join table.
 	RecordingMBIDs []string `gorm:"serializer:json" json:"recording_mb_ids"`
+}
+
+// CollectionReleaseGroupArtist links a release-group to every artist credited on it.
+//
+// It exists because a release-group can have more than one credited artist and
+// CollectionReleaseGroup can only name one. Before this, a collaboration belonged to
+// whichever sync wrote last — Rebuild claimed it for the *first* credited artist, the
+// discography sync for whichever artist it was syncing — so the album appeared on one
+// artist's page and vanished from the other's, flipping between them as syncs ran.
+//
+// The link table is additive: a row is added when an artist is seen to be credited and
+// is not removed by a writer that simply does not know about it. CollectionReleaseGroup
+// .ArtistMBID survives as the *primary* credit, for display and sorting.
+type CollectionReleaseGroupArtist struct {
+	Base
+	ReleaseGroupMBID string `gorm:"index:idx_rg_artist,unique;not null" json:"release_group_mb_id"`
+	ArtistMBID       string `gorm:"index:idx_rg_artist,unique;index;not null" json:"artist_mb_id"`
+	// Position is the artist's place in the MusicBrainz artist credit (0 = primary).
+	// It keeps "featuring" artists from being presented as the album's author.
+	Position int `json:"position"`
 }
 
 // CollectionReleaseGroup is an album/EP/etc for an artist.
@@ -486,8 +598,10 @@ func AllDBModels() []any {
 		&User{},
 		&AuthProvider{},
 		&Event{},
+		&EventItem{},
 		&CollectionArtist{},
 		&CollectionReleaseGroup{},
+		&CollectionReleaseGroupArtist{},
 		&CollectionRelease{},
 		&CollectionDesire{},
 		&AcoustIDLookup{},
