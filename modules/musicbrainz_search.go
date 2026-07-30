@@ -8,8 +8,6 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/models"
@@ -314,12 +312,13 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 
 	// Cached like the discography: the release-group page reads this on every open,
 	// and an edition list changes about as often as a discography does.
-	editionCacheMu.RLock()
-	cached, ok := editionCache[releaseGroupID]
-	editionCacheMu.RUnlock()
-	if ok && time.Now().Before(cached.expires) {
-		return cached.releases, nil
+	var fresh []models.MusicBrainzReleaseSearchResult
+	if mbCacheGet(models.MBEntityEditions, releaseGroupID, &fresh) {
+		return fresh, nil
 	}
+
+	var stale []models.MusicBrainzReleaseSearchResult
+	ok := mbCacheGetStale(models.MBEntityEditions, releaseGroupID, &stale)
 
 	// inc=media is required: browse (unlike search) omits format and track counts
 	// without it, and those are exactly what distinguishes one edition from another.
@@ -330,26 +329,13 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 	if err := musicbrainzGetJSON(endpoint, &parsed); err != nil {
 		// Serve a stale list rather than an empty page when MusicBrainz is down.
 		if ok {
-			return cached.releases, nil
+			return stale, nil
 		}
 		return nil, err
 	}
 
-	editionCacheMu.Lock()
-	editionCache[releaseGroupID] = cachedEditions{releases: parsed.Releases, expires: time.Now().Add(editionCacheTTL)}
-	editionCacheMu.Unlock()
+	mbCachePut(models.MBEntityEditions, releaseGroupID, parsed.Releases)
 	return parsed.Releases, nil
-}
-
-var (
-	editionCacheTTL = 6 * time.Hour
-	editionCache    = map[string]cachedEditions{}
-	editionCacheMu  sync.RWMutex
-)
-
-type cachedEditions struct {
-	releases []models.MusicBrainzReleaseSearchResult
-	expires  time.Time
 }
 
 // musicbrainzGetJSON performs a rate-limited, User-Agent'd GET and decodes JSON.

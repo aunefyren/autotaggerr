@@ -263,3 +263,57 @@ func TestArtistScanStarts(t *testing.T) {
 		t.Errorf("body = %+v, want the artist and one folder", body)
 	}
 }
+
+// The verb grid is filled in for libraries as well as artists: the same two scoped
+// actions, aimed at one library.
+func TestLibraryScopedActions(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+
+	// Refresh is not gated on indexed files — a library with nothing in it simply
+	// has nothing to refresh, which is a clean no-op rather than a refusal.
+	if w := do(r, "POST", "/api/v1/libraries/"+lib.ID.String()+"/refresh", token, nil); w.Code != http.StatusAccepted {
+		t.Errorf("refresh = %d, want 202: %s", w.Code, w.Body.String())
+	}
+
+	// Re-tagging nothing is a refusal, not a no-op: it would report "0 files
+	// tagged" and look like the action silently failed.
+	if w := do(r, "POST", "/api/v1/libraries/"+lib.ID.String()+"/retag", token, nil); w.Code != http.StatusConflict {
+		t.Errorf("retag with no indexed files = %d, want 409: %s", w.Code, w.Body.String())
+	}
+
+	if err := api.DB.Create(&models.LibraryItem{
+		LibraryID: lib.ID, Path: "/m/a.flac", Status: models.LibraryItemStatusOK, MBReleaseID: "rel-1",
+	}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+	if w := do(r, "POST", "/api/v1/libraries/"+lib.ID.String()+"/retag", token, nil); w.Code != http.StatusAccepted {
+		t.Errorf("retag = %d, want 202: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestLibraryScopedActionsUnknownLibrary(t *testing.T) {
+	r, _ := setupAPI(t)
+	token := loginToken(t, r)
+	missing := uuid.New().String()
+
+	for _, verb := range []string{"refresh", "retag"} {
+		if w := do(r, "POST", "/api/v1/libraries/"+missing+"/"+verb, token, nil); w.Code != http.StatusNotFound {
+			t.Errorf("%s on an unknown library = %d, want 404", verb, w.Code)
+		}
+	}
+}
+
+func TestLibraryScopedActionsRequireAuth(t *testing.T) {
+	r, _ := setupAPI(t)
+	for _, verb := range []string{"refresh", "retag"} {
+		if w := do(r, "POST", "/api/v1/libraries/"+uuid.New().String()+"/"+verb, "", nil); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s without a token = %d, want 401", verb, w.Code)
+		}
+	}
+}

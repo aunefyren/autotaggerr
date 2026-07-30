@@ -10,6 +10,44 @@ Two different questions, deliberately answered by two different authorities:
 One UI mental model — an artist-completeness **Collection** page — with the manager difference
 reduced to a provenance badge and which actions are offered.
 
+## The disk view is derived, so every writer re-derives
+
+`Owned` / `OwnedTracks` / `TotalTracks` are computed from `library_items` by
+`collection.Rebuild`. Nothing writes them directly, which means any code path that changes the
+file index has to re-derive or the collection reports something the index no longer says.
+
+Three paths do:
+
+| Path | How |
+| --- | --- |
+| a scan | `collection.Rebuild` at the end of the run |
+| applying a migration | `collection.Rebuild` after the remap |
+| manual attach | `collection.Rebuilder.Request()`, from `saveCorrelation` |
+
+Attach was missing for a long time, so attaching files by hand left the collection stale until
+the next scan — which is the only reason *Rebuild from library* had to be a button a user was
+expected to understand. It is now a repair affordance, not a step in a workflow.
+
+The trigger sits in `saveCorrelation` rather than in the handlers because that is the single
+place both the single and bulk attach paths write a correlation. A writer that has to remember to
+re-derive is a writer that will eventually forget.
+
+`Rebuilder` is asynchronous and **coalescing**. Attaching a twelve-track folder calls the attach
+path twelve times, and twelve full re-derivations for one logical action is absurd; a pass
+already in flight covers work that arrived before it started, so a burst collapses to at most two
+passes. It never blocks the caller — an attach is interactive, and making someone wait on a
+re-derivation to see their file marked matched is the wrong trade — and its failures are logged
+rather than surfaced, because the correlation is already committed and a stale derived view is a
+display problem.
+
+`Rebuild` itself runs in a transaction. Its first act is to clear the disk view wholesale before
+re-establishing it, so without one a failure partway — or two overlapping passes — would leave
+the collection claiming to own less than it does. Silent and wrong is the worst combination, so
+the write helpers propagate their errors here and the whole pass rolls back. The Lidarr and
+discography syncs keep the older log-and-continue behaviour: one unwritable album must not
+abandon a whole sync.
+
+
 ## Entities
 
 | Model | Written by | Holds |

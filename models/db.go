@@ -55,6 +55,8 @@ const (
 	EventTypeDriftSync   = "drift_sync"
 	EventTypeLidarrSync  = "lidarr_sync"
 	EventTypePlexRefresh = "plex_refresh"
+	EventTypeMigration   = "mb_migration"
+	EventTypeMirror      = "mb_mirror"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -249,6 +251,130 @@ type MusicbrainzReleaseCache struct {
 	FetchedAt time.Time `json:"fetched_at"`
 	ExpiresAt time.Time `json:"expires_at"`
 	MBVersion string    `json:"mb_version"`
+}
+
+// MusicBrainz entity kinds held in MusicbrainzEntityCache. These are cache
+// namespaces, not MusicBrainz's own entity vocabulary: "discography" and
+// "editions" are *browse results* keyed by the entity they were browsed for,
+// which is why they cannot share a table keyed by MBID alone.
+const (
+	MBEntityArtist      = "artist"      // /artist/{id} — who the artist is
+	MBEntityDiscography = "discography" // /release-group?artist={id} — their albums
+	MBEntityEditions    = "editions"    // /release?release-group={id} — an album's pressings
+)
+
+// MusicbrainzEntityCache is the persistent cache for every MusicBrainz lookup
+// other than the full release payload, which keeps its own table because it
+// predates this one and carries drift-detection columns the others have no use
+// for.
+//
+// The primary key is (Entity, MBID) rather than MBID alone: the same artist ID is
+// both an `artist` lookup and a `discography` browse, and they have different
+// payload shapes and different refresh costs. Payload is the raw JSON of whatever
+// the lookup returned, so adding a cached endpoint needs no schema change.
+//
+// Before this table these three lookups lived in process memory only, which meant
+// a restart re-paid a cold discography — up to five rate-limited requests — the
+// first time anyone opened an artist page.
+type MusicbrainzEntityCache struct {
+	Entity    string    `gorm:"primaryKey;size:32" json:"entity"`
+	MBID      string    `gorm:"primaryKey;size:64" json:"mb_id"`
+	Payload   string    `gorm:"type:text" json:"-"`
+	FetchedAt time.Time `json:"fetched_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// ArtworkCacheEntry is the index over the artwork disk cache under
+// config/artwork/. The image bytes stay on disk — they are megabytes each and
+// nothing queries them — while this row carries the two things the filesystem
+// cannot answer: when the image was fetched, and whether the providers said there
+// is no image at all.
+//
+// Negative results matter more than positive ones here. "This MBID has no cover"
+// is the common case for obscure releases, and before this table it was remembered
+// in a process-local map, so every restart re-asked the Cover Art Archive for
+// thousands of covers it had already said it did not have.
+type ArtworkCacheEntry struct {
+	// Key is the artwork cache key (entity_mbid_kind_size), which is also the
+	// image's file name on disk.
+	Key string `gorm:"primarykey" json:"key"`
+	// Missing records a negative result: the providers have no such image. The row
+	// then has no file on disk.
+	Missing     bool      `json:"missing"`
+	ContentType string    `json:"content_type"`
+	FetchedAt   time.Time `json:"fetched_at"`
+	ExpiresAt   time.Time `json:"expires_at"`
+}
+
+// MusicBrainz entity migration kinds and the entity types they apply to.
+//
+// MusicBrainz entities are mutable: they get merged into one another and, more
+// rarely, deleted outright. Every MBID Autotaggerr stores is a key into its own
+// state, so an unnoticed migration leaves the app keyed on an ID the service no
+// longer serves.
+const (
+	// MigrationKindRedirect: the service answered 200 for OldMBID but the payload
+	// carried a different id — the entity was merged into NewMBID. Unambiguous:
+	// MusicBrainz has told us exactly what replaced what.
+	MigrationKindRedirect = "redirect"
+	// MigrationKindDeleted: the service answered 404/410. Nothing replaces it, so
+	// NewMBID is empty and the affected files go back to needing identification.
+	MigrationKindDeleted = "deleted"
+
+	// Only releases and artists are ever fetched by ID, so they are the only two
+	// entities whose redirects MusicBrainz can show us. A release-group change
+	// arrives inside a release payload instead, where it cannot be told apart from
+	// the release simply moving between groups — so that case is re-linked for the
+	// one release rather than remapped globally (see migration.RelinkRelease).
+	MigrationEntityRelease = "release"
+	MigrationEntityArtist  = "artist"
+
+	// Migration lifecycle. A migration is detected as pending, and either applied
+	// (immediately when its category is not held for review, or later by hand) or
+	// dismissed. Failed keeps a migration that could not be applied visible rather
+	// than silently dropping it.
+	MigrationStatusPending   = "pending"
+	MigrationStatusApplied   = "applied"
+	MigrationStatusDismissed = "dismissed"
+	MigrationStatusFailed    = "failed"
+)
+
+// MusicbrainzMigration is one upstream identity change and what Autotaggerr did
+// about it.
+//
+// It exists for two reasons. Durability: without a record, every sync re-learns the
+// same redirect and re-asks the same question. Review: applying one rewrites MB IDs
+// across library_items, the collection tables and authored desires, and a user may
+// reasonably want to see a merge before it reshapes their collection — which is what
+// the pending status is for.
+//
+// The unique index is on (entity_type, old_mb_id): an entity migrates to exactly one
+// successor, and re-detecting the same move must not queue it twice.
+type MusicbrainzMigration struct {
+	Base
+	EntityType string `gorm:"index:idx_mb_migration,unique;not null" json:"entity_type"`
+	OldMBID    string `gorm:"index:idx_mb_migration,unique;not null" json:"old_mb_id"`
+	// NewMBID is empty for a deletion — there is nothing to point at.
+	NewMBID string `json:"new_mb_id"`
+	Kind    string `gorm:"not null" json:"kind"`
+	Status  string `gorm:"index;not null" json:"status"`
+
+	// Name is a human label for the entity (release or artist title), captured at
+	// detection. The review UI would otherwise show two bare UUIDs, and after the
+	// migration is applied the old ID can no longer be looked up to name it.
+	Name string `json:"name"`
+
+	// Impact counts, recorded at detection so a pending row can say what approving
+	// it would touch. They are a snapshot, not a promise — the apply path re-counts.
+	AffectedFiles   int `json:"affected_files"`
+	AffectedDesires int `json:"affected_desires"`
+	// TouchesPinned marks a migration that would rewrite a manual correlation. It is
+	// its own review category: a pinned MB ID is a choice a person made by hand.
+	TouchesPinned bool `json:"touches_pinned"`
+
+	DetectedAt time.Time  `json:"detected_at"`
+	AppliedAt  *time.Time `json:"applied_at"`
+	Error      string     `json:"error,omitempty"`
 }
 
 // User backs authentication. Starts as a single auto-generated admin; structured
@@ -595,6 +721,9 @@ func AllDBModels() []any {
 		&Library{},
 		&LibraryItem{},
 		&MusicbrainzReleaseCache{},
+		&MusicbrainzEntityCache{},
+		&ArtworkCacheEntry{},
+		&MusicbrainzMigration{},
 		&User{},
 		&AuthProvider{},
 		&Event{},

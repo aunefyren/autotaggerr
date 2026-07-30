@@ -7,8 +7,13 @@ import { useToast } from "../toast";
 
 const TYPE_LABELS: Record<string, string> = {
   scan: "Scan",
+  mb_mirror: "Metadata refresh",
+  // drift_sync survives for events recorded before the refresh verb was split out
+  // of the scan runner. The rows are still in the table, and an old event
+  // rendering as a raw type string would look like a bug.
   drift_sync: "Metadata sync",
   lidarr_sync: "Lidarr sync",
+  mb_migration: "Identity check",
   plex_refresh: "Plex refresh",
 };
 
@@ -143,7 +148,24 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
         </span>
       </div>
 
-      {event.type === "drift_sync" && d ? (
+      {event.type === "mb_mirror" && d ? (
+        <div className="stack">
+          <div className="row" style={{ gap: 26, flexWrap: "wrap" }}>
+            <Stat label="Entities checked" value={num(d, "done")} />
+            <Stat label="Fetched" value={num(d, "fetched")} />
+            <Stat label="Already cached" value={num(d, "fresh")} muted />
+            <Stat label="Changed upstream" value={num(d, "changed_releases")} color="var(--accent-text)" />
+            <Stat label="Errors" value={num(d, "errors")} color={num(d, "errors") > 0 ? "var(--danger-text)" : undefined} />
+          </div>
+          {/* Stated here as well as on the Metadata page: an event listing releases
+              that changed reads like something happened to the files, and nothing
+              did. */}
+          <div className="dim" style={{ fontSize: 12 }}>
+            A metadata refresh writes no files. Releases that changed upstream are re-tagged by the
+            next scan, or immediately with <em>Tag files</em>.
+          </div>
+        </div>
+      ) : event.type === "drift_sync" && d ? (
         <div className="stack">
           <div className="row" style={{ gap: 26, flexWrap: "wrap" }}>
             <Stat label="Releases checked" value={num(d, "releases_checked")} />

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
 )
@@ -22,17 +21,7 @@ import (
 // test's stub response cannot answer another test's call.
 func resetBrowseCaches(t *testing.T) {
 	t.Helper()
-	editionCacheMu.Lock()
-	editionCache = map[string]cachedEditions{}
-	editionCacheMu.Unlock()
-
-	artistLookupCacheMu.Lock()
-	artistLookupCache = map[string]cachedArtistLookup{}
-	artistLookupCacheMu.Unlock()
-
-	artistDiscographyCacheMu.Lock()
-	artistDiscographyCache = map[string]cachedDiscography{}
-	artistDiscographyCacheMu.Unlock()
+	resetEntityCache(t)
 }
 
 func TestSearchMusicBrainzArtists(t *testing.T) {
@@ -139,9 +128,7 @@ func TestGetReleaseGroupReleasesServesStaleWhenMBIsDown(t *testing.T) {
 		t.Fatalf("warm the cache: %v", err)
 	}
 	// Expire the entry so the next call must go upstream, and make upstream fail.
-	editionCacheMu.Lock()
-	editionCache["rg-1"] = cachedEditions{releases: editionCache["rg-1"].releases, expires: time.Now().Add(-time.Minute)}
-	editionCacheMu.Unlock()
+	expireEntityCache(t, models.MBEntityEditions, "rg-1")
 	fail = true
 
 	releases, err := GetMusicBrainzReleaseGroupReleases("rg-1")
@@ -225,9 +212,7 @@ func TestGetMusicBrainzArtistServesStaleWhenMBIsDown(t *testing.T) {
 	if _, err := GetMusicBrainzArtist("a1"); err != nil {
 		t.Fatalf("warm the cache: %v", err)
 	}
-	artistLookupCacheMu.Lock()
-	artistLookupCache["a1"] = cachedArtistLookup{artist: artistLookupCache["a1"].artist, expires: time.Now().Add(-time.Minute)}
-	artistLookupCacheMu.Unlock()
+	expireEntityCache(t, models.MBEntityArtist, "a1")
 	fail = true
 
 	artist, err := GetMusicBrainzArtist("a1")
@@ -304,11 +289,7 @@ func TestGetArtistDiscographyServesStaleWhenMBIsDown(t *testing.T) {
 	if _, err := GetArtistDiscography("a1"); err != nil {
 		t.Fatalf("warm the cache: %v", err)
 	}
-	artistDiscographyCacheMu.Lock()
-	artistDiscographyCache["a1"] = cachedDiscography{
-		groups: artistDiscographyCache["a1"].groups, expires: time.Now().Add(-time.Minute),
-	}
-	artistDiscographyCacheMu.Unlock()
+	expireEntityCache(t, models.MBEntityDiscography, "a1")
 	fail = true
 
 	groups, err := GetArtistDiscography("a1")

@@ -6,50 +6,9 @@ the rest from here.
 
 Shipped features are documented in [media-manager.md](media-manager.md),
 [collection.md](collection.md), [attach.md](attach.md), [scanning.md](scanning.md),
-[tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md) and
+[tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md),
+[mb-migration.md](mb-migration.md), [mirror.md](mirror.md) and
 [authentication.md](authentication.md).
-
-## Needs live verification
-
-Built and unit-tested, never run against real data. Listed because a session of live testing has
-repeatedly found faults no test could — the UI claiming a state the data did not hold.
-
-- **Bulk attach** (folder select → review → attach). Watch the mapper against your own file-naming
-  conventions; that is where the assumptions are.
-- **Collection authoring** — adding an artist you own nothing of, following, per-album and
-  per-edition wants, track selection under both "any release" and a specific edition.
-- **Per-edition ownership** — needs a rebuild before any of it appears, and a reissue you own two
-  pressings of to be meaningful at all.
-- **AcoustID identification** — needs a real client key from acoustid.org, plus `fpcalc` (already in
-  the Docker image; `libchromaprint-tools` on Ubuntu).
-- **OIDC login** — never tested against a real identity provider. The flow is now covered end to
-  end against a *fake* one (`auth/oidc_flow_test.go` for `StartLogin`/`CompleteLogin`,
-  `routers/oidc_flow_test.go` for the two redirects): real discovery document, real JWKS, real RS256
-  ID token, plus the refusals (state mismatch, forged flow cookie, replayed nonce, wrong audience,
-  expired token, unverified email). That retires the "is the plumbing wired" question. What a fake
-  cannot predict is where real issuers differ — a trailing slash in the issuer, `email_verified`
-  sent as a string, group claims, clock skew — so a session against an actual provider is still
-  worth having.
-- **Artwork on a real collection.** The Cover Art Archive path was verified end to end against one
-  real release-group (fetched, cached, served, cache-hit on the second call), but never against a
-  browsing page with hundreds of rows. What to watch: first-paint behaviour on a cold cache, how many
-  rows resolve to no cover at all, and whether `config/artwork/` grows to a size worth pruning.
-- **fanart.tv artist images** — needs a personal API key from fanart.tv, added as a `fanart` data
-  source. Entirely untested against the real service: the thumb/backdrop resolution is covered only
-  by a stubbed response. Without a key, artists show monogram tiles, which *is* the tested path.
-- **The per-artist actions** (scan / refresh metadata / tag files on the artist page). The folder
-  resolution is the part to watch: it derives an artist's folders from where their indexed files
-  actually sit, so it is only as good as the correlations already in the index — an artist whose
-  albums live under two differently-spelled folders should produce two walk roots, and one whose
-  files sit outside the `<root>/<ARTIST>/<ALBUM>/…` layout falls back to the file's own directory.
-  "Refresh metadata" is additionally untested end to end: MusicBrainz cannot be stubbed from outside
-  `modules/`, so only its refusals are covered by tests.
-
-- **The reworked browsing pages** (collection / artist / release-group). Rebuilt around artwork,
-  coverage meters, sortable-filterable tables and grouped catalogue sections; the release-group page
-  lost its three scope buttons in favour of checkboxes on the editions and tracks themselves. Worth a
-  session with a real library: whether the Albums/EPs/Singles/Other split puts things where you expect,
-  and whether ticking editions and tracks records the want you meant.
 
 ## Open work
 
@@ -58,11 +17,15 @@ repeatedly found faults no test could — the UI claiming a state the data did n
 - **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
   pulls the whole back catalogue of the chosen types. A global follow default could layer on later
   without a schema change.
-- **Drift sync has no schedule of its own.** It runs on demand only; it should get its own cron
-  entry rather than riding the scan.
 - **More activity events** — Plex refresh, health checks, file import. Per-file tag detail already
   exists on scans and drift syncs (see [scanning.md](scanning.md)); what is missing is events for the
   other things the app does.
+- **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
+  collection already knows about. Artists reached only by browsing still fall back to the
+  on-demand path.
+- **Tag files has no collection-wide scope.** Artist and library have it; "re-tag everything" does
+  not, because it is what a scan already does — worth a button only if re-tagging without a disk
+  walk turns out to be wanted at that size.
 - **Event retention is fixed** at the newest 200 events (detail rows cascade with them), and the
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
@@ -83,26 +46,27 @@ repeatedly found faults no test could — the UI claiming a state the data did n
   [scanning.md](scanning.md)) on a `scan.Scope` built to extend. A release-group or single-album
   scope needs a new constructor and UI, not new machinery — worth doing once the artist actions have
   been used against a real library.
+- **Folder structure**
+  Mapping to current content, creating folders, renaming and keeping up to date.
+  Configurable structure? 
+  Link to file importing feature?
 
 ## Known issues / limitations
 
-- **Cold-cache scans are slow.** A large personal library can take ~7 hours. The MusicBrainz limiter
-  is global, so a cold scan is floored at ~1 *distinct release* per second no matter how many workers
-  run; caching and concurrency (see [scanning.md](scanning.md)) mainly help the warm-cache steady
-  state. Duplicate concurrent fetches of the same release used to multiply that floor by the worker
-  count and no longer do, and the rate is now configurable from the data source row — but the floor
-  itself is inherent to the public service's terms and is not going away.
-  **Still open:** measure the real warm-scan speedup (scan events now carry `mb_lookups`, so the
-  cache-hit vs fetch split is finally visible) and tune the default worker count from it; consider a
-  separate, higher cap for MP3s than for FLAC, since FLAC rewrites are more disk-bound. A documented
-  local-mirror setup is the only route to a genuinely fast cold scan.
+- **Worker-count tuning.** Scan events now carry `mb_lookups` (cache hit / coalesced / fetched), so
+  the cost of a run is finally measurable. The default `autotaggerr_process_concurrency` of 4 has
+  never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
+  worth it — FLAC rewrites are more disk-bound.
 
-- **Jellyfin duplicate artists via NFO / online providers.** Jellyfin keys artist identity on the
-  *name string*, not the MB ID (which Autotaggerr does tag). When an online provider like TheAudioDB
-  spells an artist differently from MusicBrainz (e.g. straight `'` vs curly `’` apostrophe),
-  Jellyfin creates two artists and can persist both into `album.nfo` as repeated `<albumartist>`
-  lines. Autotaggerr's tags are correct — they mirror MusicBrainz — and the split originates in
-  Jellyfin. Workaround: disable the NFO reader and/or TheAudioDB in Jellyfin so it trusts the
-  embedded tags. See the NFO-sidecar idea above for a possible in-app fix.
+## MusicBrainz entity migration — what is left
 
+The feature has shipped, including release-group pruning, artist identity verification and the
+manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
 
+- **The sweep has no progress reporting.** It runs for hours on a large collection and reports only
+  when finished — the Activity feed shows a running event with no sense of how far along it is.
+  The scan status summary already carries per-run counters; the sweep could feed the same thing.
+- **Release-group pruning only runs on a discography sync**, which is per-artist and user-triggered.
+  An artist nobody syncs keeps their orphaned rows. The sweep verifies artist *identity* but does
+  not prune their groups, because that would mean a discography fetch per artist on top of the
+  lookup.

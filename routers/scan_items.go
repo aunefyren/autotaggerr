@@ -75,6 +75,64 @@ func (a *API) triggerSync(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"status": "sync started"})
 }
 
+// refreshLibrary and retagLibrary are the library-scoped halves of the verb grid:
+// the same two actions the artist page offers, aimed at one library instead.
+func (a *API) refreshLibrary(c *gin.Context) {
+	lib, ok := a.libraryAction(c)
+	if !ok {
+		return
+	}
+	go a.Scan.RefreshLibrary(lib.ID)
+	c.JSON(http.StatusAccepted, gin.H{"status": "refresh started", "library": lib.Name})
+}
+
+func (a *API) retagLibrary(c *gin.Context) {
+	lib, ok := a.libraryAction(c)
+	if !ok {
+		return
+	}
+
+	// Gated on a running scan because this writes files; the refresh above is not.
+	if a.Scan.Running() {
+		c.JSON(http.StatusConflict, gin.H{"error": "a scan or re-tag is already running"})
+		return
+	}
+
+	var count int64
+	a.DB.Model(&models.LibraryItem{}).
+		Where("library_id = ? AND status = ?", lib.ID, models.LibraryItemStatusOK).Count(&count)
+	if count == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files in this library — run a scan first"})
+		return
+	}
+
+	go a.Scan.RetagLibrary(lib.ID)
+	c.JSON(http.StatusAccepted, gin.H{"status": "tagging started", "library": lib.Name, "files": count})
+}
+
+// libraryAction resolves the library a scoped action targets, answering the shared
+// failure cases so each handler is only about its own verb.
+//
+// Only the file-writing verbs are gated on a running scan. A metadata refresh is
+// not — it runs alongside and yields, which is the whole point of splitting the
+// guards.
+func (a *API) libraryAction(c *gin.Context) (models.Library, bool) {
+	if a.Scan == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		return models.Library{}, false
+	}
+	id, ok := a.idParam(c)
+	if !ok {
+		return models.Library{}, false
+	}
+	var lib models.Library
+	if err := a.DB.First(&lib, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+		return models.Library{}, false
+	}
+	return lib, true
+}
+
 // The per-artist actions.
 //
 // All three are narrowed versions of work the app already does to a whole library,

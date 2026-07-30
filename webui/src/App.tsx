@@ -13,6 +13,8 @@ import TaggerProfiles from "./pages/TaggerProfiles";
 import Items from "./pages/Items";
 import Collection from "./pages/Collection";
 import Activity from "./pages/Activity";
+import Migrations from "./pages/Migrations";
+import Mirror from "./pages/Mirror";
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -48,6 +50,8 @@ export default function App() {
         <Route path="/collection/:mbid" element={<Artist />} />
         <Route path="/collection/:mbid/:rgid" element={<ReleaseGroup />} />
         <Route path="/activity" element={<Activity />} />
+        <Route path="/migrations" element={<Migrations />} />
+        <Route path="/mirror" element={<Mirror />} />
         <Route path="/login-providers" element={<AuthProviders />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

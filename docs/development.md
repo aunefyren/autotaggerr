@@ -98,9 +98,11 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
   `Error`/`Debug` do not interpret `%` directives (`go vet` catches this).
 - **External clients** (`modules/lidarr.go`, `modules/plex.go`) are only constructed when their
   config is present and may be `nil`. Always nil-check before use in the pipeline.
-- **Caching**: MusicBrainz/Lidarr/Plex lookups cache to JSON under `./config/` with
-  `*LoadCache`/`*SaveCache` helpers loaded at startup. MusicBrainz requests go through
-  `RateLimit()` — route any new MusicBrainz call through it.
+- **Caching**: Lidarr/Plex lookups cache to JSON under `./config/` with `*LoadCache`/`*SaveCache`
+  helpers loaded at startup; MusicBrainz lookups are DB-backed and write through as they are
+  fetched (`musicbrainz_release_cache`, `musicbrainz_entity_cache`). MusicBrainz requests go
+  through `RateLimit()` — route any new MusicBrainz call through it, and cache the result via
+  `mbCachePut` so the mirror can keep it warm. See `docs/mirror.md`.
 - **UI follows the style guide.** Once `docs/style-guide.md` exists, *every* UI change must consult it
   and either follow it or deliberately reshape it (updating the guide in the same change). Reuse the
   shared design tokens, colors, elements, and principles as much as possible — do not introduce
@@ -133,5 +135,7 @@ Feature docs:
 - `tagging.md` — what gets written to a file, and why idempotency is the property that matters.
 - `artist-credit-tagging.md` — how MusicBrainz artist credits (incl. featuring artists) become
   the track's artist tag.
+- `mb-migration.md` — following MusicBrainz merges and deletions across Autotaggerr's own records.
+- `mirror.md` — the local MusicBrainz mirror: what is cached where, TTLs, and the refresh pass.
 - `fingerprinting.md` — optional AcoustID identification.
 - `authentication.md` — local login, API keys, OIDC.

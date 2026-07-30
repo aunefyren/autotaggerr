@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { CollectionArtist } from "../types";
+import { CollectionArtist, Manager } from "../types";
 import { EmptyState, ErrorNote, Pill } from "../components/ui";
 import { useToast } from "../toast";
 import { MBLink } from "../components/MBLink";
@@ -65,6 +65,11 @@ export default function Collection() {
   const toast = useToast();
   const { data, err, loading, reload } = useFetch<CollectionArtist[]>(() => api.get("/artists"));
   const [rebuilding, setRebuilding] = useState(false);
+  // Sync from Lidarr is only offered when there is a Lidarr to sync from. The
+  // endpoint already rejects the call with 400, but a button whose only outcome is
+  // an error message is a button that should not be there.
+  const managers = useFetch<Manager[]>(() => api.get("/managers"));
+  const hasLidarr = (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
   const [adding, setAdding] = useState(false);
   const browse = useBrowse("name");
 
@@ -111,8 +116,21 @@ export default function Collection() {
         <h1>Collection</h1>
         <div className="row">
           <button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>Add artist</button>
-          <button className="btn btn-secondary btn-sm" onClick={syncLidarr}>Sync from Lidarr</button>
-          <button className="btn btn-secondary btn-sm" onClick={rebuild} disabled={rebuilding}>
+          {hasLidarr && (
+            <button
+              className="btn btn-secondary btn-sm"
+              onClick={syncLidarr}
+              title="Mirror what Lidarr says should exist for Lidarr-managed artists. Reads Lidarr, not MusicBrainz; writes no files."
+            >
+              Sync from Lidarr
+            </button>
+          )}
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={rebuild}
+            disabled={rebuilding}
+            title="Recompute what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — a scan does this at the end of every run, so this is only for when the view looks stale."
+          >
             {rebuilding ? "Rebuilding…" : "Rebuild from library"}
           </button>
         </div>

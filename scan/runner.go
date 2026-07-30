@@ -4,6 +4,7 @@
 package scan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -15,7 +16,10 @@ import (
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/events"
+	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/migration"
+	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/google/uuid"
@@ -55,6 +59,11 @@ type Runner struct {
 	version     string
 	concurrency int
 
+	// refresh is the metadata verb. The scan owns file writes and delegates every
+	// MusicBrainz read to it, so "refresh this artist" and the scan's own refresh
+	// stage cannot drift apart in what they fetch.
+	refresh *mirror.Runner
+
 	running atomic.Bool // drops overlapping runs
 	jobMu   sync.Mutex  // serializes run bodies
 
@@ -63,14 +72,25 @@ type Runner struct {
 }
 
 // NewRunner builds a runner. plex may be nil (Plex refresh is then skipped).
+//
+// The metadata runner is constructed here rather than passed in, and wired to
+// yield to this runner: the two share the MusicBrainz rate limit, and the one a
+// user is waiting on has to win. Callers that need the refresh verb directly
+// (the cron job, the API) take it back via Refresher.
 func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *Runner {
-	return &Runner{
+	r := &Runner{
 		db:          db,
 		plex:        plex,
 		version:     cfg.AutotaggerrVersion,
 		concurrency: cfg.AutotaggerrProcessConcurrency,
 	}
+	r.refresh = mirror.NewRunner(db, r.Running)
+	return r
 }
+
+// Refresher exposes the metadata runner so the cron job and the API can drive the
+// refresh verb without going through a scan.
+func (r *Runner) Refresher() *mirror.Runner { return r.refresh }
 
 // Status returns a copy of the current/last scan summary.
 func (r *Runner) Status() Summary {
@@ -233,6 +253,15 @@ func (r *Runner) Run(scope Scope) {
 	var errorFiles []string
 	libraryNames := make([]string, 0, len(scope.Targets))
 
+	// Refresh stage. A scan reads files through the *cache*, so without this it
+	// would tag from a week-old copy and never notice a release that changed
+	// upstream. Only expired entries are re-read, which is what keeps a nightly
+	// scan from re-fetching the whole collection.
+	//
+	// Run inline: this holds the file-writing guard already, and a scan waiting on
+	// a scheduled refresh it is perfectly able to run alongside would be absurd.
+	refreshResult := r.refresh.RunInline(context.Background(), mirror.DueScope(modules.MusicbrainzDueForRefresh()))
+
 	for _, target := range scope.Targets {
 		library := target.Library
 		libraryNames = append(libraryNames, library.Name)
@@ -259,6 +288,19 @@ func (r *Runner) Run(scope Scope) {
 			}
 		}
 		logger.Log.Info("processed library: " + library.Path)
+	}
+
+	// Drift re-tag stage. shouldSkip drops files whose size and mtime are unchanged,
+	// which is every file of a release that changed only *upstream* — so the walk
+	// above cannot have caught them. This is where the refresh stage's findings are
+	// acted on, and it is here rather than in the refresh verb because writing files
+	// is the scan's job, not the refresh's.
+	drift := releaseRefresh{}
+	if len(refreshResult.ChangedReleases) > 0 {
+		logger.Log.Infof("%d release(s) changed upstream; re-tagging their files", len(refreshResult.ChangedReleases))
+		drift = r.retagReleases(refreshResult.ChangedReleases, refreshSet, detail)
+		tagsWritten += drift.retagged
+		errorFiles = append(errorFiles, drift.errorFiles...)
 	}
 
 	r.flushPlex(refreshSet)
@@ -295,8 +337,14 @@ func (r *Runner) Run(scope Scope) {
 	logger.Log.Infof("MusicBrainz lookups: %d served from cache, %d coalesced onto an in-flight fetch, %d fetched",
 		mbStats.CacheHits, mbStats.Coalesced, mbStats.Fetches)
 
+	// A scan fetches releases just as a sync does, so it detects redirects and
+	// deletions too — draining the queue here keeps a cold scan from leaving them
+	// for whenever the next sync happens to run.
+	migrations := r.applyMigrations()
+
 	summary := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, len(errorFiles))
 	details := map[string]any{
+		"migrations":   migrations,
 		"processed":    processed,
 		"unchanged":    unchanged,
 		"changed":      changed,
@@ -307,6 +355,15 @@ func (r *Runner) Run(scope Scope) {
 		"duration":     end.Sub(start).String(),
 		"mb_lookups":   mbStats,
 		"detail":       detailSummary(detail),
+		"refresh": map[string]any{
+			"checked":          refreshResult.Checked,
+			"fetched":          refreshResult.Fetched,
+			"fresh":            refreshResult.Fresh,
+			"changed_releases": len(refreshResult.ChangedReleases),
+			"gone_releases":    refreshResult.GoneReleases,
+			"relinked":         refreshResult.Relinked,
+			"files_retagged":   drift.retagged,
+		},
 	}
 	// What narrowed the scan, when something did. A partial scan otherwise reads in
 	// the feed as a full one that mysteriously found forty files.
@@ -346,53 +403,134 @@ func (r *Runner) rebuildCollection() {
 	}
 }
 
-// SyncDrift re-checks cached MusicBrainz releases whose TTL has elapsed and, when
-// a release changed upstream, re-tags the indexed files that use it — the case a
-// normal scan skips (unchanged on disk). It shares the single-run guard with scans
-// so the two never overlap. Run via `go` for background execution.
-func (r *Runner) SyncDrift() {
-	if !r.running.CompareAndSwap(false, true) {
-		logger.Log.Warn("metadata sync skipped: a scan or sync is already running")
-		return
+// applyMigrations drains the pending MusicBrainz migration queue at a run boundary.
+//
+// It runs here rather than where a redirect is detected because detection happens on
+// the fetch path — mid-scan, on a worker goroutine, holding the rate limiter — and
+// applying one rewrites MB IDs across several tables in a transaction. Doing that
+// between files would interleave schema-wide rewrites with tag writes; doing it here
+// means it happens once, with the collection rebuild that follows picking up the
+// remapped ownership in the same pass.
+//
+// A run that detects nothing costs one indexed query for an empty set.
+func (r *Runner) applyMigrations() migration.Result {
+	if r.db == nil {
+		return migration.Result{}
 	}
-	defer r.running.Store(false)
 
-	r.jobMu.Lock()
-	defer r.jobMu.Unlock()
-
-	logger.Log.Info("metadata sync starting...")
-	event := events.Begin(r.db, models.EventTypeDriftSync, "Metadata sync")
-	refreshSet := modules.NewAlbumRefreshSet(nil)
-	detail := components.NewDetailCollector(maxDetailItemsRecorded)
-
-	result := r.refreshReleases(modules.MusicbrainzDueForRefresh(), refreshSet, detail)
-
-	r.flushPlex(refreshSet)
-	logger.Log.Info("metadata sync finished. " + result.summary())
-	r.finishRefresh(event, result.summary(), result, detail, nil)
+	res, err := migration.ProcessPending(r.db, migration.PolicyFromConfig(files.ConfigFile))
+	if err != nil {
+		logger.Log.Warnf("failed to process MusicBrainz migrations: %s", err.Error())
+		return res
+	}
+	if res.Applied > 0 || res.Pending > 0 || res.Failed > 0 {
+		logger.Log.Infof("MusicBrainz migrations: %d applied (%d files remapped, %d files un-identified) · %d awaiting review · %d failed",
+			res.Applied, res.Files, res.Unmatched, res.Pending, res.Failed)
+	}
+	return res
 }
 
-// RefreshArtist pulls fresh metadata for one artist: their catalogue (the
-// discography, so releases added upstream appear) and every edition of theirs the
-// collection holds, re-tagging the files of any release that changed.
+// SyncDrift refreshes metadata for the whole collection. It is the refresh verb at
+// collection scope, and it writes no files.
 //
-// It is the drift sync narrowed to one artist with the TTL ignored, and both halves
-// of that matter. The narrowing keeps a manual refresh within the MusicBrainz rate
-// limit — one artist is tens of releases, not thousands. Ignoring the TTL is the
-// point of asking by hand: a user who suspects a release is wrong is not helped by
-// "it was checked recently, come back in a week".
+// It used to re-tag the files of any release that changed, which made a button
+// called "sync" a button that rewrote audio. The re-tagging now happens in the scan
+// (see the drift stage in Run), which is the verb that owns file writes. A user who
+// wants it immediately presses Tag files.
 //
-// It shares the single-run guard with scans so the two never write tags at once. Run
-// via `go` for background execution.
+// Run via `go` for background execution.
+func (r *Runner) SyncDrift() {
+	if err := r.refresh.RunCollection(context.Background(), false); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+		logger.Log.Warnf("metadata refresh failed: %s", err.Error())
+	}
+}
+
+// VerifyIdentities re-reads every MBID the collection is keyed on, ignoring every
+// cached copy, so entities merged or deleted upstream are found now rather than
+// whenever their TTL happens to lapse.
+//
+// It is not a verb of its own: it is the refresh verb at collection scope with the
+// cache ignored. Detecting a merge was never a separate activity — merges and
+// deletions are recorded on the HTTP path by whatever fetch sees them, so any
+// refresh that reaches the network finds them, and queues them under the same
+// approval policy.
+//
+// Run via `go` for background execution.
+func (r *Runner) VerifyIdentities() {
+	if err := r.refresh.RunCollection(context.Background(), true); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+		logger.Log.Warnf("full metadata refresh failed: %s", err.Error())
+	}
+}
+
+// RefreshArtist pulls fresh metadata for one artist: who they are, their
+// discography (so a release added upstream appears), the editions of each of their
+// release-groups, and every release of theirs the collection holds. The TTL is
+// ignored — asking by hand means "check now", and "it was checked recently, come
+// back in a week" is not an answer to that.
+//
+// **It writes no files.** It used to re-tag every file of a release that had
+// changed, which meant a button labelled *Refresh metadata* could rewrite hundreds
+// of audio files. What it does now is report how many releases changed; the next
+// scan re-tags them, or the user presses Tag files to do it immediately.
+//
+// Run via `go` for background execution.
 func (r *Runner) RefreshArtist(artistMBID string) {
-	var artist models.CollectionArtist
-	if err := r.db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
-		logger.Log.Warnf("metadata refresh skipped: artist %s not found: %s", artistMBID, err.Error())
+	scope, err := mirror.ArtistScope(r.db, artistMBID)
+	if err != nil {
+		logger.Log.Warnf("metadata refresh skipped for artist %s: %s", artistMBID, err.Error())
+		return
+	}
+
+	// The discography is synced through the collection layer as well as fetched,
+	// because upserting the release-group rows is what makes a newly released album
+	// appear in the collection at all — the cache alone would hold it and show
+	// nobody.
+	if _, err := collection.SyncArtist(r.db, artistMBID); err != nil {
+		logger.Log.Warnf("failed to sync discography for %s: %s", artistMBID, err.Error())
+	}
+
+	if _, err := r.refresh.Run(context.Background(), scope); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+		logger.Log.Warnf("metadata refresh failed for %s: %s", artistMBID, err.Error())
+	}
+}
+
+// RefreshLibrary pulls fresh metadata for everything one library's files point at,
+// ignoring the cache. The middle scope between one artist and the whole collection.
+//
+// Like every refresh it writes no files: it reports what changed, and the next scan
+// (or Tag files) applies it.
+//
+// Run via `go` for background execution.
+func (r *Runner) RefreshLibrary(libraryID uuid.UUID) {
+	scope, err := mirror.LibraryScope(r.db, libraryID)
+	if err != nil {
+		logger.Log.Warnf("metadata refresh skipped for library %s: %s", libraryID, err.Error())
+		return
+	}
+	if _, err := r.refresh.Run(context.Background(), scope); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+		logger.Log.Warnf("metadata refresh failed for library %s: %s", libraryID, err.Error())
+	}
+}
+
+// RetagLibrary rewrites every indexed file in one library from its stored
+// correlation, without walking the disk or re-fetching anything. The library-scoped
+// twin of RetagArtist.
+func (r *Runner) RetagLibrary(libraryID uuid.UUID) {
+	var library models.Library
+	if err := r.db.First(&library, "id = ?", libraryID).Error; err != nil {
+		logger.Log.Warnf("re-tag skipped: library %s not found: %s", libraryID, err.Error())
+		return
+	}
+
+	var items []models.LibraryItem
+	if err := r.db.Where("library_id = ? AND status = ?", libraryID, models.LibraryItemStatusOK).
+		Order("path").Find(&items).Error; err != nil {
+		logger.Log.Warnf("failed to load items for library %s: %s", library.Name, err.Error())
 		return
 	}
 
 	if !r.running.CompareAndSwap(false, true) {
-		logger.Log.Warn("metadata refresh skipped: a scan or sync is already running")
+		logger.Log.Warn("re-tag skipped: a scan or re-tag is already running")
 		return
 	}
 	defer r.running.Store(false)
@@ -400,32 +538,21 @@ func (r *Runner) RefreshArtist(artistMBID string) {
 	r.jobMu.Lock()
 	defer r.jobMu.Unlock()
 
-	logger.Log.Info("metadata refresh starting for artist: " + artist.Name)
-	event := events.Begin(r.db, models.EventTypeDriftSync, "Metadata refresh for "+artist.Name)
+	logger.Log.Infof("re-tagging %d files for library: %s", len(items), library.Name)
+	event := events.Begin(r.db, models.EventTypeDriftSync, "Tag files in "+library.Name)
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(maxDetailItemsRecorded)
 
-	// The catalogue first: a refresh that re-read the editions but not the
-	// discography would never surface the album released last month, which is a
-	// large part of why anyone presses refresh on an artist.
-	catalogued, err := collection.SyncArtist(r.db, artistMBID)
-	if err != nil {
-		logger.Log.Warnf("failed to sync discography for %s: %s", artist.Name, err.Error())
-	}
-
-	releases, err := collection.ArtistReleaseMBIDs(r.db, artistMBID)
-	if err != nil {
-		logger.Log.Warnf("failed to resolve releases for %s: %s", artist.Name, err.Error())
-	}
-	result := r.refreshReleases(releases, refreshSet, detail)
+	result := releaseRefresh{}
+	result.retagItems(r, items, map[uuid.UUID]models.Library{}, refreshSet, detail)
 
 	r.flushPlex(refreshSet)
-	logger.Log.Infof("metadata refresh finished for %s. %s", artist.Name, result.summary())
-	r.finishRefresh(event, result.summary(), result, detail, map[string]any{
-		"artist":            artist.Name,
-		"artist_mb_id":      artistMBID,
-		"release_groups":    catalogued,
-		"releases_in_scope": len(releases),
+	summary := fmt.Sprintf("%d of %d files re-tagged · %d errors", result.retagged, len(items), len(result.errorFiles))
+	logger.Log.Infof("re-tag finished for %s. %s", library.Name, summary)
+	r.finishRefresh(event, summary, result, detail, map[string]any{
+		"library":        library.Name,
+		"library_id":     libraryID.String(),
+		"files_in_scope": len(items),
 	})
 }
 
@@ -483,35 +610,38 @@ type releaseRefresh struct {
 	changedReleases int
 	retagged        int
 	errorFiles      []string
+	// goneReleases and relinked record what the run learned about identity rather
+	// than content: releases MusicBrainz no longer has, and releases that changed
+	// release-group. Both are silent in the file counts — no file need change for
+	// either — so they are counted separately or they would not be visible at all.
+	goneReleases int
+	relinked     int
+	migrations   migration.Result
 }
 
 func (res releaseRefresh) summary() string {
-	return fmt.Sprintf("%d releases checked · %d changed · %d files re-tagged · %d errors",
+	summary := fmt.Sprintf("%d releases checked · %d changed · %d files re-tagged · %d errors",
 		res.checked, res.changedReleases, res.retagged, len(res.errorFiles))
+	if res.migrations.Applied > 0 || res.migrations.Pending > 0 || res.goneReleases > 0 {
+		summary += fmt.Sprintf(" · %d migrations applied · %d awaiting review",
+			res.migrations.Applied, res.migrations.Pending)
+	}
+	return summary
 }
 
-// refreshReleases re-fetches each release from MusicBrainz and, for those whose
-// content changed upstream, re-tags every indexed file that uses them — the case a
-// normal scan skips, because nothing about the file on disk changed.
+// retagReleases rewrites the indexed files of releases that changed upstream.
 //
-// Every caller narrowing "which releases" (the whole expired set, one artist's) goes
-// through here, so they cannot drift apart in how a changed release is applied.
-func (r *Runner) refreshReleases(mbIDs []string, refreshSet *modules.AlbumRefreshSet, detail *components.DetailCollector) releaseRefresh {
+// It is the write half of what used to be one cascading function: the refresh verb
+// now decides *which* releases changed and this decides what to do about it. The
+// split is what lets "Refresh metadata" be a button that only reads, while the scan
+// remains the thing that touches files.
+func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshSet, detail *components.DetailCollector) releaseRefresh {
 	res := releaseRefresh{}
 	libraries := map[uuid.UUID]models.Library{} // small per-run cache
 
 	for _, mbID := range mbIDs {
 		res.checked++
-		_, changed, err := modules.RefreshMusicBrainzRelease(mbID)
-		if err != nil {
-			logger.Log.Warnf("failed to refresh release %s: %s", mbID, err.Error())
-			continue
-		}
-		if !changed {
-			continue
-		}
 		res.changedReleases++
-		logger.Log.Infof("release changed upstream, re-tagging affected files: %s", mbID)
 
 		var items []models.LibraryItem
 		if err := r.db.Where("mb_release_id = ? AND status = ?", mbID, models.LibraryItemStatusOK).Find(&items).Error; err != nil {
@@ -568,12 +698,15 @@ func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseR
 		recorded = recorded[:maxErrorFilesRecorded]
 	}
 	details := map[string]any{
-		"releases_checked": res.checked,
-		"releases_changed": res.changedReleases,
-		"files_retagged":   res.retagged,
-		"errors":           len(res.errorFiles),
-		"error_files":      recorded,
-		"detail":           detailSummary(detail),
+		"releases_checked":  res.checked,
+		"releases_changed":  res.changedReleases,
+		"files_retagged":    res.retagged,
+		"errors":            len(res.errorFiles),
+		"error_files":       recorded,
+		"detail":            detailSummary(detail),
+		"releases_gone":     res.goneReleases,
+		"releases_relinked": res.relinked,
+		"migrations":        res.migrations,
 	}
 	for k, v := range extra {
 		details[k] = v

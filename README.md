@@ -150,6 +150,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"autotaggerr_process_on_start_up": true,
 	"autotaggerr_process_cron_schedule": "0 0 18 * * 7",
 	"autotaggerr_process_concurrency": 4,
+	"autotaggerr_mirror_cron_schedule": "0 0 3 * * *",
 	"lidarr_base_url": "https://lidarr.mycooldomain.com",
 	"lidarr_api_key": "XXX",
 	"lidarr_header_cookie": "",
@@ -185,6 +186,13 @@ Every setting can be defined in `config.json`. A subset can also be overridden a
 | `autotaggerr_custom_artist_delimiter` | — | — | string | Delimiter used when joining artists. Default `" & "`. |
 | `autotaggerr_custom_artist_delimiter_commas` | — | — | bool | Use commas between artists, with the custom delimiter before the last. Default `true`. |
 | `autotaggerr_remove_values` | — | — | bool | Remove existing tag values not present in the new metadata. Default `false`. |
+| `autotaggerr_mirror_disabled` | — | — | bool | Turn the scheduled MusicBrainz mirror refresh off entirely. Default `false` (the mirror runs). |
+| `autotaggerr_mirror_cron_schedule` | — | — | string | 6-field cron for the mirror refresh. Default `0 0 3 * * *` (nightly 03:00). |
+| `autotaggerr_mirror_on_start_up` | — | — | bool | Also run a mirror pass on startup. Default `false` — a first pass over a large collection is hours of rate-limited fetching. |
+| `autotaggerr_migration_review_releases` | — | — | bool | Hold merged **releases** for manual approval instead of re-pointing records automatically. Default `false` (apply). |
+| `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |
+| `autotaggerr_migration_review_pinned` | — | — | bool | Hold any migration that would rewrite a **manually attached** file's MB ID, whatever its type. Default `false` (apply). |
+| `autotaggerr_migration_review_deletions` | — | — | bool | Hold **deleted** entities for manual approval. Applying one marks the affected files unmatched. Default `false` (apply). |
 | `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. |
 | `smtp_host` | `-smtphost` | `smtphost` | string | SMTP server hostname. Default empty. |
 | `smtp_port` | `-smtpport` | `smtpport` | int | SMTP server port. Default `0`. |

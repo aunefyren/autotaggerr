@@ -30,12 +30,14 @@ func SetDB(db *gorm.DB) {
 // concurrency is added, the cache maps themselves must be guarded too.
 
 const (
-	cacheNameMusicbrainz      = "musicbrainz_releases"
-	cacheNameLidarrArtists    = "lidarr_artists"
-	cacheNameLidarrAlbums     = "lidarr_albums"
-	cacheNameLidarrTracks     = "lidarr_tracks"
-	cacheNameLidarrTrackFiles = "lidarr_trackfiles"
-	cacheNamePlexAlbumKeys    = "plex_album_keys"
+	cacheNameMusicbrainz         = "musicbrainz_releases"
+	cacheNameMusicbrainzEntities = "musicbrainz_entities"
+	cacheNameArtwork             = "artwork"
+	cacheNameLidarrArtists       = "lidarr_artists"
+	cacheNameLidarrAlbums        = "lidarr_albums"
+	cacheNameLidarrTracks        = "lidarr_tracks"
+	cacheNameLidarrTrackFiles    = "lidarr_trackfiles"
+	cacheNamePlexAlbumKeys       = "plex_album_keys"
 )
 
 type cacheWriter func() error
@@ -66,12 +68,14 @@ func markCacheDirty(name string) {
 // logged and skipped — a missing or corrupt cache just starts empty.
 func LoadAllCaches() {
 	loaders := map[string]func() error{
-		cacheNameMusicbrainz:      MusicbrainzLoadCache,
-		cacheNameLidarrArtists:    LidarrLoadArtistsCache,
-		cacheNameLidarrAlbums:     LidarrLoadAlbumsCache,
-		cacheNameLidarrTracks:     LidarrLoadTracksCache,
-		cacheNameLidarrTrackFiles: LidarrLoadTrackFilesCache,
-		cacheNamePlexAlbumKeys:    PlexLoadAlbumKeyCache,
+		cacheNameMusicbrainz:         MusicbrainzLoadCache,
+		cacheNameMusicbrainzEntities: musicbrainzLoadEntityCache,
+		cacheNameArtwork:             artworkLoadCache,
+		cacheNameLidarrArtists:       LidarrLoadArtistsCache,
+		cacheNameLidarrAlbums:        LidarrLoadAlbumsCache,
+		cacheNameLidarrTracks:        LidarrLoadTracksCache,
+		cacheNameLidarrTrackFiles:    LidarrLoadTrackFilesCache,
+		cacheNamePlexAlbumKeys:       PlexLoadAlbumKeyCache,
 	}
 
 	for name, load := range loaders {

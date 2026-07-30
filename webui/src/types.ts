@@ -191,6 +191,31 @@ export interface ScanStatus {
   last_error?: string;
 }
 
+/**
+ * One mirror pass, plus how much of the collection is cached right now.
+ *
+ * `fetched` and `fresh` are the pair worth reading: `fetched` is what actually
+ * cost a MusicBrainz rate-limit slot, `fresh` is what the local mirror already
+ * had. `cached` is keyed by entity kind and is meaningful between passes too.
+ */
+export interface MirrorStatus {
+  running: boolean;
+  phase?: string;
+  started_at?: string;
+  finished_at?: string;
+  total: number;
+  done: number;
+  fetched: number;
+  fresh: number;
+  errors: number;
+  /** Releases whose metadata differs from the cached copy. Reported, not acted on. */
+  changed_releases: number;
+  gone_releases: number;
+  relinked: number;
+  last_error?: string;
+  cached?: Record<string, number>;
+}
+
 export interface ItemsPage {
   total: number;
   limit: number;
@@ -389,4 +414,39 @@ export interface CollectionDesire {
   release_group_mb_id: string;
   release_mb_id: string;
   recording_mb_ids: string[] | null;
+}
+
+/**
+ * A MusicBrainz identity change: an entity that was merged into another upstream,
+ * or deleted outright. Pending rows are waiting for approval because their category
+ * is held for review; everything else is history.
+ */
+export interface MusicbrainzMigration {
+  id: string;
+  entity_type: string;
+  old_mb_id: string;
+  new_mb_id: string;
+  kind: string;
+  status: string;
+  name: string;
+  affected_files: number;
+  affected_desires: number;
+  touches_pinned: boolean;
+  detected_at: string;
+  applied_at: string | null;
+  error?: string;
+}
+
+export interface MigrationList {
+  migrations: MusicbrainzMigration[];
+  pending: number;
+}
+
+/** Which categories of migration wait for approval instead of applying themselves. */
+export interface MigrationPolicy {
+  review_releases: boolean;
+  review_artists: boolean;
+  review_pinned: boolean;
+  review_deletions: boolean;
+  entity_types: string[];
 }

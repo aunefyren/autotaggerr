@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/auth"
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/database"
+	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/scan"
 	"github.com/gin-gonic/gin"
@@ -38,13 +40,21 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 		t.Fatalf("create user: %v", err)
 	}
 
+	scanRunner := scan.NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 	api := &API{
 		DB:         db,
-		Scan:       scan.NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"}),
+		Scan:       scanRunner,
+		Mirror:     mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }),
+		Rebuilder:  collection.NewRebuilder(db),
 		SigningKey: []byte("signing-key"),
 		AppName:    "AT",
 		Version:    "test",
 	}
+	// A rebuild kicked off by a handler runs in the background; without this it can
+	// outlive the test and write to a database whose temp directory has been
+	// removed, which shows up as unrelated "readonly database" noise.
+	t.Cleanup(api.Rebuilder.Quiesce)
+
 	r := gin.New()
 	api.Register(r.Group("/api/v1"))
 	return r, api

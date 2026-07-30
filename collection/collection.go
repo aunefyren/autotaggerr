@@ -30,7 +30,39 @@ import (
 // Rebuild recomputes the disk ("present") side of the collection from the index. It
 // reads only cached releases, so it never triggers MusicBrainz fetches. Catalog state
 // — including wanted release-groups with no files — is left untouched.
+//
+// It runs in a transaction because its first act is to clear the disk view wholesale
+// before re-establishing it. Without one, a rebuild that failed partway — or two
+// overlapping rebuilds, which the scan's end-of-run call and the manual button can
+// easily produce — would leave the collection reporting that it owns less than it
+// does. The window is small and the consequence is silent, which is the worst
+// combination to leave to chance. The transaction also serialises concurrent
+// rebuilds, since the second waits on the first's write lock rather than interleaving
+// its clear with the other's re-establish.
+//
+// What it does *not* change: the per-row upserts below still log and carry on when a
+// single row fails. That resilience is deliberate and shared with the Lidarr sync —
+// one unwritable row must not abandon a whole re-derivation. So the guarantee here is
+// that the clear-and-re-establish is atomic, not that every row succeeded.
 func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
+	if db == nil {
+		return 0, 0, nil
+	}
+	err = db.Transaction(func(tx *gorm.DB) error {
+		var txErr error
+		artistCount, ownedCount, txErr = rebuildTx(tx)
+		return txErr
+	})
+	if err != nil {
+		return 0, 0, err
+	}
+	return artistCount, ownedCount, nil
+}
+
+// rebuildTx is the body of Rebuild, run inside the caller's transaction. Every write
+// below goes through the handle passed in, so a failure at any point rolls the whole
+// re-derivation back rather than leaving the disk view half-cleared.
+func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	// library -> manager type (for the per-artist "managed by" provenance)
 	managerType := map[uuid.UUID]string{}
 	var managers []models.Manager
@@ -166,17 +198,23 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 			}
 		}
 	}
-	syncOwnedReleases(db, ownedEditions)
+	if err := syncOwnedReleases(db, ownedEditions); err != nil {
+		return 0, 0, err
+	}
 
 	for artistID, mgrs := range artistManagers {
-		upsertArtist(db, artistID, artistName[artistID], managedByLabel(mgrs))
+		if err := upsertArtist(db, artistID, artistName[artistID], managedByLabel(mgrs)); err != nil {
+			return 0, 0, err
+		}
 	}
 	for rgID, info := range rgBest {
-		upsertReleaseGroup(db, rgWrite{
+		if err := upsertReleaseGroup(db, rgWrite{
 			mbID: rgID, artistMBID: info.artistID, credits: info.credits, title: info.title,
 			primary: info.primary, secondary: info.secondary, date: info.date,
 			disk: &diskState{owned: true, ownedTracks: info.owned, totalTracks: info.total},
-		})
+		}); err != nil {
+			return 0, 0, err
+		}
 	}
 
 	return len(artistManagers), len(rgBest), nil
@@ -189,7 +227,13 @@ func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 // the remaster (which manual attach now makes easy) leaves the original owning
 // nothing, and a stale row would keep claiming files that moved — the same class of
 // bug as the release-group counts that used to survive losing their files.
-func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease) {
+// syncOwnedReleases returns an error if any write failed. Rebuild treats that as
+// fatal and rolls back: a re-derivation that half-landed leaves the collection
+// claiming to own less than it does, and a silently wrong view is worse than an
+// error the user can retry. Per-row failures are still logged individually, because
+// which row failed is the useful diagnostic.
+func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease) error {
+	var failed error
 	keep := make([]string, 0, len(owned))
 	for _, rel := range owned {
 		keep = append(keep, rel.MBID)
@@ -208,11 +252,13 @@ func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease) {
 				"total_tracks":        rel.TotalTracks,
 			}).Error; err != nil {
 				logger.Log.Warnf("failed to update owned edition %s: %s", rel.MBID, err.Error())
+				failed = err
 			}
 			continue
 		}
 		if err := db.Create(&rel).Error; err != nil {
 			logger.Log.Warnf("failed to record owned edition %s: %s", rel.MBID, err.Error())
+			failed = err
 		}
 	}
 
@@ -224,7 +270,9 @@ func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease) {
 	}
 	if err := prune.Delete(&models.CollectionRelease{}).Error; err != nil {
 		logger.Log.Warnf("failed to prune owned editions: %s", err.Error())
+		failed = err
 	}
+	return failed
 }
 
 // mediaSummary describes a release's media the way an edition list needs it:
@@ -271,17 +319,37 @@ func SyncArtist(db *gorm.DB, artistMBID string) (wanted int, err error) {
 		return 0, err
 	}
 
-	groups, err := modules.GetMusicBrainzArtistReleaseGroups(artistMBID)
+	// Verify the artist's own identity first. Nothing else re-reads an artist on a
+	// schedule — releases are walked constantly by the drift sync, artists are not —
+	// so without this an artist merged upstream stays undetected until somebody opens
+	// their page. One extra request against the several this sync already spends.
+	if err := modules.VerifyArtistIdentity(artistMBID); err != nil {
+		logger.Log.Debugf("could not verify identity of artist %s: %s", artistMBID, err.Error())
+	}
+
+	groups, complete, err := modules.GetMusicBrainzArtistReleaseGroups(artistMBID)
 	if err != nil {
 		return 0, err
 	}
+	// Pruning uses the *unfiltered* discography, deliberately: `groups` is everything
+	// MusicBrainz has, while the loop below only upserts the types this artist's
+	// follow settings want. Comparing stored rows against the filtered set would
+	// delete every release-group of a type the user does not follow.
+	if complete {
+		if pruned, err := PruneOrphanReleaseGroups(db, artistMBID, groups); err != nil {
+			logger.Log.Warnf("failed to prune orphaned release-groups for %s: %s", artistMBID, err.Error())
+		} else if pruned > 0 {
+			logger.Log.Infof("pruned %d release-group(s) MusicBrainz no longer lists for %s", pruned, artist.Name)
+		}
+	}
+
 	for _, rg := range groups {
 		if !FollowWants(artist, rg.PrimaryType, rg.SecondaryTypes) {
 			continue
 		}
 		// The MusicBrainz discography is the native manager's catalog. Track counts
 		// stay unknown (0) — counting them would mean fetching every release.
-		upsertReleaseGroup(db, rgWrite{
+		_ = upsertReleaseGroup(db, rgWrite{
 			mbID: rg.ID, artistMBID: artistMBID, title: rg.Title,
 			primary: rg.PrimaryType, secondary: strings.Join(rg.SecondaryTypes, ", "),
 			date:    rg.FirstReleaseDate,
@@ -370,21 +438,29 @@ func managedByLabel(mgrs map[string]bool) string {
 	}
 }
 
-func upsertArtist(db *gorm.DB, mbID, name, managedBy string) {
+// upsertArtist returns an error so Rebuild can roll back on a failed write. The
+// sync paths log it and carry on instead, which is why the error is returned rather
+// than acted on here.
+func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
 	var a models.CollectionArtist
 	if err := db.Where("mb_id = ?", mbID).First(&a).Error; err == nil {
 		// Preserve Monitored / LastSyncedAt / Origin; refresh name + provenance.
 		// Origin records how the artist *entered* the collection, so an artist added
 		// by hand keeps that origin once files for it show up.
-		db.Model(&a).Updates(map[string]any{"name": name, "managed_by": managedBy})
-		return
+		if err := db.Model(&a).Updates(map[string]any{"name": name, "managed_by": managedBy}).Error; err != nil {
+			logger.Log.Warnf("failed to update artist %s: %s", mbID, err.Error())
+			return err
+		}
+		return nil
 	}
 	if err := db.Create(&models.CollectionArtist{
 		MBID: mbID, Name: name, ManagedBy: managedBy,
 		Origin: models.CollectionOriginLibrary,
 	}).Error; err != nil {
 		logger.Log.Warnf("failed to upsert artist %s: %s", mbID, err.Error())
+		return err
 	}
+	return nil
 }
 
 // diskState is what Rebuild observed on disk.
@@ -415,7 +491,10 @@ type rgWrite struct {
 	catalog *catalogState
 }
 
-func upsertReleaseGroup(db *gorm.DB, w rgWrite) {
+// upsertReleaseGroup returns an error so Rebuild can roll back on a failed write.
+// The sync paths ignore it and carry on, which is the resilience they have always
+// had — one unwritable album must not abandon a whole discography sync.
+func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 	updates := map[string]any{
 		"title": w.title, "primary_type": w.primary,
 		"secondary_types": w.secondary, "first_release_date": w.date,
@@ -450,8 +529,11 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) {
 
 	var rg models.CollectionReleaseGroup
 	if err := db.Where("mb_id = ?", w.mbID).First(&rg).Error; err == nil {
-		db.Model(&rg).Updates(updates)
-		return
+		if err := db.Model(&rg).Updates(updates).Error; err != nil {
+			logger.Log.Warnf("failed to update release-group %s: %s", w.mbID, err.Error())
+			return err
+		}
+		return nil
 	}
 
 	// On create there is nothing to preserve, so the caller's artist is the best
@@ -474,7 +556,9 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) {
 	}
 	if err := db.Create(&row).Error; err != nil {
 		logger.Log.Warnf("failed to upsert release-group %s: %s", w.mbID, err.Error())
+		return err
 	}
+	return nil
 }
 
 // SyncLidarr mirrors Lidarr's albums for the collection's Lidarr-managed artists:
@@ -542,7 +626,7 @@ func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
 					continue
 				}
 				// Lidarr's album type / release date; no MB secondary types here.
-				upsertReleaseGroup(db, rgWrite{
+				_ = upsertReleaseGroup(db, rgWrite{
 					mbID: al.ForeignAlbumID, artistMBID: la.ForeignArtistID, title: al.Title,
 					primary: al.AlbumType, date: al.ReleaseDate,
 					catalog: &catalogState{

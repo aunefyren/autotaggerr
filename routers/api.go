@@ -5,6 +5,8 @@ import (
 	"net/http"
 
 	"github.com/aunefyren/autotaggerr/auth"
+	"github.com/aunefyren/autotaggerr/collection"
+	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/scan"
 	"github.com/gin-gonic/gin"
@@ -13,8 +15,12 @@ import (
 
 // API holds the dependencies shared by the JSON API handlers.
 type API struct {
-	DB         *gorm.DB
-	Scan       *scan.Runner
+	DB     *gorm.DB
+	Scan   *scan.Runner
+	Mirror *mirror.Runner
+	// Rebuilder re-derives the collection after a handler changes the file index.
+	// May be nil, in which case requests are dropped (see collection.Rebuilder).
+	Rebuilder  *collection.Rebuilder
 	SigningKey []byte
 	AppName    string
 	Version    string
@@ -88,6 +94,8 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.PUT("/libraries/:id", a.updateLibrary)
 		protected.DELETE("/libraries/:id", a.deleteLibrary)
 		protected.POST("/libraries/:id/scan", a.scanLibrary)
+		protected.POST("/libraries/:id/refresh", a.refreshLibrary)
+		protected.POST("/libraries/:id/retag", a.retagLibrary)
 
 		// Library items (the correlation index)
 		protected.GET("/library-items", a.listLibraryItems)
@@ -113,9 +121,21 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/sync", a.triggerSync)
 		protected.GET("/scan/status", a.scanStatus)
 
+		// MusicBrainz mirror: the scheduled refresh of the local entity cache.
+		protected.GET("/mirror/status", a.mirrorStatus)
+		protected.POST("/mirror/sync", a.triggerMirror)
+		protected.POST("/mirror/cancel", a.cancelMirror)
+
 		// Activity events
 		protected.GET("/events", a.listEvents)
 		protected.GET("/events/:id", a.getEvent)
+
+		// MusicBrainz identity migrations (merges and deletions upstream).
+		protected.GET("/migrations", a.listMigrations)
+		protected.GET("/migrations/policy", a.migrationPolicy)
+		protected.POST("/migrations/:id/approve", a.approveMigration)
+		protected.POST("/migrations/:id/dismiss", a.dismissMigration)
+		protected.POST("/migrations/verify", a.verifyIdentities)
 
 		// Collection (present vs wanted)
 		protected.GET("/artists", a.listArtists)

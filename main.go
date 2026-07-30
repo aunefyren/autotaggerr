@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -25,6 +26,7 @@ import (
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/routers"
@@ -41,6 +43,7 @@ var (
 	plexClient   *modules.PlexClient
 	db           *gorm.DB
 	scanRunner   *scan.Runner
+	mirrorRunner *mirror.Runner
 )
 
 func main() {
@@ -181,6 +184,11 @@ func main() {
 	// library scans through this one instance (single-run guard + status).
 	scanRunner = scan.NewRunner(db, plexClient, files.ConfigFile)
 
+	// The metadata-refresh runner is owned by the scan runner and already wired to
+	// yield to it: both spend the same one-request-per-second MusicBrainz budget,
+	// and the file-writing job is the one with a user waiting on it.
+	mirrorRunner = scanRunner.Refresher()
+
 	// Create task scheduler for the recurring library scan
 	taskScheduler := chrono.NewDefaultTaskScheduler()
 
@@ -189,6 +197,26 @@ func main() {
 	}, files.ConfigFile.AutotaggerrProcessCronSchedule)
 	if err != nil {
 		logger.Log.Error("library process task was not scheduled successfully.")
+	}
+
+	// Scheduled MusicBrainz mirror refresh.
+	if !files.ConfigFile.AutotaggerrMirrorDisabled {
+		_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
+			if err := mirrorRunner.RunCollection(ctx, false); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+				logger.Log.Errorf("metadata refresh failed: %s", err.Error())
+			}
+		}, files.ConfigFile.AutotaggerrMirrorCronSchedule)
+		if err != nil {
+			logger.Log.Error("MusicBrainz mirror task was not scheduled successfully.")
+		}
+
+		if files.ConfigFile.AutotaggerrMirrorOnStartUp && filePath == nil {
+			go func() {
+				if err := mirrorRunner.RunCollection(context.Background(), false); err != nil {
+					logger.Log.Errorf("failed to start the metadata refresh: %s", err.Error())
+				}
+			}()
+		}
 	}
 
 	// start library process if no file is configured and the feature is enabled
@@ -222,14 +250,14 @@ func main() {
 	}
 
 	// Initialize Router
-	router := initRouter(db, scanRunner, files.ConfigFile)
+	router := initRouter(db, scanRunner, mirrorRunner, files.ConfigFile)
 
 	logger.Log.Info("router initialized. starting Autotaggerr at http://*:" + strconv.Itoa(files.ConfigFile.AutotaggerrPort))
 
 	log.Fatal(router.Run(":" + strconv.Itoa(files.ConfigFile.AutotaggerrPort)))
 }
 
-func initRouter(db *gorm.DB, scanRunner *scan.Runner, cfg models.ConfigStruct) *gin.Engine {
+func initRouter(db *gorm.DB, scanRunner *scan.Runner, mirrorRunner *mirror.Runner, cfg models.ConfigStruct) *gin.Engine {
 	router := gin.Default()
 
 	router.Use(cors.New(cors.Config{
@@ -250,6 +278,8 @@ func initRouter(db *gorm.DB, scanRunner *scan.Runner, cfg models.ConfigStruct) *
 	api := &routers.API{
 		DB:         db,
 		Scan:       scanRunner,
+		Mirror:     mirrorRunner,
+		Rebuilder:  collection.NewRebuilder(db),
 		SigningKey: files.GetPrivateKey(0),
 		AppName:    cfg.AutotaggerrName,
 		Version:    cfg.AutotaggerrVersion,

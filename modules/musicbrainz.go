@@ -177,6 +177,56 @@ func cachedFreshRelease(mbID string) (models.MusicBrainzReleaseResponse, bool) {
 	return cached.Release, true
 }
 
+// MusicbrainzExtendExpiry pushes a cached release's expiry out to a longer TTL.
+// The mirror uses it to tier freshness by how much the collection cares: an
+// edition nobody owns is reference data that can go stale for weeks, while a
+// release with files on disk drives the tags on those files and should not.
+//
+// Extending rather than setting: the jitter already spread the base expiry, and
+// clamping every long-TTL entry to the same instant would undo that.
+func MusicbrainzExtendExpiry(mbID string, ttl time.Duration) {
+	musicbrainzReleaseCacheMu.Lock()
+	cached, ok := musicbrainzReleaseCache[mbID]
+	if ok {
+		if extended := cached.Timestamp.Add(ttl); extended.After(cached.ExpiresAt) {
+			cached.ExpiresAt = extended
+			musicbrainzReleaseCache[mbID] = cached
+		} else {
+			ok = false
+		}
+	}
+	entry := musicbrainzReleaseCache[mbID]
+	musicbrainzReleaseCacheMu.Unlock()
+
+	if !ok {
+		return
+	}
+	if cacheDB != nil {
+		if err := musicbrainzStoreDB(mbID, entry); err != nil {
+			logger.Log.Warnf("failed to extend MusicBrainz cache expiry for %s: %s", mbID, err.Error())
+		}
+		return
+	}
+	markCacheDirty(cacheNameMusicbrainz)
+}
+
+// MusicbrainzReleaseFresh reports whether a release is cached and unexpired. The
+// mirror uses it to decide what a refresh pass still owes without paying the
+// decode — and, more importantly, without calling GetMusicBrainzRelease, which
+// would fetch the very entry it is trying to ask about.
+func MusicbrainzReleaseFresh(mbID string) bool {
+	_, ok := cachedFreshRelease(mbID)
+	return ok
+}
+
+// MusicbrainzReleaseCacheSize returns how many releases are cached, for coverage
+// reporting.
+func MusicbrainzReleaseCacheSize() int {
+	musicbrainzReleaseCacheMu.RLock()
+	defer musicbrainzReleaseCacheMu.RUnlock()
+	return len(musicbrainzReleaseCache)
+}
+
 // readBodySnippet reads a small, bounded portion of an error response body so it
 // can be included in an error message without risking a huge/streaming read.
 func readBodySnippet(r io.Reader) string {
@@ -216,9 +266,13 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 		snippet := readBodySnippet(resp.Body)
 		switch resp.StatusCode {
 		case http.StatusNotFound, http.StatusGone:
-			// The release ID does not exist on MusicBrainz — usually a stale/merged
-			// ID that Lidarr is still holding on to.
-			return apiResponse, fmt.Errorf("release %q not found on MusicBrainz (HTTP %d) — the Lidarr-assigned MB ID may be stale or merged: %s", mbID, resp.StatusCode, snippet)
+			// The release genuinely does not exist upstream: deleted, or an ID that
+			// was never valid. A *merged* ID does not land here — MusicBrainz still
+			// resolves those, which is handled below. Recorded as a migration so the
+			// dead ID is dealt with once instead of re-failing on every run, and
+			// returned as ErrEntityGone so callers can tell it from an outage.
+			RecordDeletion(models.MigrationEntityRelease, mbID)
+			return apiResponse, newGoneError(models.MigrationEntityRelease, mbID, resp.StatusCode, snippet)
 		case http.StatusServiceUnavailable, http.StatusTooManyRequests:
 			return apiResponse, fmt.Errorf("MusicBrainz throttled/unavailable for release %q (HTTP %d, transient — retry later): %s", mbID, resp.StatusCode, snippet)
 		default:
@@ -236,6 +290,18 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 		return apiResponse, fmt.Errorf("failed to parse MusicBrainz response for release %q: %w", mbID, err)
 	}
 
+	// A merge is only visible here: MusicBrainz resolved the old ID and answered with
+	// the surviving release, whose payload id is the new one. Cache under the *asked
+	// for* key as well as recording the move — the caller is mid-scan holding the old
+	// ID, and failing its lookup to make a point about identity would break tagging
+	// for a file whose metadata we are holding in our hands. The remap that retires
+	// the old key happens when the migration is applied.
+	canonicalID := mbID
+	if apiResponse.ID != "" && apiResponse.ID != mbID {
+		RecordRedirect(models.MigrationEntityRelease, mbID, apiResponse.ID, apiResponse.Title)
+		canonicalID = apiResponse.ID
+	}
+
 	now := time.Now()
 	entry := models.CachedMusicBrainzRelease{
 		Release:   apiResponse,
@@ -244,6 +310,9 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	}
 	musicbrainzReleaseCacheMu.Lock()
 	musicbrainzReleaseCache[mbID] = entry
+	if canonicalID != mbID {
+		musicbrainzReleaseCache[canonicalID] = entry
+	}
 	musicbrainzReleaseCacheMu.Unlock()
 
 	// Persist the entry. With a database configured we write through this single
@@ -252,6 +321,11 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	if cacheDB != nil {
 		if err := musicbrainzStoreDB(mbID, entry); err != nil {
 			logger.Log.Warnf("failed to persist MusicBrainz cache row %s: %s", mbID, err.Error())
+		}
+		if canonicalID != mbID {
+			if err := musicbrainzStoreDB(canonicalID, entry); err != nil {
+				logger.Log.Warnf("failed to persist MusicBrainz cache row %s: %s", canonicalID, err.Error())
+			}
 		}
 	} else {
 		markCacheDirty(cacheNameMusicbrainz)

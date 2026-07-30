@@ -288,12 +288,18 @@ export default function Artist() {
 
             {/* Commands, not state — and scoped to this artist, so none of them
                 costs a full-library pass. Ordered by what they touch: the disk,
-                then MusicBrainz, then only the files. */}
+                then MusicBrainz, then only the files.
+
+                None of them cascades into another. Each does exactly what its
+                label says and stops, because two of the three rewrite the user's
+                audio files and a button that quietly does more than it claims is
+                the wrong place to be clever. Refresh metadata reports what changed
+                upstream; acting on it is Tag files, or the next scan. */}
             <span className="sep">·</span>
             <button
               className="btn btn-ghost btn-sm"
               disabled={running}
-              title="Walk this artist's folders and process new or changed files, as a library scan would."
+              title="Walk this artist's folders and process new or changed files, as a library scan would. Writes tags."
               onClick={action("scan", "Scan started")}
             >
               Scan
@@ -301,7 +307,7 @@ export default function Artist() {
             <button
               className="btn btn-ghost btn-sm"
               disabled={running}
-              title="Re-read this artist's catalogue and editions from MusicBrainz, ignoring the cache, and re-tag anything that changed upstream."
+              title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release — ignoring the cache. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next scan) applies it."
               onClick={action("refresh", "Metadata refresh started")}
             >
               Refresh metadata
@@ -309,7 +315,7 @@ export default function Artist() {
             <button
               className="btn btn-ghost btn-sm"
               disabled={running}
-              title="Rewrite the tags of this artist's indexed files from the metadata already known. No disk walk, no MusicBrainz lookups."
+              title="Rewrite the tags of this artist's indexed files from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
               onClick={action("retag", "Tagging started")}
             >
               Tag files

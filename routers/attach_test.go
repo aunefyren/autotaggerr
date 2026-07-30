@@ -21,6 +21,11 @@ func seedAttachFixtures(t *testing.T, db *gorm.DB) models.LibraryItem {
 	release := models.MusicBrainzReleaseResponse{
 		ID:    "rel-1",
 		Title: "Saturday Night Fever",
+		// Credited and grouped, because collection.Rebuild derives ownership from
+		// exactly these two fields — a release with neither materialises nothing,
+		// which would make the rebuild-on-attach assertion vacuously unprovable.
+		ArtistCredit: []models.ArtistCredit{{Name: "Bee Gees", Artist: models.Artist{ID: "art-1", Name: "Bee Gees"}}},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-1", Title: "Saturday Night Fever", PrimaryType: "Album"},
 		Media: []models.MusicBrainzMedia{{
 			Position: 1,
 			Tracks: []models.Track{
@@ -245,5 +250,40 @@ func TestAttachKeepsCorrelationWhenTaggingFails(t *testing.T) {
 	_ = api.DB.First(&stored, "id = ?", item.ID).Error
 	if stored.MBReleaseID != "rel-1" || !stored.Pinned {
 		t.Errorf("correlation was lost after a tagging failure: %+v", stored)
+	}
+}
+
+// Attaching a file by hand has to re-derive the collection. Before this, attach
+// wrote the correlation and stopped, so the collection kept reporting the old
+// ownership until the next scan — which is why "Rebuild from library" had to be a
+// button users were expected to know about.
+func TestAttachRebuildsTheCollection(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	item := seedAttachFixtures(t, api.DB)
+
+	// Nothing is owned yet: the item has no correlation, so a rebuild would
+	// materialise nothing.
+	var before int64
+	api.DB.Model(&models.CollectionReleaseGroup{}).Where("owned = ?", true).Count(&before)
+	if before != 0 {
+		t.Fatalf("expected no owned release-groups before the attach, got %d", before)
+	}
+
+	w := do(r, "POST", "/api/v1/library-items/"+item.ID.String()+"/attach", token, map[string]string{
+		"mb_release_id": "rel-1", "mb_release_track_id": "t2",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("attach = %d: %s", w.Code, w.Body.String())
+	}
+
+	// The rebuild is asynchronous by design — the user must not wait on it — so
+	// wait for the pass rather than asserting immediately.
+	api.Rebuilder.Wait()
+
+	var after int64
+	api.DB.Model(&models.CollectionReleaseGroup{}).Where("owned = ?", true).Count(&after)
+	if after == 0 {
+		t.Fatal("attach did not re-derive the collection: still nothing owned")
 	}
 }

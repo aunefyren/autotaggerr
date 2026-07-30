@@ -9,12 +9,18 @@
 //
 // Three properties make it safe to call from a table with a hundred rows:
 //
-//  1. a disk cache under config/artwork/, so a cover is fetched once per install;
+//  1. a disk cache under config/artwork/, so a cover is transferred about once a
+//     month rather than once a paint;
 //  2. a negative cache, so "no art for this MBID" is remembered rather than
 //     re-asked on every paint — this is the difference between one wasted request
 //     and one per row per reload;
 //  3. single-flight per key, so N rows racing for the same uncached image make one
 //     upstream request, not N.
+//
+// Both caches are indexed by models.ArtworkCacheEntry rows, which is what lets
+// them survive a restart and what gives images an expiry at all. The bytes stay on
+// disk; only the metadata the filesystem cannot express — the fetch time, and the
+// fact that a provider said there is nothing — lives in the database.
 package modules
 
 import (
@@ -31,6 +37,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/models"
 	"github.com/google/uuid"
 )
 
@@ -52,7 +59,19 @@ const (
 	// artworkNegativeTTL is how long "there is no art for this MBID" is trusted.
 	// Long enough that browsing costs nothing, short enough that art added
 	// upstream shows up the same week.
-	artworkNegativeTTL = 24 * time.Hour
+	artworkNegativeTTL = 7 * 24 * time.Hour
+
+	// artworkPositiveTTL is how long a cached image is served before it is fetched
+	// again. Images are the longest-lived thing this app caches, and deliberately
+	// so: a cover does not change, it is expensive to transfer, and the disk copy
+	// is the whole reason a page of a hundred albums paints instantly.
+	//
+	// It is not infinite — which is what it effectively was before this table —
+	// because the Cover Art Archive does get *better*: a release with no art, or
+	// with a poor scan, gets a proper one uploaded eventually, and without an
+	// expiry that improvement would never reach an install that once cached the
+	// placeholder.
+	artworkPositiveTTL = 30 * 24 * time.Hour
 
 	// artworkNegativeMax bounds the negative cache. The artwork endpoint answers
 	// for any MBID, not only ones in the collection, and it is reachable without a
@@ -116,8 +135,8 @@ var (
 	artworkThrottleMu sync.Mutex
 	artworkLastCall   = map[string]time.Time{}
 
-	artworkNegativeMu sync.Mutex
-	artworkNegative   = map[string]time.Time{}
+	artworkIndexMu sync.Mutex
+	artworkIndex   = map[string]artworkMeta{}
 
 	artworkFlightMu sync.Mutex
 	artworkFlight   = map[string]*artworkCall{}
@@ -132,6 +151,17 @@ type artworkCall struct {
 	art  Artwork
 	err  error
 }
+
+// artworkMeta is what the index knows about one cache key: whether the providers
+// had an image, and until when that answer is trusted. The bytes themselves live
+// on disk — this is only the part the filesystem cannot record.
+type artworkMeta struct {
+	missing     bool
+	contentType string
+	expiresAt   time.Time
+}
+
+func (m artworkMeta) fresh() bool { return time.Now().Before(m.expiresAt) }
 
 // GetArtwork returns one image for an entity, from the disk cache when possible.
 //
@@ -175,6 +205,13 @@ func GetArtwork(providers ArtworkProviders, entity, mbid, kind string, size int)
 		writeArtworkCache(key, call.art)
 	} else if errors.Is(call.err, ErrNoArtwork) {
 		rememberNoArtwork(key)
+	} else if art, ok := readExpiredArtwork(key); ok {
+		// A provider outage must not make covers vanish from a page that had them
+		// yesterday. Giving images an expiry is about picking up better scans over
+		// time, not about discarding a perfectly good one because a CDN is down —
+		// so a failed *refresh* falls back to the copy already on disk, exactly as
+		// the MusicBrainz lookups fall back to their stale entries.
+		call.art, call.err = art, nil
 	}
 
 	close(call.done)
@@ -404,10 +441,50 @@ func artworkCachePath(key string) string {
 	return filepath.Join(artworkCacheDir(), key)
 }
 
-// readArtworkCache returns a previously fetched image. The content type is stored
-// alongside the bytes rather than guessed from an extension, because fanart.tv
-// serves a mix of formats behind extensionless URLs.
+// readArtworkCache returns a previously fetched image, if one is on disk and the
+// index still trusts it. The content type is sniffed from the bytes rather than
+// guessed from an extension, because fanart.tv serves a mix of formats behind
+// extensionless URLs.
+//
+// A file with no index entry is *adopted* rather than ignored: installs that
+// cached artwork before the index existed have a full config/artwork/ directory,
+// and treating those as misses would re-download every cover an install already
+// has. Adoption gives them a normal expiry, so they refresh on the ordinary
+// schedule from here on.
 func readArtworkCache(key string) (Artwork, bool) {
+	meta, known := artworkMetaFor(key)
+	if known {
+		if meta.missing || !meta.fresh() {
+			return Artwork{}, false
+		}
+	}
+
+	data, err := os.ReadFile(artworkCachePath(key))
+	if err != nil || len(data) == 0 {
+		return Artwork{}, false
+	}
+	contentType := sniffImageType(data)
+	if contentType == "" {
+		return Artwork{}, false
+	}
+
+	if !known {
+		storeArtworkMeta(key, artworkMeta{
+			contentType: contentType,
+			expiresAt:   time.Now().Add(artworkPositiveTTL),
+		})
+	}
+	return Artwork{Data: data, ContentType: contentType, FromCache: true}, true
+}
+
+// readExpiredArtwork returns a cached image whatever its age, for the case where
+// the refresh that would have replaced it failed. It refuses entries recorded as
+// missing — there is no file behind those to serve.
+func readExpiredArtwork(key string) (Artwork, bool) {
+	if meta, known := artworkMetaFor(key); known && meta.missing {
+		return Artwork{}, false
+	}
+
 	data, err := os.ReadFile(artworkCachePath(key))
 	if err != nil || len(data) == 0 {
 		return Artwork{}, false
@@ -435,42 +512,136 @@ func writeArtworkCache(key string, art Artwork) {
 	if err := os.Rename(tmp, path); err != nil {
 		logger.Log.Warnf("could not cache artwork %s: %s", key, err.Error())
 		_ = os.Remove(tmp)
+		return
 	}
+
+	storeArtworkMeta(key, artworkMeta{
+		contentType: art.ContentType,
+		expiresAt:   time.Now().Add(artworkPositiveTTL),
+	})
 }
 
 func negativeCached(key string) bool {
-	artworkNegativeMu.Lock()
-	defer artworkNegativeMu.Unlock()
-	at, ok := artworkNegative[key]
-	if !ok {
-		return false
-	}
-	if time.Since(at) > artworkNegativeTTL {
-		delete(artworkNegative, key)
-		return false
-	}
-	return true
+	meta, ok := artworkMetaFor(key)
+	return ok && meta.missing && meta.fresh()
 }
 
 func rememberNoArtwork(key string) {
-	artworkNegativeMu.Lock()
-	defer artworkNegativeMu.Unlock()
-	if len(artworkNegative) >= artworkNegativeMax {
-		// Dropped wholesale rather than evicted one by one: the entries are all
-		// equally cheap to re-derive, and an LRU here would be machinery in service
-		// of a cache whose only job is to stop a repeated 404.
-		artworkNegative = map[string]time.Time{}
+	pruneArtworkNegatives()
+	storeArtworkMeta(key, artworkMeta{
+		missing:   true,
+		expiresAt: time.Now().Add(artworkNegativeTTL),
+	})
+}
+
+func artworkMetaFor(key string) (artworkMeta, bool) {
+	artworkIndexMu.Lock()
+	defer artworkIndexMu.Unlock()
+	meta, ok := artworkIndex[key]
+	return meta, ok
+}
+
+// storeArtworkMeta records one index entry in memory and, when a database is
+// configured, writes it through. Persisting is what makes the negative cache
+// worth having: "no cover for this release" is the common answer for obscure
+// releases, and a process-local memory of it meant every restart re-asked the
+// Cover Art Archive for thousands of covers it had already declined.
+func storeArtworkMeta(key string, meta artworkMeta) {
+	artworkIndexMu.Lock()
+	artworkIndex[key] = meta
+	artworkIndexMu.Unlock()
+
+	if cacheDB == nil {
+		return
 	}
-	artworkNegative[key] = time.Now()
+	row := models.ArtworkCacheEntry{
+		Key:         key,
+		Missing:     meta.missing,
+		ContentType: meta.contentType,
+		FetchedAt:   time.Now(),
+		ExpiresAt:   meta.expiresAt,
+	}
+	if err := cacheDB.Save(&row).Error; err != nil {
+		logger.Log.Warnf("failed to persist artwork cache row %s: %s", key, err.Error())
+	}
+}
+
+// pruneArtworkNegatives bounds the negative half of the index. Only negatives are
+// capped: a positive entry required a real image to come back, so those are
+// bounded by the collection, while the artwork endpoint answers for any MBID
+// anyone asks about and is reachable without a session (an <img> tag cannot send
+// an Authorization header).
+//
+// Dropped wholesale rather than evicted one by one: the entries are all equally
+// cheap to re-derive, and an LRU here would be machinery in service of a cache
+// whose only job is to stop a repeated 404.
+func pruneArtworkNegatives() {
+	artworkIndexMu.Lock()
+	negatives := 0
+	for _, meta := range artworkIndex {
+		if meta.missing {
+			negatives++
+		}
+	}
+	if negatives < artworkNegativeMax {
+		artworkIndexMu.Unlock()
+		return
+	}
+	for key, meta := range artworkIndex {
+		if meta.missing {
+			delete(artworkIndex, key)
+		}
+	}
+	artworkIndexMu.Unlock()
+
+	if cacheDB != nil {
+		if err := cacheDB.Where("missing = ?", true).Delete(&models.ArtworkCacheEntry{}).Error; err != nil {
+			logger.Log.Warnf("failed to prune artwork negative cache: %s", err.Error())
+		}
+	}
 }
 
 // ResetArtworkNegativeCache forgets every "no artwork" answer. Exposed for tests
 // and for the case where a provider was just configured — the empty answers
-// recorded before the API key existed are not worth waiting a day on.
+// recorded before the API key existed are not worth waiting a week on.
 func ResetArtworkNegativeCache() {
-	artworkNegativeMu.Lock()
-	defer artworkNegativeMu.Unlock()
-	artworkNegative = map[string]time.Time{}
+	artworkIndexMu.Lock()
+	for key, meta := range artworkIndex {
+		if meta.missing {
+			delete(artworkIndex, key)
+		}
+	}
+	artworkIndexMu.Unlock()
+
+	if cacheDB != nil {
+		if err := cacheDB.Where("missing = ?", true).Delete(&models.ArtworkCacheEntry{}).Error; err != nil {
+			logger.Log.Warnf("failed to clear artwork negative cache: %s", err.Error())
+		}
+	}
+}
+
+// artworkLoadCache warms the index from the database at startup, so a restart
+// keeps both what has been fetched and what the providers said does not exist.
+func artworkLoadCache() error {
+	if cacheDB == nil {
+		return nil
+	}
+
+	var rows []models.ArtworkCacheEntry
+	if err := cacheDB.Find(&rows).Error; err != nil {
+		return err
+	}
+
+	artworkIndexMu.Lock()
+	defer artworkIndexMu.Unlock()
+	for _, r := range rows {
+		artworkIndex[r.Key] = artworkMeta{
+			missing:     r.Missing,
+			contentType: r.ContentType,
+			expiresAt:   r.ExpiresAt,
+		}
+	}
+	return nil
 }
 
 func orDefault(value, fallback string) string {

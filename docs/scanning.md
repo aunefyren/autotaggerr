@@ -3,6 +3,43 @@
 How files get processed, why most of them get skipped, how upstream MusicBrainz changes are caught,
 and how any of it is visible afterwards.
 
+## The three verbs, and why none of them cascades
+
+A library is acted on by exactly three verbs, each available at whatever scope you point it at
+(one artist, one library, everything):
+
+| Verb | Reads | Writes files | Owner |
+| --- | --- | --- | --- |
+| **Scan** | disk + MusicBrainz | **yes** | `scan.Runner` |
+| **Refresh metadata** | MusicBrainz | no | `mirror.Runner` |
+| **Tag files** | the local database | **yes** | `scan.Runner` |
+
+All three are available at all three scopes:
+
+| | artist | library | everything |
+| --- | --- | --- | --- |
+| Scan | `POST /artists/:mbid/scan` | `POST /libraries/:id/scan` | `POST /scan` |
+| Refresh metadata | `POST /artists/:mbid/refresh` | `POST /libraries/:id/refresh` | `POST /mirror/sync` |
+| Tag files | `POST /artists/:mbid/retag` | `POST /libraries/:id/retag` | — |
+
+Only the file-writing verbs are gated on a running scan (`409`). A metadata refresh is not: it
+runs alongside and yields at entity boundaries, which is the point of keying mutual exclusion on
+whether a job writes files rather than on which runner owns it.
+
+**No verb triggers another.** Each does what its label says and stops. Two of the three rewrite
+the user's audio files, so a button that quietly does more than it claims is the wrong place to be
+clever: *Refresh metadata* used to re-tag every file of a release that had changed upstream, which
+made a button about reading capable of rewriting hundreds of files.
+
+The cascade is replaced by a handover. A refresh reports which releases changed; the scan re-tags
+them in its drift stage, and a user who wants it now presses *Tag files*.
+
+This also means the verbs behave identically whether a cron job or a person invoked them — there
+is no "scheduled runs do more" mode to explain after the fact when reading the Activity feed.
+
+See [mirror.md](mirror.md) for the refresh verb and the scan's drift stage.
+
+
 ## The scan runner
 
 `scan.Runner` is shared by the cron job, the startup run and the API, so there is exactly one
@@ -201,6 +238,11 @@ scan is floored at roughly one *distinct release* per second no matter how many 
 concurrency mainly helps the warm-cache steady state, which is subprocess- and disk-bound. Fetch
 coalescing (above) is what makes that floor "per release" rather than "per release, times the number
 of workers that happened to start on the same album".
+
+That floor only binds on a *cold* cache. Measured against a large personal library, a full scan went
+from ~7 hours to ~14 minutes once the release cache was warm — the steady state is subprocess- and
+disk-bound, not rate-limited, which is what the worker pool and fetch coalescing are for. A cold
+first scan is still paced by MusicBrainz, and a local mirror is the only way around that.
 
 `processLibraries` is guarded by the runner's CAS plus `jobMu`, which serialises the job body; the
 cron job and the startup run share that guard.

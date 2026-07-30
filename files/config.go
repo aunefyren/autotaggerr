@@ -100,6 +100,13 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrMirrorCronSchedule == "" {
+		// set new value — nightly at 03:00, when nobody is browsing and the scan
+		// (weekly, 18:00 Sunday) is not competing for the same rate-limit budget
+		ConfigFile.AutotaggerrMirrorCronSchedule = "0 0 3 * * *"
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrProcessConcurrency < 1 {
 		// set new value (number of files processed in parallel per scan)
 		ConfigFile.AutotaggerrProcessConcurrency = 4
@@ -167,6 +174,21 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrCustomArtistDelimiterCommas = true
 	ConfigFile.AutotaggerrIgnoreRedundantContributingArtists = true
 	ConfigFile.AutotaggerrRemoveValues = false
+
+	// The MusicBrainz mirror runs nightly by default but not on startup: a first
+	// pass over a large collection is hours of rate-limited fetching, and tying that
+	// to every restart would make a restart something to avoid.
+	ConfigFile.AutotaggerrMirrorDisabled = false
+	ConfigFile.AutotaggerrMirrorCronSchedule = "0 0 3 * * *"
+	ConfigFile.AutotaggerrMirrorOnStartUp = false
+
+	// MusicBrainz migrations apply themselves by default; these hold a category back
+	// for manual approval instead. Written explicitly so the keys are discoverable in
+	// a fresh config.json rather than only in the README.
+	ConfigFile.AutotaggerrMigrationReviewReleases = false
+	ConfigFile.AutotaggerrMigrationReviewArtists = false
+	ConfigFile.AutotaggerrMigrationReviewPinned = false
+	ConfigFile.AutotaggerrMigrationReviewDeletions = false
 
 	level := logrus.InfoLevel
 	ConfigFile.AutotaggerrLogLevel = level.String()

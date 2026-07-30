@@ -2,6 +2,7 @@ package modules
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,12 @@ func withMockMB(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	musicbrainzReleaseCacheMu.Lock()
 	musicbrainzReleaseCache = map[string]models.CachedMusicBrainzRelease{}
 	musicbrainzReleaseCacheMu.Unlock()
+
+	// The entity cache answers artist/discography/edition lookups, so it has to be
+	// cleared here too or one test's stub response leaks into the next.
+	mbEntityCacheMu.Lock()
+	mbEntityCache = map[mbCacheKey]mbCacheRecord{}
+	mbEntityCacheMu.Unlock()
 
 	queryMutex.Lock()
 	lastQueryTime = time.Time{} // ensure the next RateLimit() call doesn't sleep
@@ -286,8 +293,9 @@ func TestGetMusicBrainzReleaseHTTPError(t *testing.T) {
 	}
 }
 
-// TestGetMusicBrainzReleaseNotFound covers the "stale Lidarr MB ID" case: a 404
-// must produce a clearly distinguishable, actionable error.
+// TestGetMusicBrainzReleaseNotFound covers the dead-MB-ID case: a 404 must be
+// distinguishable from a transient failure by the *type* of the error, not by
+// matching words in its message, so callers can act on it. See ErrEntityGone.
 func TestGetMusicBrainzReleaseNotFound(t *testing.T) {
 	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -298,11 +306,10 @@ func TestGetMusicBrainzReleaseNotFound(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on HTTP 404, got nil")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "not found") || !strings.Contains(msg, "stale") {
-		t.Errorf("404 error %q should flag a not-found / stale MB ID", msg)
+	if !errors.Is(err, ErrEntityGone) {
+		t.Errorf("404 error %v should unwrap to ErrEntityGone", err)
 	}
-	if !strings.Contains(msg, "gone-id") {
-		t.Errorf("404 error %q should name the release ID", msg)
+	if !strings.Contains(err.Error(), "gone-id") {
+		t.Errorf("404 error %q should name the release ID", err.Error())
 	}
 }

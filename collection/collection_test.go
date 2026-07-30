@@ -698,3 +698,112 @@ func TestReleaseGroupsForArtistUnionsUnlinkedRows(t *testing.T) {
 		t.Errorf("artist saw %v, want both the unlinked row and the linked collaboration", seen)
 	}
 }
+
+// Rebuild clears the disk view before re-establishing it, so it has to be atomic:
+// a failure partway through must not leave the collection reporting that it owns
+// less than it does.
+func TestRebuildRollsBackOnFailure(t *testing.T) {
+	db := testDB(t)
+
+	modules.SetDB(db)
+	defer modules.SetDB(nil)
+
+	release := models.MusicBrainzReleaseResponse{
+		ID:           "rel-1",
+		Title:        "Album One",
+		ArtistCredit: []models.ArtistCredit{{Name: "The Band", Artist: models.Artist{ID: "art-1", Name: "The Band"}}},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-1", Title: "Album One", PrimaryType: "Album"},
+		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}, {ID: "t2"}}}},
+	}
+	payload, _ := json.Marshal(release)
+	if err := db.Create(&models.MusicbrainzReleaseCache{MBID: "rel-1", Payload: string(payload), FetchedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour)}).Error; err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if err := modules.MusicbrainzLoadCache(); err != nil {
+		t.Fatalf("load cache: %v", err)
+	}
+	lib := models.Library{Name: "L", Path: "/m"}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	if err := db.Create(&models.LibraryItem{LibraryID: lib.ID, Path: "/m/a.flac", Status: "ok", MBReleaseID: "rel-1"}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	if _, _, err := Rebuild(db); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	var before models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-1").First(&before).Error; err != nil {
+		t.Fatalf("expected an owned release-group after the first rebuild: %v", err)
+	}
+	if !before.Owned {
+		t.Fatal("release-group should be owned before the failing rebuild")
+	}
+
+	// Fail the re-establish half while leaving the clear to succeed, by removing the
+	// table the second half writes to.
+	if err := db.Migrator().DropTable(&models.CollectionRelease{}); err != nil {
+		t.Fatalf("drop table: %v", err)
+	}
+	if _, _, err := Rebuild(db); err == nil {
+		t.Fatal("expected the rebuild to fail once its writes cannot land")
+	}
+
+	// The clear must have rolled back with it.
+	if err := db.Migrator().AutoMigrate(&models.CollectionRelease{}); err != nil {
+		t.Fatalf("restore table: %v", err)
+	}
+	var after models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-1").First(&after).Error; err != nil {
+		t.Fatalf("release-group row vanished: %v", err)
+	}
+	if !after.Owned || after.OwnedTracks != before.OwnedTracks {
+		t.Fatalf("ownership was lost by a failed rebuild: before %+v, after %+v", before, after)
+	}
+}
+
+func TestRebuildWithoutDB(t *testing.T) {
+	artists, owned, err := Rebuild(nil)
+	if err != nil || artists != 0 || owned != 0 {
+		t.Fatalf("Rebuild(nil) = %d, %d, %v", artists, owned, err)
+	}
+}
+
+// A burst of attaches — one per track of a folder — must not queue one full
+// re-derivation per file. The pass already in flight covers work that arrived
+// before it started, so a burst collapses to at most two.
+func TestRebuilderCoalescesBursts(t *testing.T) {
+	db := testDB(t)
+	rb := NewRebuilder(db)
+
+	for i := 0; i < 12; i++ {
+		rb.Request()
+	}
+
+	rb.Wait()
+
+	// Drain whatever the coalescing tail produced, bounded so a regression that
+	// starts one pass per request fails here rather than hanging.
+	passes := 1
+	for {
+		select {
+		case <-rb.done:
+			passes++
+			if passes > 3 {
+				t.Fatalf("12 requests produced %d passes; expected them to coalesce", passes)
+			}
+		case <-time.After(500 * time.Millisecond):
+			return
+		}
+	}
+}
+
+// A rebuilder with no database is inert rather than a panic: the one-shot --file
+// invocation and most tests run without one.
+func TestRebuilderWithoutDB(t *testing.T) {
+	NewRebuilder(nil).Request()
+	var nilRebuilder *Rebuilder
+	nilRebuilder.Request()
+}

@@ -65,23 +65,29 @@ func TestRunnerRunAll(t *testing.T) {
 	}
 }
 
-func TestRunnerSyncDriftEmitsEvent(t *testing.T) {
+// SyncDrift is now the refresh verb at collection scope: it records a metadata
+// refresh event and, critically, writes no files.
+func TestRunnerSyncDriftEmitsRefreshEvent(t *testing.T) {
 	db, err := database.Connect(models.DatabaseConfig{Type: "sqlite", DSN: filepath.Join(t.TempDir(), "t.db")})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
-	r.SyncDrift() // no cached releases due -> a clean no-op sync
+	r.SyncDrift() // empty collection -> a clean no-op refresh
 
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeDriftSync).First(&ev).Error; err != nil {
-		t.Fatalf("drift event not recorded: %v", err)
+	if err := db.Where("type = ?", models.EventTypeMirror).First(&ev).Error; err != nil {
+		t.Fatalf("metadata refresh event not recorded: %v", err)
 	}
 	if ev.Status != models.EventStatusOK || ev.FinishedAt == nil {
-		t.Errorf("drift event should finish ok: %+v", ev)
+		t.Errorf("refresh event should finish ok: %+v", ev)
 	}
-	if checked, ok := ev.Details["releases_checked"].(float64); !ok || checked != 0 {
-		t.Errorf("releases_checked = %#v, want 0", ev.Details["releases_checked"])
+	if fetched, ok := ev.Details["fetched"].(float64); !ok || fetched != 0 {
+		t.Errorf("fetched = %#v, want 0", ev.Details["fetched"])
+	}
+	// The point of the split: a refresh must never rewrite audio files.
+	if retagged, present := ev.Details["files_retagged"]; present {
+		t.Errorf("a refresh reported file writes (%#v) — it must not touch files", retagged)
 	}
 }
 

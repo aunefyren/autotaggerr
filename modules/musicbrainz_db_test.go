@@ -31,6 +31,14 @@ func resetMap() {
 	musicbrainzReleaseCacheMu.Lock()
 	musicbrainzReleaseCache = map[string]models.CachedMusicBrainzRelease{}
 	musicbrainzReleaseCacheMu.Unlock()
+
+	mbEntityCacheMu.Lock()
+	mbEntityCache = map[mbCacheKey]mbCacheRecord{}
+	mbEntityCacheMu.Unlock()
+
+	artworkIndexMu.Lock()
+	artworkIndex = map[string]artworkMeta{}
+	artworkIndexMu.Unlock()
 }
 
 func TestMusicbrainzCacheDBRoundTrip(t *testing.T) {

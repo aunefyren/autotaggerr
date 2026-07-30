@@ -10,6 +10,8 @@ const NAV = [
   { to: "/items", label: "Items", ic: "≣" },
   { to: "/collection", label: "Collection", ic: "♫" },
   { to: "/activity", label: "Activity", ic: "⟳" },
+  { to: "/migrations", label: "Migrations", ic: "⇄" },
+  { to: "/mirror", label: "Metadata", ic: "⛁" },
   { to: "/login-providers", label: "Login providers", ic: "⚿" },
 ];
 

@@ -33,15 +33,40 @@ type ConfigStruct struct {
 	AutotaggerrCustomArtistDelimiter              string         `json:"autotaggerr_custom_artist_delimiter"`
 	AutotaggerrCustomArtistDelimiterCommas        bool           `json:"autotaggerr_custom_artist_delimiter_commas"`
 	AutotaggerrRemoveValues                       bool           `json:"autotaggerr_remove_values"`
-	SMTPEnabled                                   bool           `json:"smtp_enabled"`
-	SMTPHost                                      string         `json:"smtp_host"`
-	SMTPPort                                      int            `json:"smtp_port"`
-	SMTPUsername                                  string         `json:"smtp_username"`
-	SMTPPassword                                  string         `json:"smtp_password"`
-	SMTPFrom                                      string         `json:"smtp_from"`
-	LidarrBaseURL                                 string         `json:"lidarr_base_url"`
-	LidarrAPIKey                                  string         `json:"lidarr_api_key"`
-	LidarrHeaderCookie                            string         `json:"lidarr_header_cookie"`
-	PlexBaseURL                                   string         `json:"plex_base_url"`
-	PlexToken                                     string         `json:"plex_token"`
+
+	// MusicBrainz mirror. The mirror refreshes the local copy of every MusicBrainz
+	// entity the collection refers to on a schedule, so browsing reads the database
+	// instead of a rate-limited API (see docs/mirror.md).
+	//
+	// Disabled expresses the opt-out rather than an "enabled" opt-in for the same
+	// reason the migration review flags do: a bool absent from an existing
+	// config.json decodes as false, and false has to mean the default behaviour.
+	AutotaggerrMirrorDisabled     bool   `json:"autotaggerr_mirror_disabled"`
+	AutotaggerrMirrorCronSchedule string `json:"autotaggerr_mirror_cron_schedule"`
+	AutotaggerrMirrorOnStartUp    bool   `json:"autotaggerr_mirror_on_start_up"`
+
+	// MusicBrainz migration review policy. These are phrased as *review* opt-ins
+	// rather than auto-apply opt-outs on purpose: a bool absent from an existing
+	// config.json decodes as false, and false must mean "apply it" — the default —
+	// so upgrading cannot silently start queueing every merge for approval.
+	AutotaggerrMigrationReviewReleases bool `json:"autotaggerr_migration_review_releases"`
+	AutotaggerrMigrationReviewArtists  bool `json:"autotaggerr_migration_review_artists"`
+	// AutotaggerrMigrationReviewPinned holds any migration that would rewrite a
+	// manual correlation, whatever its entity type.
+	AutotaggerrMigrationReviewPinned bool `json:"autotaggerr_migration_review_pinned"`
+	// AutotaggerrMigrationReviewDeletions holds the 404 case, which un-identifies
+	// files rather than re-pointing them.
+	AutotaggerrMigrationReviewDeletions bool `json:"autotaggerr_migration_review_deletions"`
+
+	SMTPEnabled        bool   `json:"smtp_enabled"`
+	SMTPHost           string `json:"smtp_host"`
+	SMTPPort           int    `json:"smtp_port"`
+	SMTPUsername       string `json:"smtp_username"`
+	SMTPPassword       string `json:"smtp_password"`
+	SMTPFrom           string `json:"smtp_from"`
+	LidarrBaseURL      string `json:"lidarr_base_url"`
+	LidarrAPIKey       string `json:"lidarr_api_key"`
+	LidarrHeaderCookie string `json:"lidarr_header_cookie"`
+	PlexBaseURL        string `json:"plex_base_url"`
+	PlexToken          string `json:"plex_token"`
 }

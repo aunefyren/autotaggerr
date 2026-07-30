@@ -28,10 +28,12 @@ export default function Libraries() {
   };
   const managerName = (id: string | null) => (id ? options.managers.find((m) => m.id === id)?.name : undefined);
 
-  const scan = async (l: Library) => {
+  // The same three verbs the artist page offers, aimed at one library. None of
+  // them cascades into another: each does what its label says and stops.
+  const action = (l: Library, verb: string, started: string) => async () => {
     try {
-      await api.post(`/libraries/${l.id}/scan`);
-      toast("info", `Scan started for ${l.name}`);
+      await api.post(`/libraries/${l.id}/${verb}`);
+      toast("info", `${started} for ${l.name}`);
     } catch (e) {
       toast("err", errMsg(e));
     }
@@ -96,7 +98,27 @@ export default function Libraries() {
                   </td>
                   <td>
                     <div className="row" style={{ justifyContent: "flex-end" }}>
-                      <button className="btn btn-secondary btn-sm" onClick={() => scan(l)}>Scan</button>
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={action(l, "scan", "Scan started")}
+                        title="Walk this library and process new or changed files. Writes tags."
+                      >
+                        Scan
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={action(l, "refresh", "Metadata refresh started")}
+                        title="Re-read MusicBrainz for everything this library's files point at, ignoring the cache. Reads only: no files are written. Anything that changed is reported, and Tag files (or the next scan) applies it."
+                      >
+                        Refresh metadata
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        onClick={action(l, "retag", "Tagging started")}
+                        title="Rewrite the tags of this library's indexed files from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
+                      >
+                        Tag files
+                      </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setEditing(l)}>Edit</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => toggle(l)}>{l.enabled ? "Disable" : "Enable"}</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => remove(l)} style={{ color: "var(--danger-text)" }}>Remove</button>

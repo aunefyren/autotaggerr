@@ -200,10 +200,13 @@ func (a *API) attachItem(c *gin.Context) {
 }
 
 // saveCorrelation writes one validated manual attachment. Shared by the single and
-// bulk paths so they cannot drift into recording different things.
+// bulk paths so they cannot drift into recording different things — which is also
+// why the collection rebuild is triggered here rather than in each handler: the
+// disk view is derived from these rows, and a writer that forgets to re-derive
+// leaves the collection reporting something the index no longer says.
 func (a *API) saveCorrelation(itemID uuid.UUID, releaseID string, track modules.ReleaseTrack) error {
 	now := time.Now()
-	return a.DB.Model(&models.LibraryItem{}).Where("id = ?", itemID).Updates(map[string]any{
+	err := a.DB.Model(&models.LibraryItem{}).Where("id = ?", itemID).Updates(map[string]any{
 		"mb_release_id":       releaseID,
 		"mb_release_track_id": track.TrackID,
 		"mb_recording_id":     track.RecordingID,
@@ -213,6 +216,15 @@ func (a *API) saveCorrelation(itemID uuid.UUID, releaseID string, track modules.
 		"status":              models.LibraryItemStatusOK,
 		"error":               "",
 	}).Error
+	if err != nil {
+		return err
+	}
+
+	// Coalesced and asynchronous: attaching a twelve-track folder calls this twelve
+	// times, and the user should not wait on a re-derivation to see the file marked
+	// as matched.
+	a.Rebuilder.Request()
+	return nil
 }
 
 // bulkMapping is one file → track pairing as it crosses the wire, in both the
