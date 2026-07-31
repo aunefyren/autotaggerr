@@ -84,15 +84,14 @@ func (a *API) rebuildAfterMigration() {
 // immediately with 202: the sweep is one rate-limited request per release and per
 // artist, so a large collection takes hours — holding the request open for that would
 // time out long before it finished. Progress shows up on the Activity feed, and the
-// single-run guard is what stops a second press from doubling the load.
+// queue's dedup is what stops a second press from doubling the load.
 func (a *API) verifyIdentities(c *gin.Context) {
-	if a.Scan.Running() {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scan or sync is already running"})
+	if a.Scan == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
 		return
 	}
-
-	go a.Scan.VerifyIdentities()
-	c.JSON(http.StatusAccepted, gin.H{"status": "identity check started"})
+	a.Scan.VerifyIdentities()
+	c.JSON(http.StatusAccepted, gin.H{"status": "identity check queued"})
 }
 
 // migrationPolicy reports the current review policy, so the UI can explain why a

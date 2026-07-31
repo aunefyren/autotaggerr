@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
@@ -80,6 +81,13 @@ func (a *API) artwork(c *gin.Context) {
 	art, err := modules.GetArtwork(artworkProviders(a.DB), entity, mbid, kind, size)
 	if err != nil {
 		if errors.Is(err, modules.ErrNoArtwork) {
+			// Cache the negative. "No image for this MBID" is as stable an answer as
+			// the image itself — a disabled provider will keep saying no, and an
+			// enabled one rarely gains art an existing entity lacked — so without a
+			// cache header the browser re-asks on every navigation, turning one
+			// coverless collection into a 404 flood in the reverse-proxy logs. A day
+			// is short enough that enabling a provider is picked up the same session.
+			c.Header("Cache-Control", "public, max-age=86400")
 			c.Status(http.StatusNotFound)
 			return
 		}
@@ -105,4 +113,19 @@ func (a *API) artwork(c *gin.Context) {
 		c.Header("X-Artwork-Cache", "hit")
 	}
 	c.Data(http.StatusOK, art.ContentType, art.Data)
+}
+
+// artworkCapabilities reports which kinds of artwork can actually be served, so the
+// UI can render a monogram tile directly instead of firing an <img> request that is
+// certain to 404. It reflects the same truth the artwork handler enforces — fanart
+// enabled but keyless still reports false, because it cannot resolve an image — so a
+// provider that cannot deliver produces no requests, and therefore no 404s to log.
+//
+//	GET /artwork-capabilities -> {"cover": bool, "artist": bool}
+func (a *API) artworkCapabilities(c *gin.Context) {
+	providers := artworkProviders(a.DB)
+	c.JSON(http.StatusOK, gin.H{
+		"cover":  providers.CoverArtEnabled,
+		"artist": providers.FanartEnabled && strings.TrimSpace(providers.FanartAPIKey) != "",
+	})
 }

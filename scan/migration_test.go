@@ -95,6 +95,7 @@ func TestVerifyIdentitiesRecordsAFullRefreshEvent(t *testing.T) {
 
 	runner := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 	runner.VerifyIdentities()
+	runner.waitIdle(t)
 
 	var ev models.Event
 	if err := db.Where("type = ?", models.EventTypeMirror).First(&ev).Error; err != nil {

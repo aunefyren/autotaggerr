@@ -12,13 +12,55 @@ still open) before making changes.
 - `./config` must be writable; `files.LoadConfig` creates `config/config.json` on first run.
 
 ```bash
-go build ./...                     # compile everything
+go build ./...                     # compile everything (embeds the current web/dist as-is)
 go run .                           # run the service (reads/writes ./config)
 go vet ./...                       # must be clean — CI gate
 gofmt -l .                         # must print nothing — CI gate
-go test -race ./...                # run tests (none yet)
+go test -race ./...                # run tests
 go run . --file "<path>" --fileRoot "<library-root>"   # one-shot single-file processing
 ```
+
+**Building with the frontend.** The Go build embeds `web/dist` but does *not* rebuild it — the
+frontend is a separate Node build (see [Web UI](#web-ui-webui--webdist)). Rebuild the UI whenever
+`webui/` source changed, then build the binary:
+
+```bash
+cd webui && npm ci && npm run build && cd ..   # refresh web/dist (npm ci only needed once / on dep change)
+go build .                                       # produces ./autotaggerr (autotaggerr.exe on Windows)
+```
+
+**Updating dependencies** spans two ecosystems — `go get -u` never touches the frontend:
+
+```bash
+go get -u ./... && go mod tidy                 # Go modules
+cd webui && npm update && npm run build && cd ..   # npm packages, then rebuild the bundle
+```
+
+### Makefile shortcuts
+
+A [`Makefile`](../Makefile) wraps these flows so the frontend step is never forgotten:
+
+| Target | Does |
+|--------|------|
+| `make build` | verify prereqs, rebuild `web/dist`, then `go build .` (the safe default — UI never stale) |
+| `make go` | `go build .` only, skipping the frontend (when the UI is unchanged) |
+| `make ui` | verify prereqs, then rebuild `web/dist` only (installs deps first if missing/changed) |
+| `make run` | verify prereqs, rebuild `web/dist`, then `go run .` |
+| `make check` | verify the toolchain (Go, Node, npm, `tsc`) and print a clear report |
+| `make deps` | force a clean `npm ci --include=dev` in `webui/` (fixes a missing `tsc`) |
+| `make update` | `go get -u` + `go mod tidy` + `npm update` + rebuild the bundle |
+| `make test` / `make fmt` / `make vet` | the CI gates locally |
+
+Every recipe uses only `go`/`npm`/`cd`, so the same Makefile runs on Linux/macOS and Windows —
+but `make` is not bundled with Windows. Install it once (`choco install make` or
+`scoop install make`), or use the raw commands above, which need no extra tooling.
+
+`make build`/`ui`/`run` run `make check` first (`tools/checkenv`, a small cross-platform Go program),
+so a missing Node, npm, or TypeScript compiler fails with an explanation and a fix rather than a raw
+platform error. **`tsc` is not a system tool** — it is a devDependency in `webui/node_modules`, so a
+"'tsc' is not recognized" failure means the frontend deps were not installed, or were installed
+without devDependencies (the common Windows cause is `NODE_ENV=production`, which makes `npm ci` skip
+them). The fix is `make deps` — or, without make, `cd webui && npm ci --include=dev`.
 
 ## CI gates (`.github/workflows/go.yml`)
 
@@ -70,7 +112,9 @@ npm run build     # type-check + bundle into ../web/dist
 
 **`web/dist` is committed** (not gitignored) so `go build ./...` works without a Node toolchain;
 rebuild and commit it when the UI changes. `webui/node_modules` is ignored. After changing the UI,
-run `npm run build` before building/running the Go binary, or the embedded assets will be stale.
+run `npm run build` (or `make ui` / `make build`) before building/running the Go binary, or the
+embedded assets will be stale — a rebuilt binary serving an old bundle is the classic "my UI change
+didn't show up". `git status` will show `web/dist` as changed after every build; that is expected.
 
 ## Git ownership
 

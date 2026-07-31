@@ -502,9 +502,24 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 
 	counter, unchangedFiles, allTagsWritten, errorFiles, err = WalkAndProcess(root, configFile.AutotaggerrProcessConcurrency, func(path string) (bool, int, error) {
 		return ProcessTrackFile(path, lidarrClient, plexClient, refreshSet, root, configFile)
-	})
+	}, nil)
 
 	return counter, unchangedFiles, allTagsWritten, errorFiles, refreshSet.Snapshot(), err
+}
+
+// CountSupportedFiles walks root and counts the audio files a scan would process.
+// It is the same enumeration WalkAndProcess uses for its own progress logging,
+// exposed so a caller can size a progress bar across several roots before any of
+// them starts. Walk errors are ignored, exactly as the scan tolerates them.
+func CountSupportedFiles(root string) int {
+	total := 0
+	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err == nil && !d.IsDir() && supportedExtensions[strings.ToLower(filepath.Ext(path))] {
+			total++
+		}
+		return nil
+	})
+	return total
 }
 
 // WalkAndProcess walks root and, for every supported audio file, runs process in
@@ -512,7 +527,12 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 // progress, and periodically flushing batched caches. It is the single scan
 // orchestrator shared by the legacy folder scan and the component pipeline; the
 // process callback decides how each file is correlated and tagged.
-func WalkAndProcess(root string, workers int, process func(path string) (unchanged bool, tagsWritten int, err error)) (
+//
+// onFile, if non-nil, is called once per file after it is processed, with its path.
+// It runs on the worker goroutine, so it must be cheap and safe for concurrent
+// calls — the scan uses it to advance a live progress counter without the per-file
+// hot path ever taking a lock.
+func WalkAndProcess(root string, workers int, process func(path string) (unchanged bool, tagsWritten int, err error), onFile func(path string)) (
 	counter int,
 	unchangedFiles int,
 	allTagsWritten int,
@@ -527,13 +547,7 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 	}
 
 	// first pass, count total supported files
-	totalFiles := 0
-	filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-		if err == nil && !d.IsDir() && supportedExtensions[strings.ToLower(filepath.Ext(path))] {
-			totalFiles++
-		}
-		return nil
-	})
+	totalFiles := CountSupportedFiles(root)
 
 	if totalFiles == 0 {
 		logger.Log.Info("no supported files found in: " + root)
@@ -588,6 +602,12 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 		go func(path string) {
 			defer wg.Done()
 			defer func() { <-sem }()
+			// Progress advances for every file visited, error or not, so the bar can
+			// reach 100% on a scan that hits some failures. Deferred so the error
+			// early-return below still counts the file as done.
+			if onFile != nil {
+				defer onFile(path)
+			}
 
 			unchanged, tagsWritten, procErr := process(path)
 			if procErr != nil {

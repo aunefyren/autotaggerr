@@ -56,6 +56,77 @@ func TestBeginFinish(t *testing.T) {
 	}
 }
 
+// TestStartProgressPersistsFinalSnapshot covers the two things the flusher promises:
+// stop() lands the latest snapshot on the row, and a Finish that follows does not
+// erase it (Finish Saves the struct, which writeProgress keeps in sync).
+func TestStartProgressPersistsFinalSnapshot(t *testing.T) {
+	db := testDB(t)
+	ev := Begin(db, models.EventTypeScan, "Library scan")
+
+	var done int
+	stop := StartProgress(db, ev, func() Progress {
+		done++
+		return Progress{Total: 100, Done: done, Phase: "scanning", Current: "Radiohead"}
+	})
+	stop() // synchronous final write
+
+	var got models.Event
+	if err := db.First(&got, "id = ?", ev.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if got.Total != 100 || got.Done == 0 || got.Phase != "scanning" || got.Current != "Radiohead" {
+		t.Errorf("progress not persisted: total=%d done=%d phase=%q current=%q", got.Total, got.Done, got.Phase, got.Current)
+	}
+
+	// Finish must not reset the progress fields it does not touch.
+	Finish(db, ev, models.EventStatusOK, "done", nil)
+	if err := db.First(&got, "id = ?", ev.ID).Error; err != nil {
+		t.Fatalf("reload after finish: %v", err)
+	}
+	if got.Total != 100 || got.Phase != "scanning" {
+		t.Errorf("Finish erased progress: total=%d phase=%q", got.Total, got.Phase)
+	}
+}
+
+// A nil db (the flag-driven single-file path builds events without one) must yield a
+// no-op stop rather than panicking.
+func TestStartProgressNilDB(t *testing.T) {
+	ev := Begin(nil, models.EventTypeScan, "scan")
+	stop := StartProgress(nil, ev, func() Progress { return Progress{} })
+	stop() // must not panic
+}
+
+// TestReconcileRunning covers the restart cleanup: running events are closed as
+// failed, while already-finished events are left untouched.
+func TestReconcileRunning(t *testing.T) {
+	db := testDB(t)
+	running := Begin(db, models.EventTypeScan, "interrupted scan")
+	done := Begin(db, models.EventTypeScan, "finished scan")
+	Finish(db, done, models.EventStatusOK, "done", nil)
+
+	ReconcileRunning(db)
+
+	var gotRunning models.Event
+	if err := db.First(&gotRunning, "id = ?", running.ID).Error; err != nil {
+		t.Fatalf("reload running: %v", err)
+	}
+	if gotRunning.Status != models.EventStatusError || gotRunning.FinishedAt == nil {
+		t.Errorf("interrupted event not closed: status=%q finished=%v", gotRunning.Status, gotRunning.FinishedAt)
+	}
+	if gotRunning.Summary == "" {
+		t.Error("interrupted event should carry an explanatory summary")
+	}
+
+	// The already-finished event must be left exactly as it was.
+	var gotDone models.Event
+	if err := db.First(&gotDone, "id = ?", done.ID).Error; err != nil {
+		t.Fatalf("reload done: %v", err)
+	}
+	if gotDone.Status != models.EventStatusOK || gotDone.Summary != "done" {
+		t.Errorf("finished event was altered: %+v", gotDone)
+	}
+}
+
 func TestPruneKeepsNewest(t *testing.T) {
 	db := testDB(t)
 	for i := 0; i < 5; i++ {

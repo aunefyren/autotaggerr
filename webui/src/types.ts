@@ -179,8 +179,18 @@ export interface Health {
   counts: Record<string, number>;
 }
 
+/** One queued or running background job. */
+export interface JobView {
+  kind: string;
+  title: string;
+}
+
 export interface ScanStatus {
   running: boolean;
+  /** The job executing right now (a scan, re-tag, or metadata refresh); absent when idle. */
+  current_job?: JobView;
+  /** Jobs waiting behind the current one, in the order they will run. */
+  queue?: JobView[];
   started_at?: string;
   finished_at?: string;
   processed: number;
@@ -189,6 +199,12 @@ export interface ScanStatus {
   tags_written: number;
   errors: number;
   last_error?: string;
+  /** Live progress while running: files to visit, files done, current stage, and the
+   *  artist folder being worked on. Absent/zero when no scan is in flight. */
+  total?: number;
+  done?: number;
+  phase?: string;
+  current?: string;
 }
 
 /**
@@ -263,6 +279,13 @@ export interface Event {
   title: string;
   summary: string;
   details: Record<string, unknown> | null;
+  /** Live progress, written on a throttled ticker while the event runs and left on
+   *  the finished row. total/done drive a bar; phase names the stage; current is what
+   *  is being worked on. Absent/zero when the job reported no countable progress. */
+  total?: number;
+  done?: number;
+  phase?: string;
+  current?: string;
   /** Per-file detail. Only the single-event endpoint returns it, never the feed. */
   items?: EventItem[];
 }

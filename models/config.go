@@ -45,6 +45,11 @@ type ConfigStruct struct {
 	AutotaggerrMirrorCronSchedule string `json:"autotaggerr_mirror_cron_schedule"`
 	AutotaggerrMirrorOnStartUp    bool   `json:"autotaggerr_mirror_on_start_up"`
 
+	// Health-check schedule for the configured Lidarr/Plex connections. Checks are
+	// cheap and only record an Activity event when a service's health changes, so a
+	// frequent cadence does not flood the feed. Empty falls back to the default.
+	AutotaggerrHealthCronSchedule string `json:"autotaggerr_health_cron_schedule"`
+
 	// MusicBrainz migration review policy. These are phrased as *review* opt-ins
 	// rather than auto-apply opt-outs on purpose: a bool absent from an existing
 	// config.json decodes as false, and false must mean "apply it" — the default —

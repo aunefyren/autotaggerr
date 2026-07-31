@@ -1,6 +1,7 @@
 // Package scan runs library scans and tracks their status. It wraps the component
-// pipeline (components.ScanLibrary) with a single-run guard and a last-run summary
-// so the scheduled job, the startup run, and the API all share one runner.
+// pipeline (components.ScanLibrary) behind a single serial job queue (see queue.go)
+// and a last-run summary, so the scheduled job, the startup run, and the API all share
+// one runner and one queue.
 package scan
 
 import (
@@ -8,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -38,9 +40,25 @@ const maxErrorFilesRecorded = 100
 // rest are counted and dropped rather than turned into a table nobody reads.
 const maxDetailItemsRecorded = 500
 
-// Summary is the status of the current or most recent scan.
+// Scan phases, reported in Summary.Phase so a running scan is legible. A scan reads
+// the metadata cache, walks the libraries, then acts on what changed — these name
+// each stage in order.
+const (
+	PhaseRefresh    = "refresh"    // re-reading metadata due for a refresh
+	PhaseScanning   = "scanning"   // walking libraries and tagging files
+	PhaseDrift      = "drift"      // re-tagging files of upstream-changed releases
+	PhasePlex       = "plex"       // telling Plex to refresh changed albums
+	PhaseMigrations = "migrations" // applying MusicBrainz redirects/deletions
+)
+
+// Summary is the status of the current or most recent scan, plus the job queue.
 type Summary struct {
+	// Running is whether any background job is executing; CurrentJob names it and Queue
+	// lists what is waiting behind it. The scan counters and progress below describe the
+	// current job only when it is a scan.
 	Running     bool       `json:"running"`
+	CurrentJob  *JobView   `json:"current_job,omitempty"`
+	Queue       []JobView  `json:"queue,omitempty"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
 	Processed   int        `json:"processed"`
@@ -49,6 +67,15 @@ type Summary struct {
 	TagsWritten int        `json:"tags_written"`
 	Errors      int        `json:"errors"`
 	LastError   string     `json:"last_error,omitempty"`
+
+	// Live progress, populated by Status() from the run's atomics while a scan is in
+	// flight. Total is every supported file the scan will visit (counted up front);
+	// Done climbs as files are processed; Phase names the current stage; Current is
+	// the artist folder being worked on. They are the progress bar the feed draws.
+	Total   int    `json:"total,omitempty"`
+	Done    int    `json:"done,omitempty"`
+	Phase   string `json:"phase,omitempty"`
+	Current string `json:"current,omitempty"`
 }
 
 // Runner owns scan execution and status. A single Runner instance is shared by
@@ -64,27 +91,49 @@ type Runner struct {
 	// stage cannot drift apart in what they fetch.
 	refresh *mirror.Runner
 
-	running atomic.Bool // drops overlapping runs
-	jobMu   sync.Mutex  // serializes run bodies
+	running atomic.Bool // a job is currently executing
+	jobMu   sync.Mutex  // held for the duration of each job; TryLock'd by interactive re-tags
+
+	// The job queue: a single worker (started in NewRunner) drains `queue` one at a
+	// time, so every background verb is serial and visible. `current` is the executing
+	// job; `wake` nudges the worker when something is enqueued.
+	queueMu sync.Mutex
+	queue   []job
+	current *job
+	wake    chan struct{}
 
 	statusMu sync.Mutex
 	summary  Summary
+
+	// Live scan progress, kept in atomics so the per-file callback never contends on
+	// statusMu across a pool of workers. Status() overlays these onto the summary
+	// while a scan runs, and the event-progress flusher reads them through
+	// progressSnapshot; the run resets them at its start.
+	progTotal   atomic.Int64
+	progDone    atomic.Int64
+	progPhase   atomic.Pointer[string]
+	progCurrent atomic.Pointer[string]
 }
 
-// NewRunner builds a runner. plex may be nil (Plex refresh is then skipped).
+// NewRunner builds a runner and starts its queue worker. plex may be nil (Plex
+// refresh is then skipped).
 //
-// The metadata runner is constructed here rather than passed in, and wired to
-// yield to this runner: the two share the MusicBrainz rate limit, and the one a
-// user is waiting on has to win. Callers that need the refresh verb directly
-// (the cron job, the API) take it back via Refresher.
+// The metadata runner is constructed here rather than passed in. It is wired with a
+// nil yieldTo: the queue serialises every background job, so a metadata pass never
+// runs alongside file work and has nothing to yield to. Wiring it to yield here would
+// also deadlock a scan's own inline refresh — the scan holds the running flag the
+// yield waits on. Callers that need the refresh verb directly take it back via
+// Refresher.
 func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *Runner {
 	r := &Runner{
 		db:          db,
 		plex:        plex,
 		version:     cfg.AutotaggerrVersion,
 		concurrency: cfg.AutotaggerrProcessConcurrency,
+		wake:        make(chan struct{}, 1),
 	}
-	r.refresh = mirror.NewRunner(db, r.Running)
+	r.refresh = mirror.NewRunner(db, nil)
+	go r.worker()
 	return r
 }
 
@@ -92,11 +141,63 @@ func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *
 // refresh verb without going through a scan.
 func (r *Runner) Refresher() *mirror.Runner { return r.refresh }
 
-// Status returns a copy of the current/last scan summary.
+// Status returns a copy of the current/last scan summary plus the queue. Running is
+// taken from the atomic so it reflects both queue jobs and the interactive re-tags
+// that never touch the summary; while a job runs the live progress atomics are folded
+// in, so a scan shows a moving bar without the per-file path taking the status lock.
 func (r *Runner) Status() Summary {
 	r.statusMu.Lock()
-	defer r.statusMu.Unlock()
-	return r.summary
+	s := r.summary
+	r.statusMu.Unlock()
+	s.Running = r.running.Load()
+	if s.Running {
+		p := r.progressSnapshot()
+		s.Total, s.Done, s.Phase, s.Current = p.Total, p.Done, p.Phase, p.Current
+	}
+	return s
+}
+
+// setPhase records the stage a running scan is in, for Summary.Phase and the event
+// progress row.
+func (r *Runner) setPhase(phase string) { r.progPhase.Store(&phase) }
+
+// setCurrent records what the scan is working on right now (an artist folder). Under
+// concurrent workers this is the most recently started file's artist — a liveness
+// indicator, not a strict cursor.
+func (r *Runner) setCurrent(current string) { r.progCurrent.Store(&current) }
+
+// progressSnapshot reads the live progress atomics into an events.Progress. It is the
+// single source both Status() and the event-progress flusher read, so the feed and
+// the status endpoint can never disagree.
+func (r *Runner) progressSnapshot() events.Progress {
+	phase, current := "", ""
+	if p := r.progPhase.Load(); p != nil {
+		phase = *p
+	}
+	if c := r.progCurrent.Load(); c != nil {
+		current = *c
+	}
+	return events.Progress{
+		Total:   int(r.progTotal.Load()),
+		Done:    int(r.progDone.Load()),
+		Phase:   phase,
+		Current: current,
+	}
+}
+
+// artistFromPath is the artist folder a file sits under, given the library root the
+// path convention (<root>/<ARTIST>/<ALBUM>/...) is anchored on. Empty when the path
+// is not under root or has no artist segment.
+func artistFromPath(root, path string) string {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) == 0 || parts[0] == "" || parts[0] == "." || parts[0] == ".." {
+		return ""
+	}
+	return parts[0]
 }
 
 // Running reports whether a scan is in progress.
@@ -185,9 +286,15 @@ func (r *Runner) ArtistScope(artistMBID string) (Scope, error) {
 	}, nil
 }
 
-// RunAll scans every enabled library. It drops the run if one is already in
-// progress. Run it via `go` for background execution.
+// RunAll queues a scan of every enabled library. Deduped against an identical scan
+// already queued or running.
 func (r *Runner) RunAll() {
+	r.enqueue(job{jobScanAll, "scan_all", "Scan all libraries", r.runAllNow})
+}
+
+// runAllNow is the executor: it loads the libraries at run time (not enqueue time, so a
+// library added while queued is included) and scans them.
+func (r *Runner) runAllNow() {
 	var libraries []models.Library
 	if err := r.db.Where("enabled = ?", true).Order("name").Find(&libraries).Error; err != nil {
 		logger.Log.Error("failed to load libraries from database. error: " + err.Error())
@@ -197,24 +304,24 @@ func (r *Runner) RunAll() {
 		logger.Log.Info("no enabled libraries configured; nothing to scan")
 		return
 	}
-	r.Run(LibraryScope(libraries))
+	r.runScope(LibraryScope(libraries))
 }
 
-// RunLibrary scans one library by ID. It returns an error only when the library
-// cannot be loaded; the scan itself runs under the same single-run guard.
+// RunLibrary queues a scan of one library by ID. It returns an error only when the
+// library cannot be loaded now; the scan itself runs later on the queue worker.
 func (r *Runner) RunLibrary(id uuid.UUID) error {
 	var library models.Library
 	if err := r.db.First(&library, "id = ?", id).Error; err != nil {
 		return err
 	}
-	r.Run(LibraryScope([]models.Library{library}))
+	r.enqueue(job{jobScanLibrary, "scan_library:" + id.String(), "Scan of " + library.Name, func() {
+		r.runScope(LibraryScope([]models.Library{library}))
+	}})
 	return nil
 }
 
-// RunArtist scans one artist's folders. It returns an error when the scope cannot be
-// resolved (unknown artist, no files on disk); the scan itself runs under the same
-// single-run guard as every other scan. Callers that want to report the resolution
-// failure to a user should call ArtistScope first and Run the result.
+// RunArtist queues a scan of one artist's folders. It returns an error when the scope
+// cannot be resolved (unknown artist, no files on disk); the scan itself runs later.
 func (r *Runner) RunArtist(artistMBID string) error {
 	scope, err := r.ArtistScope(artistMBID)
 	if err != nil {
@@ -224,23 +331,42 @@ func (r *Runner) RunArtist(artistMBID string) error {
 	return nil
 }
 
-// Run executes a scope. It drops the run if a scan or sync is already in progress.
-// Run it via `go` for background execution.
+// Run queues a pre-resolved scope. The API resolves the scope first (so "this artist
+// has no files" is answered immediately) and hands the result here; the dedup key comes
+// from the scope title, so a second identical request collapses onto the first.
 func (r *Runner) Run(scope Scope) {
-	if !r.running.CompareAndSwap(false, true) {
-		logger.Log.Warn("library scan skipped: previous run still in progress")
-		return
+	key := "scan_artist:" + scope.Title
+	if mbid, ok := scope.Detail["artist_mb_id"].(string); ok && mbid != "" {
+		key = "scan_artist:" + mbid
 	}
-	defer r.running.Store(false)
+	r.enqueue(job{jobScanArtist, key, scope.Title, func() { r.runScope(scope) }})
+}
 
-	r.jobMu.Lock()
-	defer r.jobMu.Unlock()
-
+// runScope executes a scan of a scope. It is only ever called by the queue worker,
+// which holds jobMu and the running flag for its duration — so this body takes no guard
+// of its own.
+func (r *Runner) runScope(scope Scope) {
 	start := time.Now()
-	r.setStatus(func(s *Summary) { *s = Summary{Running: true, StartedAt: &start} })
+	// Reset the scan counters and progress for this run without disturbing the
+	// queue view (CurrentJob / Queue) the worker set.
+	r.setStatus(func(s *Summary) {
+		s.StartedAt = &start
+		s.FinishedAt = nil
+		s.Processed, s.Unchanged, s.Changed, s.TagsWritten, s.Errors = 0, 0, 0, 0, 0
+		s.LastError = ""
+	})
 	logger.Log.Info("library process task starting...")
 
 	event := events.Begin(r.db, models.EventTypeScan, scope.Title)
+
+	// Reset the live progress atomics and start the flusher that writes them onto the
+	// running event, so the Activity feed can draw a bar. Stopped before Finish, whose
+	// Save must not race the flusher for the row.
+	r.progDone.Store(0)
+	r.progTotal.Store(0)
+	r.setCurrent("")
+	r.setPhase(PhaseRefresh)
+	stopProgress := events.StartProgress(r.db, event, r.progressSnapshot)
 
 	// Per-run MusicBrainz accounting. Only the `fetches` figure pays the rate
 	// limiter, so this is what makes "why did this scan take seven hours" answerable
@@ -253,6 +379,22 @@ func (r *Runner) Run(scope Scope) {
 	var errorFiles []string
 	libraryNames := make([]string, 0, len(scope.Targets))
 
+	// Size the progress bar up front by counting the files the scan will visit. The
+	// same walk WalkAndProcess does per root, summed across every target, so the bar
+	// tracks the whole scan rather than resetting per library. One extra disk walk,
+	// against the far heavier tag reads the scan is about to do.
+	var totalFiles int
+	for _, target := range scope.Targets {
+		roots := target.Roots
+		if len(roots) == 0 {
+			roots = []string{target.Library.Path}
+		}
+		for _, root := range roots {
+			totalFiles += modules.CountSupportedFiles(root)
+		}
+	}
+	r.progTotal.Store(int64(totalFiles))
+
 	// Refresh stage. A scan reads files through the *cache*, so without this it
 	// would tag from a week-old copy and never notice a release that changed
 	// upstream. Only expired entries are re-read, which is what keeps a nightly
@@ -262,11 +404,22 @@ func (r *Runner) Run(scope Scope) {
 	// a scheduled refresh it is perfectly able to run alongside would be absurd.
 	refreshResult := r.refresh.RunInline(context.Background(), mirror.DueScope(modules.MusicbrainzDueForRefresh()))
 
+	r.setPhase(PhaseScanning)
 	for _, target := range scope.Targets {
 		library := target.Library
 		libraryNames = append(libraryNames, library.Name)
 		logger.Log.Info("processing library: " + library.Path)
-		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.concurrency)
+
+		// Advance the live counter per file and name the artist folder being worked
+		// on. Runs on scan worker goroutines, so it only touches the lock-free atomics.
+		root := library.Path
+		onFile := func(path string) {
+			r.progDone.Add(1)
+			if a := artistFromPath(root, path); a != "" {
+				r.setCurrent(a)
+			}
+		}
+		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.concurrency, onFile)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library.Path + "'. error: " + err.Error())
 			r.setStatus(func(s *Summary) { s.LastError = err.Error() })
@@ -297,12 +450,14 @@ func (r *Runner) Run(scope Scope) {
 	// is the scan's job, not the refresh's.
 	drift := releaseRefresh{}
 	if len(refreshResult.ChangedReleases) > 0 {
+		r.setPhase(PhaseDrift)
 		logger.Log.Infof("%d release(s) changed upstream; re-tagging their files", len(refreshResult.ChangedReleases))
 		drift = r.retagReleases(refreshResult.ChangedReleases, refreshSet, detail)
 		tagsWritten += drift.retagged
 		errorFiles = append(errorFiles, drift.errorFiles...)
 	}
 
+	r.setPhase(PhasePlex)
 	r.flushPlex(refreshSet)
 
 	end := time.Now()
@@ -314,8 +469,10 @@ func (r *Runner) Run(scope Scope) {
 	}
 	logger.Log.Info("process took: " + end.Sub(start).String())
 
+	// Running is not cleared here: the queue worker owns it (and clears it after this
+	// returns), so a scan finishing does not mark the runner idle while a queued job is
+	// about to start.
 	r.setStatus(func(s *Summary) {
-		s.Running = false
 		s.FinishedAt = &end
 		s.Processed = processed
 		s.Unchanged = unchanged
@@ -340,7 +497,12 @@ func (r *Runner) Run(scope Scope) {
 	// A scan fetches releases just as a sync does, so it detects redirects and
 	// deletions too — draining the queue here keeps a cold scan from leaving them
 	// for whenever the next sync happens to run.
+	r.setPhase(PhaseMigrations)
 	migrations := r.applyMigrations()
+
+	// Stop the flusher before Finish writes the row: its final snapshot lands the last
+	// progress, and Finish then Saves the event without racing an in-flight update.
+	stopProgress()
 
 	summary := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, len(errorFiles))
 	details := map[string]any{
@@ -440,6 +602,10 @@ func (r *Runner) applyMigrations() migration.Result {
 //
 // Run via `go` for background execution.
 func (r *Runner) SyncDrift() {
+	r.enqueue(job{jobRefreshAll, "refresh_all", "Metadata refresh", r.syncDriftNow})
+}
+
+func (r *Runner) syncDriftNow() {
 	if err := r.refresh.RunCollection(context.Background(), false); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
 		logger.Log.Warnf("metadata refresh failed: %s", err.Error())
 	}
@@ -457,6 +623,10 @@ func (r *Runner) SyncDrift() {
 //
 // Run via `go` for background execution.
 func (r *Runner) VerifyIdentities() {
+	r.enqueue(job{jobRefreshVerify, "refresh_verify", "Verify identities", r.verifyIdentitiesNow})
+}
+
+func (r *Runner) verifyIdentitiesNow() {
 	if err := r.refresh.RunCollection(context.Background(), true); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
 		logger.Log.Warnf("full metadata refresh failed: %s", err.Error())
 	}
@@ -475,6 +645,12 @@ func (r *Runner) VerifyIdentities() {
 //
 // Run via `go` for background execution.
 func (r *Runner) RefreshArtist(artistMBID string) {
+	r.enqueue(job{jobRefreshArtist, "refresh_artist:" + artistMBID, "Refresh metadata", func() {
+		r.refreshArtistNow(artistMBID)
+	}})
+}
+
+func (r *Runner) refreshArtistNow(artistMBID string) {
 	scope, err := mirror.ArtistScope(r.db, artistMBID)
 	if err != nil {
 		logger.Log.Warnf("metadata refresh skipped for artist %s: %s", artistMBID, err.Error())
@@ -502,6 +678,12 @@ func (r *Runner) RefreshArtist(artistMBID string) {
 //
 // Run via `go` for background execution.
 func (r *Runner) RefreshLibrary(libraryID uuid.UUID) {
+	r.enqueue(job{jobRefreshLibrary, "refresh_library:" + libraryID.String(), "Refresh metadata", func() {
+		r.refreshLibraryNow(libraryID)
+	}})
+}
+
+func (r *Runner) refreshLibraryNow(libraryID uuid.UUID) {
 	scope, err := mirror.LibraryScope(r.db, libraryID)
 	if err != nil {
 		logger.Log.Warnf("metadata refresh skipped for library %s: %s", libraryID, err.Error())
@@ -512,10 +694,16 @@ func (r *Runner) RefreshLibrary(libraryID uuid.UUID) {
 	}
 }
 
-// RetagLibrary rewrites every indexed file in one library from its stored
+// RetagLibrary queues a re-tag of every indexed file in one library from its stored
 // correlation, without walking the disk or re-fetching anything. The library-scoped
 // twin of RetagArtist.
 func (r *Runner) RetagLibrary(libraryID uuid.UUID) {
+	r.enqueue(job{jobRetagLibrary, "retag_library:" + libraryID.String(), "Tag files", func() {
+		r.retagLibraryNow(libraryID)
+	}})
+}
+
+func (r *Runner) retagLibraryNow(libraryID uuid.UUID) {
 	var library models.Library
 	if err := r.db.First(&library, "id = ?", libraryID).Error; err != nil {
 		logger.Log.Warnf("re-tag skipped: library %s not found: %s", libraryID, err.Error())
@@ -528,15 +716,6 @@ func (r *Runner) RetagLibrary(libraryID uuid.UUID) {
 		logger.Log.Warnf("failed to load items for library %s: %s", library.Name, err.Error())
 		return
 	}
-
-	if !r.running.CompareAndSwap(false, true) {
-		logger.Log.Warn("re-tag skipped: a scan or re-tag is already running")
-		return
-	}
-	defer r.running.Store(false)
-
-	r.jobMu.Lock()
-	defer r.jobMu.Unlock()
 
 	logger.Log.Infof("re-tagging %d files for library: %s", len(items), library.Name)
 	event := events.Begin(r.db, models.EventTypeDriftSync, "Tag files in "+library.Name)
@@ -565,6 +744,12 @@ func (r *Runner) RetagLibrary(libraryID uuid.UUID) {
 // disk), and a metadata refresh would spend rate limit re-reading releases that never
 // changed; this writes what is already known and stops.
 func (r *Runner) RetagArtist(artistMBID string) {
+	r.enqueue(job{jobRetagArtist, "retag_artist:" + artistMBID, "Tag files", func() {
+		r.retagArtistNow(artistMBID)
+	}})
+}
+
+func (r *Runner) retagArtistNow(artistMBID string) {
 	var artist models.CollectionArtist
 	if err := r.db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
 		logger.Log.Warnf("re-tag skipped: artist %s not found: %s", artistMBID, err.Error())
@@ -575,15 +760,6 @@ func (r *Runner) RetagArtist(artistMBID string) {
 		logger.Log.Warnf("failed to load items for %s: %s", artist.Name, err.Error())
 		return
 	}
-
-	if !r.running.CompareAndSwap(false, true) {
-		logger.Log.Warn("re-tag skipped: a scan or sync is already running")
-		return
-	}
-	defer r.running.Store(false)
-
-	r.jobMu.Lock()
-	defer r.jobMu.Unlock()
 
 	logger.Log.Infof("re-tagging %d files for artist: %s", len(items), artist.Name)
 	event := events.Begin(r.db, models.EventTypeDriftSync, "Tag files for "+artist.Name)
@@ -672,18 +848,43 @@ func (res *releaseRefresh) retagItems(r *Runner, items []models.LibraryItem, lib
 	}
 }
 
-// flushPlex tells Plex to refresh every album a run touched. A nil client (Plex not
-// configured) skips it, which is the documented default.
+// flushPlex tells Plex to refresh every album a run touched, and records the batch as
+// a single Plex refresh event. A nil client (Plex not configured) or an empty set
+// skips it — nothing happened, so no event. One event per run rather than per album
+// keeps the feed readable when a scan touches hundreds of albums.
 func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet) {
 	if r.plex == nil {
 		return
 	}
-	for albumName, albumKey := range refreshSet.Snapshot() {
+	albums := refreshSet.Snapshot()
+	if len(albums) == 0 {
+		return
+	}
+
+	event := events.Begin(r.db, models.EventTypePlexRefresh, "Plex refresh")
+	refreshed := 0
+	failed := make([]string, 0)
+	for albumName, albumKey := range albums {
 		if err := r.plex.RefreshAlbum(albumKey); err != nil {
 			logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
+			failed = append(failed, albumName)
+			continue
 		}
+		refreshed++
 		logger.Log.Info("triggered Plex refresh for album: " + albumName)
 	}
+
+	status := models.EventStatusOK
+	if len(failed) > 0 {
+		status = models.EventStatusError
+	}
+	summary := fmt.Sprintf("%d album(s) refreshed · %d failed", refreshed, len(failed))
+	events.Finish(r.db, event, status, summary, map[string]any{
+		"albums_refreshed": refreshed,
+		"albums_failed":    len(failed),
+		"failed_albums":    failed,
+	})
+	events.Prune(r.db, eventRetention)
 }
 
 // finishRefresh records the Activity event shared by every re-tagging run, with
@@ -788,24 +989,25 @@ type RetagResult struct {
 	Err     error
 }
 
-// RetagItems rewrites several indexed files from their stored correlations. It
-// takes the scan run-guard for the whole batch rather than checking it per file:
-// a bulk attach writes a whole folder, and a scan starting halfway through would
-// be tagging the same files from another goroutine.
+// RetagItems rewrites several indexed files from their stored correlations. Unlike the
+// queued verbs it runs synchronously on the caller's goroutine and returns per-file
+// results — a bulk attach needs the outcome now, not an event later.
 //
-// Libraries and taggers are resolved once and reused across the batch, which is
-// what makes attaching a 20-track album one unit of work rather than 20.
+// It shares jobMu with the queue worker but TryLocks it: if a background job holds the
+// lock it refuses immediately rather than blocking the HTTP request behind a job that
+// could run for hours. That mutual exclusion is what stops a scan and an attach writing
+// the same file from two goroutines. Libraries and taggers are resolved once and reused
+// across the batch, which makes attaching a 20-track album one unit of work, not 20.
 func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	if len(itemIDs) == 0 {
 		return nil, nil
 	}
-	if !r.running.CompareAndSwap(false, true) {
-		return nil, errors.New("a scan is already running — try again once it finishes")
+	if !r.jobMu.TryLock() {
+		return nil, errors.New("a background job is running — try again once it finishes")
 	}
-	defer r.running.Store(false)
-
-	r.jobMu.Lock()
 	defer r.jobMu.Unlock()
+	r.running.Store(true)
+	defer r.running.Store(false)
 
 	libraries := map[uuid.UUID]models.Library{}
 	results := make([]RetagResult, 0, len(itemIDs))

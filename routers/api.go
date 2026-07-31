@@ -59,6 +59,11 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/auth/me", a.me)
 		protected.GET("/health", a.health)
 
+		// Which artwork kinds can actually be served, so the UI skips requests that
+		// would only 404. Behind auth because only the app reads it; the images
+		// themselves stay public for <img>.
+		protected.GET("/artwork-capabilities", a.artworkCapabilities)
+
 		// Data sources
 		protected.GET("/data-sources", a.listDataSources)
 		protected.POST("/data-sources", a.createDataSource)

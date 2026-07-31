@@ -159,7 +159,7 @@ func ScanLibrary(
 	processedVersion string,
 	workers int,
 ) (counter, unchangedFiles, tagsWritten int, errorFiles []string, err error) {
-	return ScanLibraryRoots(db, library, nil, plexClient, refreshSet, detail, processedVersion, workers)
+	return ScanLibraryRoots(db, library, nil, plexClient, refreshSet, detail, processedVersion, workers, nil)
 }
 
 // ScanLibraryRoots is ScanLibrary narrowed to part of a library: it walks each of
@@ -177,6 +177,10 @@ func ScanLibrary(
 // summed. A root that no longer exists on disk is walked as an empty folder — the
 // zero counters that produces are the honest report for "the folder is gone", and it
 // keeps one stale target from abandoning the others.
+//
+// onFile, if non-nil, is called once per processed file with its path; it is passed
+// straight through to WalkAndProcess so the scan runner can advance a live progress
+// counter. It must be cheap and concurrency-safe.
 func ScanLibraryRoots(
 	db *gorm.DB,
 	library models.Library,
@@ -186,6 +190,7 @@ func ScanLibraryRoots(
 	detail *DetailCollector,
 	processedVersion string,
 	workers int,
+	onFile func(path string),
 ) (counter, unchangedFiles, tagsWritten int, errorFiles []string, err error) {
 	manager, tagger, err := BuildForLibrary(db, library)
 	if err != nil {
@@ -203,7 +208,7 @@ func ScanLibraryRoots(
 				return true, 0, nil // counts as unchanged
 			}
 			return ProcessFile(db, library, manager, tagger, plexClient, refreshSet, detail, path, library.Path, processedVersion)
-		})
+		}, onFile)
 		counter += c
 		unchangedFiles += u
 		tagsWritten += tw

@@ -1,8 +1,10 @@
+import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useFetch } from "../hooks";
 import { Health, ScanStatus } from "../types";
 import { ErrorNote } from "../components/ui";
+import { ProgressBar } from "../components/ProgressBar";
 
 const LABELS: Record<string, string> = {
   libraries: "Libraries",
@@ -15,6 +17,14 @@ const LABELS: Record<string, string> = {
 export default function Dashboard() {
   const health = useFetch<Health>(() => api.get("/health"));
   const scan = useFetch<ScanStatus>(() => api.get("/scan/status"));
+
+  // Keep the scan card live while a run is in progress.
+  const running = scan.data?.running ?? false;
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => scan.reload(), 3000);
+    return () => clearInterval(t);
+  }, [running, scan.reload]);
 
   if (health.err) return <ErrorNote message={health.err} />;
 
@@ -60,18 +70,29 @@ export default function Dashboard() {
           </Link>
         </div>
         {scan.data && (scan.data.finished_at || scan.data.running) ? (
-          <div className="row" style={{ gap: 24, flexWrap: "wrap" }}>
-            <ScanStat label="Processed" value={scan.data.processed} />
-            <ScanStat label="Changed" value={scan.data.changed} accent="var(--accent-text)" />
-            <ScanStat label="Tags written" value={scan.data.tags_written} />
-            <ScanStat label="Errors" value={scan.data.errors} accent={scan.data.errors ? "var(--danger-text)" : undefined} />
-            <div style={{ marginLeft: "auto" }}>
-              {scan.data.running ? (
-                <span className="pill pill-scan"><span className="dot" />Running</span>
-              ) : (
-                <span className="pill pill-ok"><span className="dot" />Idle</span>
-              )}
+          <div className="stack" style={{ gap: 12 }}>
+            <div className="row" style={{ gap: 24, flexWrap: "wrap" }}>
+              <ScanStat label="Processed" value={scan.data.processed} />
+              <ScanStat label="Changed" value={scan.data.changed} accent="var(--accent-text)" />
+              <ScanStat label="Tags written" value={scan.data.tags_written} />
+              <ScanStat label="Errors" value={scan.data.errors} accent={scan.data.errors ? "var(--danger-text)" : undefined} />
+              <div style={{ marginLeft: "auto" }}>
+                {scan.data.running ? (
+                  <span className="pill pill-scan"><span className="dot" />Running</span>
+                ) : (
+                  <span className="pill pill-ok"><span className="dot" />Idle</span>
+                )}
+              </div>
             </div>
+            {scan.data.running && (scan.data.total ?? 0) > 0 && (
+              <div className="row" style={{ gap: 10, alignItems: "center" }}>
+                <ProgressBar done={scan.data.done ?? 0} total={scan.data.total ?? 0} width={260} />
+                <span className="mono dim" style={{ fontSize: 11 }}>
+                  {scan.data.done ?? 0} / {scan.data.total}
+                  {scan.data.current ? ` · ${scan.data.current}` : ""}
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="muted">No scans yet. Start one from the Activity page.</div>

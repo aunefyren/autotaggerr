@@ -89,5 +89,9 @@ MusicBrainz calls go through `RateLimit()` — respect it when adding new MusicB
 
 ## Concurrency
 
-`processLibraries` is guarded by `libraryScanRunning` (atomic CAS, drops overlapping runs) and
-`jobMu` (serializes the job body). The cron job and the on-startup run share this guard.
+Every background verb (scans, re-tags, metadata refreshes) is enqueued onto a **single serial job
+queue** in `scan.Runner`, drained by one worker goroutine that holds `jobMu` per job (`scan/queue.go`).
+The cron job, the startup run and the API all enqueue; jobs dedup by key and file-writing jobs take
+priority over pending metadata jobs. Interactive `RetagItems` stays synchronous and `TryLock`s
+`jobMu`. On startup, `events.ReconcileRunning` closes out events left `running` by a crashed process.
+See [docs/scanning.md](docs/scanning.md#the-job-queue).

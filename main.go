@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -24,7 +23,9 @@ import (
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/database"
+	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/files"
+	"github.com/aunefyren/autotaggerr/health"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
@@ -150,27 +151,11 @@ func main() {
 	// configure Lidarr client
 	if files.ConfigFile.LidarrBaseURL != "" && files.ConfigFile.LidarrAPIKey != "" {
 		lidarrClient = modules.NewLidarrClient(files.ConfigFile.LidarrBaseURL, files.ConfigFile.LidarrAPIKey, &files.ConfigFile.LidarrHeaderCookie)
-		health, err := lidarrClient.HealthCheck()
-		if err != nil {
-			logger.Log.Error("failed to health check Lidarr. error: " + err.Error())
-		} else if !health {
-			logger.Log.Error("Lidarr connection is unhealthy")
-		} else {
-			logger.Log.Info("Lidarr connection is healthy")
-		}
 	}
 
 	// configure Plex client
 	if files.ConfigFile.PlexBaseURL != "" && files.ConfigFile.PlexToken != "" {
 		plexClient = modules.NewPlexClient(files.ConfigFile.PlexBaseURL, files.ConfigFile.PlexToken)
-		health, err := plexClient.HealthCheck()
-		if err != nil {
-			logger.Log.Error("failed to health check Plex. error: " + err.Error())
-		} else if !health {
-			logger.Log.Error("Plex connection is unhealthy")
-		} else {
-			logger.Log.Info("Plex connection is healthy")
-		}
 	}
 
 	// load all on-disk caches into memory once; the per-file path works purely
@@ -179,6 +164,12 @@ func main() {
 
 	// Apply the configured MusicBrainz request rate to the limiter.
 	components.ApplyDataSourceRateLimits(db)
+
+	// Close out any event left "running" by a previous process. Must run before the
+	// schedules and startup jobs below create new running events, so it only touches
+	// orphans from an interrupted run — the "two scans stuck at running" after a
+	// restart.
+	events.ReconcileRunning(db)
 
 	// Shared scan runner: the cron job, the startup run, and the API all drive
 	// library scans through this one instance (single-run guard + status).
@@ -199,24 +190,36 @@ func main() {
 		logger.Log.Error("library process task was not scheduled successfully.")
 	}
 
-	// Scheduled MusicBrainz mirror refresh.
+	// Scheduled MusicBrainz mirror refresh. Enqueued through the scan runner (SyncDrift)
+	// rather than started directly, so every background job — scans, re-tags, refreshes
+	// — shares one serial queue and a refresh takes its turn behind file work.
 	if !files.ConfigFile.AutotaggerrMirrorDisabled {
 		_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-			if err := mirrorRunner.RunCollection(ctx, false); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
-				logger.Log.Errorf("metadata refresh failed: %s", err.Error())
-			}
+			scanRunner.SyncDrift()
 		}, files.ConfigFile.AutotaggerrMirrorCronSchedule)
 		if err != nil {
 			logger.Log.Error("MusicBrainz mirror task was not scheduled successfully.")
 		}
 
 		if files.ConfigFile.AutotaggerrMirrorOnStartUp && filePath == nil {
-			go func() {
-				if err := mirrorRunner.RunCollection(context.Background(), false); err != nil {
-					logger.Log.Errorf("failed to start the metadata refresh: %s", err.Error())
-				}
-			}()
+			scanRunner.SyncDrift()
 		}
+	}
+
+	// Scheduled health checks for the configured connections. A baseline runs at
+	// startup (off the main goroutine, so a slow endpoint cannot stall boot); the cron
+	// then re-checks and records an event only when a connection's health changes.
+	// NewChecker returns nil when neither Lidarr nor Plex is configured, and Run is a
+	// no-op on nil.
+	healthChecker := health.NewChecker(db, lidarrClient, plexClient)
+	if filePath == nil {
+		go healthChecker.Run()
+	}
+	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
+		healthChecker.Run()
+	}, files.ConfigFile.AutotaggerrHealthCronSchedule)
+	if err != nil {
+		logger.Log.Error("health check task was not scheduled successfully.")
 	}
 
 	// start library process if no file is configured and the feature is enabled

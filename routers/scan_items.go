@@ -25,12 +25,10 @@ func (a *API) triggerScan(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
 		return
 	}
-	if a.Scan.Running() {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scan is already running"})
-		return
-	}
-	go a.Scan.RunAll()
-	c.JSON(http.StatusAccepted, gin.H{"status": "scan started"})
+	// No busy check: overlapping requests queue rather than 409, and an identical scan
+	// already queued or running is collapsed by the runner's dedup.
+	a.Scan.RunAll()
+	c.JSON(http.StatusAccepted, gin.H{"status": "scan queued"})
 }
 
 // scanLibrary starts a background scan of a single library.
@@ -48,16 +46,12 @@ func (a *API) scanLibrary(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
 		return
 	}
-	if a.Scan.Running() {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scan is already running"})
+	if err := a.Scan.RunLibrary(id); err != nil {
+		logger.Log.Error("failed to queue library scan. error: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to queue the scan"})
 		return
 	}
-	go func() {
-		if err := a.Scan.RunLibrary(id); err != nil {
-			logger.Log.Error("failed to scan library. error: " + err.Error())
-		}
-	}()
-	c.JSON(http.StatusAccepted, gin.H{"status": "scan started"})
+	c.JSON(http.StatusAccepted, gin.H{"status": "scan queued"})
 }
 
 // triggerSync starts a background metadata sync: re-check due MusicBrainz releases
@@ -67,12 +61,8 @@ func (a *API) triggerSync(c *gin.Context) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
 		return
 	}
-	if a.Scan.Running() {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scan or sync is already running"})
-		return
-	}
-	go a.Scan.SyncDrift()
-	c.JSON(http.StatusAccepted, gin.H{"status": "sync started"})
+	a.Scan.SyncDrift()
+	c.JSON(http.StatusAccepted, gin.H{"status": "sync queued"})
 }
 
 // refreshLibrary and retagLibrary are the library-scoped halves of the verb grid:
@@ -82,8 +72,8 @@ func (a *API) refreshLibrary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	go a.Scan.RefreshLibrary(lib.ID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "refresh started", "library": lib.Name})
+	a.Scan.RefreshLibrary(lib.ID)
+	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued", "library": lib.Name})
 }
 
 func (a *API) retagLibrary(c *gin.Context) {
@@ -92,12 +82,9 @@ func (a *API) retagLibrary(c *gin.Context) {
 		return
 	}
 
-	// Gated on a running scan because this writes files; the refresh above is not.
-	if a.Scan.Running() {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scan or re-tag is already running"})
-		return
-	}
-
+	// Still refused when there is nothing to tag — a "0 files tagged" event would look
+	// like the action silently failed — but no longer refused for a running job: it
+	// queues behind whatever is ahead of it.
 	var count int64
 	a.DB.Model(&models.LibraryItem{}).
 		Where("library_id = ? AND status = ?", lib.ID, models.LibraryItemStatusOK).Count(&count)
@@ -106,8 +93,8 @@ func (a *API) retagLibrary(c *gin.Context) {
 		return
 	}
 
-	go a.Scan.RetagLibrary(lib.ID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "tagging started", "library": lib.Name, "files": count})
+	a.Scan.RetagLibrary(lib.ID)
+	c.JSON(http.StatusAccepted, gin.H{"status": "tagging queued", "library": lib.Name, "files": count})
 }
 
 // libraryAction resolves the library a scoped action targets, answering the shared
@@ -162,13 +149,8 @@ func (a *API) artistAction(c *gin.Context) (models.CollectionArtist, bool) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
 		return artist, false
 	}
-	// Checked here as well as inside the runner: the runner drops an overlapping run
-	// silently (right for a cron job), whereas a user who pressed a button needs to be
-	// told why nothing happened.
-	if a.Scan.Running() {
-		c.JSON(http.StatusConflict, gin.H{"error": "a scan or sync is already running"})
-		return artist, false
-	}
+	// No running-scan refusal: an overlapping action queues rather than being dropped,
+	// and the runner collapses a duplicate of one already queued or running.
 	return artist, true
 }
 
@@ -190,8 +172,8 @@ func (a *API) scanArtist(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to scan"})
 		return
 	}
-	go a.Scan.Run(scope)
-	c.JSON(http.StatusAccepted, gin.H{"status": "scan started", "artist": artist.Name, "folders": scope.Detail["folders"]})
+	a.Scan.Run(scope)
+	c.JSON(http.StatusAccepted, gin.H{"status": "scan queued", "artist": artist.Name, "folders": scope.Detail["folders"]})
 }
 
 // refreshArtist re-reads this artist's catalogue and editions from MusicBrainz,
@@ -201,8 +183,8 @@ func (a *API) refreshArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	go a.Scan.RefreshArtist(artist.MBID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "refresh started", "artist": artist.Name})
+	a.Scan.RefreshArtist(artist.MBID)
+	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued", "artist": artist.Name})
 }
 
 // retagArtist rewrites this artist's indexed files from their stored correlations.
@@ -221,8 +203,8 @@ func (a *API) retagArtist(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files for this artist — run a scan first"})
 		return
 	}
-	go a.Scan.RetagArtist(artist.MBID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "tagging started", "artist": artist.Name, "files": len(items)})
+	a.Scan.RetagArtist(artist.MBID)
+	c.JSON(http.StatusAccepted, gin.H{"status": "tagging queued", "artist": artist.Name, "files": len(items)})
 }
 
 // scanStatus reports the current or most recent scan summary.

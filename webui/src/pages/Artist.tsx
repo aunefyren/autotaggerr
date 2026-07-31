@@ -8,6 +8,7 @@ import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
+import { ProgressBar } from "../components/ProgressBar";
 import {
   FilterChip,
   SortHeader,
@@ -321,9 +322,14 @@ export default function Artist() {
               Tag files
             </button>
             {running && (
-              <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A scan or sync is running">
-                Working…
-              </Link>
+              <span className="row" style={{ gap: 8, alignItems: "center" }}>
+                <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A scan or sync is running">
+                  Working…
+                </Link>
+                {(status.data?.total ?? 0) > 0 && (
+                  <ProgressBar done={status.data?.done ?? 0} total={status.data?.total ?? 0} width={100} />
+                )}
+              </span>
             )}
           </div>
         )}

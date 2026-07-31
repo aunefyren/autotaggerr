@@ -1,6 +1,7 @@
 package models
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -57,6 +58,7 @@ const (
 	EventTypePlexRefresh = "plex_refresh"
 	EventTypeMigration   = "mb_migration"
 	EventTypeMirror      = "mb_mirror"
+	EventTypeHealth      = "health_check"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -439,6 +441,18 @@ type Event struct {
 	RefType    string         `json:"ref_type,omitempty"`
 	RefID      *uuid.UUID     `gorm:"type:uuid" json:"ref_id,omitempty"`
 
+	// Live progress for a running event, so the Activity feed can draw a bar rather
+	// than an indefinite "running". Total/Done are the bar; Phase names the current
+	// stage; Current is the thing being worked on right now (a library, an artist).
+	// They are written on a throttled ticker (see events.StartProgress) — never per
+	// item — and left in place on the finished row, where the feed simply stops
+	// showing the bar. `current` is a reserved word in some SQL dialects, hence the
+	// explicit column name.
+	Total   int    `json:"total,omitempty"`
+	Done    int    `json:"done,omitempty"`
+	Phase   string `json:"phase,omitempty"`
+	Current string `gorm:"column:current_item" json:"current,omitempty"`
+
 	// Items is the per-file detail (EventItem rows), attached by the single-event
 	// endpoint only — never stored on this row and never loaded for the feed, where
 	// 50 events would drag thousands of rows behind them.
@@ -518,6 +532,19 @@ type CollectionArtist struct {
 
 // DefaultFollowTypes is what following an artist wants when nothing is configured.
 const DefaultFollowTypes = "Album,EP"
+
+// VariousArtistsMBID is MusicBrainz's special-purpose "Various Artists" artist —
+// the placeholder every compilation with no single album-artist is credited to. It
+// is shared across the whole database, so its "discography" is hundreds of thousands
+// of release-groups. Nothing about pulling that catalogue is useful: it is not a real
+// artist to follow, and a full fetch is unbounded work. Callers use IsVariousArtists
+// to short-circuit any discography pull for it.
+const VariousArtistsMBID = "89ad4ac3-39f7-470e-963a-56509c546377"
+
+// IsVariousArtists reports whether an MBID is the shared "Various Artists" placeholder.
+func IsVariousArtists(mbID string) bool {
+	return strings.EqualFold(strings.TrimSpace(mbID), VariousArtistsMBID)
+}
 
 // Collection artist origins.
 const (

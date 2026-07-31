@@ -673,7 +673,9 @@ func (a *API) discography(c *gin.Context) {
 	}
 
 	out := make([]releaseGroupView, 0, len(groups))
+	seen := make(map[string]bool, len(groups))
 	for _, g := range groups {
+		seen[g.ID] = true
 		rg, known := byMBID[g.ID]
 		if !known {
 			// Not in the collection: carry the MusicBrainz metadata so the row still
@@ -686,6 +688,18 @@ func (a *API) discography(c *gin.Context) {
 		}
 		view := newReleaseGroupView(rg, catalogued, anyEdition[g.ID], artist, editions[g.ID], recordings[g.ID])
 		view.OwnedEditions = editionCounts[g.ID]
+		out = append(out, view)
+	}
+
+	// Add any release-group the collection owns that the live discography did not list.
+	// The live list is capped (five pages) and, for the "Various Artists" placeholder,
+	// deliberately empty — so owned compilations would otherwise vanish from the page.
+	for _, rg := range stored {
+		if seen[rg.MBID] {
+			continue
+		}
+		view := newReleaseGroupView(rg, catalogued, anyEdition[rg.MBID], artist, editions[rg.MBID], recordings[rg.MBID])
+		view.OwnedEditions = editionCounts[rg.MBID]
 		out = append(out, view)
 	}
 

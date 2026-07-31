@@ -107,6 +107,13 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrHealthCronSchedule == "" {
+		// set new value — every five minutes; cheap, and only records an event when a
+		// connection's health actually changes
+		ConfigFile.AutotaggerrHealthCronSchedule = "0 */5 * * * *"
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrProcessConcurrency < 1 {
 		// set new value (number of files processed in parallel per scan)
 		ConfigFile.AutotaggerrProcessConcurrency = 4
@@ -181,6 +188,8 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrMirrorDisabled = false
 	ConfigFile.AutotaggerrMirrorCronSchedule = "0 0 3 * * *"
 	ConfigFile.AutotaggerrMirrorOnStartUp = false
+
+	ConfigFile.AutotaggerrHealthCronSchedule = "0 */5 * * * *"
 
 	// MusicBrainz migrations apply themselves by default; these hold a category back
 	// for manual approval instead. Written explicitly so the keys are discoverable in

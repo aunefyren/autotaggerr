@@ -1,11 +1,8 @@
 package routers
 
 import (
-	"context"
-	"errors"
 	"net/http"
 
-	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/gin-gonic/gin"
 )
 
@@ -28,7 +25,7 @@ func (a *API) mirrorStatus(c *gin.Context) {
 // HTTP request that asked for it, and tying it to the request would cancel the
 // whole thing the moment the browser tab closed.
 func (a *API) triggerMirror(c *gin.Context) {
-	if a.Mirror == nil {
+	if a.Mirror == nil || a.Scan == nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "mirror unavailable"})
 		return
 	}
@@ -36,21 +33,14 @@ func (a *API) triggerMirror(c *gin.Context) {
 	// force is what the Migrations page's "Refresh metadata" sends, and what the
 	// "ignore cached copies" option on the Metadata page sets. Same verb, same
 	// endpoint — the only difference is whether cached copies are trusted.
-	force := c.Query("force") == "true"
-
-	scope, err := mirror.CollectionScope(a.DB, force)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to enumerate the collection"})
-		return
-	}
-
-	if err := a.Mirror.Start(context.Background(), scope); err != nil {
-		if errors.Is(err, mirror.ErrAlreadyRunning) {
-			c.JSON(http.StatusConflict, gin.H{"error": "a mirror pass is already running"})
-			return
-		}
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
+	//
+	// Routed through the scan runner's queue rather than started directly, so a mirror
+	// pass takes its turn behind any file-writing work instead of running alongside it.
+	// Dedup collapses a second press onto the pass already queued or running.
+	if c.Query("force") == "true" {
+		a.Scan.VerifyIdentities()
+	} else {
+		a.Scan.SyncDrift()
 	}
 
 	c.JSON(http.StatusAccepted, a.Mirror.Status())

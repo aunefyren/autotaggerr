@@ -17,9 +17,9 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 - **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
   pulls the whole back catalogue of the chosen types. A global follow default could layer on later
   without a schema change.
-- **More activity events** — Plex refresh, health checks, file import. Per-file tag detail already
-  exists on scans and drift syncs (see [scanning.md](scanning.md)); what is missing is events for the
-  other things the app does.
+- **File-import events.** Plex refresh and scheduled health checks now emit events, and long jobs
+  carry live progress (see [scanning.md](scanning.md)); the remaining gap is an event for file import,
+  which ships with that feature (M6 pass E) rather than before it.
 - **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
   collection already knows about. Artists reached only by browsing still fall back to the
   on-demand path.
@@ -63,9 +63,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 The feature has shipped, including release-group pruning, artist identity verification and the
 manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
 
-- **The sweep has no progress reporting.** It runs for hours on a large collection and reports only
-  when finished — the Activity feed shows a running event with no sense of how far along it is.
-  The scan status summary already carries per-run counters; the sweep could feed the same thing.
 - **Release-group pruning only runs on a discography sync**, which is per-artist and user-triggered.
   An artist nobody syncs keeps their orphaned rows. The sweep verifies artist *identity* but does
   not prune their groups, because that would mean a discography fetch per artist on top of the

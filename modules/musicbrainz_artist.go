@@ -39,6 +39,15 @@ const (
 // collection. An error return likewise yields complete=false, since a discography
 // that failed halfway is indistinguishable from a short one.
 func GetMusicBrainzArtistReleaseGroups(artistID string) ([]models.MusicBrainzArtistReleaseGroup, bool, error) {
+	// "Various Artists" is a shared placeholder crediting every compilation without a
+	// single album-artist; its discography is hundreds of thousands of release-groups,
+	// so paging it is unbounded work that yields nothing worth following. Return an
+	// empty discography and, crucially, complete=false: a caller that prunes on absence
+	// must not treat this empty list as "MusicBrainz dropped everything".
+	if models.IsVariousArtists(artistID) {
+		return nil, false, nil
+	}
+
 	var all []models.MusicBrainzArtistReleaseGroup
 	complete := false
 

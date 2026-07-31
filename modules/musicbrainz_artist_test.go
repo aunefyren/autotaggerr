@@ -58,6 +58,30 @@ func TestArtistReleaseGroupsReportTruncation(t *testing.T) {
 	}
 }
 
+// The shared "Various Artists" placeholder has an unbounded discography, so it must
+// short-circuit to an empty, incomplete list without ever hitting MusicBrainz.
+func TestVariousArtistsDiscographyNotFetched(t *testing.T) {
+	hit := false
+	withMockMB(t, func(w http.ResponseWriter, _ *http.Request) {
+		hit = true
+		_ = json.NewEncoder(w).Encode(models.MusicBrainzArtistReleaseGroups{Count: 1})
+	})
+
+	rgs, complete, err := GetMusicBrainzArtistReleaseGroups(models.VariousArtistsMBID)
+	if err != nil {
+		t.Fatalf("GetMusicBrainzArtistReleaseGroups: %v", err)
+	}
+	if hit {
+		t.Error("Various Artists must not trigger a MusicBrainz request")
+	}
+	if len(rgs) != 0 {
+		t.Errorf("Various Artists discography = %d groups, want 0", len(rgs))
+	}
+	if complete {
+		t.Error("an empty Various Artists list must not claim to be complete (would trigger pruning)")
+	}
+}
+
 func TestCachedRelease(t *testing.T) {
 	withMockMB(t, func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(models.MusicBrainzReleaseResponse{ID: "rel-x", Title: "Cached"})

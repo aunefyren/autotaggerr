@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { Event, EventItem, EventsPage, ScanStatus } from "../types";
+import { Event, EventItem, EventsPage, JobView, ScanStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
+import { ProgressBar } from "../components/ProgressBar";
 import { useToast } from "../toast";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -15,7 +16,56 @@ const TYPE_LABELS: Record<string, string> = {
   lidarr_sync: "Lidarr sync",
   mb_migration: "Identity check",
   plex_refresh: "Plex refresh",
+  health_check: "Health check",
 };
+
+// Human labels for the stage a running job reports, across scans and metadata passes.
+const PHASE_LABELS: Record<string, string> = {
+  // scan phases
+  refresh: "Refreshing metadata",
+  scanning: "Scanning files",
+  drift: "Re-tagging changed releases",
+  plex: "Refreshing Plex",
+  migrations: "Applying identity changes",
+  // metadata-pass phases
+  artists: "Artists",
+  discographies: "Discographies",
+  editions: "Editions",
+  releases: "Releases",
+  paused: "Paused",
+};
+
+// Labels for the kinds of job the queue holds, so a pending row reads as words.
+const JOB_KIND_LABELS: Record<string, string> = {
+  scan_all: "Scan",
+  scan_library: "Scan",
+  scan_artist: "Scan",
+  retag_library: "Tag files",
+  retag_artist: "Tag files",
+  refresh_all: "Metadata refresh",
+  refresh_verify: "Verify identities",
+  refresh_artist: "Metadata refresh",
+  refresh_library: "Metadata refresh",
+};
+
+// isScanJob distinguishes a file-walking scan (which reports file counters and a
+// per-file progress bar) from a metadata refresh (which does not).
+function isScanJob(job?: JobView): boolean {
+  return job?.kind?.startsWith("scan") ?? false;
+}
+
+// A coarse elapsed string ("3m 20s", "1h 4m"). Recomputed on each poll-driven
+// re-render, which is close enough for a job measured in minutes to hours.
+function elapsed(from?: string): string {
+  if (!from) return "";
+  const secs = Math.max(0, Math.floor((Date.now() - new Date(from).getTime()) / 1000));
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  if (h) return `${h}h ${m}m`;
+  if (m) return `${m}m ${s}s`;
+  return `${s}s`;
+}
 
 function EventStatus({ status }: { status: string }) {
   if (status === "running") return <Pill kind="scan">Running</Pill>;
@@ -29,15 +79,18 @@ export default function Activity() {
   const status = useFetch<ScanStatus>(() => api.get("/scan/status"));
   const [selected, setSelected] = useState<Event | null>(null);
 
-  // Poll while a scan is running so the feed and banner stay live.
+  // Poll while anything is running — a scan (via its status) or any other job that
+  // left a running event in the feed, such as a metadata sweep with no scan in flight.
+  const anyEventRunning = (events.data?.events ?? []).some((e) => e.status === "running");
+  const shouldPoll = (status.data?.running ?? false) || anyEventRunning;
   useEffect(() => {
-    if (!status.data?.running) return;
+    if (!shouldPoll) return;
     const t = setInterval(() => {
       status.reload();
       events.reload();
     }, 3000);
     return () => clearInterval(t);
-  }, [status.data?.running, status.reload, events.reload]);
+  }, [shouldPoll, status.reload, events.reload]);
 
   // Refresh the feed whenever a scan starts or finishes.
   useEffect(() => {
@@ -75,15 +128,54 @@ export default function Activity() {
       </div>
 
       {status.data?.running && (
-        <div className="card" style={{ borderColor: "var(--border-strong)" }}>
-          <div className="row" style={{ justifyContent: "space-between" }}>
-            <div className="row" style={{ gap: 10 }}>
-              <Pill kind="scan">Scanning</Pill>
+        <div className="card stack" style={{ borderColor: "var(--border-strong)", gap: 8 }}>
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
+            <div className="row" style={{ gap: 10, alignItems: "center" }}>
+              <Pill kind="scan">{isScanJob(status.data.current_job) ? "Scanning" : "Working"}</Pill>
               <span className="muted">
-                {status.data.processed} processed · {status.data.changed} changed · {status.data.errors} errors
+                {status.data.current_job?.title ?? "Working…"}
+              </span>
+              {status.data.phase && (
+                <span className="dim" style={{ fontSize: 12 }}>{PHASE_LABELS[status.data.phase] ?? status.data.phase}</span>
+              )}
+              {status.data.current && (
+                <span className="dim mono" style={{ fontSize: 12 }} title="Currently processing">
+                  {status.data.current}
+                </span>
+              )}
+            </div>
+            <span className="dim mono" style={{ fontSize: 11 }}>{elapsed(status.data.started_at)}</span>
+          </div>
+
+          {(status.data.total ?? 0) > 0 && (
+            <div className="row" style={{ gap: 10, alignItems: "center" }}>
+              <ProgressBar done={status.data.done ?? 0} total={status.data.total ?? 0} width={260} />
+              <span className="mono dim" style={{ fontSize: 11 }}>
+                {status.data.done ?? 0} / {status.data.total}
               </span>
             </div>
-          </div>
+          )}
+
+          {/* The file counters describe a scan; a metadata refresh has none, so they are
+              shown only for a scan job. */}
+          {isScanJob(status.data.current_job) && (
+            <span className="muted" style={{ fontSize: 12 }}>
+              {status.data.processed} processed · {status.data.changed} changed · {status.data.errors} errors
+            </span>
+          )}
+        </div>
+      )}
+
+      {(status.data?.queue?.length ?? 0) > 0 && (
+        <div className="card stack" style={{ gap: 6 }}>
+          <div className="eyebrow">Queued ({status.data!.queue!.length})</div>
+          {status.data!.queue!.map((j, i) => (
+            <div key={i} className="row" style={{ gap: 8, alignItems: "center" }}>
+              <span className="dim mono" style={{ fontSize: 11, minWidth: 16, textAlign: "right" }}>{i + 1}</span>
+              <span style={{ fontSize: 13 }}>{j.title}</span>
+              <span className="dim" style={{ fontSize: 11 }}>{JOB_KIND_LABELS[j.kind] ?? j.kind}</span>
+            </div>
+          ))}
         </div>
       )}
 
@@ -111,7 +203,19 @@ export default function Activity() {
                   </td>
                   <td style={{ color: "var(--text)" }}>{ev.title || TYPE_LABELS[ev.type] || ev.type}</td>
                   <td><EventStatus status={ev.status} /></td>
-                  <td className="muted">{ev.summary}</td>
+                  <td className="muted">
+                    {ev.status === "running" && (ev.total ?? 0) > 0 ? (
+                      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+                        <ProgressBar done={ev.done ?? 0} total={ev.total ?? 0} width={120} showPercent={false} />
+                        <span className="dim mono" style={{ fontSize: 11 }}>
+                          {ev.done ?? 0}/{ev.total}
+                          {ev.phase ? ` · ${PHASE_LABELS[ev.phase] ?? ev.phase}` : ""}
+                        </span>
+                      </div>
+                    ) : (
+                      ev.summary
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

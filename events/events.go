@@ -4,6 +4,7 @@
 package events
 
 import (
+	"sync"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -11,6 +12,13 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
+
+// progressFlushInterval is how often a running event's live progress is written to
+// the database. It is a compromise: often enough that a feed watching a long job
+// sees it move, rare enough that a scan touching thousands of files does not turn
+// into thousands of UPDATEs. The per-item hot path never writes — StartProgress
+// polls the job's own counters on this tick.
+const progressFlushInterval = 2 * time.Second
 
 // Begin creates a running event and returns it. The caller finishes it with Finish.
 func Begin(db *gorm.DB, evType, title string) *models.Event {
@@ -27,6 +35,72 @@ func Begin(db *gorm.DB, evType, title string) *models.Event {
 		logger.Log.Warnf("failed to record event: %s", err.Error())
 	}
 	return ev
+}
+
+// Progress is one live snapshot of a running job. Total/Done drive the feed's
+// progress bar; Phase names the current stage; Current is what is being worked on
+// right now (a library name, an artist).
+type Progress struct {
+	Total, Done    int
+	Phase, Current string
+}
+
+// writeProgress records a snapshot onto the event, both in memory and in the
+// database. Setting the fields on the struct as well as the row matters: Finish
+// later calls Save(ev), which would write the struct's zero values back over the
+// row and erase the last progress if the struct had never been updated.
+func writeProgress(db *gorm.DB, ev *models.Event, p Progress) {
+	if ev == nil {
+		return
+	}
+	ev.Total, ev.Done, ev.Phase, ev.Current = p.Total, p.Done, p.Phase, p.Current
+	if db == nil || ev.ID == uuid.Nil {
+		return
+	}
+	updates := map[string]any{
+		"total": p.Total, "done": p.Done, "phase": p.Phase, "current_item": p.Current,
+	}
+	if err := db.Model(ev).Updates(updates).Error; err != nil {
+		logger.Log.Warnf("failed to record event progress: %s", err.Error())
+	}
+}
+
+// StartProgress launches a background flusher that writes the event's progress on a
+// ticker until the returned stop func is called. `snapshot` is polled, not pushed:
+// it reads the job's own live counters (guarded by the job), so the per-item hot
+// path never touches the database. stop() waits for the ticker goroutine to quit
+// before its final write, so the last snapshot is the value left on the row — and it
+// must be called before Finish, which then Saves that value rather than racing it.
+//
+// A nil db or an unpersisted event yields a no-op stop: the caller wires this in
+// unconditionally and need not special-case the db-less test path.
+func StartProgress(db *gorm.DB, ev *models.Event, snapshot func() Progress) (stop func()) {
+	if db == nil || ev == nil || ev.ID == uuid.Nil || snapshot == nil {
+		return func() {}
+	}
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(progressFlushInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				writeProgress(db, ev, snapshot())
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(done)
+			<-stopped
+			writeProgress(db, ev, snapshot())
+		})
+	}
 }
 
 // Finish marks an event complete with a final status, one-line summary, and a
@@ -74,6 +148,36 @@ func Items(db *gorm.DB, eventID uuid.UUID) ([]models.EventItem, error) {
 	}
 	err := db.Where("event_id = ?", eventID).Order("created_at, path").Find(&items).Error
 	return items, err
+}
+
+// ReconcileRunning closes out events left in the running state by a previous process.
+// A running event whose owning process is gone can never finish itself, so on startup
+// — before any new work begins — every such row is marked failed and stamped finished.
+// Without this an interrupted scan (or refresh, or sweep) shows as "running" in the
+// feed forever, and nothing distinguishes it from a live one.
+//
+// Startup-only by contract: it must run before the process starts any job of its own,
+// because it cannot tell "a previous process left this" from "this process just began
+// it". The caller places it ahead of every auto-start and schedule.
+func ReconcileRunning(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+	now := time.Now()
+	res := db.Model(&models.Event{}).
+		Where("status = ?", models.EventStatusRunning).
+		Updates(map[string]any{
+			"status":      models.EventStatusError,
+			"finished_at": now,
+			"summary":     "interrupted — the service restarted while this was running",
+		})
+	if res.Error != nil {
+		logger.Log.Warnf("failed to reconcile interrupted events: %s", res.Error.Error())
+		return
+	}
+	if res.RowsAffected > 0 {
+		logger.Log.Infof("marked %d interrupted event(s) as failed on startup", res.RowsAffected)
+	}
 }
 
 // Prune keeps only the newest `keep` events, deleting the rest along with their

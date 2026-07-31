@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -110,6 +111,20 @@ func TestArtworkWithoutProviderIs404(t *testing.T) {
 	w := getArtwork(r, "/api/v1/artwork/release-group/"+artworkTestMBID)
 	if w.Code != http.StatusNotFound {
 		t.Errorf("status = %d, want 404: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestArtworkNegativeIsCacheable(t *testing.T) {
+	r, _ := artworkAPI(t)
+	// "No image" is a stable answer, and the browser must be told so: without a
+	// Cache-Control header a coverless collection re-asks on every navigation, and a
+	// reverse proxy watching for 404 floods can ban the client for its own traffic.
+	w := getArtwork(r, "/api/v1/artwork/release-group/"+artworkTestMBID)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404", w.Code)
+	}
+	if got := w.Header().Get("Cache-Control"); got == "" {
+		t.Error("404 has no Cache-Control — the browser will re-ask on every navigation")
 	}
 }
 
@@ -245,5 +260,56 @@ func TestArtworkProvidersResolution(t *testing.T) {
 	}
 	if !p.FanartEnabled || p.FanartAPIKey != "k" {
 		t.Errorf("fanart not resolved: %+v", p)
+	}
+}
+
+func TestArtworkCapabilities(t *testing.T) {
+	// The endpoint is what lets the UI skip requests that could only 404, so it must
+	// report exactly what the artwork handler can deliver: a disabled — or, for
+	// fanart, keyless — provider is not a capability, however configured it looks.
+	cases := []struct {
+		name                  string
+		setup                 func(t *testing.T, db *gorm.DB)
+		wantCover, wantArtist bool
+	}{
+		{"nothing configured", func(_ *testing.T, _ *gorm.DB) {}, false, false},
+		{"cover only", func(t *testing.T, db *gorm.DB) {
+			addDataSource(t, db, models.DataSourceTypeCoverArtArchive, "https://caa.example", "", true)
+		}, true, false},
+		{"fanart with key", func(t *testing.T, db *gorm.DB) {
+			addDataSource(t, db, models.DataSourceTypeFanart, "https://fanart.example", "k", true)
+		}, false, true},
+		{"fanart without key cannot serve", func(t *testing.T, db *gorm.DB) {
+			addDataSource(t, db, models.DataSourceTypeFanart, "https://fanart.example", "", true)
+		}, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			r, db := artworkAPI(t)
+			tc.setup(t, db)
+			token := loginToken(t, r)
+
+			w := do(r, "GET", "/api/v1/artwork-capabilities", token, nil)
+			if w.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+			}
+			var got struct {
+				Cover  bool `json:"cover"`
+				Artist bool `json:"artist"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+				t.Fatalf("decode: %v (%s)", err, w.Body.String())
+			}
+			if got.Cover != tc.wantCover || got.Artist != tc.wantArtist {
+				t.Errorf("caps = %+v, want cover=%v artist=%v", got, tc.wantCover, tc.wantArtist)
+			}
+		})
+	}
+}
+
+func TestArtworkCapabilitiesRequiresAuth(t *testing.T) {
+	r, _ := artworkAPI(t)
+	if w := do(r, "GET", "/api/v1/artwork-capabilities", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
 	}
 }

@@ -435,9 +435,25 @@ func (r *Runner) run(ctx context.Context, scope Scope) (Result, error) {
 	})
 
 	event := events.Begin(r.db, models.EventTypeMirror, scope.Title)
+
+	// Flush the pass's live Total/Done/Phase onto the event row so the Activity feed
+	// draws a bar for a long refresh — the sweep especially, which runs for hours.
+	// Stopped before finish so its Save keeps the last progress rather than racing it.
+	stopProgress := events.StartProgress(r.db, event, r.progressSnapshot)
 	res, cancelled := r.execute(ctx, scope, true)
+	stopProgress()
+
 	r.finish(event, started, scope, res, cancelled)
 	return res, nil
+}
+
+// progressSnapshot reads the pass's live counters for the event-progress flusher.
+// Phase names the stage; the scope title is already the event's Title, so Current is
+// left empty here.
+func (r *Runner) progressSnapshot() events.Progress {
+	r.statusMu.Lock()
+	defer r.statusMu.Unlock()
+	return events.Progress{Total: r.summary.Total, Done: r.summary.Done, Phase: r.summary.Phase}
 }
 
 // execute is the pass body. track says whether to publish progress into the shared

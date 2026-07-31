@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/logger"
@@ -16,6 +17,27 @@ import (
 func init() {
 	logger.Log = logrus.New()
 	logger.Log.SetOutput(io.Discard)
+}
+
+// waitIdle blocks until the queue has drained and no job is executing. The trigger
+// verbs are asynchronous now (they enqueue), so a test must wait for the worker before
+// asserting on the result — and before its temp DB is torn down under a running job.
+func (r *Runner) waitIdle(t *testing.T) {
+	t.Helper()
+	deadline := time.After(30 * time.Second)
+	for {
+		r.queueMu.Lock()
+		idle := r.current == nil && len(r.queue) == 0
+		r.queueMu.Unlock()
+		if idle && !r.running.Load() {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("queue did not drain within 30s")
+		case <-time.After(2 * time.Millisecond):
+		}
+	}
 }
 
 func TestRunnerRunAll(t *testing.T) {
@@ -40,6 +62,7 @@ func TestRunnerRunAll(t *testing.T) {
 
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	r.RunAll()
+	r.waitIdle(t)
 
 	s := r.Status()
 	if s.Running {
@@ -63,6 +86,32 @@ func TestRunnerRunAll(t *testing.T) {
 	if errs, ok := ev.Details["errors"].(float64); !ok || errs != 1 {
 		t.Errorf("event details errors = %#v, want 1", ev.Details["errors"])
 	}
+
+	// The flusher should have counted the one file and left the final progress on the
+	// row: total==done==1, ending in the migrations phase.
+	if ev.Total != 1 || ev.Done != 1 {
+		t.Errorf("event progress total/done = %d/%d, want 1/1", ev.Total, ev.Done)
+	}
+	if ev.Phase != PhaseMigrations {
+		t.Errorf("event ended in phase %q, want %q", ev.Phase, PhaseMigrations)
+	}
+}
+
+func TestArtistFromPath(t *testing.T) {
+	root := filepath.FromSlash("/music")
+	cases := []struct {
+		path, want string
+	}{
+		{filepath.FromSlash("/music/Radiohead/OK Computer (1997)/01 Airbag.flac"), "Radiohead"},
+		{filepath.FromSlash("/music/Various Artists/Comp (2001)/01 One.mp3"), "Various Artists"},
+		{filepath.FromSlash("/elsewhere/Artist/Album/1.flac"), ""}, // not under root
+		{root, ""}, // the root itself has no artist segment
+	}
+	for _, c := range cases {
+		if got := artistFromPath(root, c.path); got != c.want {
+			t.Errorf("artistFromPath(%q, %q) = %q, want %q", root, c.path, got, c.want)
+		}
+	}
 }
 
 // SyncDrift is now the refresh verb at collection scope: it records a metadata
@@ -74,6 +123,7 @@ func TestRunnerSyncDriftEmitsRefreshEvent(t *testing.T) {
 	}
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.SyncDrift() // empty collection -> a clean no-op refresh
+	r.waitIdle(t)
 
 	var ev models.Event
 	if err := db.Where("type = ?", models.EventTypeMirror).First(&ev).Error; err != nil {
@@ -98,6 +148,7 @@ func TestRunnerNoLibraries(t *testing.T) {
 	}
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll() // no libraries -> no-op, no panic
+	r.waitIdle(t)
 	if r.Running() {
 		t.Error("runner should be idle")
 	}
@@ -171,6 +222,7 @@ func TestRunArtistScansOnlyTheArtistFolder(t *testing.T) {
 	if err := r.RunArtist("artist-1"); err != nil {
 		t.Fatalf("RunArtist: %v", err)
 	}
+	r.waitIdle(t)
 
 	if s := r.Status(); s.Errors != 1 {
 		t.Errorf("errors = %d, want 1 — the other artist's file should not have been walked", s.Errors)
@@ -209,7 +261,9 @@ func TestRunAllStampsLastScan(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"}).RunAll()
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r.RunAll()
+	r.waitIdle(t)
 
 	var after models.Library
 	if err := db.First(&after, "id = ?", library.ID).Error; err != nil {
@@ -232,6 +286,7 @@ func TestRetagArtistEmitsEvent(t *testing.T) {
 	}
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RetagArtist("artist-1")
+	r.waitIdle(t)
 
 	var ev models.Event
 	if err := db.Where("type = ?", models.EventTypeDriftSync).First(&ev).Error; err != nil {

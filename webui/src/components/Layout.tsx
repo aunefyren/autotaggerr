@@ -1,5 +1,6 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
+import { ArtworkCapabilitiesProvider } from "./Artwork";
 
 const NAV = [
   { to: "/", label: "Dashboard", ic: "◧", end: true },
@@ -22,6 +23,7 @@ export default function Layout() {
     NAV.find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to))) ?? NAV[0];
 
   return (
+    <ArtworkCapabilitiesProvider>
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
@@ -51,5 +53,6 @@ export default function Layout() {
         </main>
       </div>
     </div>
+    </ArtworkCapabilitiesProvider>
   );
 }

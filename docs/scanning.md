@@ -42,8 +42,10 @@ See [mirror.md](mirror.md) for the refresh verb and the scan's drift stage.
 
 ## The scan runner
 
-`scan.Runner` is shared by the cron job, the startup run and the API, so there is exactly one
-single-run guard (`running` atomic CAS, dropping overlapping runs) and one status summary.
+`scan.Runner` is shared by the cron job, the startup run and the API. Every background verb — scans,
+re-tags, and metadata refreshes — is enqueued onto **one serial job queue** drained by a single
+worker (see [the queue](#the-job-queue)), so exactly one runs at a time and the rest are shown as
+pending rather than dropped. `Status()` reports that queue alongside the last run's summary.
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -89,8 +91,9 @@ should not cost a cold scan. They differ in what they re-read, cheapest first:
 | **Refresh metadata** (`refresh`) | no | yes, TTL ignored | a release looks wrong upstream, or a new album should have appeared |
 | **Scan** (`scan`) | yes | as needed | files were added, moved or changed on disk |
 
-All three take the same single-run guard as a full scan, report through the same `GET /scan/status`,
-and record the same `scan` / `drift_sync` events with the artist named in the payload.
+All three go through the same [job queue](#the-job-queue) as a full scan, report through the same
+`GET /scan/status`, and record the same `scan` / `drift_sync` events with the artist named in the
+payload.
 
 `refresh` ignores the cache TTL on purpose. Asking by hand is not helped by "it was checked
 recently"; narrowing to one artist is what keeps that affordable within the MusicBrainz rate limit.
@@ -150,7 +153,7 @@ Catches upstream MusicBrainz changes and re-tags the files a scan would skip.
 - `MusicbrainzDueForRefresh` finds expired cache entries.
 - `RefreshMusicBrainzRelease` force-fetches and compares the old and new `hashRelease` (sha256 of
   the payload) → changed or not.
-- `scan.Runner.SyncDrift` shares the scan run-guard, refreshes what is due, and for changed releases
+- `scan.Runner.SyncDrift` enqueues onto the shared [job queue](#the-job-queue), refreshes what is due, and for changed releases
   re-tags the affected `library_items` from their stored correlation via `TagResolvedFile` plus the
   library's tagger — refreshing each item's on-disk identity afterwards so skip-unchanged stays
   correct.
@@ -168,7 +171,40 @@ checked/changed, files re-tagged and errors.
 reverse-chronological feed with status pills, a live scanning banner, a "Scan all" button and a
 click-through detail modal (scan stat grid, per-file detail, drift detail).
 
-Emitted today: `scan`, `drift_sync`, `lidarr_sync`.
+Emitted today: `scan`, `drift_sync`, `lidarr_sync`, `mb_mirror`, `mb_migration`, `plex_refresh`,
+`health_check`.
+
+- **`plex_refresh`** — one event per run wrapping `flushPlex`, summarising albums refreshed and
+  failed (`albums_refreshed` / `albums_failed` / `failed_albums`). One per album would flood the feed
+  when a scan touches hundreds; one per run keeps it readable. Emitted only when Plex is configured
+  and the run actually touched an album.
+- **`health_check`** — the configured Lidarr/Plex connections, probed at startup and on a cron
+  (`autotaggerr_health_cron_schedule`, default every five minutes). Recorded **only when a
+  connection's health changes** (with a baseline on the first check per process): a frequent cadence
+  otherwise buries the feed under identical "healthy" rows. `details.services` carries per-connection
+  `healthy` + `error`. Lives in `health.Checker`, which holds the last-seen state to gate the write.
+
+### Live progress
+
+Long events carry live progress so the feed can draw a bar instead of an indefinite "running":
+`Event.Total` / `Done` / `Phase` / `Current` (`current_item` column). They are written on a throttled
+ticker by `events.StartProgress`, which **polls** a snapshot of the job's own counters every two
+seconds — the per-item hot path never touches the database — and lands a final snapshot on `stop()`,
+called before `Finish` so its `Save` keeps the values rather than racing them.
+
+- **Scans** keep the live figures in lock-free atomics on the `scan.Runner`, so the per-file callback
+  (`WalkAndProcess`'s `onFile`) never contends on the status mutex across the worker pool. `Total` is
+  every supported file, counted up front across all targets (`modules.CountSupportedFiles`); `Phase`
+  moves through `refresh` → `scanning` → `drift` → `plex` → `migrations`; `Current` is the artist
+  folder of the most recently started file — a liveness indicator, not a strict cursor under
+  concurrency. `Status()` overlays the atomics onto the summary while a scan runs, so `/scan/status`
+  and the event row agree.
+- **Metadata passes** (`mb_mirror`, including the identity sweep) already tracked `Total`/`Done`/
+  `Phase` in `mirror.Summary`; the same flusher now mirrors them onto the event row, so a sweep that
+  runs for hours shows progress in the feed rather than only on `/mirror/status`.
+- The **Activity** feed polls while any event is running (not only during a scan), shows the bar +
+  phase + current + elapsed in the banner and inline on running rows; the **Dashboard** and **Artist**
+  scan widgets show the bar too.
 
 ### Per-file detail
 
@@ -244,8 +280,45 @@ from ~7 hours to ~14 minutes once the release cache was warm — the steady stat
 disk-bound, not rate-limited, which is what the worker pool and fetch coalescing are for. A cold
 first scan is still paced by MusicBrainz, and a local mirror is the only way around that.
 
-`processLibraries` is guarded by the runner's CAS plus `jobMu`, which serialises the job body; the
-cron job and the startup run share that guard.
+## The job queue
+
+Every background verb the runner exposes — `RunAll` / `RunLibrary` / `RunArtist` (scans),
+`RetagLibrary` / `RetagArtist` (re-tags), `SyncDrift` / `VerifyIdentities` / `RefreshArtist` /
+`RefreshLibrary` (metadata refreshes) — is now an **enqueue**, not an inline run. A single worker
+goroutine (`scan/queue.go`, started in `NewRunner`) drains the queue one job at a time, holding
+`jobMu` for the whole of each. This replaced the old "atomic CAS that dropped overlapping runs",
+which is what left a user's second scan silently vanishing and, after a crash, events stuck at
+`running` forever (the latter is also swept on startup — see [reconciliation](#restart-reconciliation)).
+
+- **Dedup.** Enqueuing a `key` already running or pending is a no-op, so a restart storm or a
+  double-click cannot stack redundant runs. Keys are per-scope: `scan_all`, `scan_library:<id>`,
+  `scan_artist:<mbid>`, `refresh_all`, and so on.
+- **Priority.** File-writing jobs (scans, re-tags) slot ahead of pending metadata jobs, so a scan a
+  user asked for is not stuck behind a hours-long refresh — but a job already *running* is never
+  preempted. Cancelling a running metadata pass (`POST /mirror/cancel`) is the way to jump it.
+- **Serialisation replaces the yield.** Because nothing overlaps any more, the metadata runner drops
+  its old cooperative "yield to file work" dance (`mirror.NewRunner` is now wired with a nil
+  `yieldTo`). That also removes a latent self-deadlock: a scan's own inline refresh used to wait on
+  the running flag the scan itself held.
+- **Interactive re-tags stay synchronous.** `RetagItems` (the attach flow) must return per-file
+  results to its HTTP caller, so it is not queued; it `TryLock`s `jobMu` and refuses immediately if a
+  background job holds it, rather than blocking the request behind a job that could run for hours.
+- **API.** Trigger endpoints no longer 409 on "already running" — they enqueue and return `202`
+  (`scan queued`, etc.). The remaining 409s are "nothing to scan / no indexed files" refusals, which
+  are unchanged. `Status()` carries `current_job` and `queue`, which the Activity page renders as a
+  live banner plus a pending list.
+
+Within a single scan, files are still processed by a bounded worker pool
+(`autotaggerr_process_concurrency`); the queue serialises *jobs*, the pool parallelises *files inside
+a job*.
+
+## Restart reconciliation
+
+`events.ReconcileRunning` runs once at startup, before any schedule or auto-start fires, and marks
+every event still in the `running` state as failed ("interrupted — the service restarted"). A running
+event whose process is gone can never finish itself, so without this an interrupted scan or sweep
+shows as running in the feed forever. It is startup-only by contract: run later, it could not tell a
+previous process's orphan from a job this process just began.
 
 ## Plex refresh
 
