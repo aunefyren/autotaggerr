@@ -109,6 +109,66 @@ func TestArtistTargetsEmptyWithoutFiles(t *testing.T) {
 	}
 }
 
+// ReleaseGroupTargets narrows to each file's own directory (album / per-disc folder),
+// the opposite of ArtistTargets collapsing to the artist folder — so re-correlating one
+// album does not re-walk the whole discography.
+func TestReleaseGroupTargetsNarrowsToAlbumFolders(t *testing.T) {
+	db := testDB(t)
+	root := "/music"
+	library := models.Library{Name: "L", Path: root, Enabled: true}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	rgMBID, relMBID := uuid.NewString(), uuid.NewString()
+	if err := db.Create(&models.CollectionRelease{MBID: relMBID, ReleaseGroupMBID: rgMBID, ArtistMBID: "art"}).Error; err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	album := filepath.Join(root, "Artist", "Album (2020)")
+	disc2 := filepath.Join(album, "CD2")
+	for _, p := range []string{
+		filepath.Join(album, "01 a.flac"),
+		filepath.Join(album, "02 b.flac"),
+		filepath.Join(disc2, "01 c.flac"),
+	} {
+		if err := db.Create(&models.LibraryItem{LibraryID: library.ID, Path: p, MBReleaseID: relMBID, Status: models.LibraryItemStatusOK}).Error; err != nil {
+			t.Fatalf("create item: %v", err)
+		}
+	}
+
+	targets, err := ReleaseGroupTargets(db, rgMBID)
+	if err != nil {
+		t.Fatalf("ReleaseGroupTargets: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tg := range targets {
+		got[tg.Path] = true
+	}
+	if !got[album] || !got[disc2] {
+		t.Errorf("targets = %+v, want album %q and disc %q", targets, album, disc2)
+	}
+	if got[filepath.Join(root, "Artist")] {
+		t.Error("release-group targets must not widen to the artist folder")
+	}
+	if len(targets) != 2 {
+		t.Errorf("targets = %d, want 2 (album + disc)", len(targets))
+	}
+}
+
+func TestReleaseGroupTargetsEmptyWithoutFiles(t *testing.T) {
+	db := testDB(t)
+	rgMBID := uuid.NewString()
+	if err := db.Create(&models.CollectionRelease{MBID: uuid.NewString(), ReleaseGroupMBID: rgMBID, ArtistMBID: "art"}).Error; err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	targets, err := ReleaseGroupTargets(db, rgMBID)
+	if err != nil {
+		t.Fatalf("ReleaseGroupTargets: %v", err)
+	}
+	if len(targets) != 0 {
+		t.Errorf("targets = %+v, want none", targets)
+	}
+}
+
 // A collaboration belongs to both artists. The second one is credited only through
 // the link table, which is exactly why the resolution goes through it.
 func TestArtistItemsFollowsCreditLinks(t *testing.T) {

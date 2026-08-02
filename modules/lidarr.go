@@ -1,7 +1,6 @@
 package modules
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -42,6 +41,38 @@ func init() {
 	registerCache(cacheNameLidarrAlbums, LidarrSaveAlbumsCache)
 	registerCache(cacheNameLidarrTracks, LidarrSaveTracksCache)
 	registerCache(cacheNameLidarrTrackFiles, LidarrSaveTrackFilesCache)
+}
+
+// LidarrInvalidateCaches drops every in-memory Lidarr cache and flags them dirty so
+// the emptied state is persisted. The next lookup re-fetches from Lidarr, which is
+// how a release selection changed in Lidarr reaches GetMonitoredAlbumMBID before the
+// 1h TTL would otherwise expire. It is a whole-cache flush rather than artist-scoped:
+// the album/track/trackfile caches are keyed by Lidarr's own IDs, not by artist, so a
+// scoped drop would have to walk their values to map back — not worth it for an action
+// the user triggers by hand, and re-fetching from Lidarr is not rate-limited the way
+// MusicBrainz is.
+func LidarrInvalidateCaches() {
+	lidarrArtistsCacheMu.Lock()
+	lidarrArtistsCache = map[string]models.CachedLidarrArtistRelease{}
+	lidarrArtistsCacheMu.Unlock()
+	markCacheDirty(cacheNameLidarrArtists)
+
+	lidarrAlbumsCacheMu.Lock()
+	lidarrAlbumsCache = map[string]models.CachedLidarrAlbumRelease{}
+	lidarrAlbumsCacheMu.Unlock()
+	markCacheDirty(cacheNameLidarrAlbums)
+
+	lidarrTracksCacheMu.Lock()
+	lidarrTracksCache = map[string]models.CachedLidarrTracksRelease{}
+	lidarrTracksCacheMu.Unlock()
+	markCacheDirty(cacheNameLidarrTracks)
+
+	lidarrTrackFilesCacheMu.Lock()
+	lidarrTrackFilesCache = map[string]models.CachedLidarrTrackFilesRelease{}
+	lidarrTrackFilesCacheMu.Unlock()
+	markCacheDirty(cacheNameLidarrTrackFiles)
+
+	logger.Log.Debug("invalidated Lidarr caches (artists, albums, tracks, trackfiles)")
 }
 
 // must be local in the file
@@ -463,47 +494,25 @@ func LidarrSaveTrackFilesCache() error {
 	return os.WriteFile(lidarrTrackFilesCachePath, data, 0644)
 }
 
-// HealthCheck hits a cheap endpoint and checks auth.
-// Uses /api/v1/system/status (we only care that it decodes / returns 200).
+// HealthCheck verifies Lidarr is reachable AND that our credentials actually get
+// through to it. It deliberately probes an *authenticated* endpoint via the same
+// getJSON path the scanner uses (identical headers, cookie and redirect handling),
+// so the check exercises the exact gate real lookups pass through.
+//
+// It does NOT use /api/v1/system/status: that endpoint is commonly whitelisted at a
+// reverse proxy / Authelia so monitors can reach it without a session, which means it
+// can return 200 while every authenticated endpoint the scanner needs (e.g.
+// /api/v1/artist) is rejected — a green health check masking a fully broken scan.
+// /api/v1/rootfolder is cheap and requires auth, so a 401/redirect surfaces here.
 func (c *LidarrClient) HealthCheck() (health bool, err error) {
-	health = false
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	// decode into a loose map to avoid tight coupling to fields
-	var status map[string]any
-
-	// wrap existing getJSON with context timeout if you like
-	reqPath := "/api/v1/system/status"
-	// quick context-aware version of getJSON:
-	req, err := http.NewRequestWithContext(ctx, "GET", c.BaseURL+reqPath, nil)
-	if err != nil {
-		return health, err
-	}
-	req.Header.Set("X-Api-Key", c.APIKey)
-	req.Header.Set("Accept", "application/json")
-
-	if c.Cookie != nil {
-		req.Header.Set("Cookie", *c.Cookie)
+	var dst json.RawMessage
+	if err := c.getJSON("/api/v1/rootfolder", &dst); err != nil {
+		logger.Log.Error("failed to ping Lidarr. error: " + err.Error())
+		return false, err
 	}
 
-	resp, err := c.HTTP.Do(req)
-	if err != nil {
-		return health, err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		b, _ := io.ReadAll(resp.Body)
-		logger.Log.Error("failed to ping Lidarr. response: " + string(b))
-		return health, err
-	}
-	// optional: verify JSON parses
-	_ = json.NewDecoder(resp.Body).Decode(&status)
 	logger.Log.Debug("managed to ping Lidarr")
-
-	return true, err
+	return true, nil
 }
 
 // try to retrieve the MB release from Lidarr

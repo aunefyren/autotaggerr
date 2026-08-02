@@ -299,3 +299,83 @@ func TestRetagArtistEmitsEvent(t *testing.T) {
 		t.Errorf("event details lost the artist: %#v", ev.Details)
 	}
 }
+
+func TestReleaseGroupScopeResolvesAlbumFolders(t *testing.T) {
+	db, err := database.Connect(models.DatabaseConfig{Type: "sqlite", DSN: filepath.Join(t.TempDir(), "t.db")})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	root := "/music"
+	library := models.Library{Name: "L", Path: root, Enabled: true}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	if err := db.Create(&models.CollectionReleaseGroup{MBID: "rg-1", ArtistMBID: "art", Title: "Album"}).Error; err != nil {
+		t.Fatalf("create rg: %v", err)
+	}
+	if err := db.Create(&models.CollectionRelease{MBID: "rel-1", ReleaseGroupMBID: "rg-1", ArtistMBID: "art"}).Error; err != nil {
+		t.Fatalf("create release: %v", err)
+	}
+	album := filepath.Join(root, "Artist", "Album (2020)")
+	if err := db.Create(&models.LibraryItem{LibraryID: library.ID, Path: filepath.Join(album, "01.flac"), MBReleaseID: "rel-1", Status: models.LibraryItemStatusOK}).Error; err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	scope, err := r.ReleaseGroupScope("rg-1")
+	if err != nil {
+		t.Fatalf("ReleaseGroupScope: %v", err)
+	}
+	if len(scope.Targets) != 1 {
+		t.Fatalf("targets = %d, want 1", len(scope.Targets))
+	}
+	if scope.Targets[0].Library.ID != library.ID {
+		t.Error("target lost its library")
+	}
+	if len(scope.Targets[0].Roots) != 1 || scope.Targets[0].Roots[0] != album {
+		t.Errorf("roots = %v, want [%q]", scope.Targets[0].Roots, album)
+	}
+	if scope.Detail["release_group_mb_id"] != "rg-1" {
+		t.Errorf("detail lost the release-group id: %#v", scope.Detail)
+	}
+}
+
+func TestReleaseGroupScopeNothingToScan(t *testing.T) {
+	db, err := database.Connect(models.DatabaseConfig{Type: "sqlite", DSN: filepath.Join(t.TempDir(), "t.db")})
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if err := db.Create(&models.CollectionReleaseGroup{MBID: "rg-1", ArtistMBID: "art", Title: "Album"}).Error; err != nil {
+		t.Fatalf("create rg: %v", err)
+	}
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	if _, err := r.ReleaseGroupScope("rg-1"); !errors.Is(err, ErrNothingToScan) {
+		t.Errorf("ReleaseGroupScope with no files = %v, want ErrNothingToScan", err)
+	}
+}
+
+func TestPathInScope(t *testing.T) {
+	root := filepath.Join(string(filepath.Separator)+"music", "Ye")
+	other := filepath.Join(string(filepath.Separator)+"music", "Yellowcard")
+
+	cases := []struct {
+		name  string
+		path  string
+		roots []string
+		want  bool
+	}{
+		{"empty roots means whole library", filepath.Join(other, "album", "01.flac"), nil, true},
+		{"file under root", filepath.Join(root, "Donda (2021)", "01.flac"), []string{root}, true},
+		{"root itself", root, []string{root}, true},
+		{"sibling with shared prefix is not under root", filepath.Join(other, "album", "01.flac"), []string{root}, false},
+		{"unrelated path", filepath.Join(string(filepath.Separator)+"music", "Beck", "01.flac"), []string{root}, false},
+		{"matches one of several roots", filepath.Join(other, "01.flac"), []string{root, other}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pathInScope(tc.path, tc.roots); got != tc.want {
+				t.Errorf("pathInScope(%q, %v) = %v, want %v", tc.path, tc.roots, got, tc.want)
+			}
+		})
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
@@ -163,6 +164,10 @@ func (a *API) attachItem(c *gin.Context) {
 		return
 	}
 
+	if !a.requireIdentityEditable(c, []models.LibraryItem{item}) {
+		return
+	}
+
 	// Validate the choice against the real release rather than trusting the body:
 	// a wrong ID would otherwise be written into the file's tags.
 	release, err := modules.GetMusicBrainzRelease(body.MBReleaseID)
@@ -197,6 +202,52 @@ func (a *API) attachItem(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"attached": true, "tags_written": written})
+}
+
+// libraryIdentityEditable reports whether files in a library may have their MB identity
+// set by hand — false for a Lidarr-managed library, where the release and track are
+// Lidarr's to decide. It is the single resolver shared by the attach gate (which turns
+// false into a 409) and the item listing (which turns it into a flag the UI uses to hide
+// the control), so both agree on what "editable" means.
+func (a *API) libraryIdentityEditable(libraryID uuid.UUID) (bool, error) {
+	var library models.Library
+	if err := a.DB.First(&library, "id = ?", libraryID).Error; err != nil {
+		return false, err
+	}
+	manager, _, err := components.BuildForLibrary(a.DB, library)
+	if err != nil {
+		return false, err
+	}
+	return manager.Type() != models.ManagerTypeLidarr, nil
+}
+
+// requireIdentityEditable rejects a manual attach when any file in the set lives in a
+// Lidarr-managed library. There the release and track are Lidarr's to decide, so a
+// hand-attach would be reverted by the next scan; the honest answer is to refuse and
+// point at Lidarr. It fails closed (500) if a manager cannot be resolved, and one
+// Lidarr-governed file locks the whole action — a bulk attach is one album, and
+// splitting it would be a worse surprise than rejecting it. Returns false (response
+// already written) when the request must not proceed.
+func (a *API) requireIdentityEditable(c *gin.Context, items []models.LibraryItem) bool {
+	editableByLibrary := map[uuid.UUID]bool{}
+	for _, item := range items {
+		editable, seen := editableByLibrary[item.LibraryID]
+		if !seen {
+			var err error
+			editable, err = a.libraryIdentityEditable(item.LibraryID)
+			if err != nil {
+				logger.Log.Warnf("attach gate: failed to resolve manager for library %s: %s", item.LibraryID, err.Error())
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve the library manager"})
+				return false
+			}
+			editableByLibrary[item.LibraryID] = editable
+		}
+		if !editable {
+			c.JSON(http.StatusConflict, gin.H{"error": "these files are managed by Lidarr — change the release in Lidarr, not here"})
+			return false
+		}
+	}
+	return true
 }
 
 // saveCorrelation writes one validated manual attachment. Shared by the single and
@@ -303,6 +354,10 @@ func (a *API) previewBulkAttach(c *gin.Context) {
 		return
 	}
 
+	if !a.requireIdentityEditable(c, items) {
+		return
+	}
+
 	release, err := modules.GetMusicBrainzRelease(body.MBReleaseID)
 	if err != nil {
 		logger.Log.Errorf("bulk preview: failed to load release %s: %s", body.MBReleaseID, err.Error())
@@ -387,6 +442,10 @@ func (a *API) attachBulk(c *gin.Context) {
 	items, err := a.loadItemsForBulk(itemIDs)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if !a.requireIdentityEditable(c, items) {
 		return
 	}
 

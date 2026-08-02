@@ -575,6 +575,12 @@ type CollectionDesire struct {
 	// RecordingMBIDs is the desired-song set; empty means the whole release-group
 	// or release. Stored as JSON so it needs no join table.
 	RecordingMBIDs []string `gorm:"serializer:json" json:"recording_mb_ids"`
+	// Auto marks an edition want that the rebuild derived from ownership rather than
+	// the user pinning it: when an "any" want is satisfied by a file, the want migrates
+	// to the owned edition as an auto row that keeps tracking the files (re-pointed when
+	// they change edition, pruned when they go). A hand-pinned edition is auto=false and
+	// the rebuild never touches it. See docs/wip.md follow-up C.
+	Auto bool `json:"auto"`
 }
 
 // CollectionReleaseGroupArtist links a release-group to every artist credited on it.

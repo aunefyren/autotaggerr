@@ -21,6 +21,21 @@ import (
 // unset or invalid. Kept modest because FLAC rewrites are disk-bound.
 const defaultProcessConcurrency = 4
 
+// ErrTrackNotInRelease means the resolved release does not contain the resolved
+// track: the release ID and track ID disagree about which edition the file belongs
+// to. It is its own error, not a generic tag failure, because the fix is specific —
+// the manager's release selection and track mapping have drifted apart (common
+// mid-migration), and a force re-correlate is what reconciles them. Callers use
+// errors.Is to tell this apart from an unreadable file or a missing tool.
+var ErrTrackNotInRelease = errors.New("track not found in release data")
+
+// ErrUnmatched means the manager owns identity for this file but could not match it,
+// and tag fallback was refused. It is not a processing failure — the file is readable
+// and the tools are present — so callers record it as an unmatched item rather than an
+// error. It exists so a Lidarr-managed file Lidarr does not know about drops out of the
+// collection instead of being tagged from its own (possibly stale) embedded tags.
+var ErrUnmatched = errors.New("no manager match for file")
+
 // AlbumRefreshSet is a concurrency-safe collection of albums (album name -> Plex
 // album key) that changed during a scan and therefore need a Plex metadata
 // refresh. It replaces the previous pass-a-map-and-return-it threading so that
@@ -40,6 +55,12 @@ func NewAlbumRefreshSet(seed map[string]string) *AlbumRefreshSet {
 }
 
 func (s *AlbumRefreshSet) Add(albumName, albumKey string) {
+	// A nil set means "nobody is collecting refreshes"; drop silently rather than
+	// panicking. The Plex refresh is a non-fatal follow-up to a write that already
+	// succeeded, so a missing collector must never take down the tagging path.
+	if s == nil {
+		return
+	}
 	s.mu.Lock()
 	s.m[albumName] = albumKey
 	s.mu.Unlock()
@@ -47,6 +68,9 @@ func (s *AlbumRefreshSet) Add(albumName, albumKey string) {
 
 // Snapshot returns a copy of the current entries, safe to iterate after the scan.
 func (s *AlbumRefreshSet) Snapshot() map[string]string {
+	if s == nil {
+		return map[string]string{}
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := make(map[string]string, len(s.m))
@@ -138,7 +162,7 @@ func SetFileTags(filePath string, metadata models.FileTags, configFile models.Co
 // is kept as the low-level single-file engine (used by the CLI path and tests);
 // the component pipeline reuses ResolveCorrelation + TagResolvedFile directly.
 func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
-	correlation, err := ResolveCorrelation(filePath, lidarrClient, rootDir)
+	correlation, err := ResolveCorrelation(filePath, lidarrClient, rootDir, true)
 	if err != nil {
 		return false, 0, err
 	}
@@ -147,10 +171,16 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 }
 
 // ResolveCorrelation determines the MusicBrainz release/track/recording IDs for a
-// file. It prefers Lidarr (when a client is supplied) and falls back to the file's
-// own embedded tags, mirroring the original ProcessTrackFile behavior. A nil
-// lidarrClient reproduces the native (tags-only) path.
-func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir string) (models.Correlation, error) {
+// file. It prefers Lidarr (when a client is supplied) and, when allowTagFallback is
+// set, falls back to the file's own embedded tags. A nil lidarrClient reproduces the
+// native (tags-only) path.
+//
+// allowTagFallback is how "Lidarr owns identity" is enforced: the Lidarr manager passes
+// false when it has a client to ask, so a file Lidarr does not know about returns
+// ErrUnmatched instead of being tagged from its own possibly-stale tags. The native
+// manager and the legacy single-file engine pass true, because embedded tags are the
+// only source they have.
+func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir string, allowTagFallback bool) (models.Correlation, error) {
 	correlation := models.Correlation{}
 
 	logger.Log.Debugf("processing track file: %s", filePath)
@@ -177,6 +207,14 @@ func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 	}
 
 	if correlation.MBReleaseTrackID == "" || correlation.MBReleaseID == "" {
+		if !allowTagFallback {
+			// The manager owns identity and did not match this file. Refuse to read the
+			// file's own tags: they may name a release the manager has since moved off,
+			// and tagging from them is exactly the stale-identity drift this guards. Left
+			// unmatched, the file drops out of the collection until the manager knows it.
+			logger.Log.Debugf("manager returned no match for %s; not falling back to embedded tags", filePath)
+			return correlation, fmt.Errorf("%w: %s", ErrUnmatched, filepath.Base(filePath))
+		}
 		// fall back to the file's own embedded MusicBrainz tags
 		var err error
 		correlation.MBReleaseID, err = ExtractMusicBrainzReleaseID(filePath)
@@ -252,8 +290,8 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 	}
 
 	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", correlation.MBReleaseTrackID, correlation.MBReleaseID, correlation.TrackTitle, response.ID)
-	logger.Log.Warn("Lidarr metadata data could be outdated")
-	return false, 0, nil, fmt.Errorf("failed to tag file, track not found in release data for '%s'", response.ID)
+	logger.Log.Warn("the manager's release selection and track mapping disagree; a force re-correlate may reconcile them")
+	return false, 0, nil, fmt.Errorf("%w: track %s is not in release %s — the manager's release and track mapping disagree; force re-correlate this artist to reconcile", ErrTrackNotInRelease, correlation.MBReleaseTrackID, response.ID)
 }
 
 func ProcessTrackFileAfterMatch(

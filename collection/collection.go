@@ -16,6 +16,7 @@
 package collection
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -217,7 +218,113 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		}
 	}
 
+	// Runs last: it reads the artists' managed_by (upserted just above) and the owned
+	// editions to keep auto-selected edition wants tracking the files.
+	if err := reconcileAutoDesires(db, ownedEditions); err != nil {
+		return 0, 0, err
+	}
+
 	return len(artistManagers), len(rgBest), nil
+}
+
+// reconcileAutoDesires keeps auto-selected edition wants tracking the files (follow-up
+// C). When the user wants "any" edition of an album and files land, the want migrates to
+// the owned edition as an auto desire; if the files are later replaced with a different
+// edition it re-points, and if they are removed it is pruned. Only native artists are
+// managed — under Lidarr the edition comes from the monitored release, not a desire — and
+// only albums the user actually asked for (an "any" want, or a prior auto want) are
+// touched, so owning a file never manufactures a want on its own. A hand-pinned edition
+// (auto=false) is never removed or re-pointed here; the flag is what tells them apart.
+func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease) error {
+	ownedByRG := map[string]map[string]bool{}
+	for _, rel := range ownedEditions {
+		if ownedByRG[rel.ReleaseGroupMBID] == nil {
+			ownedByRG[rel.ReleaseGroupMBID] = map[string]bool{}
+		}
+		ownedByRG[rel.ReleaseGroupMBID][rel.MBID] = true
+	}
+
+	var desires []models.CollectionDesire
+	if err := db.Find(&desires).Error; err != nil {
+		return err
+	}
+	if len(desires) == 0 {
+		return nil
+	}
+
+	// managed_by per artist, so the native-only rule costs no query per desire.
+	editable := map[string]bool{}
+	var artists []models.CollectionArtist
+	if err := db.Find(&artists).Error; err != nil {
+		return err
+	}
+	for _, a := range artists {
+		editable[a.MBID] = IdentityEditable(a)
+	}
+
+	// A release-group is under auto management if the user expressed intent for it (an
+	// "any" want) or we already promoted it (an auto want). Evaluated on the current
+	// rows, before any are pruned below, so a re-point — delete the old auto, add the
+	// new one — does not lose the trigger midway.
+	autoManaged := map[string]bool{}
+	for _, d := range desires {
+		if editable[d.ArtistMBID] && (d.ReleaseMBID == "" || d.Auto) {
+			autoManaged[d.ReleaseGroupMBID] = true
+		}
+	}
+
+	// Prune stale auto wants: an auto edition no longer owned (files moved off it, or
+	// were removed) has stopped representing anything.
+	for _, d := range desires {
+		if d.Auto && !ownedByRG[d.ReleaseGroupMBID][d.ReleaseMBID] {
+			if err := db.Delete(&models.CollectionDesire{}, "id = ?", d.ID).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	// Promote / re-point: for each auto-managed group that owns something, drop the
+	// "any" want and ensure one auto want per owned edition that has no desire yet.
+	for rgMBID := range autoManaged {
+		owned := ownedByRG[rgMBID]
+		if len(owned) == 0 {
+			continue // still wanted, nothing owned: leave the "any" want untouched
+		}
+
+		artistMBID := ""
+		haveEdition := map[string]bool{} // editions already desired (manual or surviving auto)
+		var anyIDs []uuid.UUID
+		for _, d := range desires {
+			if d.ReleaseGroupMBID != rgMBID {
+				continue
+			}
+			if artistMBID == "" {
+				artistMBID = d.ArtistMBID
+			}
+			if d.ReleaseMBID == "" {
+				anyIDs = append(anyIDs, d.ID)
+			} else {
+				haveEdition[d.ReleaseMBID] = true
+			}
+		}
+		if len(anyIDs) > 0 {
+			if err := db.Delete(&models.CollectionDesire{}, "id IN ?", anyIDs).Error; err != nil {
+				return err
+			}
+		}
+		for relID := range owned {
+			if haveEdition[relID] {
+				continue // a manual or already-owned auto want covers this edition
+			}
+			if err := db.Create(&models.CollectionDesire{
+				ArtistMBID: artistMBID, ReleaseGroupMBID: rgMBID, ReleaseMBID: relID, Auto: true,
+			}).Error; err != nil {
+				return err
+			}
+		}
+	}
+
+	return nil
 }
 
 // syncOwnedReleases makes the per-edition disk table match exactly the editions
@@ -401,6 +508,33 @@ func FollowWants(artist models.CollectionArtist, primaryType string, secondaryTy
 // natively managed again.
 func FollowGoverns(artist models.CollectionArtist) bool {
 	return artist.ManagedBy != models.ManagedByLidarr && artist.ManagedBy != models.ManagedByMixed
+}
+
+// IdentityEditable reports whether the user may set a MusicBrainz identity for this
+// artist's files by hand — attaching an unmatched file, wanting a specific edition,
+// choosing a release. It is the identity-side sibling of FollowGoverns: false when a
+// manager owns identity. Under the rule "if Lidarr governs the artist at all, identity
+// is Lidarr's", that means the Lidarr and mixed cases. For those artists the release,
+// the edition and the track are Lidarr's to decide, and Autotaggerr only tags to match;
+// a hand-attach there would be reverted by the next scan anyway.
+func IdentityEditable(artist models.CollectionArtist) bool {
+	return artist.ManagedBy != models.ManagedByLidarr && artist.ManagedBy != models.ManagedByMixed
+}
+
+// ArtistIdentityEditable resolves IdentityEditable for an artist by MB ID. An artist
+// with no collection row yet is editable: nothing owns it, so the native path (manual
+// choice) is the only authority there is. A lookup error other than "not found" is
+// returned so the caller can fail closed rather than silently allowing an edit.
+func ArtistIdentityEditable(db *gorm.DB, artistMBID string) (bool, error) {
+	var artist models.CollectionArtist
+	err := db.Where("mb_id = ?", strings.TrimSpace(artistMBID)).First(&artist).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return IdentityEditable(artist), nil
 }
 
 // FollowWantsStored is FollowWants for a stored CollectionReleaseGroup row, whose

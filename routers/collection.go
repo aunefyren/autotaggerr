@@ -21,10 +21,18 @@ import (
 type artistView struct {
 	models.CollectionArtist
 	FollowGoverns bool `json:"follow_governs"`
+	// IdentityEditable is false when a manager (Lidarr, or the mixed case) owns this
+	// artist's MB identity: the UI uses it to hide the attach / choose-edition / want
+	// controls, which the API would reject anyway (see requireIdentityEditable).
+	IdentityEditable bool `json:"identity_editable"`
 }
 
 func newArtistView(artist models.CollectionArtist) artistView {
-	return artistView{CollectionArtist: artist, FollowGoverns: collection.FollowGoverns(artist)}
+	return artistView{
+		CollectionArtist: artist,
+		FollowGoverns:    collection.FollowGoverns(artist),
+		IdentityEditable: collection.IdentityEditable(artist),
+	}
 }
 
 type artistSummary struct {
@@ -69,6 +77,10 @@ type releaseGroupView struct {
 	// owned/total counts above describe only the best-owned one, so without this a
 	// row cannot say that two pressings are involved.
 	OwnedEditions int `json:"owned_editions"`
+	// IdentityEditable is false when the page's artist is manager-owned (Lidarr /
+	// mixed): the row's edition and want controls are then Lidarr's to decide, so the
+	// UI renders them as state rather than editable choices.
+	IdentityEditable bool `json:"identity_editable"`
 }
 
 // editionView is one MusicBrainz edition of a release-group plus what is owned of
@@ -185,6 +197,7 @@ func newReleaseGroupView(
 		WantedAnyEdition:       anyEdition,
 		DesiredReleases:        desiredReleases,
 		DesiredRecordings:      desiredRecordings,
+		IdentityEditable:       collection.IdentityEditable(artist),
 	}
 }
 
@@ -508,6 +521,10 @@ func (a *API) setDesire(c *gin.Context) {
 		return
 	}
 
+	if !a.requireArtistIdentityEditable(c, c.Param("mbid")) {
+		return
+	}
+
 	desire, err := collection.SetDesire(a.DB, collection.DesireInput{
 		ArtistMBID:       c.Param("mbid"),
 		ReleaseGroupMBID: body.ReleaseGroupMBID,
@@ -525,7 +542,30 @@ func (a *API) setDesire(c *gin.Context) {
 	c.JSON(http.StatusOK, desire)
 }
 
+// requireArtistIdentityEditable rejects a want when the artist is managed by Lidarr
+// (or mixed): under "Lidarr owns identity" what is wanted and which edition is Lidarr's
+// call, mirrored into the collection by the sync. It fails closed (500) if the artist's
+// manager cannot be resolved. Returns false (response already written) when blocked.
+func (a *API) requireArtistIdentityEditable(c *gin.Context, artistMBID string) bool {
+	editable, err := collection.ArtistIdentityEditable(a.DB, artistMBID)
+	if err != nil {
+		logger.Log.Warnf("desire gate: failed to resolve identity authority for %s: %s", artistMBID, err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve the artist's manager"})
+		return false
+	}
+	if !editable {
+		c.JSON(http.StatusConflict, gin.H{"error": "this artist is managed by Lidarr — set what is wanted in Lidarr, not here"})
+		return false
+	}
+	return true
+}
+
 // clearDesire drops a want. Owned files are never touched.
+//
+// Unlike setDesire this is deliberately *not* gated on the manager: clearing is a pure
+// removal, and a want left over from before an artist became Lidarr-managed needs a way
+// out. Blocking it would strand stale rows with no UI to remove them — the same reason
+// detach stays allowed while attach is gated.
 func (a *API) clearDesire(c *gin.Context) {
 	if err := collection.ClearDesire(a.DB, c.Query("release_group_mb_id"), c.Query("release_mb_id")); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear the desire"})

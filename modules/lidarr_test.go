@@ -325,13 +325,38 @@ func TestResolveMetadataDetailsFromLidarr(t *testing.T) {
 func TestLidarrHealthCheck(t *testing.T) {
 	resetLidarrCaches()
 	mock := newLidarrMock(t, map[string]any{
-		"/api/v1/system/status": map[string]any{"version": "2.0.0"},
+		"/api/v1/rootfolder": []map[string]any{{"id": 1, "path": "/music"}},
 	})
 	client := NewLidarrClient(mock.server.URL, "test-key", nil)
 
 	ok, err := client.HealthCheck()
 	if err != nil || !ok {
 		t.Errorf("HealthCheck = (%v, %v), want (true, nil)", ok, err)
+	}
+}
+
+// TestLidarrHealthCheckAuthGated reproduces the Authelia case: the status endpoint is
+// whitelisted (200) but the authenticated endpoints are rejected (401). The health
+// check must probe the authenticated path so it reports unhealthy, rather than being
+// fooled green by the open status endpoint while every real scan lookup fails.
+func TestLidarrHealthCheckAuthGated(t *testing.T) {
+	resetLidarrCaches()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/system/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"version": "2.0.0"})
+			return
+		}
+		// everything else sits behind auth and is rejected
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`401 Unauthorized`))
+	}))
+	t.Cleanup(srv.Close)
+	client := NewLidarrClient(srv.URL, "test-key", nil)
+
+	ok, err := client.HealthCheck()
+	if ok || err == nil {
+		t.Errorf("HealthCheck = (%v, %v), want (false, non-nil) when authenticated endpoints are gated", ok, err)
 	}
 }
 

@@ -141,6 +141,9 @@ func SetDesire(db *gorm.DB, in DesireInput) (models.CollectionDesire, error) {
 		// Save, not Update: the recordings column goes through GORM's json
 		// serializer, and a column-level Update writes the raw Go slice instead.
 		desire.RecordingMBIDs = in.RecordingMBIDs
+		// A hand re-assert makes the want manual: the rebuild must stop managing it as
+		// an auto row (it would otherwise re-point or prune the edition the user pinned).
+		desire.Auto = false
 		if err := db.Save(&desire).Error; err != nil {
 			return desire, err
 		}

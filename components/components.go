@@ -83,14 +83,20 @@ func ApplyDataSourceRateLimits(db *gorm.DB) {
 
 // --- Managers ---------------------------------------------------------------
 
-// LidarrManager reads the correlation decision from Lidarr, falling back to the
-// file's embedded tags — exactly the original ProcessTrackFile behavior.
+// LidarrManager reads the correlation decision from Lidarr. When it has a client to
+// ask, it owns identity: a file Lidarr does not match is left unmatched rather than
+// tagged from the file's own (possibly stale) embedded tags. Only a misconfigured
+// manager — a Lidarr row with no usable client — keeps the legacy tag fallback, so an
+// outage or a bad config does not silently orphan a whole library.
 type LidarrManager struct {
 	client *modules.LidarrClient
 }
 
 func (m *LidarrManager) Correlate(filePath, rootDir string) (models.Correlation, error) {
-	return modules.ResolveCorrelation(filePath, m.client, rootDir)
+	// No client means we cannot be authoritative, so keep the permissive tag fallback;
+	// with a client, Lidarr is the authority and "no match" means unmatched.
+	allowTagFallback := m.client == nil
+	return modules.ResolveCorrelation(filePath, m.client, rootDir, allowTagFallback)
 }
 
 func (m *LidarrManager) HealthCheck() (bool, error) {
@@ -107,7 +113,9 @@ func (m *LidarrManager) Type() string { return models.ManagerTypeLidarr }
 type AutotaggerrManager struct{}
 
 func (m *AutotaggerrManager) Correlate(filePath, rootDir string) (models.Correlation, error) {
-	return modules.ResolveCorrelation(filePath, nil, rootDir)
+	// Native has no manager to defer to: embedded tags are its only source, so the
+	// fallback is not a fallback here — it is the whole resolution.
+	return modules.ResolveCorrelation(filePath, nil, rootDir, true)
 }
 
 func (m *AutotaggerrManager) HealthCheck() (bool, error) { return true, nil }

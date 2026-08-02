@@ -225,6 +225,11 @@ type Scope struct {
 	Title   string
 	Targets []Target
 	Detail  map[string]any
+	// Force re-processes every file in the scope, bypassing the unchanged-on-disk
+	// skip. It is set only by the manager repair verb (ForceRecorrelate*), where the
+	// whole point is to pull a changed Lidarr release selection down onto files whose
+	// bytes never moved.
+	Force bool
 }
 
 // ErrNothingToScan reports a scope that resolved to no folders on disk. It is a
@@ -264,8 +269,38 @@ func (r *Runner) ArtistScope(artistMBID string) (Scope, error) {
 		return Scope{}, ErrNothingToScan
 	}
 
-	// One target per library, so an artist split across two libraries is two
-	// targets — each walk has to correlate against its own library root.
+	return buildScope("Scan of "+artist.Name,
+		map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID}, found), nil
+}
+
+// ReleaseGroupScope covers the album folders of one release-group, for the narrowest
+// force re-correlate. It returns ErrNothingToScan when nothing is owned of the group,
+// and the DB error when the release-group is unknown.
+func (r *Runner) ReleaseGroupScope(rgMBID string) (Scope, error) {
+	var rg models.CollectionReleaseGroup
+	if err := r.db.Where("mb_id = ?", rgMBID).First(&rg).Error; err != nil {
+		return Scope{}, err
+	}
+	found, err := collection.ReleaseGroupTargets(r.db, rgMBID)
+	if err != nil {
+		return Scope{}, err
+	}
+	if len(found) == 0 {
+		return Scope{}, ErrNothingToScan
+	}
+	title := rg.Title
+	if title == "" {
+		title = rgMBID
+	}
+	return buildScope("Scan of "+title,
+		map[string]any{"release_group": title, "release_group_mb_id": rgMBID}, found), nil
+}
+
+// buildScope groups per-folder targets by library into scan Targets and records the
+// walked folders in Detail. Shared by every partial scope (artist, release-group) so
+// they resolve targets identically: one Target per library, since each walk correlates
+// against its own library root.
+func buildScope(title string, detail map[string]any, found []collection.ArtistTarget) Scope {
 	byLibrary := map[uuid.UUID]int{}
 	targets := make([]Target, 0, 1)
 	folders := make([]string, 0, len(found))
@@ -278,12 +313,11 @@ func (r *Runner) ArtistScope(artistMBID string) (Scope, error) {
 		byLibrary[f.Library.ID] = len(targets)
 		targets = append(targets, Target{Library: f.Library, Roots: []string{f.Path}})
 	}
-
-	return Scope{
-		Title:   "Scan of " + artist.Name,
-		Targets: targets,
-		Detail:  map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID, "folders": folders},
-	}, nil
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	detail["folders"] = folders
+	return Scope{Title: title, Targets: targets, Detail: detail}
 }
 
 // RunAll queues a scan of every enabled library. Deduped against an identical scan
@@ -340,6 +374,136 @@ func (r *Runner) Run(scope Scope) {
 		key = "scan_artist:" + mbid
 	}
 	r.enqueue(job{jobScanArtist, key, scope.Title, func() { r.runScope(scope) }})
+}
+
+// ForceRecorrelateArtist repairs an artist whose files diverged from what their
+// manager now says — the case a plain scan cannot fix. It resolves the artist's
+// folders, marks the scope Force (so every file is re-processed even though nothing
+// changed on disk), and enqueues it. The executor busts the Lidarr caches and drops
+// the Pinned flag on the artist's Lidarr-governed files first, so the re-walk asks
+// Lidarr fresh and writes its current release instead of reusing a stale correlation
+// or a hand-attached pin.
+//
+// It returns an error only when the scope cannot be resolved now (unknown artist, no
+// files on disk); the work itself runs later on the queue worker.
+func (r *Runner) ForceRecorrelateArtist(artistMBID string) error {
+	scope, err := r.ArtistScope(artistMBID)
+	if err != nil {
+		return err
+	}
+	name, _ := scope.Detail["artist"].(string)
+	scope.Title = forceTitle(name, "artist")
+	r.enqueueForceRecorrelate("force_recorrelate:"+artistMBID, scope)
+	return nil
+}
+
+// ForceRecorrelateReleaseGroup is ForceRecorrelateArtist narrowed to one album — the
+// least disruptive repair when only a single release drifted. Same mechanics: bust the
+// caches, drop Lidarr-governed pins in scope, force a re-walk.
+func (r *Runner) ForceRecorrelateReleaseGroup(rgMBID string) error {
+	scope, err := r.ReleaseGroupScope(rgMBID)
+	if err != nil {
+		return err
+	}
+	title, _ := scope.Detail["release_group"].(string)
+	scope.Title = forceTitle(title, "release group")
+	r.enqueueForceRecorrelate("force_recorrelate_rg:"+rgMBID, scope)
+	return nil
+}
+
+// ForceRecorrelateLibrary re-correlates an entire library — the widest repair, for when
+// a Lidarr instance was re-pointed and everything under it needs to follow. Roots are
+// empty (the whole library), so prepareForceRecorrelate clears every Lidarr-governed pin
+// in it.
+func (r *Runner) ForceRecorrelateLibrary(libraryID uuid.UUID) error {
+	var library models.Library
+	if err := r.db.First(&library, "id = ?", libraryID).Error; err != nil {
+		return err
+	}
+	scope := LibraryScope([]models.Library{library})
+	scope.Title = "Re-correlate " + library.Name
+	r.enqueueForceRecorrelate("force_recorrelate_lib:"+libraryID.String(), scope)
+	return nil
+}
+
+// forceTitle labels a re-correlate run "Re-correlate <name>", or a generic fallback when
+// the name is unknown.
+func forceTitle(name, kind string) string {
+	if name != "" {
+		return "Re-correlate " + name
+	}
+	return "Re-correlate " + kind
+}
+
+// enqueueForceRecorrelate queues a forced re-walk of a scope: prepareForceRecorrelate
+// busts the Lidarr caches and drops Lidarr-governed pins in scope, then runScope runs
+// with Force set so shouldSkip is bypassed. Shared by all three force verbs.
+func (r *Runner) enqueueForceRecorrelate(key string, scope Scope) {
+	scope.Force = true
+	r.enqueue(job{jobForceRecorrelate, key, scope.Title, func() {
+		r.prepareForceRecorrelate(scope)
+		r.runScope(scope)
+	}})
+}
+
+// prepareForceRecorrelate readies a forced scope so the re-walk resolves identity
+// from the manager rather than from anything stale. It invalidates the Lidarr caches
+// (whole-cache; the next lookup re-fetches the current selection) and clears the
+// Pinned flag on every Lidarr-governed file in scope, because a pin makes the pipeline
+// reuse a hand-chosen correlation instead of asking the manager. Native libraries are
+// left untouched: their pins are the only identity they have, and there is no other
+// authority to defer to.
+func (r *Runner) prepareForceRecorrelate(scope Scope) {
+	modules.LidarrInvalidateCaches()
+
+	for _, target := range scope.Targets {
+		manager, _, err := components.BuildForLibrary(r.db, target.Library)
+		if err != nil {
+			logger.Log.Warnf("force re-correlate: cannot resolve manager for library %q: %s", target.Library.Name, err.Error())
+			continue
+		}
+		if manager.Type() != models.ManagerTypeLidarr {
+			continue
+		}
+
+		var pinned []models.LibraryItem
+		if err := r.db.Where("library_id = ? AND pinned = ?", target.Library.ID, true).Find(&pinned).Error; err != nil {
+			logger.Log.Warnf("force re-correlate: failed to load pinned items for %q: %s", target.Library.Name, err.Error())
+			continue
+		}
+
+		ids := make([]uuid.UUID, 0, len(pinned))
+		for _, item := range pinned {
+			if pathInScope(item.Path, target.Roots) {
+				ids = append(ids, item.ID)
+			}
+		}
+		if len(ids) == 0 {
+			continue
+		}
+		if err := r.db.Model(&models.LibraryItem{}).Where("id IN ?", ids).Update("pinned", false).Error; err != nil {
+			logger.Log.Warnf("force re-correlate: failed to clear %d pin(s) in %q: %s", len(ids), target.Library.Name, err.Error())
+			continue
+		}
+		logger.Log.Infof("force re-correlate: cleared %d manual pin(s) in %q so Lidarr can re-correlate them", len(ids), target.Library.Name)
+	}
+}
+
+// pathInScope reports whether a file path falls under one of the scope roots. Empty
+// roots means the whole library is in scope, so everything qualifies. A root only
+// matches at a path boundary, so "/music/Ye" never swallows "/music/Yellowcard".
+func pathInScope(path string, roots []string) bool {
+	if len(roots) == 0 {
+		return true
+	}
+	clean := filepath.Clean(path)
+	for _, root := range roots {
+		root = filepath.Clean(root)
+		if clean == root || strings.HasPrefix(clean, root+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // runScope executes a scan of a scope. It is only ever called by the queue worker,
@@ -419,7 +583,7 @@ func (r *Runner) runScope(scope Scope) {
 				r.setCurrent(a)
 			}
 		}
-		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.concurrency, onFile)
+		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.concurrency, scope.Force, onFile)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library.Path + "'. error: " + err.Error())
 			r.setStatus(func(s *Summary) { s.LastError = err.Error() })
@@ -1011,14 +1175,20 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 
 	libraries := map[uuid.UUID]models.Library{}
 	results := make([]RetagResult, 0, len(itemIDs))
+	// Collect changed albums so Plex is told to refresh them, exactly like the
+	// scan and drift-sync paths. Passing a live set (not nil) is also what keeps
+	// retagItem's Plex hand-off from dereferencing a nil pointer when a file's
+	// tags actually change and a Plex client is attached.
+	refreshSet := modules.NewAlbumRefreshSet(nil)
 	for _, id := range itemIDs {
 		var item models.LibraryItem
 		if err := r.db.First(&item, "id = ?", id).Error; err != nil {
 			results = append(results, RetagResult{ItemID: id, Err: err})
 			continue
 		}
-		written, _, err := r.retagItem(item, libraries, nil)
+		written, _, err := r.retagItem(item, libraries, refreshSet)
 		results = append(results, RetagResult{ItemID: id, Path: item.Path, Written: written, Err: err})
 	}
+	r.flushPlex(refreshSet)
 	return results, nil
 }

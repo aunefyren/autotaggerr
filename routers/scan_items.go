@@ -12,6 +12,7 @@ import (
 	"github.com/aunefyren/autotaggerr/scan"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
 )
 
 const (
@@ -207,6 +208,69 @@ func (a *API) retagArtist(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"status": "tagging queued", "artist": artist.Name, "files": len(items)})
 }
 
+// recorrelateReleaseGroup forces one album's files to be re-correlated from their
+// manager — the narrowest repair. The `:mbid` segment is the release-group MB ID (named
+// for the sibling route `/release-groups/:mbid/releases`, not for an artist).
+func (a *API) recorrelateReleaseGroup(c *gin.Context) {
+	if a.Scan == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		return
+	}
+	rgMBID := c.Param("mbid")
+	if err := a.Scan.ForceRecorrelateReleaseGroup(rgMBID); err != nil {
+		switch {
+		case errors.Is(err, scan.ErrNothingToScan):
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			c.JSON(http.StatusNotFound, gin.H{"error": "release group not found"})
+		default:
+			logger.Log.Error("failed to resolve release-group re-correlate scope. error: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to re-correlate"})
+		}
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": "re-correlate queued", "release_group": rgMBID})
+}
+
+// recorrelateLibrary forces every file in a library to be re-correlated from its
+// manager — the widest repair, for a re-pointed Lidarr instance.
+func (a *API) recorrelateLibrary(c *gin.Context) {
+	lib, ok := a.libraryAction(c)
+	if !ok {
+		return
+	}
+	if err := a.Scan.ForceRecorrelateLibrary(lib.ID); err != nil {
+		logger.Log.Error("failed to queue library re-correlate. error: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to queue the re-correlate"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": "re-correlate queued", "library": lib.Name})
+}
+
+// recorrelateArtist forces this artist's files to be re-correlated from their manager,
+// repairing the case a plain scan cannot: a release selection changed in Lidarr does
+// not touch a byte on disk, so the unchanged-file skip means an ordinary scan never
+// re-reads them. This busts the Lidarr caches, clears any manual pins on the artist's
+// Lidarr-governed files, and re-walks with the skip disabled so Lidarr's current
+// release is written. It discards hand-attached pins for those files by design — under
+// Lidarr, identity is the manager's to decide.
+func (a *API) recorrelateArtist(c *gin.Context) {
+	artist, ok := a.artistAction(c)
+	if !ok {
+		return
+	}
+	if err := a.Scan.ForceRecorrelateArtist(artist.MBID); err != nil {
+		if errors.Is(err, scan.ErrNothingToScan) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
+		logger.Log.Error("failed to resolve artist re-correlate scope. error: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to re-correlate"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": "re-correlate queued", "artist": artist.Name})
+}
+
 // scanStatus reports the current or most recent scan summary.
 func (a *API) scanStatus(c *gin.Context) {
 	if a.Scan == nil {
@@ -260,12 +324,39 @@ func (a *API) listLibraryItems(c *gin.Context) {
 		return
 	}
 
+	// Annotate each row with whether its file's identity may be set by hand, resolved
+	// once per library (a page is usually one library, often one manager). A resolution
+	// failure fails closed to not-editable: hiding the attach control is the safe
+	// default, and the attach endpoint itself is still gated regardless.
+	editableByLibrary := map[uuid.UUID]bool{}
+	views := make([]libraryItemView, 0, len(items))
+	for _, item := range items {
+		editable, seen := editableByLibrary[item.LibraryID]
+		if !seen {
+			var err error
+			if editable, err = a.libraryIdentityEditable(item.LibraryID); err != nil {
+				logger.Log.Warnf("list items: failed to resolve manager for library %s: %s", item.LibraryID, err.Error())
+				editable = false
+			}
+			editableByLibrary[item.LibraryID] = editable
+		}
+		views = append(views, libraryItemView{LibraryItem: item, IdentityEditable: editable})
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"total":  total,
 		"limit":  limit,
 		"offset": offset,
-		"items":  items,
+		"items":  views,
 	})
+}
+
+// libraryItemView is a library item plus whether its MB identity may be set by hand.
+// The flag lets the attach picker hide its controls for Lidarr-managed files instead of
+// offering an action the API would reject.
+type libraryItemView struct {
+	models.LibraryItem
+	IdentityEditable bool `json:"identity_editable"`
 }
 
 // itemTags returns the current-vs-desired tag diff for one indexed file.

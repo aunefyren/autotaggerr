@@ -1,6 +1,7 @@
 package components
 
 import (
+	"errors"
 	"os"
 	"sync"
 	"time"
@@ -122,6 +123,14 @@ func ProcessFile(
 	if !pinned {
 		correlation, err = manager.Correlate(filePath, rootDir)
 		if err != nil {
+			// An unmatched file is a state, not a failure: the manager owns identity and
+			// does not know this file. Record it as unmatched (so it drops out of the
+			// collection and the next scan re-attempts it) but do not count it as an
+			// error or abort — the rest of the library is fine.
+			if errors.Is(err, modules.ErrUnmatched) {
+				recordItem(db, library.ID, filePath, models.Correlation{}, true, processedVersion, managerType, err)
+				return true, 0, nil
+			}
 			recordItem(db, library.ID, filePath, models.Correlation{}, false, processedVersion, managerType, err)
 			detail.AddError(filePath, err)
 			return false, 0, err
@@ -159,7 +168,7 @@ func ScanLibrary(
 	processedVersion string,
 	workers int,
 ) (counter, unchangedFiles, tagsWritten int, errorFiles []string, err error) {
-	return ScanLibraryRoots(db, library, nil, plexClient, refreshSet, detail, processedVersion, workers, nil)
+	return ScanLibraryRoots(db, library, nil, plexClient, refreshSet, detail, processedVersion, workers, false, nil)
 }
 
 // ScanLibraryRoots is ScanLibrary narrowed to part of a library: it walks each of
@@ -181,6 +190,11 @@ func ScanLibrary(
 // onFile, if non-nil, is called once per processed file with its path; it is passed
 // straight through to WalkAndProcess so the scan runner can advance a live progress
 // counter. It must be cheap and concurrency-safe.
+//
+// force re-processes every file in scope even when shouldSkip would drop it as
+// unchanged on disk. It exists for the manager repair path: a release selection
+// changed in Lidarr does not touch a byte on disk, so the only way to pull the new
+// correlation down onto already-tagged files is to ignore the skip cache for one run.
 func ScanLibraryRoots(
 	db *gorm.DB,
 	library models.Library,
@@ -190,6 +204,7 @@ func ScanLibraryRoots(
 	detail *DetailCollector,
 	processedVersion string,
 	workers int,
+	force bool,
 	onFile func(path string),
 ) (counter, unchangedFiles, tagsWritten int, errorFiles []string, err error) {
 	manager, tagger, err := BuildForLibrary(db, library)
@@ -204,7 +219,7 @@ func ScanLibraryRoots(
 	errorFiles = []string{}
 	for _, root := range roots {
 		c, u, tw, errs, walkErr := modules.WalkAndProcess(root, workers, func(path string) (bool, int, error) {
-			if shouldSkip(db, path, processedVersion, managerType) {
+			if !force && shouldSkip(db, path, processedVersion, managerType) {
 				return true, 0, nil // counts as unchanged
 			}
 			return ProcessFile(db, library, manager, tagger, plexClient, refreshSet, detail, path, library.Path, processedVersion)
@@ -329,8 +344,16 @@ func recordItem(db *gorm.DB, libraryID uuid.UUID, filePath string, correlation m
 	}
 
 	if procErr != nil {
-		item.Status = models.LibraryItemStatusError
-		item.Error = procErr.Error()
+		// ErrUnmatched is its own state: the manager owns identity and does not know
+		// this file. It is not an error the user must fix, so it carries no error text
+		// and does not read as a failed file in the feed.
+		if errors.Is(procErr, modules.ErrUnmatched) {
+			item.Status = models.LibraryItemStatusUnmatched
+			item.Error = ""
+		} else {
+			item.Status = models.LibraryItemStatusError
+			item.Error = procErr.Error()
+		}
 	} else {
 		item.Status = models.LibraryItemStatusOK
 		item.Error = ""

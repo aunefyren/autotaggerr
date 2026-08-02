@@ -20,15 +20,16 @@ import (
 type jobKind string
 
 const (
-	jobScanAll        jobKind = "scan_all"
-	jobScanLibrary    jobKind = "scan_library"
-	jobScanArtist     jobKind = "scan_artist"
-	jobRetagLibrary   jobKind = "retag_library"
-	jobRetagArtist    jobKind = "retag_artist"
-	jobRefreshAll     jobKind = "refresh_all"
-	jobRefreshVerify  jobKind = "refresh_verify"
-	jobRefreshArtist  jobKind = "refresh_artist"
-	jobRefreshLibrary jobKind = "refresh_library"
+	jobScanAll          jobKind = "scan_all"
+	jobScanLibrary      jobKind = "scan_library"
+	jobScanArtist       jobKind = "scan_artist"
+	jobRetagLibrary     jobKind = "retag_library"
+	jobRetagArtist      jobKind = "retag_artist"
+	jobForceRecorrelate jobKind = "force_recorrelate"
+	jobRefreshAll       jobKind = "refresh_all"
+	jobRefreshVerify    jobKind = "refresh_verify"
+	jobRefreshArtist    jobKind = "refresh_artist"
+	jobRefreshLibrary   jobKind = "refresh_library"
 )
 
 // fileWriting reports whether a kind rewrites audio files. File-writing jobs are
@@ -36,7 +37,7 @@ const (
 // behind a hours-long refresh — but a job already running is never preempted.
 func (k jobKind) fileWriting() bool {
 	switch k {
-	case jobScanAll, jobScanLibrary, jobScanArtist, jobRetagLibrary, jobRetagArtist:
+	case jobScanAll, jobScanLibrary, jobScanArtist, jobRetagLibrary, jobRetagArtist, jobForceRecorrelate:
 		return true
 	}
 	return false

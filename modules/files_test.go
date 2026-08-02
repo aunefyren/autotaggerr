@@ -1,10 +1,22 @@
 package modules
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
 )
+
+// TestResolveCorrelationNoFallbackUnmatched checks that with tag fallback refused and
+// no manager match (nil client), resolution reports ErrUnmatched rather than reading
+// the file's own tags. The empty correlation short-circuits before any disk access, so
+// the path need not exist.
+func TestResolveCorrelationNoFallbackUnmatched(t *testing.T) {
+	_, err := ResolveCorrelation("/does/not/exist/01 Track.flac", nil, "/does/not/exist", false)
+	if !errors.Is(err, ErrUnmatched) {
+		t.Fatalf("expected ErrUnmatched, got %v", err)
+	}
+}
 
 func TestReleaseToAlbumType(t *testing.T) {
 	rg := func(primary string, secondary ...string) models.ReleaseGroup {

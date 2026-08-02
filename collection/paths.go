@@ -95,6 +95,74 @@ func ArtistItemIDs(db *gorm.DB, artistMBID string) ([]uuid.UUID, error) {
 	return ids, nil
 }
 
+// ReleaseGroupReleaseMBIDs returns the MusicBrainz release IDs the collection holds
+// for one release-group: the editions its owned files can point at.
+func ReleaseGroupReleaseMBIDs(db *gorm.DB, releaseGroupMBID string) ([]string, error) {
+	if db == nil || releaseGroupMBID == "" {
+		return nil, nil
+	}
+	var mbids []string
+	err := db.Model(&models.CollectionRelease{}).
+		Where("release_group_mb_id = ?", releaseGroupMBID).
+		Pluck("mb_id", &mbids).Error
+	return mbids, err
+}
+
+// ReleaseGroupItems returns the indexed files owned of a release-group's editions,
+// mirroring ArtistItems one level down. Failed items are excluded — there is nothing to
+// re-tag them from.
+func ReleaseGroupItems(db *gorm.DB, releaseGroupMBID string) ([]models.LibraryItem, error) {
+	releases, err := ReleaseGroupReleaseMBIDs(db, releaseGroupMBID)
+	if err != nil || len(releases) == 0 {
+		return nil, err
+	}
+	var items []models.LibraryItem
+	err = db.Where("mb_release_id IN ? AND status = ?", releases, models.LibraryItemStatusOK).
+		Order("path").Find(&items).Error
+	return items, err
+}
+
+// ReleaseGroupTargets returns the folders to walk to re-process one release-group's
+// files. Unlike ArtistTargets it narrows to each file's own directory (the album or
+// media folder) rather than the artist folder, so a release-group action touches one
+// album and not the whole discography. Recursion in the walk still catches per-disc
+// subfolders, and files sharing a folder share an album by the layout convention, so a
+// directory is the right granularity here.
+func ReleaseGroupTargets(db *gorm.DB, releaseGroupMBID string) ([]ArtistTarget, error) {
+	items, err := ReleaseGroupItems(db, releaseGroupMBID)
+	if err != nil || len(items) == 0 {
+		return nil, err
+	}
+
+	libraries := map[uuid.UUID]models.Library{}
+	var rows []models.Library
+	if err := db.Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for _, lib := range rows {
+		libraries[lib.ID] = lib
+	}
+
+	seen := map[string]bool{}
+	targets := make([]ArtistTarget, 0, 1)
+	for _, item := range items {
+		library, ok := libraries[item.LibraryID]
+		if !ok {
+			logger.Log.Warnf("skipping item %q: library %s no longer exists", item.Path, item.LibraryID)
+			continue
+		}
+		folder := filepath.Dir(item.Path)
+		if seen[folder] {
+			continue
+		}
+		seen[folder] = true
+		targets = append(targets, ArtistTarget{Library: library, Path: folder})
+	}
+
+	sort.Slice(targets, func(i, j int) bool { return targets[i].Path < targets[j].Path })
+	return targets, nil
+}
+
 // ArtistTargets returns the folders to walk to scan this artist, derived from where
 // their indexed files actually sit. Folders are deduplicated and sorted, so a scan
 // of an artist with fifty albums walks one directory, not fifty.
