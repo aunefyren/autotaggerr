@@ -261,3 +261,99 @@ promotion and is not restored. Re-add the want to bring it back. A future refine
 Frontend (separate repo): the `auto` flag is on each desire; render an auto-selected edition as
 state ("you have this edition") rather than an unpick toggle, and keep the explicit "want a specific
 edition" / "want another edition" controls behind `identity_editable`.
+
+## Inject a MusicBrainz metadata source (testability)
+
+**The problem.** MusicBrainz is reached by calling *package-level free functions* in `modules/`
+(`GetMusicBrainzRelease`, `SearchMusicBrainzReleases`, `SearchMusicBrainzArtists`,
+`GetMusicBrainzArtist`, `GetMusicBrainzArtistReleaseGroups`, `GetMusicBrainzReleaseGroupReleases`).
+The only test seam is `withMockMB` (`modules/musicbrainz_http_test.go`), which flips the **unexported**
+`musicbrainzBaseURL` at an httptest server — so it works **only inside `modules/`**. Every handler in
+`routers/`, and the derivations in `collection/`/`components/`/`mirror/` that call MB, are therefore
+coverable only on the paths that return *before* the network (unknown artist, blank query). That is
+the ceiling on `routers/collection.go` and `routers/attach.go` coverage, and it is why an integration
+path can only ever be exercised against the live musicbrainz.org (slow, flaky, and rate-limited).
+
+**The fix — the same dependency injection the external clients already use.** `modules.LidarrClient`
+and `modules.PlexClient` are constructed in `main` only when configured, injected as pointers
+(`scan.NewRunner(db, plexClient, cfg)`, `API{...}`), and nil-checked at every use. MusicBrainz is the
+odd one out — it is invoked as free functions instead of an injected client. Put it behind an
+interface, inject it the same way, and a test hands in a fake with **zero network**. This is the only
+option that also scales to AcoustID, cover art / fanart, and future sources, each of which today has
+the same unexported-base-URL seam.
+
+**The abstraction already half-exists.** `components.DataSource` is an interface with a single
+`GetRelease(mbID)` method, implemented by `MusicBrainzDataSource`, which just wraps
+`modules.GetMusicBrainzRelease`. Its own doc comment already calls it "the single seam that changes"
+when the MB cache moves. The gap is that the *other six* fetchers bypass it and call `modules.`
+directly. The work is to **widen that seam to cover every MB fetch and route all callers through it.**
+
+### The interface
+
+One port, the network-fetching MB calls only:
+
+```go
+type MetadataSource interface {
+    GetRelease(mbID string) (models.MusicBrainzReleaseResponse, error)
+    GetArtist(artistID string) (models.MusicBrainzArtistLookup, error)
+    GetArtistReleaseGroups(artistID string) ([]models.MusicBrainzArtistReleaseGroup, bool, error)
+    GetReleaseGroupReleases(rgID string) ([]models.MusicBrainzReleaseSearchResult, error)
+    SearchReleases(q modules.ReleaseSearchQuery) (modules.ReleaseSearchPage, error) // move the query/page types down too
+    SearchArtists(q string) ([]models.MusicBrainzArtistSearchResult, error)
+}
+```
+
+**What stays a free function (not in the port):** the cache/stats/mirror helpers that touch no network
+— `MusicbrainzLoadCache`, `MusicbrainzReleaseFresh`, `MusicbrainzExtendExpiry`, `MusicbrainzExpireEntity`,
+`MusicbrainzEntityFresh`/`Counts`, `Musicbrainz{Stats,Reset}*`, `MusicbrainzDueForRefresh`. They are
+already testable and are not identity/fetch decisions.
+
+**Where it lives (cycle analysis).** `collection` and `components` are siblings — neither imports the
+other today — and both need the port, as do `mirror`, `scan` and `routers`. Declaring it in
+`components` (or `collection`) would force a new cross-import; declaring it in `modules` means a test
+fake must import `modules`, which is the coupling we are trying to shed. **Put the interface in a new
+leaf package** (e.g. `metadata/`) that imports only `models`; everyone can depend on it without a
+cycle, and `modules` provides the concrete adapter. (The lighter alternative — declare it in `models`
+— is fewer files but stretches "models is data only"; note the choice and pick one.) The `ReleaseSearchQuery`/`ReleaseSearchPage` types currently in `modules` must move to `models`/`metadata`
+so the interface can name them without importing `modules`.
+
+### Call sites to migrate (non-test)
+
+- `routers/attach.go` — `GetMusicBrainzRelease` (×5), `SearchMusicBrainzReleases` (×2),
+  `GetMusicBrainzReleaseGroupReleases` (×2)
+- `routers/collection.go` — `SearchMusicBrainzArtists`, `GetMusicBrainzArtist`
+- `collection/collection.go` — `GetMusicBrainzArtistReleaseGroups` (inside `SyncArtist`)
+- `collection/desire.go` — `GetMusicBrainzReleaseGroupReleases` (`ReleaseGroupEditions`)
+- `components/components.go` — the `MusicBrainzDataSource.GetRelease` body (becomes the adapter)
+- `components/diff.go` — `GetMusicBrainzRelease` (`ComputeItemDiff`)
+- `mirror/mirror.go` — `GetMusicBrainzReleaseGroupReleases`, `GetMusicBrainzArtist`
+
+`collection`/`components`/`mirror` functions that call MB gain a `MetadataSource` parameter (or a field
+on their receiver — `collection.Rebuilder`, `mirror.Runner` already carry deps); `routers.API` gains a
+`Meta MetadataSource` field, wired in `main` beside `Scan`/`Mirror`. Follow the existing rule: **may be
+nil** where a source is optional, nil-checked at use.
+
+### Sequencing
+
+1. Create `metadata` (interface + the moved search query/page types) and the `modules` adapter
+   (`modules.NewMetadataSource()` returning a value whose methods call today's free functions). No
+   behaviour change; everything still compiles calling the adapter.
+2. Thread the port through one vertical slice first — `routers/attach.go` release search/attach — and
+   add a fake `MetadataSource` in a routers test to prove the pattern (this is the coverage win that
+   justifies the refactor).
+3. Migrate the remaining call sites package by package (`collection`, `components/diff`, `mirror`,
+   rest of `routers`), deleting each direct `modules.` fetch as it is replaced.
+4. Keep `withMockMB` for `modules/`'s own tests of the real adapter (the HTTP/parse/cache/rate-limit
+   behaviour still needs an integration test at the true boundary).
+
+### Payoff and risks
+
+- **Payoff.** Unlocks handler- and derivation-level tests for the MB-bound code that is currently the
+  hard ceiling (`routers/collection.go`, `routers/attach.go`, `collection.SyncArtist`,
+  `mirror` refresh), the bulk of the remaining gap to the 80–85% coverage target. Same pattern then
+  retrofits AcoustID / artwork.
+- **Risk / decisions to lock first:** (1) interface home — `metadata` package vs `models`; (2) whether
+  callers take the port as a parameter or a struct field (prefer the field where a receiver already
+  exists, matching `Rebuilder`/`Runner`); (3) the `ReleaseSearchQuery`/`Page` type move is the one
+  churny edit — do it in step 1 so nothing downstream re-churns. Purely mechanical otherwise: no
+  behaviour changes, and the caching/rate-limiting stays exactly where it is, behind the adapter.

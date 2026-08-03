@@ -3,7 +3,6 @@ package modules
 import (
 	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -140,19 +139,22 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		return true, tagsWritten, nil, nil
 	}
 
-	utf8Env := append(os.Environ(), "LANG=en_US.UTF-8", "LC_ALL=en_US.UTF-8")
-
+	// --no-utf8-convert tells metaflac the tag arguments are already UTF-8 and must be
+	// stored verbatim. Our Go strings are always UTF-8, so this is correct — and it is
+	// locale-independent. Without it, metaflac converts from the process's "local
+	// charset" to UTF-8, and on a host where that locale resolves to ASCII/C (a minimal
+	// container, or any box without en_US.UTF-8 generated) every non-ASCII byte is
+	// replaced with '#'. Forcing LANG/LC_ALL=en_US.UTF-8 here used to *cause* that,
+	// because a locale that is not installed falls back to C.
 	for key, value := range changes {
 		// remove then set only the keys that changed
-		removeCmd := exec.Command("metaflac", "--remove-tag="+key, filePath)
-		removeCmd.Env = utf8Env
+		removeCmd := exec.Command("metaflac", "--no-utf8-convert", "--remove-tag="+key, filePath)
 		if err := removeCmd.Run(); err != nil {
 			logger.Log.Error(fmt.Sprintf("failed to remove tag %s: %s", key, err.Error()))
 			return unchanged, tagsWritten, changed, errors.New("failed to remove tag")
 		}
 
-		setCmd := exec.Command("metaflac", "--set-tag", fmt.Sprintf("%s=%s", key, value), filePath)
-		setCmd.Env = utf8Env
+		setCmd := exec.Command("metaflac", "--no-utf8-convert", "--set-tag", fmt.Sprintf("%s=%s", key, value), filePath)
 		if err := setCmd.Run(); err != nil {
 			logger.Log.Error(fmt.Sprintf("failed to set tag %s: %s", key, err.Error()))
 			return unchanged, tagsWritten, changed, errors.New("failed to set tag")

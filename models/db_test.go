@@ -2,6 +2,7 @@ package models
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -175,5 +176,26 @@ func TestAllDBModelsCoversEveryTable(t *testing.T) {
 			t.Errorf("%s listed twice in AllDBModels", key)
 		}
 		seen[key] = true
+	}
+}
+
+// IsVariousArtists matches the shared placeholder MBID case-insensitively and after
+// trimming, and rejects anything else — the guard that keeps a "Various Artists"
+// compilation from triggering an unbounded discography pull.
+func TestIsVariousArtists(t *testing.T) {
+	if !IsVariousArtists(VariousArtistsMBID) {
+		t.Error("the canonical VA MBID should match")
+	}
+	if !IsVariousArtists("  " + VariousArtistsMBID + "  ") {
+		t.Error("surrounding whitespace should be trimmed before matching")
+	}
+	if !IsVariousArtists(strings.ToUpper(VariousArtistsMBID)) {
+		t.Error("matching should be case-insensitive")
+	}
+	if IsVariousArtists("89ad4ac3-0000-0000-0000-000000000000") {
+		t.Error("an unrelated MBID must not match")
+	}
+	if IsVariousArtists("") {
+		t.Error("the empty string must not match")
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/aunefyren/autotaggerr/models"
 )
 
 // The AcoustID client. Fingerprinting itself needs fpcalc on PATH and is skipped
@@ -234,5 +236,35 @@ func TestSnippetTruncatesLongBodies(t *testing.T) {
 	}
 	if got := snippet([]byte("  short  ")); got != "short" {
 		t.Errorf("snippet = %q, want it trimmed", got)
+	}
+}
+
+// IdentifyFile returns cached candidates without spawning fpcalc or calling AcoustID
+// when the cached fingerprint is fresh (size + mtime match) and a prior lookup was
+// stored. This is the UI-button path: a cached identify costs no subprocess and no
+// network.
+func TestIdentifyFileUsesCachedCandidates(t *testing.T) {
+	db := withMigrationDB(t)
+	mod := time.Now().Truncate(time.Second)
+	lookedUp := mod
+	if err := db.Create(&models.AcoustIDLookup{
+		Path:        "/music/Artist/Album (2020)/01 Track.flac",
+		Size:        4096,
+		ModTime:     &mod,
+		Fingerprint: "AQABz0mUkZ", // non-empty: no fpcalc needed
+		Duration:    123,
+		Candidates:  "[]", // a fresh lookup that found nothing
+		LookedUpAt:  &lookedUp,
+		FetchedAt:   mod,
+	}).Error; err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+
+	got, err := IdentifyFile("/music/Artist/Album (2020)/01 Track.flac", "apikey", "", 4096, mod)
+	if err != nil {
+		t.Fatalf("IdentifyFile: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("candidates = %d, want 0 (the cached lookup found nothing)", len(got))
 	}
 }

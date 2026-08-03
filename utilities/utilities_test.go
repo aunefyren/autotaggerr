@@ -259,3 +259,20 @@ func TestDiffID3Tags(t *testing.T) {
 		}
 	})
 }
+
+// SortTagChanges orders a diff by field name in place, so the same write always
+// reports its fields in the same order rather than shuffling on each map iteration.
+func TestSortTagChanges(t *testing.T) {
+	changes := []models.TagChange{
+		{Field: "title"}, {Field: "album"}, {Field: "artist"},
+	}
+	SortTagChanges(changes)
+	got := []string{changes[0].Field, changes[1].Field, changes[2].Field}
+	want := []string{"album", "artist", "title"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("order = %v, want %v", got, want)
+	}
+	// Empty and single-element slices must not panic.
+	SortTagChanges(nil)
+	SortTagChanges([]models.TagChange{{Field: "solo"}})
+}

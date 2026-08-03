@@ -67,6 +67,43 @@ func (m *lidarrMock) hitCount(path string) int {
 
 func i64ptr(v int64) *int64 { return &v }
 
+// LidarrInvalidateCaches drops every in-memory Lidarr cache. It is what the force
+// re-correlate verb calls so a release selection changed in Lidarr is re-fetched
+// before the 1h TTL expires.
+func TestLidarrInvalidateCaches(t *testing.T) {
+	resetLidarrCaches()
+	t.Cleanup(resetLidarrCaches)
+
+	lidarrArtistsCacheMu.Lock()
+	lidarrArtistsCache["a"] = models.CachedLidarrArtistRelease{}
+	lidarrArtistsCacheMu.Unlock()
+	lidarrAlbumsCacheMu.Lock()
+	lidarrAlbumsCache["b"] = models.CachedLidarrAlbumRelease{}
+	lidarrAlbumsCacheMu.Unlock()
+	lidarrTracksCacheMu.Lock()
+	lidarrTracksCache["c"] = models.CachedLidarrTracksRelease{}
+	lidarrTracksCacheMu.Unlock()
+	lidarrTrackFilesCacheMu.Lock()
+	lidarrTrackFilesCache["d"] = models.CachedLidarrTrackFilesRelease{}
+	lidarrTrackFilesCacheMu.Unlock()
+
+	LidarrInvalidateCaches()
+
+	lidarrArtistsCacheMu.RLock()
+	lidarrAlbumsCacheMu.RLock()
+	lidarrTracksCacheMu.RLock()
+	lidarrTrackFilesCacheMu.RLock()
+	n := len(lidarrArtistsCache) + len(lidarrAlbumsCache) + len(lidarrTracksCache) + len(lidarrTrackFilesCache)
+	lidarrTrackFilesCacheMu.RUnlock()
+	lidarrTracksCacheMu.RUnlock()
+	lidarrAlbumsCacheMu.RUnlock()
+	lidarrArtistsCacheMu.RUnlock()
+
+	if n != 0 {
+		t.Errorf("caches still hold %d entries after invalidation, want 0", n)
+	}
+}
+
 func TestLidarrFindArtistByName(t *testing.T) {
 	resetLidarrCaches()
 	mock := newLidarrMock(t, map[string]any{

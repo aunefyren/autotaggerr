@@ -688,3 +688,28 @@ func TestScanLibraryCollectsTagDiff(t *testing.T) {
 		t.Errorf("idempotent rewrite reported unchanged=%v changes=%+v", unchanged, changes)
 	}
 }
+
+// TaggerForLibrary resolves just the tagger a library is configured with. A library
+// pointing at an explicit profile gets that profile's settings; one with none falls
+// back to a default rather than erroring.
+func TestTaggerForLibrary(t *testing.T) {
+	db := testDB(t)
+
+	profile := models.TaggerProfile{Name: "No write", WriteTags: false}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	lib := models.Library{Name: "L", Path: "/m", TaggerProfileID: &profile.ID}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+
+	if TaggerForLibrary(db, lib).WriteEnabled() {
+		t.Error("the library's profile disables writes; the tagger should too")
+	}
+
+	// A library with no explicit profile still resolves to a usable tagger.
+	if TaggerForLibrary(db, models.Library{Name: "Bare", Path: "/n"}) == nil {
+		t.Error("a bare library must still resolve a tagger")
+	}
+}

@@ -203,6 +203,23 @@ func artistFromPath(root, path string) string {
 // Running reports whether a scan is in progress.
 func (r *Runner) Running() bool { return r.running.Load() }
 
+// Wait blocks until the queue has drained and no job is executing. It is meant for
+// graceful shutdown and for tests: a background job that outlives its caller keeps
+// writing to a database whose temp directory may already be gone, which surfaces as
+// unrelated "readonly database" noise. It does not stop new work from being enqueued —
+// it simply waits for what is already queued or running to finish.
+func (r *Runner) Wait() {
+	for {
+		r.queueMu.Lock()
+		idle := r.current == nil && len(r.queue) == 0
+		r.queueMu.Unlock()
+		if idle && !r.running.Load() {
+			return
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // Target is one unit of scan work: a library, and optionally the folders inside it
 // to walk. Empty Roots means the whole library.
 type Target struct {

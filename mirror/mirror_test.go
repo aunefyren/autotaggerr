@@ -129,6 +129,37 @@ func TestCollectionScopeWithoutDB(t *testing.T) {
 
 // A pass over an empty collection still completes and reports cleanly, which is
 // what the cron job does on a fresh install.
+// DueScope is a thin constructor: it labels the refresh and carries exactly the
+// release IDs it was handed, nothing more.
+func TestDueScope(t *testing.T) {
+	scope := DueScope([]string{"rel-a", "rel-b"})
+	if scope.Title == "" {
+		t.Error("DueScope produced an unlabelled scope")
+	}
+	if len(scope.Releases) != 2 || scope.Releases[0] != "rel-a" {
+		t.Errorf("DueScope releases = %v, want the two it was given", scope.Releases)
+	}
+}
+
+func TestRunnerRunningStartsFalse(t *testing.T) {
+	if NewRunner(testDB(t), nil).Running() {
+		t.Error("a fresh runner reports a pass in progress")
+	}
+}
+
+// RunCollection over an empty collection resolves an empty scope and returns cleanly
+// without any MusicBrainz call — the whole-collection entry point still works when
+// there is nothing to refresh.
+func TestRunCollectionOverEmptyCollection(t *testing.T) {
+	r := NewRunner(testDB(t), nil)
+	if err := r.RunCollection(context.Background(), false); err != nil {
+		t.Fatalf("RunCollection: %v", err)
+	}
+	if r.Running() {
+		t.Error("pass should not still be running")
+	}
+}
+
 func TestRunOverEmptyCollection(t *testing.T) {
 	db := testDB(t)
 	r := NewRunner(db, nil)
