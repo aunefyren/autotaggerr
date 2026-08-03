@@ -289,7 +289,7 @@ func TestVerifyArtistIdentityBypassesTheCache(t *testing.T) {
 		t.Fatalf("server hit %d times; the second lookup should have been cached", hits)
 	}
 
-	if err := VerifyArtistIdentity("art-old"); err != nil {
+	if err := VerifyArtistIdentity(NewMetadataSource(), "art-old"); err != nil {
 		t.Fatalf("VerifyArtistIdentity: %v", err)
 	}
 	if hits != 2 {

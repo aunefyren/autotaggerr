@@ -10,6 +10,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
@@ -25,7 +26,7 @@ import (
 // escape hatch when search cannot surface a release at all, an MBID or a pasted
 // musicbrainz.org URL, which is resolved directly instead of searched.
 func (a *API) searchReleases(c *gin.Context) {
-	query := modules.ReleaseSearchQuery{
+	query := metadata.ReleaseSearchQuery{
 		Text:     c.Query("q"),
 		Artist:   c.Query("artist"),
 		ArtistID: c.Query("artist_id"),
@@ -50,7 +51,7 @@ func (a *API) searchReleases(c *gin.Context) {
 		return
 	}
 
-	page, err := modules.SearchMusicBrainzReleases(query)
+	page, err := a.meta().SearchReleases(query)
 	if err != nil {
 		logger.Log.Errorf("release search failed for %q: %s", query.Lucene(), err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "MusicBrainz search failed"})
@@ -62,12 +63,12 @@ func (a *API) searchReleases(c *gin.Context) {
 // resolvePastedMBID turns a pasted ID or URL into the same result shape a search
 // returns. An artist ID narrows the search rather than resolving to one release,
 // since an artist is not something a file can be attached to.
-func (a *API) resolvePastedMBID(c *gin.Context, ref modules.ParsedMBID, query modules.ReleaseSearchQuery) {
+func (a *API) resolvePastedMBID(c *gin.Context, ref modules.ParsedMBID, query metadata.ReleaseSearchQuery) {
 	switch ref.Entity {
 	case "artist":
 		query.Text = ""
 		query.ArtistID = ref.MBID
-		page, err := modules.SearchMusicBrainzReleases(query)
+		page, err := a.meta().SearchReleases(query)
 		if err != nil {
 			logger.Log.Errorf("release search by artist %s failed: %s", ref.MBID, err.Error())
 			c.JSON(http.StatusBadGateway, gin.H{"error": "MusicBrainz search failed"})
@@ -77,29 +78,29 @@ func (a *API) resolvePastedMBID(c *gin.Context, ref modules.ParsedMBID, query mo
 		return
 
 	case "release-group":
-		releases, err := modules.GetMusicBrainzReleaseGroupReleases(ref.MBID)
+		releases, err := a.meta().GetReleaseGroupReleases(ref.MBID)
 		if err != nil {
 			logger.Log.Errorf("editions lookup for release-group %s failed: %s", ref.MBID, err.Error())
 			c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release group from MusicBrainz"})
 			return
 		}
-		c.JSON(http.StatusOK, modules.ReleaseSearchPage{Count: len(releases), Releases: releases})
+		c.JSON(http.StatusOK, metadata.ReleaseSearchPage{Count: len(releases), Releases: releases})
 		return
 	}
 
 	// "release" or a bare MBID: try the release, then fall back to treating it as a
 	// release group, so pasting an ID without its URL still lands somewhere useful.
-	release, err := modules.GetMusicBrainzRelease(ref.MBID)
+	release, err := a.meta().GetRelease(ref.MBID)
 	if err == nil {
-		c.JSON(http.StatusOK, modules.ReleaseSearchPage{
+		c.JSON(http.StatusOK, metadata.ReleaseSearchPage{
 			Count:    1,
 			Releases: []models.MusicBrainzReleaseSearchResult{modules.SearchResultFromRelease(release)},
 		})
 		return
 	}
 	if ref.Entity == "" {
-		if releases, groupErr := modules.GetMusicBrainzReleaseGroupReleases(ref.MBID); groupErr == nil && len(releases) > 0 {
-			c.JSON(http.StatusOK, modules.ReleaseSearchPage{Count: len(releases), Releases: releases})
+		if releases, groupErr := a.meta().GetReleaseGroupReleases(ref.MBID); groupErr == nil && len(releases) > 0 {
+			c.JSON(http.StatusOK, metadata.ReleaseSearchPage{Count: len(releases), Releases: releases})
 			return
 		}
 	}
@@ -112,7 +113,7 @@ func (a *API) resolvePastedMBID(c *gin.Context, ref modules.ParsedMBID, query mo
 // costs no MusicBrainz call.
 func (a *API) releaseTracks(c *gin.Context) {
 	mbID := strings.TrimSpace(c.Param("mbid"))
-	release, err := modules.GetMusicBrainzRelease(mbID)
+	release, err := a.meta().GetRelease(mbID)
 	if err != nil {
 		logger.Log.Errorf("failed to load release %s: %s", mbID, err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release from MusicBrainz"})
@@ -170,7 +171,7 @@ func (a *API) attachItem(c *gin.Context) {
 
 	// Validate the choice against the real release rather than trusting the body:
 	// a wrong ID would otherwise be written into the file's tags.
-	release, err := modules.GetMusicBrainzRelease(body.MBReleaseID)
+	release, err := a.meta().GetRelease(body.MBReleaseID)
 	if err != nil {
 		logger.Log.Errorf("attach: failed to load release %s: %s", body.MBReleaseID, err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release from MusicBrainz"})
@@ -358,7 +359,7 @@ func (a *API) previewBulkAttach(c *gin.Context) {
 		return
 	}
 
-	release, err := modules.GetMusicBrainzRelease(body.MBReleaseID)
+	release, err := a.meta().GetRelease(body.MBReleaseID)
 	if err != nil {
 		logger.Log.Errorf("bulk preview: failed to load release %s: %s", body.MBReleaseID, err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release from MusicBrainz"})
@@ -449,7 +450,7 @@ func (a *API) attachBulk(c *gin.Context) {
 		return
 	}
 
-	release, err := modules.GetMusicBrainzRelease(body.MBReleaseID)
+	release, err := a.meta().GetRelease(body.MBReleaseID)
 	if err != nil {
 		logger.Log.Errorf("bulk attach: failed to load release %s: %s", body.MBReleaseID, err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release from MusicBrainz"})

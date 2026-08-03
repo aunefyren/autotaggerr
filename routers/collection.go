@@ -404,7 +404,7 @@ func (a *API) setArtistMonitored(c *gin.Context) {
 
 	wanted := 0
 	if body.Monitored {
-		n, err := collection.SyncArtist(a.DB, mbid)
+		n, err := collection.SyncArtist(a.DB, a.meta(), mbid)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to sync discography: " + err.Error()})
 			return
@@ -461,7 +461,7 @@ func (a *API) searchArtists(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "a search query is required"})
 		return
 	}
-	results, err := modules.SearchMusicBrainzArtists(query)
+	results, err := a.meta().SearchArtists(query)
 	if err != nil {
 		logger.Log.Errorf("artist search failed for %q: %s", query, err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "MusicBrainz search failed"})
@@ -493,7 +493,7 @@ func (a *API) addArtist(c *gin.Context) {
 // releaseGroupEditions lists a release-group's releases so a specific edition can
 // be desired ("I want the 2017 remaster, not just the album").
 func (a *API) releaseGroupEditions(c *gin.Context) {
-	editions, err := collection.ReleaseGroupEditions(c.Param("mbid"))
+	editions, err := collection.ReleaseGroupEditions(a.meta(), c.Param("mbid"))
 	if err != nil {
 		logger.Log.Errorf("failed to list editions for %s: %s", c.Param("mbid"), err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "could not list editions from MusicBrainz"})
@@ -613,7 +613,7 @@ func (a *API) artistInfo(c *gin.Context) {
 		return
 	}
 
-	info, err := modules.GetMusicBrainzArtist(mbid)
+	info, err := a.meta().GetArtist(mbid)
 	if err != nil {
 		logger.Log.Warnf("failed to load artist info for %s: %s", mbid, err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load the artist from MusicBrainz"})
@@ -791,7 +791,7 @@ func (a *API) updateFollow(c *gin.Context) {
 
 	wanted := 0
 	if artist.Monitored {
-		n, err := collection.SyncArtist(a.DB, mbid)
+		n, err := collection.SyncArtist(a.DB, a.meta(), mbid)
 		if err != nil {
 			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to sync discography: " + err.Error()})
 			return
@@ -869,7 +869,7 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 
 	view := newReleaseGroupView(rg, catalogued, anyEdition, artist, editionIDs, recordings)
 
-	editions, err := collection.ReleaseGroupEditions(rgMBID)
+	editions, err := collection.ReleaseGroupEditions(a.meta(), rgMBID)
 	if err != nil {
 		logger.Log.Errorf("failed to list editions for %s: %s", rgMBID, err.Error())
 		// The page is still useful without the edition list; report it as empty

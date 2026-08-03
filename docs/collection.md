@@ -177,6 +177,14 @@ Within one release-group a desire is *either* any-release *or* a set of specific
 one clears the other (`SetDesire` enforces it in both directions). Holding both at once is a
 contradiction the schema would otherwise store happily.
 
+**Auto-narrowing (native only).** An `any`-release want self-narrows to the edition you actually own:
+when a file lands for an "any" desire, `reconcileAutoDesires` (last step of `rebuildTx`) replaces the
+`any` row with one `Auto`-flagged want per owned edition. The `CollectionDesire.Auto` bit is what
+keeps this honest — Rebuild may re-point an `auto` want when the files are replaced, but never touches
+a hand-pinned one (`SetDesire` clears `Auto` on a manual re-assert). Own two editions ⇒ one `auto`
+want each. Edge case (v1): deleting *every* file of a promoted album prunes its `auto` wants and drops
+it from wanted — re-add to restore. Lidarr artists are skipped: their edition is the monitored release.
+
 ## Following
 
 **Follow** an artist to auto-want a *shape* of release; **Add to wanted** picks one album by hand.
@@ -207,6 +215,44 @@ manager dropping the album. Guarded by `routers/wanted_source_test.go`.
 Provenance has a real **unknown** state (`models.ManagedByUnknown`) for an artist whose library
 manager cannot be resolved. Absence of information is never presented as a positive claim that an
 artist is natively managed.
+
+## Manager authority — Lidarr owns identity
+
+When an artist is managed by Lidarr, **Lidarr is the sole authority over *identity*** — which albums
+are wanted, which release/edition is selected, and which track a file maps to. Autotaggerr's job
+shrinks to *tagging* files to match Lidarr's answer and *refreshing Plex*. `mixed` counts as Lidarr:
+if Lidarr governs an artist at all, identity is Lidarr's, so the gate is one bit per artist, not a
+per-release negotiation. The whole `CollectionDesire` model above is therefore a **native-manager
+construct** — for a Lidarr artist the same facts arrive via `SyncLidarr` (`catalog_monitored` = the
+want, the monitored release = the chosen edition), and running both authorities at once is what
+produces contradictions ("20/32 on an old release" while the album is green in Lidarr).
+
+The boundary is enforced by a single predicate and four mechanisms:
+
+- **One gate predicate.** `collection.IdentityEditable(artist)` / `ArtistIdentityEditable(db, mbID)`
+  (`managedBy != lidarr && != mixed`; unknown artist = editable) — the identity-side sibling of
+  `FollowGoverns`. Enforced in the API (`requireIdentityEditable` in `routers/attach.go` gates
+  attach/bulk-attach on the file's *library* manager; `requireArtistIdentityEditable` gates
+  `setDesire`), returning **409**, and surfaced as the `identity_editable` field on the artist,
+  release-group and library-item views so the UI hides the control before the reject is ever hit.
+  `clearDesire` is deliberately left ungated — clearing a stale want is a pure removal, like detach.
+- **No tag fallback under Lidarr.** `ResolveCorrelation` (`modules/files.go`) normally falls back to a
+  file's embedded MB tags when Lidarr returns nothing; under a Lidarr manager *with a client* that
+  fallback would preserve a stale identity, so the file becomes `unmatched` (`modules.ErrUnmatched` →
+  `LibraryItemStatusUnmatched`) instead — not an error, not tagged, re-attempted next scan. A
+  credential-less Lidarr row keeps the tag fallback so an outage cannot orphan a library; the native
+  manager keeps it always (tags are its only source).
+- **Force re-correlate** (per artist / release-group / library). Changing the selection in Lidarr is
+  the source of truth, but two things keep a diverged file stuck: `shouldSkip` never re-processes on an
+  upstream selection change, and a manual attach is `Pinned`. The verb defeats both — it busts the
+  Lidarr caches (`modules.LidarrInvalidateCaches`), clears `Pinned` on Lidarr-governed items in scope,
+  re-runs the pipeline **ignoring `shouldSkip`**, and writes Lidarr's current release, leaving anything
+  Lidarr still cannot match `unmatched`. Exposed as `POST /{artists|release-groups}/:mbid/recorrelate`
+  and `POST /libraries/:id/recorrelate` (see [scanning.md](scanning.md#per-artist-actions)).
+- **Track-not-found is surfaced, not silent.** When Lidarr's release ID and track ID disagree
+  (common mid-migration), tagging returns `modules.ErrTrackNotInRelease` wrapped with an actionable
+  message pointing at force re-correlate, and the file lands as a visible `error` item the next scan
+  re-attempts — rather than silently keeping its old tags.
 
 ## Hard-won UI rules
 

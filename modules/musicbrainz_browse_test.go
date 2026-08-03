@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 )
 
@@ -341,7 +342,7 @@ func TestSearchMusicBrainzReleases(t *testing.T) {
 		fmt.Fprint(w, `{"count":1,"releases":[{"id":"rel-1","title":"Spiderland","score":100}]}`)
 	})
 
-	page, err := SearchMusicBrainzReleases(ReleaseSearchQuery{Artist: "Slint", Release: "Spiderland", Limit: 5})
+	page, err := SearchMusicBrainzReleases(metadata.ReleaseSearchQuery{Artist: "Slint", Release: "Spiderland", Limit: 5})
 	if err != nil {
 		t.Fatalf("SearchMusicBrainzReleases: %v", err)
 	}
@@ -368,7 +369,7 @@ func TestSearchMusicBrainzReleasesClampsPaging(t *testing.T) {
 
 	// An unbounded limit is a request for MusicBrainz to send everything; a negative
 	// offset is not a page at all.
-	if _, err := SearchMusicBrainzReleases(ReleaseSearchQuery{Artist: "Slint", Limit: 9999, Offset: -10}); err != nil {
+	if _, err := SearchMusicBrainzReleases(metadata.ReleaseSearchQuery{Artist: "Slint", Limit: 9999, Offset: -10}); err != nil {
 		t.Fatalf("SearchMusicBrainzReleases: %v", err)
 	}
 	if gotLimit != fmt.Sprint(maxReleaseSearchLimit) {
@@ -384,7 +385,7 @@ func TestSearchMusicBrainzReleasesEmptyQuery(t *testing.T) {
 	withMockMB(t, func(http.ResponseWriter, *http.Request) {
 		t.Error("an empty query reached MusicBrainz")
 	})
-	page, err := SearchMusicBrainzReleases(ReleaseSearchQuery{})
+	page, err := SearchMusicBrainzReleases(metadata.ReleaseSearchQuery{})
 	if err != nil || page.Count != 0 || page.Releases != nil {
 		t.Errorf("empty query = (%+v, %v), want a zero page", page, err)
 	}
@@ -395,7 +396,7 @@ func TestSearchMusicBrainzReleasesReportsHTTPError(t *testing.T) {
 	withMockMB(t, func(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, "rate limited", http.StatusServiceUnavailable)
 	})
-	if _, err := SearchMusicBrainzReleases(ReleaseSearchQuery{Artist: "Slint"}); err == nil {
+	if _, err := SearchMusicBrainzReleases(metadata.ReleaseSearchQuery{Artist: "Slint"}); err == nil {
 		t.Error("an HTTP 503 was reported as success")
 	}
 }

@@ -4,8 +4,8 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
-	"github.com/aunefyren/autotaggerr/modules"
 	"gorm.io/gorm"
 )
 
@@ -190,6 +190,6 @@ func DesiresForArtist(db *gorm.DB, artistMBID string, releaseGroupMBIDs []string
 // ReleaseGroupEditions lists every release of a release-group from MusicBrainz, for
 // choosing a specific edition to desire. This is catalog data, not ownership — the
 // owned-editions view arrives with M6 pass C.
-func ReleaseGroupEditions(releaseGroupMBID string) ([]models.MusicBrainzReleaseSearchResult, error) {
-	return modules.GetMusicBrainzReleaseGroupReleases(releaseGroupMBID)
+func ReleaseGroupEditions(meta metadata.MetadataSource, releaseGroupMBID string) ([]models.MusicBrainzReleaseSearchResult, error) {
+	return meta.GetReleaseGroupReleases(releaseGroupMBID)
 }

@@ -140,3 +140,76 @@ func TestReleaseGroupDetailReportsRecordings(t *testing.T) {
 		t.Errorf("recordings not surfaced: %+v", got)
 	}
 }
+
+// TestReleaseGroupEditions: the edition picker lists a release-group's releases through
+// the metadata source. Previously coverable only against live MusicBrainz.
+func TestReleaseGroupEditions(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	api.Meta = &fakeMeta{getRGReleases: func(rgID string) ([]models.MusicBrainzReleaseSearchResult, error) {
+		if rgID != "rg-1" {
+			t.Errorf("GetReleaseGroupReleases called with %q, want rg-1", rgID)
+		}
+		return []models.MusicBrainzReleaseSearchResult{{ID: "ed-1"}, {ID: "ed-2"}}, nil
+	}}
+
+	w := do(r, "GET", "/api/v1/release-groups/rg-1/releases", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	var editions []models.MusicBrainzReleaseSearchResult
+	if err := json.Unmarshal(w.Body.Bytes(), &editions); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(editions) != 2 || editions[0].ID != "ed-1" {
+		t.Errorf("editions = %+v", editions)
+	}
+}
+
+// TestReleaseGroupEditionsUpstreamError: a source failure is a 502.
+func TestReleaseGroupEditionsUpstreamError(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	api.Meta = &fakeMeta{getRGReleases: func(string) ([]models.MusicBrainzReleaseSearchResult, error) {
+		return nil, errBoom
+	}}
+
+	w := do(r, "GET", "/api/v1/release-groups/rg-1/releases", token, nil)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestSetDesireBlockedForLidarrArtist: under "Lidarr owns identity" a want is Lidarr's
+// to set, so the desire endpoint rejects it with 409 and writes nothing.
+func TestSetDesireBlockedForLidarrArtist(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	artist := artistFixture(t, api.DB, "lidarr-art", "Managed", models.ManagedByLidarr, true)
+
+	w := do(r, "POST", "/api/v1/artists/"+artist.MBID+"/desires", token, map[string]any{
+		"release_group_mb_id": "rg-1", "title": "Album",
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", w.Code, w.Body.String())
+	}
+
+	var count int64
+	api.DB.Model(&models.CollectionDesire{}).Where("release_group_mb_id = ?", "rg-1").Count(&count)
+	if count != 0 {
+		t.Errorf("blocked desire was still written (count %d)", count)
+	}
+}
+
+// TestSetDesireInvalidBody: a malformed body is a 400 before anything is resolved.
+func TestSetDesireInvalidBody(t *testing.T) {
+	r, api := setupAPI(t)
+	seedArtist(t, api)
+	token := loginToken(t, r)
+
+	if w := do(r, "POST", "/api/v1/artists/art-1/desires", token, "not-an-object"); w.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", w.Code, w.Body.String())
+	}
+}

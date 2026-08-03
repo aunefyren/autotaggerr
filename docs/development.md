@@ -80,12 +80,20 @@ drops below it. Two things about it are easy to get wrong:
   test went through it — a handler test proves the route is wired, not that the boundary holds. So
   test a package from inside that package, and do not expect an integration test to raise the
   number somewhere else.
-- **Anything talking to MusicBrainz needs its stub.** `musicbrainzBaseURL` is a package var for
-  exactly this; `withMockMB` in `modules/musicbrainz_http_test.go` points it at an `httptest`
-  server and resets the caches and rate limiter. It is unexported, so tests in *other* packages
-  cannot stub MusicBrainz — those handlers can only be covered on the paths that return before the
-  external call (unknown artist, blank query). A test that depends on musicbrainz.org being
-  reachable fails for reasons unrelated to the change that broke it.
+- **Anything talking to MusicBrainz needs its stub.** Two seams, depending on where the test lives:
+  - *Inside `modules/`*: `musicbrainzBaseURL` is a package var; `withMockMB`
+    (`modules/musicbrainz_http_test.go`) points it at an `httptest` server and resets the caches and
+    rate limiter. Unexported, so it only works in `modules/`. Use it for the real adapter's
+    HTTP/parse/cache/rate-limit behaviour.
+  - *Everywhere else* (`routers`, `collection`, `components`, `mirror`): inject a fake
+    `metadata.MetadataSource`. Every non-`modules` MB fetch routes through that port — the concrete
+    one is `modules.NewMetadataSource()`; a test supplies a fake with zero network. `routers.API.Meta`
+    (nil ⇒ `API.meta()` falls back to the real source), `scan.Runner`/`mirror.Runner` carry a
+    defaulted `meta` field, and `collection.SyncArtist`/`ReleaseGroupEditions` /
+    `components.ComputeItemDiff` take the port as a parameter. See `routers/metadata_source_test.go`
+    (`fakeMeta`) and `collection/sync_artist_test.go` for the pattern. AcoustID (`acoustidBaseURL`)
+    and artwork (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still package-var seams — the same
+    port pattern would retrofit them.
 
 To find the cheapest remaining gaps, sum the uncovered statements per file rather than reading
 percentages — a 40%-covered 300-statement file matters more than a 0%-covered 10-statement one:

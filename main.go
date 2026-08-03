@@ -283,6 +283,7 @@ func initRouter(db *gorm.DB, scanRunner *scan.Runner, mirrorRunner *mirror.Runne
 		Scan:       scanRunner,
 		Mirror:     mirrorRunner,
 		Rebuilder:  collection.NewRebuilder(db),
+		Meta:       modules.NewMetadataSource(),
 		SigningKey: files.GetPrivateKey(0),
 		AppName:    cfg.AutotaggerrName,
 		Version:    cfg.AutotaggerrVersion,

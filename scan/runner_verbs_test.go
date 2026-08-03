@@ -267,6 +267,46 @@ func TestRetagItemsEmptyAndUnknown(t *testing.T) {
 	}
 }
 
+// TestRetagItemsNoWriteProfileIsANoop drives a real indexed item through the re-tag
+// verb with a no-write tagger profile, so retagItem resolves the library and tagger and
+// then returns early (no file write, no MusicBrainz call). This covers the interactive
+// re-tag path — the item lookup, the per-item result and the nil-Plex flush — without a
+// file on disk or a network round-trip.
+func TestRetagItemsNoWriteProfileIsANoop(t *testing.T) {
+	db := newTestDB(t)
+
+	profile := models.TaggerProfile{Name: "NoWrite", WriteTags: false}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	lib := models.Library{Name: "L", Path: t.TempDir(), Enabled: true, TaggerProfileID: &profile.ID}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	item := models.LibraryItem{
+		LibraryID: lib.ID, Path: filepath.Join(lib.Path, "01.flac"),
+		MBReleaseID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1",
+		Status: models.LibraryItemStatusOK,
+	}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+
+	results, err := r.RetagItems([]uuid.UUID{item.ID})
+	if err != nil {
+		t.Fatalf("RetagItems: %v", err)
+	}
+	if len(results) != 1 || results[0].Err != nil || results[0].Written != 0 {
+		t.Errorf("no-write RetagItems = %#v, want one result: written 0, no error", results)
+	}
+
+	if written, err := r.RetagItem(item.ID); err != nil || written != 0 {
+		t.Errorf("RetagItem = %d, %v; want 0, nil", written, err)
+	}
+}
+
 // RefreshArtist/RefreshLibrary for an unresolvable scope are warned no-ops: the job
 // runs, the scope resolution fails, and nothing is fetched. This covers the enqueue +
 // early-return path without touching MusicBrainz.

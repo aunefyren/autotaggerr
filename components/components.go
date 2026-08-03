@@ -9,6 +9,7 @@ import (
 	"fmt"
 
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"gorm.io/gorm"
@@ -32,25 +33,28 @@ type Manager interface {
 
 // --- Data sources -----------------------------------------------------------
 
-// MusicBrainzDataSource wraps the cached, rate-limited MusicBrainz client in
-// modules/. (The fetch still routes through modules' cache today; when the MB
-// cache moves into the DB this stays the single seam that changes.)
+// MusicBrainzDataSource adapts the MetadataSource port onto the DataSource
+// interface. The fetch routes through the injected port (the real one wraps
+// modules' cached, rate-limited client); this stays the single seam that changes
+// when the MB cache moves into the DB.
 type MusicBrainzDataSource struct {
-	row models.DataSource
+	row  models.DataSource
+	meta metadata.MetadataSource
 }
 
 func (d *MusicBrainzDataSource) GetRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
-	return modules.GetMusicBrainzRelease(mbID)
+	return d.meta.GetRelease(mbID)
 }
 
 func (d *MusicBrainzDataSource) HealthCheck() (bool, error) { return true, nil }
 func (d *MusicBrainzDataSource) Type() string               { return models.DataSourceTypeMusicBrainz }
 
-// NewDataSource builds a DataSource from its DB row.
+// NewDataSource builds a DataSource from its DB row, backed by the real
+// MusicBrainz-backed metadata source.
 func NewDataSource(row models.DataSource) (DataSource, error) {
 	switch row.Type {
 	case models.DataSourceTypeMusicBrainz:
-		return &MusicBrainzDataSource{row: row}, nil
+		return &MusicBrainzDataSource{row: row, meta: modules.NewMetadataSource()}, nil
 	default:
 		return nil, fmt.Errorf("unsupported data source type %q", row.Type)
 	}

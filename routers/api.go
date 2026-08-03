@@ -6,8 +6,10 @@ import (
 
 	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/collection"
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/scan"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -20,10 +22,26 @@ type API struct {
 	Mirror *mirror.Runner
 	// Rebuilder re-derives the collection after a handler changes the file index.
 	// May be nil, in which case requests are dropped (see collection.Rebuilder).
-	Rebuilder  *collection.Rebuilder
+	Rebuilder *collection.Rebuilder
+	// Meta is the MusicBrainz metadata source used by the MB-bound handlers. May be
+	// nil: meta() falls back to the real modules-backed source, so production wiring
+	// is optional and a test injects a fake by setting this field. This is the seam
+	// that makes the MB-bound handlers coverable without touching musicbrainz.org.
+	Meta       metadata.MetadataSource
 	SigningKey []byte
 	AppName    string
 	Version    string
+}
+
+// meta returns the injected metadata source, or the real MusicBrainz-backed one when
+// none was wired. The fallback keeps every non-test caller working (main wires it
+// explicitly), while a test sets Meta to a fake to exercise the MB-bound paths with
+// zero network.
+func (a *API) meta() metadata.MetadataSource {
+	if a.Meta != nil {
+		return a.Meta
+	}
+	return modules.NewMetadataSource()
 }
 
 // APIPing is the unauthenticated liveness probe.

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 )
 
@@ -158,7 +159,11 @@ func DropCachedRelease(mbID string) {
 //
 // Errors are returned rather than logged so a sweep can distinguish "gone" (which is
 // a result) from a transport failure (which is not).
-func VerifyArtistIdentity(artistMBID string) error {
+//
+// The re-read goes through the injected MetadataSource so a caller (and its tests)
+// can supply a fake; the cache-forget stays a local concern because bypassing the
+// cache is the whole point of the call.
+func VerifyArtistIdentity(meta metadata.MetadataSource, artistMBID string) error {
 	if artistMBID == "" {
 		return nil
 	}
@@ -170,7 +175,7 @@ func VerifyArtistIdentity(artistMBID string) error {
 	// the very copy this call exists to re-verify.
 	MusicbrainzForgetEntity(models.MBEntityArtist, artistMBID)
 
-	_, err := GetMusicBrainzArtist(artistMBID)
+	_, err := meta.GetArtist(artistMBID)
 	return err
 }
 

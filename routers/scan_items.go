@@ -370,7 +370,7 @@ func (a *API) itemTags(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
 		return
 	}
-	tags, err := components.ComputeItemDiff(a.DB, item)
+	tags, err := components.ComputeItemDiff(a.DB, a.meta(), item)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return

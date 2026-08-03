@@ -44,6 +44,7 @@ import (
 	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/migration"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
@@ -318,6 +319,10 @@ func DueScope(releases []string) Scope {
 type Runner struct {
 	db *gorm.DB
 
+	// meta is the MusicBrainz metadata source the warm pass fetches through.
+	// Defaulted to the real source in NewRunner; a test can swap it for a fake.
+	meta metadata.MetadataSource
+
 	// yieldTo reports whether file-writing work is running. May be nil, in which
 	// case a pass never yields.
 	yieldTo func() bool
@@ -334,7 +339,7 @@ type Runner struct {
 
 // NewRunner builds a refresh runner. yieldTo may be nil.
 func NewRunner(db *gorm.DB, yieldTo func() bool) *Runner {
-	return &Runner{db: db, yieldTo: yieldTo}
+	return &Runner{db: db, meta: modules.NewMetadataSource(), yieldTo: yieldTo}
 }
 
 // Status returns a copy of the current/last summary, with live cache-coverage
@@ -532,11 +537,11 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 	var err error
 	switch entity {
 	case models.MBEntityArtist:
-		_, err = modules.GetMusicBrainzArtist(mbid)
+		_, err = r.meta.GetArtist(mbid)
 	case models.MBEntityDiscography:
 		_, err = modules.GetArtistDiscography(mbid)
 	case models.MBEntityEditions:
-		_, err = modules.GetMusicBrainzReleaseGroupReleases(mbid)
+		_, err = r.meta.GetReleaseGroupReleases(mbid)
 	case entityRelease:
 		err = r.refreshRelease(mbid, res, track)
 		if err == nil && cold {

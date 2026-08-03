@@ -30,6 +30,24 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
 
+## Frontend follow-ups (separate repo)
+
+The backend for the manager-authority boundary and the auto-desire model has shipped (see
+[collection.md](collection.md#manager-authority--lidarr-owns-identity) and its desire-model section).
+The web frontend is a built bundle here (`web/dist`, no source in this repo), so these are handoff
+notes — the API contract exists and is tested; the UI has to catch up:
+
+- **Honour `identity_editable`.** When false on the artist / release-group / library-item view, hide
+  or disable manual attach, "choose edition" and the want/desire controls, with a short "Managed by
+  Lidarr — change it in Lidarr" hint. `clearDesire` (`DELETE /artists/:mbid/desires`) stays available
+  even when locked — it only removes a stale want (mirrors detach).
+- **Re-correlate buttons**, behind a confirm dialog that says it **discards manual pins** and rewrites
+  files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`), per-album on the release-group
+  page (`POST /release-groups/:mbid/recorrelate`) and per-library on library settings
+  (`POST /libraries/:id/recorrelate`).
+- **Render an `auto` desire as state**, not an unpick toggle ("you have this edition"), and keep the
+  explicit "want a specific / another edition" controls behind `identity_editable`.
+
 ## Roadmap / ideas
 
 - **Additional audio formats** (OGG, M4A/AAC, …). Tagging covers FLAC (`metaflac`) and MP3
@@ -51,6 +69,12 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   Configurable structure? 
   Link to file importing feature?
 
+- **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
+  `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID
+  (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still
+  unexported-base-URL seams stubbable only inside `modules/`; the same port pattern would make their
+  callers testable too.
+
 ## Known issues / limitations
 
 - **Worker-count tuning.** Scan events now carry `mb_lookups` (cache hit / coalesced / fetched), so
@@ -67,293 +91,3 @@ manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
   An artist nobody syncs keeps their orphaned rows. The sweep verifies artist *identity* but does
   not prune their groups, because that would mean a discography fetch per artist on top of the
   lookup.
-
-## Manager authority boundary — Lidarr owns identity
-
-**The principle.** When an artist is managed by Lidarr, Lidarr is the sole authority over
-*identity* — which albums are wanted, which release/edition is selected, and which track a file
-maps to. Autotaggerr's job is reduced to *tagging* files to match Lidarr's answer and *refreshing
-Plex*. Everything below flows from that one line. `mixed` counts as Lidarr: if Lidarr governs an
-artist at all, identity is Lidarr's, so the gate is a single bit per artist, not a per-release
-negotiation. The `CollectionDesire` model (wanted albums, "any release vs. this edition" at
-`collection/desire.go:121`) is therefore a **native-manager construct** — for a Lidarr artist the
-same facts already arrive via `SyncLidarr` (`catalog_monitored` = the want, the monitored release =
-the chosen edition), and running both authorities is what produces the contradictions below.
-
-**Why this came up.** A file's collection ownership follows its *stored correlation*
-(`collection/collection.go:108`), and a Lidarr-selected release (`e398f34d`, 20 tracks) failed to
-flow down to files still correlated to an old release (`8bf89110`, 32 tracks) — so the collection
-read "20/32 on `8bf89110`" and the release-group showed "not in Lidarr" (owned RG ≠ the RG Lidarr
-monitors) even though the album is green in Lidarr. Manually re-attaching the MB ID in Items then
-crashed on a nil Plex refresh set (fixed: `RetagItems` now allocates + flushes one, and
-`AlbumRefreshSet.Add`/`Snapshot` nil-guard). The manual attach was the user reaching for a lever
-that shouldn't exist under Lidarr — and a scan would have reverted it anyway, since the scan
-re-resolves from Lidarr while attach/drift write the stored correlation.
-
-Work, roughly in order:
-
-- **Identity gate (`collection.IdentityEditable(db, releaseGroupMBID) bool`).** False when the
-  governing artist is `lidarr` or `mixed`. Enforce in **both** layers: API endpoints (`SetDesire`,
-  `ClearDesire`, Items attach/reattach, any select-edition endpoint) reject with a clear message
-  ("this artist is managed by Lidarr — change the release in Lidarr"); the UI hides/greys the same
-  controls so the reject is never hit in normal use. One predicate, no scattered
-  `if managedBy == lidarr` checks.
-- **No tag fallback under Lidarr management.** `ResolveCorrelation` (`modules/files.go:179`)
-  currently falls back to the file's embedded MB tags when Lidarr returns nothing. For a
-  Lidarr-managed library that fallback preserves a stale identity Lidarr no longer agrees with, so
-  instead: a Lidarr-managed file Lidarr cannot match becomes **unmatched/orphaned**, surfaced as
-  such, rather than tags-resolved. (The native manager keeps the tags path — that is its only
-  source.)
-- **Lidarr force-refresh.** Changing the selected release in Lidarr is the source of truth, but
-  Autotaggerr caches Lidarr albums for 1h (`modules/lidarr.go:27`, `GetMonitoredAlbumMBID`) and
-  nothing invalidates that when the selection changes. Add a force-refresh (re-sync) that busts the
-  album cache, re-resolves the monitored release, and re-tags the affected files so the new release
-  actually flows downstream.
-- **Surface the silent "track not found in release" failure.** When the release ID
-  (`GetMonitoredAlbumMBID`) and the track ID (Lidarr's track list) disagree — common mid-migration —
-  `TagResolvedFile` returns "track not found in release data" (`modules/files.go:254`) and leaves the
-  file's old tags untouched with no visible signal. This is the most likely reason a specific file
-  stays stuck on an old release, so it must become a per-file event/warning. Needed alongside the
-  force-refresh: without it, a force-refresh can "succeed" while the file never actually moves.
-- **Keep the "any release → this edition" migration, scoped to native.** When Autotaggerr is the
-  manager and a file appears for an "any release" desire, promoting the desire to that concrete
-  release (and marking sibling editions missing) is correct — the file *is* the act of choosing.
-  Under Lidarr the same click manufactures a false "missing" state, so gate it behind
-  `IdentityEditable`.
-
-- **Repair files already stuck on an old release.** The gate stops *new* divergence; it does not
-  move files that already diverged (the `8bf89110`/`e398f34d` case). Two mechanisms keep them stuck,
-  and the recovery verb has to defeat both: (1) `shouldSkip` (`components/pipeline.go:234`)
-  re-processes only when the file's bytes, the app version, or the manager change — *never* when
-  Lidarr's release selection changes upstream, so a healthy `ok` item is skipped forever; (2) a
-  manually-attached file is `Pinned` (`routers/attach.go:215`), and the pipeline reuses the pin
-  (`pinnedCorrelation`, `pipeline.go:264`) instead of asking Lidarr. So the repair is a **force
-  re-correlate** scope (per artist / release-group / library) that: busts the Lidarr caches,
-  clears `Pinned` on Lidarr-governed items in scope, re-runs the pipeline **ignoring `shouldSkip`**,
-  and writes Lidarr's current release — leaving anything Lidarr still can't match `unmatched`.
-
-### Implementation plan (sequenced)
-
-Landed already (working tree, uncommitted):
-- The `RetagItems` nil-`AlbumRefreshSet` crash fix (`scan/runner.go`) plus `Add`/`Snapshot`
-  nil-guards (`modules/files.go`).
-- **Step 4 — Lidarr cache-bust.** `modules.LidarrInvalidateCaches()` (`modules/lidarr.go`) drops all
-  four Lidarr caches so the next lookup re-fetches the current release selection.
-- **Step 5 — force re-correlate verb.** `Scope.Force` + a `force` param threaded through
-  `components.ScanLibraryRoots` → the walk closure (bypasses `shouldSkip`).
-  `Runner.ForceRecorrelateArtist` (`scan/runner.go`) busts the Lidarr caches and clears `Pinned` on
-  the artist's Lidarr-governed files (`prepareForceRecorrelate`/`pathInScope`, unit-tested) before a
-  forced re-walk. Exposed as `POST /artists/:mbid/recorrelate` (`routers/scan_items.go`,
-  `routers/api.go`). **UI button is a separate change — the web frontend is a built bundle
-  (`web/dist`), no source in this repo.**
-- **Step 6 — track-not-found classification.** `modules.ErrTrackNotInRelease` (`modules/files.go`),
-  wrapped with an actionable message pointing at force re-correlate; the file still lands as a
-  visible `error` item that the next scan re-attempts.
-- **Step 1 — identity gate predicate.** `collection.IdentityEditable(artist)` +
-  `collection.ArtistIdentityEditable(db, mbID)` (`collection/collection.go`), the identity-side
-  sibling of `FollowGoverns` (`managedBy != lidarr && != mixed`; unknown artist = editable).
-  Table-tested.
-- **Step 2 — enforce the gate.** `requireIdentityEditable` (`routers/attach.go`, gates
-  `attachItem`/`previewBulkAttach`/`attachBulk` on the file's **library** manager type — always
-  resolvable even for an unmatched file) and `requireArtistIdentityEditable` (`routers/collection.go`,
-  gates `setDesire` on the artist's `managed_by`). Both return 409. **Deviation from the plan:**
-  `clearDesire` is left *ungated* — clearing is a pure removal, and a want left from before an artist
-  became Lidarr-managed needs a way out (same reasoning that keeps detach allowed). Flag for review.
-  UI hide/grey is a separate frontend-repo change (built bundle here).
-- **Step 3 — no tag fallback under Lidarr.** `modules.ErrUnmatched` + an `allowTagFallback` mode on
-  `ResolveCorrelation` (`modules/files.go`). `LidarrManager.Correlate` passes `false` **only when it
-  has a client** (a credential-less Lidarr row keeps the legacy tag fallback, so an outage/misconfig
-  does not orphan a library); `AutotaggerrManager` passes `true`. `ProcessFile`/`recordItem`
-  (`components/pipeline.go`) map `ErrUnmatched` to `LibraryItemStatusUnmatched` — not counted as an
-  error, not tagged, dropped from the collection, re-attempted next scan. A real transport error
-  stays `error`. Unit-tested (`TestResolveCorrelationNoFallbackUnmatched`).
-
-All six steps of the plan are implemented in the working tree. Three follow-ups remain, each
-planned below.
-
-### Follow-up A — expose editability + the frontend controls
-
-The backend gate (step 2) rejects a forbidden action, but the UI still *offers* it and only learns
-it is forbidden from a 409. The fix is to hand the frontend the same predicate as data, then have it
-hide the controls and add the repair button. The backend half lives here; the frontend half is a
-separate repo (this one ships `web/dist` only), so its deliverable is the API contract plus a
-checklist.
-
-Backend (this repo) — **DONE** (working tree):
-- `identity_editable` added to the artist view (`newArtistView`), release-group view
-  (`newReleaseGroupView`) and library-item rows (`listLibraryItems`, now wrapped in
-  `libraryItemView`), all in `routers/`. The item + attach paths share one resolver,
-  `API.libraryIdentityEditable` (`routers/attach.go`), so the listing flag and the attach 409 can
-  never disagree; the item listing fails closed to not-editable if a manager cannot be resolved.
-  Tested (`routers/identity_editable_test.go`): Lidarr artist/library ⇒ `false`, native ⇒ `true`.
-
-Frontend (separate repo — checklist, not code here):
-- When `identity_editable` is false: hide/disable manual attach, "choose edition", and the
-  want/desire controls; show a short "Managed by Lidarr — change it in Lidarr" hint.
-- Add a per-artist **Re-correlate** button calling `POST /artists/:mbid/recorrelate`, behind a
-  confirm dialog that says it **discards manual pins** and rewrites the files from Lidarr.
-- `clearDesire` (`DELETE /artists/:mbid/desires`) stays available even when locked — it only removes
-  a stale want (mirrors detach).
-
-### Follow-up B — force re-correlate at release-group and library scope — **DONE** (working tree)
-
-Backend shipped; no new machinery, just targeting + verbs + endpoints on top of the existing
-`Scope.Force` / `prepareForceRecorrelate` / `force`-flag plumbing.
-
-- **`collection.ReleaseGroupTargets`** (`collection/paths.go`, with `ReleaseGroupReleaseMBIDs` /
-  `ReleaseGroupItems`): release-group → owned editions → items → **each file's own directory**
-  (album / per-disc folder, via `filepath.Dir`), deduped and sorted. Narrower than `ArtistTargets`
-  on purpose, so one album's repair does not re-walk the discography.
-- **`Runner.ReleaseGroupScope`** (returns `ErrNothingToScan` when nothing owned, the DB error when
-  the group is unknown) + verbs **`ForceRecorrelateReleaseGroup`** and **`ForceRecorrelateLibrary`**.
-  `ArtistScope` and `ReleaseGroupScope` now share a `buildScope` helper; the three force verbs share
-  `enqueueForceRecorrelate` + `forceTitle`. `prepareForceRecorrelate` clears pins per-target scoped
-  by `pathInScope` unchanged, so it works for album folders and whole libraries.
-- **Endpoints**: `POST /release-groups/:mbid/recorrelate` (param named `:mbid` to match the sibling
-  `/release-groups/:mbid/releases`; the value is the release-group MB ID) and
-  `POST /libraries/:id/recorrelate` (via `libraryAction`).
-- **Tests**: `ReleaseGroupTargets` narrows to album/disc folders and never widens to the artist
-  folder (`collection/paths_test.go`); `ReleaseGroupScope` resolves targets/roots and returns
-  `ErrNothingToScan` when empty (`scan/runner_test.go`); endpoint contract — 404 unknown, 409 nothing
-  owned, 401 unauthenticated (`routers/recorrelate_test.go`).
-
-Frontend (separate repo): expose the two new actions where they belong — a "Re-correlate album"
-button on the release-group detail page and a "Re-correlate library" button on the library settings
-page — reusing the same discard-pins confirm as the artist button.
-
-### Follow-up C — "any release → this edition" desire migration (native only)
-
-Today a want is either "any edition" (`ReleaseMBID == ""`) or a set of specific editions
-(`collection/desire.go:121`). **Decision (locked): silent promotion, self-correcting.** When you
-wanted "any" and a file lands, that owned edition *is* the one you have — you accepted any, and this
-is the one you got. The narrowed want is not a one-time snapshot: it **reflects what the files
-represent**, so if the files are later replaced with a different edition, the want re-points to the
-new one. Wanting an *additional* edition is a separate, explicit want layered on top; it does not
-disturb the auto-narrowed one. Native-only — a Lidarr artist's edition comes from the monitored
-release, not a desire.
-
-The load-bearing piece is that an auto-selected want must be **distinguishable from a hand-pinned
-one**, so Rebuild may re-point the former but never clobber the latter. That is the entire difference
-between "tracks the files" and "goes stale".
-
-**DONE** (working tree):
-- **Schema**: `CollectionDesire.Auto bool` (`models/db.go`, `json:"auto"`, exposed so the UI can tell
-  an auto-selected edition from a hand-pinned one). Existing rows migrate to `auto=false` = manual,
-  which is correct — they were user-authored.
-- **`reconcileAutoDesires`** (`collection/collection.go`) runs last inside `rebuildTx`, after the
-  artist/RG upserts so it reads the freshly-computed `managed_by` and owned editions. Algorithm:
-  (1) compute which release-groups are "auto-managed" — a native artist with an `any` want *or* a
-  prior `auto` want — evaluated **before** any pruning so a re-point doesn't lose its trigger;
-  (2) prune `auto` wants whose edition is no longer owned; (3) for each auto-managed group that owns
-  something, delete the `any` want and add one `auto` want per owned edition lacking a desire.
-- **`SetDesire`** (`collection/desire.go`) clears `Auto` on a hand re-assert, so pinning an edition
-  by hand takes it out of the auto path.
-- **Multi-edition sub-question — resolved**: own two editions ⇒ one `auto` want each (each represents
-  what you have). Tested.
-- **Tests** (`collection/desire_auto_test.go`): promote `any`→owned edition; re-point on replaced
-  files; leave a `manual` edition untouched; skip a Lidarr artist; one `auto` want per owned edition.
-
-Known edge (documented, acceptable for v1): if **every** file of a promoted album is deleted, its
-`auto` wants are pruned and the album becomes un-wanted — the original `any` intent was consumed by
-promotion and is not restored. Re-add the want to bring it back. A future refinement could revert to
-`any` instead of dropping it.
-
-Frontend (separate repo): the `auto` flag is on each desire; render an auto-selected edition as
-state ("you have this edition") rather than an unpick toggle, and keep the explicit "want a specific
-edition" / "want another edition" controls behind `identity_editable`.
-
-## Inject a MusicBrainz metadata source (testability)
-
-**The problem.** MusicBrainz is reached by calling *package-level free functions* in `modules/`
-(`GetMusicBrainzRelease`, `SearchMusicBrainzReleases`, `SearchMusicBrainzArtists`,
-`GetMusicBrainzArtist`, `GetMusicBrainzArtistReleaseGroups`, `GetMusicBrainzReleaseGroupReleases`).
-The only test seam is `withMockMB` (`modules/musicbrainz_http_test.go`), which flips the **unexported**
-`musicbrainzBaseURL` at an httptest server — so it works **only inside `modules/`**. Every handler in
-`routers/`, and the derivations in `collection/`/`components/`/`mirror/` that call MB, are therefore
-coverable only on the paths that return *before* the network (unknown artist, blank query). That is
-the ceiling on `routers/collection.go` and `routers/attach.go` coverage, and it is why an integration
-path can only ever be exercised against the live musicbrainz.org (slow, flaky, and rate-limited).
-
-**The fix — the same dependency injection the external clients already use.** `modules.LidarrClient`
-and `modules.PlexClient` are constructed in `main` only when configured, injected as pointers
-(`scan.NewRunner(db, plexClient, cfg)`, `API{...}`), and nil-checked at every use. MusicBrainz is the
-odd one out — it is invoked as free functions instead of an injected client. Put it behind an
-interface, inject it the same way, and a test hands in a fake with **zero network**. This is the only
-option that also scales to AcoustID, cover art / fanart, and future sources, each of which today has
-the same unexported-base-URL seam.
-
-**The abstraction already half-exists.** `components.DataSource` is an interface with a single
-`GetRelease(mbID)` method, implemented by `MusicBrainzDataSource`, which just wraps
-`modules.GetMusicBrainzRelease`. Its own doc comment already calls it "the single seam that changes"
-when the MB cache moves. The gap is that the *other six* fetchers bypass it and call `modules.`
-directly. The work is to **widen that seam to cover every MB fetch and route all callers through it.**
-
-### The interface
-
-One port, the network-fetching MB calls only:
-
-```go
-type MetadataSource interface {
-    GetRelease(mbID string) (models.MusicBrainzReleaseResponse, error)
-    GetArtist(artistID string) (models.MusicBrainzArtistLookup, error)
-    GetArtistReleaseGroups(artistID string) ([]models.MusicBrainzArtistReleaseGroup, bool, error)
-    GetReleaseGroupReleases(rgID string) ([]models.MusicBrainzReleaseSearchResult, error)
-    SearchReleases(q modules.ReleaseSearchQuery) (modules.ReleaseSearchPage, error) // move the query/page types down too
-    SearchArtists(q string) ([]models.MusicBrainzArtistSearchResult, error)
-}
-```
-
-**What stays a free function (not in the port):** the cache/stats/mirror helpers that touch no network
-— `MusicbrainzLoadCache`, `MusicbrainzReleaseFresh`, `MusicbrainzExtendExpiry`, `MusicbrainzExpireEntity`,
-`MusicbrainzEntityFresh`/`Counts`, `Musicbrainz{Stats,Reset}*`, `MusicbrainzDueForRefresh`. They are
-already testable and are not identity/fetch decisions.
-
-**Where it lives (cycle analysis).** `collection` and `components` are siblings — neither imports the
-other today — and both need the port, as do `mirror`, `scan` and `routers`. Declaring it in
-`components` (or `collection`) would force a new cross-import; declaring it in `modules` means a test
-fake must import `modules`, which is the coupling we are trying to shed. **Put the interface in a new
-leaf package** (e.g. `metadata/`) that imports only `models`; everyone can depend on it without a
-cycle, and `modules` provides the concrete adapter. (The lighter alternative — declare it in `models`
-— is fewer files but stretches "models is data only"; note the choice and pick one.) The `ReleaseSearchQuery`/`ReleaseSearchPage` types currently in `modules` must move to `models`/`metadata`
-so the interface can name them without importing `modules`.
-
-### Call sites to migrate (non-test)
-
-- `routers/attach.go` — `GetMusicBrainzRelease` (×5), `SearchMusicBrainzReleases` (×2),
-  `GetMusicBrainzReleaseGroupReleases` (×2)
-- `routers/collection.go` — `SearchMusicBrainzArtists`, `GetMusicBrainzArtist`
-- `collection/collection.go` — `GetMusicBrainzArtistReleaseGroups` (inside `SyncArtist`)
-- `collection/desire.go` — `GetMusicBrainzReleaseGroupReleases` (`ReleaseGroupEditions`)
-- `components/components.go` — the `MusicBrainzDataSource.GetRelease` body (becomes the adapter)
-- `components/diff.go` — `GetMusicBrainzRelease` (`ComputeItemDiff`)
-- `mirror/mirror.go` — `GetMusicBrainzReleaseGroupReleases`, `GetMusicBrainzArtist`
-
-`collection`/`components`/`mirror` functions that call MB gain a `MetadataSource` parameter (or a field
-on their receiver — `collection.Rebuilder`, `mirror.Runner` already carry deps); `routers.API` gains a
-`Meta MetadataSource` field, wired in `main` beside `Scan`/`Mirror`. Follow the existing rule: **may be
-nil** where a source is optional, nil-checked at use.
-
-### Sequencing
-
-1. Create `metadata` (interface + the moved search query/page types) and the `modules` adapter
-   (`modules.NewMetadataSource()` returning a value whose methods call today's free functions). No
-   behaviour change; everything still compiles calling the adapter.
-2. Thread the port through one vertical slice first — `routers/attach.go` release search/attach — and
-   add a fake `MetadataSource` in a routers test to prove the pattern (this is the coverage win that
-   justifies the refactor).
-3. Migrate the remaining call sites package by package (`collection`, `components/diff`, `mirror`,
-   rest of `routers`), deleting each direct `modules.` fetch as it is replaced.
-4. Keep `withMockMB` for `modules/`'s own tests of the real adapter (the HTTP/parse/cache/rate-limit
-   behaviour still needs an integration test at the true boundary).
-
-### Payoff and risks
-
-- **Payoff.** Unlocks handler- and derivation-level tests for the MB-bound code that is currently the
-  hard ceiling (`routers/collection.go`, `routers/attach.go`, `collection.SyncArtist`,
-  `mirror` refresh), the bulk of the remaining gap to the 80–85% coverage target. Same pattern then
-  retrofits AcoustID / artwork.
-- **Risk / decisions to lock first:** (1) interface home — `metadata` package vs `models`; (2) whether
-  callers take the port as a parameter or a struct field (prefer the field where a receiver already
-  exists, matching `Rebuilder`/`Runner`); (3) the `ReleaseSearchQuery`/`Page` type move is the one
-  churny edit — do it in step 1 so nothing downstream re-churns. Purely mechanical otherwise: no
-  behaviour changes, and the caching/rate-limiting stays exactly where it is, behind the adapter.

@@ -98,6 +98,15 @@ payload.
 `refresh` ignores the cache TTL on purpose. Asking by hand is not helped by "it was checked
 recently"; narrowing to one artist is what keeps that affordable within the MusicBrainz rate limit.
 
+A fourth, heavier action — **force re-correlate** (`recorrelate`) — exists for Lidarr-managed files
+that diverged from Lidarr's current selection. It is `scan` with `Scope.Force`: it busts the Lidarr
+caches, clears `Pinned` on Lidarr-governed items in scope, and re-walks **ignoring skip-unchanged**,
+so a healthy `ok` item whose upstream release changed is actually rewritten. Scoped per artist,
+release-group (`collection.ReleaseGroupTargets`, narrowed to album/disc folders so one album's repair
+does not re-walk the discography) or whole library, via
+`POST /{artists|release-groups}/:mbid/recorrelate` and `POST /libraries/:id/recorrelate`. See
+[collection.md](collection.md#manager-authority--lidarr-owns-identity) for why it is needed.
+
 ### Finding an artist on disk
 
 Nothing stores an artist → file link — `library_items` know their release, not who made it — so

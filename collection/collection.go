@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/google/uuid"
@@ -420,7 +421,7 @@ func mediaSummary(release models.MusicBrainzReleaseResponse) string {
 // SyncArtist fetches an artist's discography and records the release-groups that
 // following the artist wants but does not own. Owned rows keep their owned flag.
 // The artist's own follow settings decide which types count.
-func SyncArtist(db *gorm.DB, artistMBID string) (wanted int, err error) {
+func SyncArtist(db *gorm.DB, meta metadata.MetadataSource, artistMBID string) (wanted int, err error) {
 	var artist models.CollectionArtist
 	if err := db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
 		return 0, err
@@ -430,11 +431,11 @@ func SyncArtist(db *gorm.DB, artistMBID string) (wanted int, err error) {
 	// schedule — releases are walked constantly by the drift sync, artists are not —
 	// so without this an artist merged upstream stays undetected until somebody opens
 	// their page. One extra request against the several this sync already spends.
-	if err := modules.VerifyArtistIdentity(artistMBID); err != nil {
+	if err := modules.VerifyArtistIdentity(meta, artistMBID); err != nil {
 		logger.Log.Debugf("could not verify identity of artist %s: %s", artistMBID, err.Error())
 	}
 
-	groups, complete, err := modules.GetMusicBrainzArtistReleaseGroups(artistMBID)
+	groups, complete, err := meta.GetArtistReleaseGroups(artistMBID)
 	if err != nil {
 		return 0, err
 	}

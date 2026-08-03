@@ -20,6 +20,7 @@ import (
 	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/migration"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
@@ -86,6 +87,11 @@ type Runner struct {
 	version     string
 	concurrency int
 
+	// meta is the MusicBrainz metadata source the runner passes to the collection
+	// derivations it drives (SyncArtist). Defaulted to the real source in NewRunner;
+	// a test could swap it for a fake without threading it through the constructor.
+	meta metadata.MetadataSource
+
 	// refresh is the metadata verb. The scan owns file writes and delegates every
 	// MusicBrainz read to it, so "refresh this artist" and the scan's own refresh
 	// stage cannot drift apart in what they fetch.
@@ -130,6 +136,7 @@ func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *
 		plex:        plex,
 		version:     cfg.AutotaggerrVersion,
 		concurrency: cfg.AutotaggerrProcessConcurrency,
+		meta:        modules.NewMetadataSource(),
 		wake:        make(chan struct{}, 1),
 	}
 	r.refresh = mirror.NewRunner(db, nil)
@@ -842,7 +849,7 @@ func (r *Runner) refreshArtistNow(artistMBID string) {
 	// because upserting the release-group rows is what makes a newly released album
 	// appear in the collection at all — the cache alone would hold it and show
 	// nobody.
-	if _, err := collection.SyncArtist(r.db, artistMBID); err != nil {
+	if _, err := collection.SyncArtist(r.db, r.meta, artistMBID); err != nil {
 		logger.Log.Warnf("failed to sync discography for %s: %s", artistMBID, err.Error())
 	}
 

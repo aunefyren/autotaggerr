@@ -3,6 +3,7 @@ package components
 import (
 	"fmt"
 
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"gorm.io/gorm"
@@ -10,9 +11,9 @@ import (
 
 // ComputeItemDiff returns the current-vs-desired tag diff for one indexed file,
 // without writing anything. It resolves the file's library tagger settings, fetches
-// the release (cached), finds the matched track, builds the desired tags, and diffs
-// them against what is on disk.
-func ComputeItemDiff(db *gorm.DB, item models.LibraryItem) ([]models.TagDiffEntry, error) {
+// the release (through the injected metadata source, cached), finds the matched
+// track, builds the desired tags, and diffs them against what is on disk.
+func ComputeItemDiff(db *gorm.DB, meta metadata.MetadataSource, item models.LibraryItem) ([]models.TagDiffEntry, error) {
 	if item.MBReleaseID == "" || item.MBReleaseTrackID == "" {
 		return nil, fmt.Errorf("this file has no MusicBrainz correlation yet — scan it first")
 	}
@@ -26,7 +27,7 @@ func ComputeItemDiff(db *gorm.DB, item models.LibraryItem) ([]models.TagDiffEntr
 		return nil, err
 	}
 
-	response, err := modules.GetMusicBrainzRelease(item.MBReleaseID)
+	response, err := meta.GetRelease(item.MBReleaseID)
 	if err != nil {
 		return nil, err
 	}
