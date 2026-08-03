@@ -223,9 +223,18 @@ func (c *LidarrClient) getTrackFilesByArtist(artistID int64) ([]models.LidarrTra
 	return files, nil
 }
 
-// retrieves the Lidarr track object from a Lidarr artist ID and track file path
-// retrieves the Lidarr track object from a Lidarr artist ID and track file path
-// Matches on (album folder, file basename) only — ignores the rest of the path.
+// retrieves the Lidarr track object from a Lidarr artist ID and track file path.
+// Matches on (album folder, optional media folder, file basename). The media folder
+// (CD1/CD2/Disc 2…) MUST be part of the match: a multi-disc release routinely repeats
+// a track basename across discs, and ignoring the media folder let the wrong disc's
+// trackfile win — resolving the file to a different MB track, so its disc/position tags
+// never converged and every scan rewrote it (an endless-retag loop).
+//
+// Lidarr's stored paths sit under a different root than ours (a container mapping), so
+// we cannot re-split them against rootDir; we compare by path *position* instead. A
+// candidate path is structurally ambiguous without its root — …/A/B/file could be
+// album B (flat) or album A + media B — so each candidate is tested under both
+// readings, and a match requires album AND media (both empty or both equal) to agree.
 func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string, rootDir string) (*models.LidarrTrackFile, error) {
 	files, err := c.getTrackFilesByArtist(artistID)
 	if err != nil {
@@ -242,6 +251,14 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 		return nil, err
 	}
 
+	// get the optional media folder (CD1/Disc 2/…); "" when the album folder holds the
+	// tracks directly. Its error case is only an empty segment, which a valid path
+	// cannot produce, so treat any failure as "no media folder".
+	targetMedia, err := utilities.ExtractMediaNameFromTrackFilePath(rootDir, fullTrackPath)
+	if err != nil {
+		targetMedia = ""
+	}
+
 	// get track file name from path
 	targetFile, err := utilities.ExtractTrackFileName(fullTrackPath)
 	if err != nil {
@@ -250,24 +267,30 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 
 	// clean strings
 	tAlbum := utilities.Canon(targetAlbum)
+	tMedia := utilities.Canon(targetMedia)
 	tFile := utilities.Canon(targetFile)
 
-	logger.Log.Trace("target album: " + tAlbum + " | target file: " + tFile)
+	logger.Log.Trace("target album: " + tAlbum + " | target media: " + tMedia + " | target file: " + tFile)
 
 	var match *models.LidarrTrackFile
 	for i := range files {
-		// get album and track name and clean them
-		// sometimes there are media folder, so unsure what is album name
 		logger.Log.Trace(files[i].Path)
-		fAlbumOrMedia := utilities.Canon(utilities.BaseDirOfPathAny(files[i].Path))
-		fAlbumOrArtist := utilities.Canon(utilities.GrandfatherDirOfPathAny(files[i].Path))
+		parent := utilities.Canon(utilities.BaseDirOfPathAny(files[i].Path))             // album (flat) or media
+		grandparent := utilities.Canon(utilities.GrandfatherDirOfPathAny(files[i].Path)) // artist (flat) or album
 		fFile := utilities.Canon(utilities.BaseOfPathAny(files[i].Path))
 
-		// log comparing
-		logger.Log.Trace("compare album=" + fAlbumOrArtist + "/" + fAlbumOrMedia + " file=" + fFile + " against target")
+		if fFile != tFile {
+			continue
+		}
 
-		// find match
-		if (fAlbumOrMedia == tAlbum || fAlbumOrArtist == tAlbum) && fFile == tFile {
+		// Reading A: candidate is flat (parent == album, no media folder).
+		flatMatch := parent == tAlbum && tMedia == ""
+		// Reading B: candidate has a media folder (grandparent == album, parent == media).
+		mediaMatch := grandparent == tAlbum && parent == tMedia && tMedia != ""
+
+		logger.Log.Trace("compare album=" + grandparent + "/" + parent + " file=" + fFile + " against target")
+
+		if flatMatch || mediaMatch {
 			match = &files[i]
 			break
 		}
@@ -275,7 +298,7 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 
 	// return error if no match
 	if match == nil {
-		logger.Log.Warnf("trackfile not found by album+file; album=%q file=%q", targetAlbum, targetFile)
+		logger.Log.Warnf("trackfile not found by album+media+file; album=%q media=%q file=%q", targetAlbum, targetMedia, targetFile)
 	}
 
 	return match, nil

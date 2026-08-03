@@ -198,6 +198,41 @@ func TestLidarrFindTrackFileByPathMediaFolder(t *testing.T) {
 	}
 }
 
+// TestLidarrFindTrackFileByPathMultiDiscSameFilename reproduces the endless-retag
+// bug: a multi-disc release where both discs carry a track file with the same
+// basename (…/Album (2001)/CD1/01 Intro.flac and …/Album (2001)/CD2/01 Intro.flac).
+// Matching on (album folder, basename) alone — ignoring the CD1/CD2 media folder —
+// makes the lookup return whichever disc's trackfile appears first in Lidarr's list.
+// So the CD2 file resolves to the CD1 trackfile (wrong MB track and disc/position),
+// and since the tags never converge to the file's real disc, every scan rewrites it.
+func TestLidarrFindTrackFileByPathMultiDiscSameFilename(t *testing.T) {
+	resetLidarrCaches()
+	root := filepath.Join("/", "music")
+	// We are processing the CD2 copy of the track.
+	trackPath := filepath.Join(root, "Some Artist", "Greatest Hits (2001)", "CD2", "01 Intro.flac")
+
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/trackfile": []models.LidarrTrackFile{
+			// CD1 comes first in the list, so an album+basename-only matcher returns it.
+			{ID: 100, AlbumID: 42, ArtistID: 2, Path: "/data/music/Some Artist/Greatest Hits (2001)/CD1/01 Intro.flac"},
+			{ID: 200, AlbumID: 42, ArtistID: 2, Path: "/data/music/Some Artist/Greatest Hits (2001)/CD2/01 Intro.flac"},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	tf, err := client.FindTrackFileByPath(2, trackPath, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tf == nil {
+		t.Fatal("expected a trackfile match for the CD2 file, got nil")
+	}
+	if tf.ID != 200 {
+		t.Fatalf("CD2 file resolved to trackfile %d, want 200 (the CD2 trackfile); "+
+			"the media folder is being ignored, so the wrong disc's track was selected", tf.ID)
+	}
+}
+
 func TestLidarrFindTrackFileByPathNoMatch(t *testing.T) {
 	resetLidarrCaches()
 	root := filepath.Join("/", "music")

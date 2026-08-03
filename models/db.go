@@ -486,8 +486,14 @@ type EventItem struct {
 	Path    string    `json:"path"`
 	// Status is EventItemStatus*: what happened to this one file.
 	Status string `json:"status"`
+	// Phase attributes the row to a stage of the run (EventItemPhase*), so the feed
+	// can group, say, releases refreshed upstream apart from files changed by the
+	// scan walk. Empty for the ordinary per-file scan row, which needs no qualifier.
+	Phase string `json:"phase,omitempty"`
 	// TagsWritten is the writer's own count. It can exceed len(Changes) for MP3s,
 	// where one changed field forces its paired composite fields to be rewritten too.
+	// On a "refreshed" row it instead carries how many of the release's files the
+	// drift stage re-tagged as a result of the upstream change.
 	TagsWritten int    `json:"tags_written"`
 	Error       string `json:"error,omitempty"`
 	// Changes is the field-level diff, empty for a failure that never got as far as
@@ -499,6 +505,16 @@ type EventItem struct {
 const (
 	EventItemStatusChanged = "changed"
 	EventItemStatusError   = "error"
+	// EventItemStatusRefreshed is a release (not a file) whose MusicBrainz metadata
+	// changed upstream during a scan's refresh stage. It is not a file outcome, so it
+	// carries no tag diff — its TagsWritten is the count of the release's files the
+	// drift stage re-tagged in response.
+	EventItemStatusRefreshed = "refreshed"
+)
+
+// Stage of a run a detail row belongs to. Empty means the ordinary scan-walk file row.
+const (
+	EventItemPhaseRefresh = "refresh"
 )
 
 // CollectionArtist is a MusicBrainz artist present in (or monitored for) the

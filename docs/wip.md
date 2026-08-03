@@ -47,6 +47,19 @@ notes — the API contract exists and is tested; the UI has to catch up:
   (`POST /libraries/:id/recorrelate`).
 - **Render an `auto` desire as state**, not an unpick toggle ("you have this edition"), and keep the
   explicit "want a specific / another edition" controls behind `identity_editable`.
+- **Surface the scan's metadata-refresh stage in Activity.** A scan runs an inline metadata refresh
+  as its first phase (no separate event — see [scanning.md](scanning.md) / the runner's phases), and
+  the backend now records it two ways on the `scan` event, both currently unrendered:
+  - The event **summary** gains a clause when the refresh did something, e.g.
+    `… · 4 releases refreshed, 2 changed upstream` (absent on a no-op scan). Already shown verbatim,
+    so this needs nothing — noted for awareness.
+  - `details.refresh` holds the counts (`checked`, `fetched`, `fresh`, `changed_releases`,
+    `gone_releases`, `relinked`, `files_retagged`) — render it as a small "Metadata" section on the
+    scan detail view.
+  - Detail rows now include **release rows** (`status: "refreshed"`, `phase: "refresh"`), whose
+    `path` is the release MBID and whose `tags_written` is how many of that release's files the drift
+    stage re-tagged. Render these distinctly from file rows (a release changed upstream, not a file),
+    ideally linking the MBID and grouping/omitting by `phase`. File rows keep `phase: ""`.
 
 ## Roadmap / ideas
 

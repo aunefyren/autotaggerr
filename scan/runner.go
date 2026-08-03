@@ -692,7 +692,7 @@ func (r *Runner) runScope(scope Scope) {
 	// progress, and Finish then Saves the event without racing an in-flight update.
 	stopProgress()
 
-	summary := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, len(errorFiles))
+	summary := scanSummaryLine(processed, changed, tagsWritten, len(errorFiles), refreshResult)
 	details := map[string]any{
 		"migrations":   migrations,
 		"processed":    processed,
@@ -720,10 +720,45 @@ func (r *Runner) runScope(scope Scope) {
 	for k, v := range scope.Detail {
 		details[k] = v
 	}
+	// The per-file detail rows plus one row per release that changed upstream. The
+	// release rows are held on the drift result rather than in the bounded per-file
+	// collector, so a large scan that fills the file limit before the drift stage runs
+	// cannot starve these few high-value rows.
+	items := detail.Items()
+	items = append(items, drift.refreshItems...)
+
 	events.Finish(r.db, event, status, summary, details)
-	events.AddItems(r.db, event, detail.Items())
+	events.AddItems(r.db, event, items)
 	events.Prune(r.db, eventRetention)
 	r.rebuildCollection()
+}
+
+// scanSummaryLine is the one-line summary stored on a scan event. It appends a
+// metadata-refresh clause only when the inline refresh actually fetched or changed
+// something, so an ordinary scan with nothing due upstream reads exactly as before
+// rather than trailing a "· 0 releases refreshed" that says nothing.
+func scanSummaryLine(processed, changed, tagsWritten, errorCount int, refresh mirror.Result) string {
+	s := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, errorCount)
+	if refresh.Fetched > 0 || len(refresh.ChangedReleases) > 0 {
+		s += fmt.Sprintf(" · %d releases refreshed", refresh.Fetched)
+		if n := len(refresh.ChangedReleases); n > 0 {
+			s += fmt.Sprintf(", %d changed upstream", n)
+		}
+	}
+	return s
+}
+
+// refreshDetailItem builds the Activity detail row for a release that changed
+// upstream during the scan's refresh stage. filesRetagged is how many of that
+// release's files the drift stage rewrote as a result, which is what ties the
+// metadata change to the file changes elsewhere in the same feed.
+func refreshDetailItem(mbID string, filesRetagged int) models.EventItem {
+	return models.EventItem{
+		Path:        mbID,
+		Status:      models.EventItemStatusRefreshed,
+		Phase:       models.EventItemPhaseRefresh,
+		TagsWritten: filesRetagged,
+	}
 }
 
 // detailSummary describes the per-file detail attached to an event: how many changed
@@ -981,6 +1016,10 @@ type releaseRefresh struct {
 	goneReleases int
 	relinked     int
 	migrations   migration.Result
+	// refreshItems is one Activity detail row per release that changed upstream,
+	// carrying how many of its files were re-tagged. Collected here so the scan can
+	// attach them to its event; see refreshDetailItem.
+	refreshItems []models.EventItem
 }
 
 func (res releaseRefresh) summary() string {
@@ -1010,9 +1049,14 @@ func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshS
 		var items []models.LibraryItem
 		if err := r.db.Where("mb_release_id = ? AND status = ?", mbID, models.LibraryItemStatusOK).Find(&items).Error; err != nil {
 			logger.Log.Warnf("failed to load items for release %s: %s", mbID, err.Error())
+			// The release still changed upstream; record it with an unknown file count
+			// rather than dropping the fact because its files could not be listed.
+			res.refreshItems = append(res.refreshItems, refreshDetailItem(mbID, 0))
 			continue
 		}
+		before := res.retagged
 		res.retagItems(r, items, libraries, refreshSet, detail)
+		res.refreshItems = append(res.refreshItems, refreshDetailItem(mbID, res.retagged-before))
 	}
 	return res
 }
