@@ -11,6 +11,7 @@ import (
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/scan"
+	"github.com/aunefyren/autotaggerr/settings"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -27,7 +28,12 @@ type API struct {
 	// nil: meta() falls back to the real modules-backed source, so production wiring
 	// is optional and a test injects a fake by setting this field. This is the seam
 	// that makes the MB-bound handlers coverable without touching musicbrainz.org.
-	Meta       metadata.MetadataSource
+	Meta metadata.MetadataSource
+	// Settings applies saved settings to the running process (schedules, log level,
+	// scan concurrency). May be nil: a nil *settings.Runtime saves to config.json and
+	// reports everything as needing a restart, which is the correct behaviour for a
+	// caller that owns no scheduler.
+	Settings   *settings.Runtime
 	SigningKey []byte
 	AppName    string
 	Version    string
@@ -183,6 +189,16 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.DELETE("/artists/:mbid/desires", a.clearDesire)
 		protected.POST("/collection/rebuild", a.rebuildCollection)
 		protected.POST("/collection/sync-lidarr", a.syncLidarr)
+
+		// Settings are admin-only: they carry the port, the schedules and the SMTP
+		// credentials, which is a different kind of power from the rest of the API.
+		admin := protected.Group("")
+		admin.Use(auth.RequireAdmin())
+		{
+			admin.GET("/settings", a.getSettings)
+			admin.PUT("/settings", a.updateSettings)
+			admin.GET("/settings/secrets/:key", a.revealSecret)
+		}
 	}
 }
 

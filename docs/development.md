@@ -220,3 +220,4 @@ Feature docs:
 - `mirror.md` — the local MusicBrainz mirror: what is cached where, TTLs, and the refresh pass.
 - `fingerprinting.md` — optional AcoustID identification.
 - `authentication.md` — local login, API keys, OIDC.
+- `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.

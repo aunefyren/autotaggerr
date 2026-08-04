@@ -7,8 +7,8 @@ the rest from here.
 Shipped features are documented in [media-manager.md](media-manager.md),
 [collection.md](collection.md), [attach.md](attach.md), [scanning.md](scanning.md),
 [tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md),
-[mb-migration.md](mb-migration.md), [mirror.md](mirror.md) and
-[authentication.md](authentication.md).
+[mb-migration.md](mb-migration.md), [mirror.md](mirror.md),
+[authentication.md](authentication.md) and [settings.md](settings.md).
 
 ## Open work
 

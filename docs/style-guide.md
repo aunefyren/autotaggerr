@@ -312,6 +312,26 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   "apply and see what happened": the review table **is** the confirmation, so there is no second
   dialog. Conflicts (two rows claiming one target) block the commit and highlight the rows with
   `--danger` rather than silently picking a winner.
+- **Setting row** (`.setting-row`, `Settings.tsx`) — a settings page is a list of *definitions*, not
+  a form filled top to bottom, so each row is two columns: name + config key + help on the left, the
+  control on the right at a fixed width, so a column of inputs reads as a column. The config key is
+  shown as a mono chip (`.setting-key`) because it is the identifier the docs, the environment
+  variable and `config.json` all use — paraphrasing it would make the page unsearchable. A **tier
+  badge** (`pill-off`: *On restart*, *Read-only*) sits with the label, not the control: it qualifies
+  the setting, not the value, and is true whether or not you are editing. An edited row is marked
+  with a 2px `--accent` bar on its leading edge rather than by recolouring the input, so "what have I
+  changed" is answerable by scanning down the page. A read-only value renders as data (mono, on
+  `--surface-2`), never as a disabled input pretending to be editable. Stacks to one column below
+  760px.
+- **Save bar** (`.savebar`) — for long editable pages: sticky to the bottom of the content area,
+  rendered **only when something is unsaved**, stating the count (`3 unsaved changes`) beside
+  Discard and Save. A Save button that scrolls away is one people stop trusting, and the count is
+  what makes it unambiguous which page state is about to be written. Not for pages that save per row
+  or per modal — those already confirm at the point of action.
+- **Inline note** (`.note`, `.note-ok` / `.note-warn`) — the non-transient half of the toast/alert
+  spec: a tinted panel with a 3px status bar on its leading edge, a bold one-word title and a line of
+  detail. Used for outcomes that must stay on screen after the toast has gone — what a save applied
+  now, and what is waiting for a restart.
 - **Labelled divider** (`.or-divider`) — hairline `--border` rules flanking an eyebrow-styled label
   (11px, uppercase, `.06em`, `--text-dim`). Separates alternative paths that are equally valid, not
   a section boundary — currently password login vs. external identity providers.

@@ -112,3 +112,62 @@
    A vertical stack of .field would push the results below the fold, and these
    fields are peers (artist + title + year), not a sequence. */
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+
+/* Settings row: what the setting is on the left, its control on the right.
+   A settings page is a list of definitions, not a form to fill top to bottom, so the
+   label column carries the name, the config key and the help — and the control column
+   stays a predictable width so a column of inputs reads as a column. Stacks below
+   760px, where two columns would leave neither of them legible. */
+.setting-row {
+  display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+  gap: 12px; align-items: start;
+  padding-top: 12px; border-top: 1px solid var(--border);
+}
+.setting-name { font-size: 13px; font-weight: 500; color: var(--text); }
+.setting-meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; flex-wrap: wrap; }
+.setting-key {
+  font-family: var(--font-mono); font-size: 11px; color: var(--text-dim);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 1px 5px;
+}
+.setting-help { margin: 4px 0 0; font-size: 12px; color: var(--text-muted); line-height: 1.45; max-width: 62ch; }
+.setting-control { display: flex; flex-direction: column; gap: 4px; }
+.setting-control .input, .setting-control .select { width: 100%; }
+.setting-readonly {
+  font-size: 12px; color: var(--text-muted); background: var(--surface-2);
+  border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 6px 10px; overflow-wrap: anywhere;
+}
+/* A dirty row is marked on the label edge rather than by recolouring the input, so
+   "what have I changed" is answerable by scanning down the page. */
+.setting-row.is-dirty { box-shadow: -2px 0 0 var(--accent); }
+@media (max-width: 760px) { .setting-row { grid-template-columns: 1fr; } }
+
+.section-title { font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+
+/* Save bar: a settings page is long, and a Save button that scrolls away is a Save
+   button people stop trusting. Sticks to the bottom of the content area, appears only
+   when there is something to save, and states the count so it is never ambiguous
+   which page state is about to be written. */
+.savebar {
+  position: sticky; bottom: 0; z-index: 5;
+  display: flex; align-items: center; justify-content: flex-end; gap: 8px;
+  padding: 10px 12px; margin-top: 4px;
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg); box-shadow: var(--shadow-2);
+}
+.savebar-count { margin-right: auto; font-size: 12px; color: var(--text-muted); }
+
+/* Inline alert: a tinted card with a left status bar, per the guide's toast/alert
+   spec. Used for what a save applied and what is still waiting on a restart. */
+.note {
+  display: flex; flex-direction: column; gap: 2px;
+  padding: 10px 12px; border-radius: var(--radius);
+  border: 1px solid var(--border); border-left-width: 3px;
+  font-size: 12px; color: var(--text-muted);
+}
+.note strong { font-size: 12px; font-weight: 600; }
+.note-ok { background: var(--success-bg); border-left-color: var(--success); }
+.note-ok strong { color: var(--success-text); }
+.note-warn { background: var(--warning-bg); border-left-color: var(--warning); }
+.note-warn strong { color: var(--warning-text); }

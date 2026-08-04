@@ -337,7 +337,7 @@ export interface CollectionArtist {
 }
 
 /** How the disk view and the manager's catalog view disagree, if at all. */
-export type Discrepancy = "" | "unmapped" | "stale_catalog" | "not_indexed";
+export type Discrepancy = "" | "unmapped" | "stale_catalog" | "not_indexed" | "no_edition";
 
 export interface CollectionReleaseGroup {
   mb_id: string;
@@ -502,4 +502,54 @@ export interface MigrationPolicy {
   review_pinned: boolean;
   review_deletions: boolean;
   entity_types: string[];
+}
+
+/**
+ * One setting, as the server describes it. The server owns the whole description —
+ * label, help, type, and whether an edit takes effect now or at the next start — so
+ * the page renders from it rather than restating the field list in TypeScript, where
+ * it would drift the first time a key is added.
+ *
+ * `value` is absent for secrets: they are fetched one at a time, on request.
+ */
+export interface SettingsField {
+  key: string;
+  label: string;
+  help?: string;
+  /** string | int | bool | select | cron | secret | list */
+  type: string;
+  /** live = applied on save · restart = takes effect at next start · readonly */
+  tier: string;
+  options?: string[];
+  placeholder?: string;
+  value?: string | number | boolean | string[];
+  secret_set?: boolean;
+  editable: boolean;
+}
+
+export interface SettingsSection {
+  id: string;
+  title: string;
+  description?: string;
+  fields: SettingsField[];
+}
+
+/** Config keys that now live in the database and are edited on their own page. */
+export interface ManagedElsewhere {
+  keys: string[];
+  label: string;
+  path: string;
+  note: string;
+}
+
+export interface SettingsView {
+  sections: SettingsSection[];
+  managed: ManagedElsewhere[];
+}
+
+/** What a save did: what moved, what took effect now, what waits for a restart. */
+export interface SettingsSaveResult {
+  changed: string[];
+  applied: string[];
+  restart_required: string[];
 }

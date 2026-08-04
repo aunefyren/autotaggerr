@@ -68,9 +68,29 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string]string {
 	}
 }
 
+// pairedFrameValue renders the "n/total" halves of a paired ID3 frame (track, disc).
+// An empty total drops the suffix, and an empty number yields "" — which is how the
+// frame is cleared, since the pair shares one frame and cannot be half-removed.
+func pairedFrameValue(number, total string) string {
+	if number == "" {
+		return ""
+	}
+	if total == "" {
+		return number
+	}
+	return fmt.Sprintf("%s/%s", number, total)
+}
+
 // SetMP3Tags writes ID3 metadata with ffmpeg. The returned changes are the
 // field-level before/after actually applied; see models.TagChange.
-func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+//
+// Every key in the change set must reach an -metadata argument, including the ones
+// whose desired value is empty (which the profile's remove_values turns into a
+// change): ffmpeg deletes a tag when given an empty value, and the reported diff is
+// derived from the change set, so a key reported but not written would be re-reported
+// on every scan forever. That is why the write blocks below do not second-guess an
+// empty value.
+func SetMP3Tags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	unchanged = false
 	tagsWritten = 0
 
@@ -92,7 +112,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 
 	logger.Log.Debug(existing)
 
-	changes, hasChanges := utilities.DiffID3Tags(existing, desired)
+	changes, hasChanges := utilities.DiffID3Tags(existing, desired, configFile)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes, returning")
 		return true, 0, nil, nil // unchanged
@@ -121,7 +141,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		addMeta("artist", desired["ARTIST"])
 		tagsWritten++
 	}
-	if _, ok := changes["ARTISTS"]; ok && desired["ARTISTS"] != "" {
+	if _, ok := changes["ARTISTS"]; ok {
 		logger.Log.Trace("adding ARTISTS")
 		addMeta("ARTISTS", desired["ARTISTS"])
 		tagsWritten++
@@ -150,17 +170,17 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 	}
 
 	// Original release date/year
-	if _, ok := changes["TDOR"]; ok && desired["TDOR"] != "" {
+	if _, ok := changes["TDOR"]; ok {
 		logger.Log.Trace("adding TDOR")
 		addMeta("TDOR", desired["TDOR"])
 		tagsWritten++
 	}
-	if _, ok := changes["ORIGINALDATE"]; ok && desired["originaldate"] != "" {
+	if _, ok := changes["ORIGINALDATE"]; ok {
 		logger.Log.Trace("adding originaldate")
 		addMeta("originaldate", desired["originaldate"])
 		tagsWritten++
 	}
-	if _, ok := changes["ORIGINALYEAR"]; ok && desired["originalyear"] != "" {
+	if _, ok := changes["ORIGINALYEAR"]; ok {
 		logger.Log.Trace("adding originalyear")
 		addMeta("originalyear", desired["originalyear"])
 		tagsWritten++
@@ -235,49 +255,46 @@ func SetMP3Tags(filePath string, metadata models.FileTags) (unchanged bool, tags
 		tagsWritten++
 	}
 
-	// Composite: track (TRACKNUMBER/TRACKTOTAL)
-	if _, nChanged := changes["TRACKNUMBER"]; nChanged || changes["TRACKTOTAL"] != "" {
-		tn := desired["TRACKNUMBER"]
-		tt := desired["TRACKTOTAL"]
-		if tn != "" && tt != "" {
-			logger.Log.Trace("adding track")
-			addMeta("track", fmt.Sprintf("%s/%s", tn, tt))
-		} else if tn != "" {
-			logger.Log.Trace("adding track")
-			addMeta("track", tn)
-		}
-		if nChanged {
+	// Composite: track (TRACKNUMBER/TRACKTOTAL). Both halves live in one ID3 frame, so
+	// either one changing rewrites the pair — and both being empty clears the frame.
+	_, trackNumberChanged := changes["TRACKNUMBER"]
+	_, trackTotalChanged := changes["TRACKTOTAL"]
+	if trackNumberChanged || trackTotalChanged {
+		logger.Log.Trace("adding track")
+		addMeta("track", pairedFrameValue(desired["TRACKNUMBER"], desired["TRACKTOTAL"]))
+		if trackNumberChanged {
 			tagsWritten++
 		}
-		if _, tChanged := changes["TRACKTOTAL"]; tChanged {
+		if trackTotalChanged {
 			tagsWritten++
 		}
 	}
 
 	// Composite: disc (DISCNUMBER/DISCTOTAL)
-	if _, nChanged := changes["DISCNUMBER"]; nChanged || changes["DISCTOTAL"] != "" {
-		dn := desired["DISCNUMBER"]
-		dt := desired["DISCTOTAL"]
-		if dn != "" && dt != "" {
-			logger.Log.Trace("adding disc")
-			addMeta("disc", fmt.Sprintf("%s/%s", dn, dt))
-		} else if dn != "" {
-			logger.Log.Trace("adding disc")
-			addMeta("disc", dn)
-		}
-		if nChanged {
+	_, discNumberChanged := changes["DISCNUMBER"]
+	_, discTotalChanged := changes["DISCTOTAL"]
+	if discNumberChanged || discTotalChanged {
+		logger.Log.Trace("adding disc")
+		addMeta("disc", pairedFrameValue(desired["DISCNUMBER"], desired["DISCTOTAL"]))
+		if discNumberChanged {
 			tagsWritten++
 		}
-		if _, tChanged := changes["DISCTOTAL"]; tChanged {
+		if discTotalChanged {
 			tagsWritten++
 		}
 	}
 
 	// Custom TXXX frames. ffmpeg stores an unknown metadata key as a TXXX frame, so
-	// we encode "ISRC:<value>"; GetMP3Tags decodes it back into the ISRC key.
-	if _, ok := changes["ISRC"]; ok && desired["ISRC"] != "" {
+	// we encode "ISRC:<value>"; GetMP3Tags decodes it back into the ISRC key. Clearing
+	// it must empty the frame itself ("TXXX=") rather than write an empty payload
+	// ("TXXX=ISRC:"), which would leave a junk frame behind on every cleared file.
+	if _, ok := changes["ISRC"]; ok {
 		logger.Log.Trace("adding ISRC")
-		args = append(args, "-metadata", "TXXX=ISRC:"+desired["ISRC"])
+		if desired["ISRC"] == "" {
+			args = append(args, "-metadata", "TXXX=")
+		} else {
+			args = append(args, "-metadata", "TXXX=ISRC:"+desired["ISRC"])
+		}
 		tagsWritten++
 	}
 

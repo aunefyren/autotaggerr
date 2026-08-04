@@ -15,6 +15,7 @@ import Collection from "./pages/Collection";
 import Activity from "./pages/Activity";
 import Migrations from "./pages/Migrations";
 import Mirror from "./pages/Mirror";
+import Settings from "./pages/Settings";
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -53,6 +54,12 @@ export default function App() {
         <Route path="/migrations" element={<Migrations />} />
         <Route path="/mirror" element={<Mirror />} />
         <Route path="/login-providers" element={<AuthProviders />} />
+        {/* Settings is admin-only server-side; a non-admin who types the URL is sent
+            home rather than shown a page that can only 403. */}
+        <Route
+          path="/settings"
+          element={user.role === "admin" ? <Settings /> : <Navigate to="/" replace />}
+        />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

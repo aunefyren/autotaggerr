@@ -32,6 +32,16 @@ function ManagedBy({ managed_by }: { managed_by: string }) {
 /** How a disk-vs-catalog disagreement reads. The disk count is the one to trust. */
 function discrepancyNote(g: CollectionReleaseGroup, manager: string): { label: string; title: string } | null {
   const cat = `${g.catalog_owned_tracks}/${g.catalog_total_tracks}`;
+  // Checked first: when no edition is selected, the counts below describe an edition
+  // nobody chose, so reading them as "the manager is out of date" sends the user to
+  // rescan something that will report the same numbers again.
+  if (g.discrepancy === "no_edition")
+    return {
+      label: `no edition in ${manager}`,
+      title:
+        `${manager} has no edition selected for this album, so its ${cat} count describes an edition nobody chose ` +
+        `(${g.owned_tracks} tracks are on disk). Pick a release for this album in ${manager} — until then its files cannot be matched.`,
+    };
   if (g.discrepancy === "stale_catalog")
     return {
       label: `${manager} ${cat}`,

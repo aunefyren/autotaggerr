@@ -44,6 +44,27 @@ Evaluated per artist, in this order:
      `autotaggerr_custom_artist_delimiter_commas` is `true`, use `", "` instead — so the list
      reads `A, B & C` rather than `A & B & C`.
 
+### Whether it is written at all
+
+`autotaggerr_ignore_redundant_contributing_artists` (default `true`) drops the track artist when
+it says nothing the album artist does not already say — i.e. when the two strings are equal under
+`utilities.EqLoose` (case, accents and punctuation ignored). A single-artist album then carries
+`ALBUMARTIST` and no `ARTIST`, and players fall back to the album artist for display.
+
+It is a **string comparison, not a credit count**. The rule used to be "one credited artist ⇒
+redundant", which reads "alone" as "same as the album artist" — so a compilation track, or a track
+credited solely to a guest on someone else's release, lost its `ARTIST` even though the album artist
+never names that artist. The comparison keeps those.
+
+Two things are unaffected by this setting and always carry the full track credit: `ARTISTS` (every
+credited artist, `; `-joined) and `MUSICBRAINZ_ARTISTID` (the track credit's MBIDs — note the
+`releaseArtistID` variable name in `BuildFileTags` is a misnomer).
+
+Whether an emptied `ARTIST` is actually *removed* from the file is a separate decision: both
+`DiffFlacTags` and `DiffID3Tags` only turn an empty desired value into a change when the tagger
+profile's `remove_values` is on. With it off, the tag Lidarr (or anyone else) wrote is left alone.
+See [tagging.md](tagging.md#removing-a-value).
+
 ## Examples
 
 With defaults (`use_current_artist_name=true`, `use_custom_artist_delimiter=true`,
@@ -65,7 +86,8 @@ With `use_custom_artist_delimiter=false`, MusicBrainz join phrases are kept:
 
 `modules/musicbrainz_test.go` (`TestMusicBrainzArtistsArrayToString`) covers the single/two/
 three-artist cases and the custom-delimiter-disabled fallback. Extend it when changing the
-join-phrase rules.
+join-phrase rules. `modules/files_extra_test.go` (`TestBuildFileTagsRedundantArtist`) covers the
+redundancy rule, including the compilation case the credit count got wrong.
 
 ## Related
 

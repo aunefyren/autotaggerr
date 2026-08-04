@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -32,6 +31,7 @@ import (
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/routers"
 	"github.com/aunefyren/autotaggerr/scan"
+	"github.com/aunefyren/autotaggerr/settings"
 	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/aunefyren/autotaggerr/web"
 	"github.com/gin-contrib/cors"
@@ -45,6 +45,9 @@ var (
 	db           *gorm.DB
 	scanRunner   *scan.Runner
 	mirrorRunner *mirror.Runner
+	// settingsRuntime owns the recurring schedules and re-applies settings saved in
+	// the UI to this running process.
+	settingsRuntime *settings.Runtime
 )
 
 func main() {
@@ -187,32 +190,6 @@ func main() {
 	// and the file-writing job is the one with a user waiting on it.
 	mirrorRunner = scanRunner.Refresher()
 
-	// Create task scheduler for the recurring library scan
-	taskScheduler := chrono.NewDefaultTaskScheduler()
-
-	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		scanRunner.RunAll()
-	}, files.ConfigFile.AutotaggerrProcessCronSchedule)
-	if err != nil {
-		logger.Log.Error("library process task was not scheduled successfully.")
-	}
-
-	// Scheduled MusicBrainz mirror refresh. Enqueued through the scan runner (SyncDrift)
-	// rather than started directly, so every background job — scans, re-tags, refreshes
-	// — shares one serial queue and a refresh takes its turn behind file work.
-	if !files.ConfigFile.AutotaggerrMirrorDisabled {
-		_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-			scanRunner.SyncDrift()
-		}, files.ConfigFile.AutotaggerrMirrorCronSchedule)
-		if err != nil {
-			logger.Log.Error("MusicBrainz mirror task was not scheduled successfully.")
-		}
-
-		if files.ConfigFile.AutotaggerrMirrorOnStartUp && filePath == nil {
-			scanRunner.SyncDrift()
-		}
-	}
-
 	// Scheduled health checks for the configured connections. A baseline runs at
 	// startup (off the main goroutine, so a slow endpoint cannot stall boot); the cron
 	// then re-checks and records an event only when a connection's health changes.
@@ -222,11 +199,36 @@ func main() {
 	if filePath == nil {
 		go healthChecker.Run()
 	}
-	_, err = taskScheduler.ScheduleWithCron(func(ctx context.Context) {
-		healthChecker.Run()
-	}, files.ConfigFile.AutotaggerrHealthCronSchedule)
-	if err != nil {
-		logger.Log.Error("health check task was not scheduled successfully.")
+
+	// Every recurring job is described once and owned by the settings runtime, which
+	// installs them here and re-installs them when a schedule is saved in the UI. The
+	// mirror's refresh is enqueued through the scan runner (SyncDrift) rather than
+	// started directly, so every background job shares one serial queue.
+	settingsRuntime = settings.NewRuntime(
+		chrono.NewDefaultTaskScheduler(),
+		scanRunner.SetConcurrency,
+		settings.CronJob{
+			Name:     "scan",
+			Run:      func() { scanRunner.RunAll() },
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrProcessCronSchedule },
+		},
+		settings.CronJob{
+			Name:     "metadata refresh",
+			Run:      func() { scanRunner.SyncDrift() },
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrMirrorCronSchedule },
+			Enabled:  func(c models.ConfigStruct) bool { return !c.AutotaggerrMirrorDisabled },
+		},
+		settings.CronJob{
+			Name:     "health check",
+			Run:      healthChecker.Run,
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrHealthCronSchedule },
+		},
+	)
+	settingsRuntime.Schedule(files.ConfigFile)
+
+	if !files.ConfigFile.AutotaggerrMirrorDisabled &&
+		files.ConfigFile.AutotaggerrMirrorOnStartUp && filePath == nil {
+		scanRunner.SyncDrift()
 	}
 
 	// start library process if no file is configured and the feature is enabled
@@ -291,6 +293,7 @@ func initRouter(db *gorm.DB, scanRunner *scan.Runner, mirrorRunner *mirror.Runne
 		Mirror:     mirrorRunner,
 		Rebuilder:  collection.NewRebuilder(db),
 		Meta:       modules.NewMetadataSource(),
+		Settings:   settingsRuntime,
 		SigningKey: files.GetPrivateKey(0),
 		AppName:    cfg.AutotaggerrName,
 		Version:    cfg.AutotaggerrVersion,

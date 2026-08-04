@@ -123,26 +123,62 @@ func TestBuildFileTags(t *testing.T) {
 	}
 }
 
-// A single-credit track with redundant contributing artists ignored produces an empty
-// primary artist tag — the branch the two-credit case above does not reach.
-func TestBuildFileTagsIgnoresRedundantSingleArtist(t *testing.T) {
-	track := models.Track{
-		Position:     1,
-		Title:        "Solo",
-		ArtistCredit: []models.ArtistCredit{{Name: "Solo Artist", Artist: models.Artist{ID: "a", Name: "Solo Artist"}}},
+// TestBuildFileTagsRedundantArtist covers what "redundant" means: the track credit
+// says nothing the album artist does not already say. It is decided by comparing the
+// two strings, so a lone track artist who is *not* the album artist (a compilation, or
+// a guest-credited track on someone else's release) keeps its ARTIST tag.
+func TestBuildFileTagsRedundantArtist(t *testing.T) {
+	credit := func(name string) []models.ArtistCredit {
+		return []models.ArtistCredit{{Name: name, Artist: models.Artist{ID: name, Name: name}}}
 	}
-	resp := models.MusicBrainzReleaseResponse{
-		Title:        "Debut",
-		ArtistCredit: []models.ArtistCredit{{Name: "Solo Artist", Artist: models.Artist{ID: "a", Name: "Solo Artist"}}},
-		Media:        []models.MusicBrainzMedia{{Position: 1, Tracks: []models.Track{track}}},
-	}
-	resp.ReleaseGroup.PrimaryType = "Album"
 
-	tags, err := BuildFileTags(track, resp.Media[0], resp, models.ConfigStruct{AutotaggerrIgnoreRedundantContributingArtists: true})
-	if err != nil {
-		t.Fatalf("BuildFileTags: %v", err)
+	cases := []struct {
+		name        string
+		trackArtist string
+		albumArtist string
+		ignore      bool
+		want        string
+	}{
+		{
+			name:        "same artist is redundant",
+			trackArtist: "Solo Artist", albumArtist: "Solo Artist", ignore: true, want: "",
+		},
+		{
+			name:        "a different lone artist is not redundant",
+			trackArtist: "Baby Keem", albumArtist: "Kendrick Lamar", ignore: true, want: "Baby Keem",
+		},
+		{
+			name:        "punctuation and accents do not make it non-redundant",
+			trackArtist: "Beyoncé", albumArtist: "Beyonce", ignore: true, want: "",
+		},
+		{
+			name:        "the setting off always writes the track artist",
+			trackArtist: "Solo Artist", albumArtist: "Solo Artist", ignore: false, want: "Solo Artist",
+		},
 	}
-	if tags.Artist != "" {
-		t.Errorf("artist = %q, want empty (redundant single contributing artist dropped)", tags.Artist)
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			track := models.Track{Position: 1, Title: "Solo", ArtistCredit: credit(c.trackArtist)}
+			resp := models.MusicBrainzReleaseResponse{
+				Title:        "Debut",
+				ArtistCredit: credit(c.albumArtist),
+				Media:        []models.MusicBrainzMedia{{Position: 1, Tracks: []models.Track{track}}},
+			}
+			resp.ReleaseGroup.PrimaryType = "Album"
+
+			tags, err := BuildFileTags(track, resp.Media[0], resp,
+				models.ConfigStruct{AutotaggerrIgnoreRedundantContributingArtists: c.ignore})
+			if err != nil {
+				t.Fatalf("BuildFileTags: %v", err)
+			}
+			if tags.Artist != c.want {
+				t.Errorf("artist = %q, want %q", tags.Artist, c.want)
+			}
+			// Whatever ARTIST does, the full credit list stays on the file.
+			if tags.ArtistSemicolon != c.trackArtist {
+				t.Errorf("artist semicolon = %q, want %q", tags.ArtistSemicolon, c.trackArtist)
+			}
+		})
 	}
 }

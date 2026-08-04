@@ -163,6 +163,13 @@ Edit the config.json, found within the config directory. If it isn't there, just
 
 Every setting can be defined in `config.json`. A subset can also be overridden at runtime with a startup flag or an environment variable (the container `entrypoint.sh` maps env vars onto the flags). Precedence is: **startup flag → environment variable → config file value**. A flag/env only overrides the config when it is explicitly provided.
 
+**You do not have to edit this file by hand.** Signed in as an admin, the **Settings** page edits the
+same keys from the web UI: schedules, log level, scan concurrency and the mirror switch take effect
+immediately, and the rest are saved and picked up at the next start (the page says which is which).
+The keys marked *managed elsewhere* below are the exception — they seeded the database on first start
+and are edited on the Managers, Tagger profiles and Libraries pages now. See
+[docs/settings.md](docs/settings.md).
+
 | Config file entry | Startup flag | Environment variable | Type | Description |
 |---|---|---|---|---|
 | `timezone` | `-tz` | `TZ` | string | IANA timezone the app runs in. Default `Europe/Paris`. |

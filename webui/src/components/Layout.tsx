@@ -3,6 +3,7 @@ import { useAuth } from "../auth";
 import { ArtworkCapabilitiesProvider } from "./Artwork";
 import { Logo } from "./Logo";
 
+/** adminOnly entries are hidden from non-admins; the API refuses them anyway. */
 const NAV = [
   { to: "/", label: "Dashboard", ic: "◧", end: true },
   { to: "/libraries", label: "Libraries", ic: "▤" },
@@ -15,13 +16,15 @@ const NAV = [
   { to: "/migrations", label: "Migrations", ic: "⇄" },
   { to: "/mirror", label: "Metadata", ic: "⛁" },
   { to: "/login-providers", label: "Login providers", ic: "⚿" },
+  { to: "/settings", label: "Settings", ic: "⚙", adminOnly: true },
 ];
 
 export default function Layout() {
   const { user, logout } = useAuth();
   const loc = useLocation();
+  const nav = NAV.filter((n) => !n.adminOnly || user?.role === "admin");
   const current =
-    NAV.find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to))) ?? NAV[0];
+    nav.find((n) => (n.end ? loc.pathname === n.to : loc.pathname.startsWith(n.to))) ?? nav[0];
 
   return (
     <ArtworkCapabilitiesProvider>
@@ -30,7 +33,7 @@ export default function Layout() {
         <div className="brand">
           <Logo /> Autotaggerr
         </div>
-        {NAV.map((n) => (
+        {nav.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end} className="navitem">
             <span className="ic">{n.ic}</span>
             {n.label}

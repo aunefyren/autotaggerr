@@ -244,16 +244,37 @@ func TestDiffFlacTags(t *testing.T) {
 	})
 }
 
+// TestDiffID3Tags mirrors TestDiffFlacTags: the remove-values policy has to mean the
+// same thing on both engines, or one tagger profile produces two behaviours depending
+// on the file's format.
 func TestDiffID3Tags(t *testing.T) {
-	t.Run("empty desired always skipped", func(t *testing.T) {
-		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string]string{"tit2": ""})
+	t.Run("empty desired is skipped when RemoveValues is off", func(t *testing.T) {
+		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string]string{"tit2": ""},
+			models.ConfigStruct{AutotaggerrRemoveValues: false})
 		if has || len(changes) != 0 {
 			t.Errorf("expected empty desired to be skipped, got %v", changes)
 		}
 	})
 
+	t.Run("empty desired removes value when RemoveValues is on", func(t *testing.T) {
+		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string]string{"tit2": ""},
+			models.ConfigStruct{AutotaggerrRemoveValues: true})
+		if !has || !reflect.DeepEqual(changes, map[string]string{"TIT2": ""}) {
+			t.Errorf("changes = %v (has=%v), want {TIT2:\"\"}", changes, has)
+		}
+	})
+
+	t.Run("an already absent tag is not a change", func(t *testing.T) {
+		changes, has := DiffID3Tags(map[string][]string{}, map[string]string{"tit2": ""},
+			models.ConfigStruct{AutotaggerrRemoveValues: true})
+		if has || len(changes) != 0 {
+			t.Errorf("removing a tag that is not there is not a change, got %v", changes)
+		}
+	})
+
 	t.Run("detects a changed value", func(t *testing.T) {
-		changes, has := DiffID3Tags(map[string][]string{"TPE1": {"Old"}}, map[string]string{"tpe1": "New"})
+		changes, has := DiffID3Tags(map[string][]string{"TPE1": {"Old"}}, map[string]string{"tpe1": "New"},
+			models.ConfigStruct{})
 		if !has || !reflect.DeepEqual(changes, map[string]string{"TPE1": "New"}) {
 			t.Errorf("changes = %v (has=%v), want {TPE1:New}", changes, has)
 		}

@@ -781,6 +781,11 @@ const (
 	// DiscrepancyNotIndexed: the manager has more files than Autotaggerr indexed —
 	// files outside the configured libraries, or not scanned yet.
 	DiscrepancyNotIndexed = "not_indexed"
+	// DiscrepancyNoEdition: the manager counted tracks for this album but has no
+	// edition selected, so its counts describe an edition nobody chose. Reported
+	// ahead of the count comparisons because it explains *why* they disagree — see
+	// Discrepancy.
+	DiscrepancyNoEdition = "no_edition"
 )
 
 // Complete reports whether every track of the best-owned edition is on disk.
@@ -805,13 +810,27 @@ func (rg CollectionReleaseGroup) Discrepancy(catalogChecked bool) string {
 	if !rg.InCatalog || rg.CatalogTotalTracks == 0 {
 		return DiscrepancyNone
 	}
-	switch {
-	case rg.OwnedTracks > rg.CatalogOwnedTracks:
-		return DiscrepancyStaleCatalog
-	case rg.CatalogOwnedTracks > rg.OwnedTracks:
-		return DiscrepancyNotIndexed
+	if rg.OwnedTracks == rg.CatalogOwnedTracks {
+		return DiscrepancyNone
 	}
-	return DiscrepancyNone
+	// The counts disagree. If the manager named no edition, that is the explanation:
+	// Lidarr picks one release per album and its statistics describe that release,
+	// but with none selected the counts still arrive, computed against an edition
+	// nobody chose — a 7-track edition against a 44-track box set. Saying "stale
+	// catalog" here sends the user to rescan something that will report the same
+	// numbers again, and the actual fix (pick a release in Lidarr) is elsewhere.
+	//
+	// It explains a disagreement rather than raising one on its own, deliberately:
+	// this column is also empty on rows written before it existed, and on a manager
+	// that does not report editions. Those rows agree with the disk and must stay
+	// silent until their next sync fills the column in.
+	if rg.CatalogReleaseMBID == "" {
+		return DiscrepancyNoEdition
+	}
+	if rg.OwnedTracks > rg.CatalogOwnedTracks {
+		return DiscrepancyStaleCatalog
+	}
+	return DiscrepancyNotIndexed
 }
 
 // AllDBModels is the AutoMigrate set — keep in sync when adding tables.

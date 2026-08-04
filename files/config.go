@@ -18,6 +18,19 @@ var configDirectoryPath, _ = filepath.Abs("./config/")
 var configFilePath = filepath.Join(configDirectoryPath, "config.json")
 var ConfigFile = models.ConfigStruct{}
 
+// SetConfigPaths points the package at a different config directory and returns a
+// function that restores the previous one. It exists as a seam for tests in other
+// packages — anything that saves config (the settings API) has to be exercised
+// against a temp directory rather than the real ./config. Production never calls it.
+func SetConfigPaths(dir string) (restore func()) {
+	previousDir, previousFile := configDirectoryPath, configFilePath
+	configDirectoryPath = dir
+	configFilePath = filepath.Join(dir, "config.json")
+	return func() {
+		configDirectoryPath, configFilePath = previousDir, previousFile
+	}
+}
+
 func LoadConfig() (err error) {
 	ConfigFile = models.ConfigStruct{}
 

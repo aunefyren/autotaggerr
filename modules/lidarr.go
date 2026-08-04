@@ -234,7 +234,12 @@ func (c *LidarrClient) getTrackFilesByArtist(artistID int64) ([]models.LidarrTra
 // we cannot re-split them against rootDir; we compare by path *position* instead. A
 // candidate path is structurally ambiguous without its root — …/A/B/file could be
 // album B (flat) or album A + media B — so each candidate is tested under both
-// readings, and a match requires album AND media (both empty or both equal) to agree.
+// readings, and a match requires album AND media (both empty, equal, or naming the
+// same disc number) to agree.
+//
+// If two candidates still fit, the triple did not identify the file and no match is
+// returned: guessing between two discs is the very failure this function exists to
+// prevent, and the caller's "unmatched" is the honest answer.
 func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string, rootDir string) (*models.LidarrTrackFile, error) {
 	files, err := c.getTrackFilesByArtist(artistID)
 	if err != nil {
@@ -286,14 +291,24 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 		// Reading A: candidate is flat (parent == album, no media folder).
 		flatMatch := parent == tAlbum && tMedia == ""
 		// Reading B: candidate has a media folder (grandparent == album, parent == media).
-		mediaMatch := grandparent == tAlbum && parent == tMedia && tMedia != ""
+		mediaMatch := tMedia != "" && grandparent == tAlbum && mediaFoldersAgree(parent, tMedia)
 
 		logger.Log.Trace("compare album=" + grandparent + "/" + parent + " file=" + fFile + " against target")
 
-		if flatMatch || mediaMatch {
-			match = &files[i]
-			break
+		if !flatMatch && !mediaMatch {
+			continue
 		}
+
+		// Two candidates for one file means the (album, media, basename) triple did not
+		// identify it after all — the multi-disc case this match exists for. Taking the
+		// first would be a coin flip between two discs, so refuse instead: an unmatched
+		// file is visible and fixable, a silently mistagged one is neither.
+		if match != nil {
+			logger.Log.Warnf("ambiguous Lidarr trackfile match for %q: both %q and %q fit; refusing to guess",
+				fullTrackPath, match.Path, files[i].Path)
+			return nil, nil
+		}
+		match = &files[i]
 	}
 
 	// return error if no match
@@ -302,6 +317,22 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 	}
 
 	return match, nil
+}
+
+// mediaFoldersAgree compares a candidate's media folder with the file's own. Equal
+// names agree; when both name a disc number, the number decides, so "CD 02" on disk
+// still matches "CD2"/"Disc 2" in Lidarr's stored path. Without that, a padding or
+// wording difference between the two sides drops the file to unmatched — the same
+// evidence lost, just failing the other way.
+func mediaFoldersAgree(candidate, target string) bool {
+	if candidate == target {
+		return true
+	}
+	if candidate == "" || target == "" {
+		return false
+	}
+	candidateDisc := discNumberFromFolderName(candidate)
+	return candidateDisc > 0 && candidateDisc == discNumberFromFolderName(target)
 }
 
 // GetArtists returns every artist Lidarr manages (with their MusicBrainz IDs),
@@ -376,9 +407,16 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 				return &r.ForeignReleaseID, nil
 			}
 		}
+		// Named, with the count, because this is the one Lidarr state that looks like a
+		// bug in Autotaggerr: an album whose releases are all unmonitored has no edition
+		// to tag against, so its files go unmatched while everything else about the
+		// album looks healthy. The fix is in Lidarr, and the message has to say so.
+		logger.Log.Errorf("Lidarr album %q (%d) has no monitored release out of %d — pick an edition for it in Lidarr, "+
+			"or its files cannot be matched", a.Title, albumID, len(a.Releases))
+		return nil, nil
 	}
 
-	logger.Log.Errorf("no monitored release with MB ID for album %d", albumID)
+	logger.Log.Errorf("Lidarr returned no album with ID %d for artist %d", albumID, artistID)
 	return nil, nil
 }
 
@@ -580,8 +618,13 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 
 		found := false
 		for _, track := range tracks {
+			// Deref only after the nil check: Lidarr omits trackFileId on a track it has
+			// no file for, and logging args are evaluated whether or not trace is on.
+			if track.TrackFileID == nil {
+				continue
+			}
 			logger.Log.Tracef("comparing track ID %d, file ID %d", track.ID, *track.TrackFileID)
-			if track.TrackFileID != nil && *track.TrackFileID == tf.ID {
+			if *track.TrackFileID == tf.ID {
 				logger.Log.Tracef("Lidarr track found: %d", track.ID)
 				lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
 				lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID

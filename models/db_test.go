@@ -125,16 +125,45 @@ func TestReleaseGroupDiscrepancy(t *testing.T) {
 			want:       DiscrepancyNone,
 		},
 		{
-			name:       "more on disk than the manager knows is a stale catalog",
-			rg:         CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 12, CatalogOwnedTracks: 3, CatalogTotalTracks: 12},
+			name: "more on disk than the manager knows is a stale catalog",
+			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 12, CatalogOwnedTracks: 3,
+				CatalogTotalTracks: 12, CatalogReleaseMBID: "rel-1"},
 			hasCatalog: true,
 			want:       DiscrepancyStaleCatalog,
 		},
 		{
-			name:       "more in the manager than indexed is not indexed",
-			rg:         CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 3, CatalogOwnedTracks: 12, CatalogTotalTracks: 12},
+			name: "more in the manager than indexed is not indexed",
+			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 3, CatalogOwnedTracks: 12,
+				CatalogTotalTracks: 12, CatalogReleaseMBID: "rel-1"},
 			hasCatalog: true,
 			want:       DiscrepancyNotIndexed,
+		},
+		{
+			// The production case: Lidarr has no release selected, so its statistics
+			// describe an edition nobody chose (7 tracks) while 44 files sit on disk.
+			// Reported as its own state, because "rescan Lidarr" cannot fix it.
+			name: "counts disagreeing with no edition selected names the edition",
+			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 44, CatalogOwnedTracks: 7,
+				CatalogTotalTracks: 7, CatalogReleaseMBID: ""},
+			hasCatalog: true,
+			want:       DiscrepancyNoEdition,
+		},
+		{
+			name: "the manager knowing more, with no edition selected, is also the edition",
+			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 3, CatalogOwnedTracks: 12,
+				CatalogTotalTracks: 12, CatalogReleaseMBID: ""},
+			hasCatalog: true,
+			want:       DiscrepancyNoEdition,
+		},
+		{
+			// An empty edition column is also what a row written before the column
+			// existed looks like. While its counts agree it says nothing, so an
+			// upgrade does not light up every album until the next sync.
+			name: "agreeing counts with no edition stay silent",
+			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 12, CatalogOwnedTracks: 12,
+				CatalogTotalTracks: 12, CatalogReleaseMBID: ""},
+			hasCatalog: true,
+			want:       DiscrepancyNone,
 		},
 		{
 			name:       "agreement is no discrepancy",

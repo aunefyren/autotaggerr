@@ -210,6 +210,31 @@ win:
 - `not_indexed` — the manager has files Autotaggerr never indexed (outside a configured library, or
   not scanned yet).
 - `unmapped` — files on disk with no manager album at all.
+- `no_edition` — the counts disagree **and** the manager named no edition, which is the reason they
+  disagree. See below.
+
+### An album with no edition selected
+
+Lidarr picks one release per album — the `monitored` flag on `album.releases[]` — and its
+`statistics` describe *that* release. An album where none is monitored still reports statistics,
+computed against an edition nobody chose, and they can disagree wildly with the files: the production
+case was Lidarr reporting **7 of 7** for an album with **44** files on disk. Monitoring the right
+release in Lidarr fixed it.
+
+Two things follow from "no edition selected", and both are now said out loud:
+
+- **Nothing can be tagged.** `GetMonitoredAlbumMBID` returns no release (it will never fall back to
+  an unmonitored one — that would tag a whole album against an edition the user did not choose), so
+  every file of the album resolves to `ErrUnmatched` under a Lidarr manager. The log line names the
+  album and says to pick an edition in Lidarr, because this is the one Lidarr state that reads as a
+  bug in Autotaggerr.
+- **The counts cannot be trusted.** `Discrepancy` reports `no_edition` instead of `stale_catalog`,
+  since "your manager needs a rescan" is advice that cannot fix it — a rescan reports the same
+  numbers again.
+
+`no_edition` *explains* a disagreement rather than raising one by itself: `CatalogReleaseMBID` is
+also empty on rows written before that column existed, so a row whose counts agree with the disk
+stays silent until its next sync fills the column in.
 
 Suppressed when there is no manager answer to compare against — `collection.CatalogChecked`, the
 single definition of that, which reads the artist's `LastSyncedAt`. Otherwise every album of an

@@ -29,6 +29,17 @@ const defaultProcessConcurrency = 4
 // errors.Is to tell this apart from an unreadable file or a missing tool.
 var ErrTrackNotInRelease = errors.New("track not found in release data")
 
+// ErrDiscMismatch means the resolved track sits on a different medium than the file's
+// own disc folder says, *and* the medium the folder names carries a track that cannot
+// be told apart from the resolved one (same position, same recording or title). That
+// is the multi-disc ambiguity: a release that repeats a track across two mediums has
+// two equally plausible answers, the folder is the only evidence which one this file
+// is, and picking the other one writes disc/track-total tags that never converge — so
+// every scan rewrites the file (the endless-retag loop). Refusing is deliberate: the
+// file is surfaced as a failure to fix (in the manager, or by renaming the folder)
+// rather than silently churning forever. See docs/tagging.md.
+var ErrDiscMismatch = errors.New("resolved track is on a different disc than the file's folder")
+
 // ErrUnmatched means the manager owns identity for this file but could not match it,
 // and tag fallback was refused. It is not a processing failure — the file is readable
 // and the tools are present — so callers record it as an unmatched item rather than an
@@ -150,7 +161,7 @@ func SetFileTags(filePath string, metadata models.FileTags, configFile models.Co
 
 	switch ext {
 	case ".mp3":
-		return SetMP3Tags(filePath, metadata)
+		return SetMP3Tags(filePath, metadata, configFile)
 	case ".flac":
 		return SetFlacTags(filePath, metadata, configFile)
 	default:
@@ -275,6 +286,10 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 		for _, track := range media.Tracks {
 			if track.ID == correlation.MBReleaseTrackID {
 				logger.Log.Debug("release track ID found in MB response")
+				if err := verifyDiscFolder(filePath, correlation, track, media, response); err != nil {
+					logger.Log.Warnf("refusing to tag '%s': %s", filePath, err.Error())
+					return false, 0, nil, err
+				}
 				return ProcessTrackFileAfterMatch(
 					filePath,
 					nil,
@@ -292,6 +307,64 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", correlation.MBReleaseTrackID, correlation.MBReleaseID, correlation.TrackTitle, response.ID)
 	logger.Log.Warn("the manager's release selection and track mapping disagree; a force re-correlate may reconcile them")
 	return false, 0, nil, fmt.Errorf("%w: track %s is not in release %s — the manager's release and track mapping disagree; force re-correlate this artist to reconcile", ErrTrackNotInRelease, correlation.MBReleaseTrackID, response.ID)
+}
+
+// verifyDiscFolder is the last check before a write: it refuses a correlation that
+// puts the file on a different disc than its own media folder does, when the two
+// discs are genuinely confusable.
+//
+// It is narrow on purpose. Folder numbering does not have to agree with MusicBrainz
+// medium numbering in general — a release whose medium 1 is a bonus DVD legitimately
+// has its "CD 1" folder on medium 2 — so a bare number disagreement is not evidence of
+// anything and must keep tagging. What *is* evidence is the disagreement plus a
+// look-alike: the medium the folder names holds a track at the same position that is
+// the same recording (or, failing that, has the same title). Then the two candidates
+// are indistinguishable by anything except the folder, one of them was picked without
+// looking at it, and the disc/track-total tags written can never match the file's
+// folder — which is exactly the state that makes every scan rewrite the file.
+//
+// A manual correlation is exempt: someone looked at this file and said which track it
+// is, and that outranks the folder it happens to sit in.
+func verifyDiscFolder(
+	filePath string,
+	correlation models.Correlation,
+	track models.Track,
+	media models.MusicBrainzMedia,
+	response models.MusicBrainzReleaseResponse,
+) error {
+	if correlation.Source == models.CorrelationSourceManual {
+		return nil
+	}
+	if len(response.Media) < 2 {
+		return nil // single medium: the folder's disc number is noise
+	}
+
+	disc := discFromFolder(filePath)
+	if disc == 0 || disc == media.Position {
+		return nil
+	}
+
+	for _, other := range response.Media {
+		if other.Position != disc {
+			continue
+		}
+		for _, candidate := range other.Tracks {
+			if candidate.ID == track.ID || candidate.Position != track.Position {
+				continue
+			}
+			sameRecording := candidate.Recording.ID != "" && candidate.Recording.ID == track.Recording.ID
+			if !sameRecording && !strings.EqualFold(candidate.Title, track.Title) {
+				continue
+			}
+			return fmt.Errorf(
+				"%w: the file sits in disc %d but was resolved to track %s on disc %d of release %s, "+
+					"where disc %d carries the same track (%q) — correct the file's track in the manager, "+
+					"or rename the folder to the disc it really is",
+				ErrDiscMismatch, disc, track.ID, media.Position, response.ID, disc, track.Title)
+		}
+	}
+
+	return nil
 }
 
 func ProcessTrackFileAfterMatch(
@@ -349,9 +422,31 @@ func BuildFileTags(
 	response models.MusicBrainzReleaseResponse,
 	configFile models.ConfigStruct,
 ) (models.FileTags, error) {
-	trackArtist := ""
-	if !configFile.AutotaggerrIgnoreRedundantContributingArtists || len(track.ArtistCredit) > 1 {
-		trackArtist = MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
+	// determine release artist
+	releaseArtist := ""
+	if len(response.ArtistCredit) > 0 {
+		if configFile.AutotaggerrUseCurrentArtistName {
+			// use current artist name if configured
+			releaseArtist = response.ArtistCredit[0].Artist.Name
+		} else {
+			// use original release artist name if configured
+			releaseArtist = response.ArtistCredit[0].Name
+		}
+	} else {
+		return models.FileTags{}, errors.New("failed to determine album artist")
+	}
+
+	trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
+	// "Redundant" means the track credit says nothing the album artist does not
+	// already say — so it is decided by comparing the two strings, not by counting
+	// credits. Counting was the old rule, and it read "one credited artist" as
+	// "same as the album artist": on a compilation, or on a release credited to one
+	// artist with a track credited solely to another, it emptied ARTIST on a track
+	// whose artist the album artist does not name at all. Loose comparison so
+	// punctuation or accent differences between the two credits do not keep a
+	// genuinely redundant string.
+	if configFile.AutotaggerrIgnoreRedundantContributingArtists && utilities.EqLoose(trackArtist, releaseArtist) {
+		trackArtist = ""
 	}
 	logger.Log.Trace("track artists: " + trackArtist)
 
@@ -365,20 +460,6 @@ func BuildFileTags(
 		} else {
 			trackArtistSemiColon += artistCredit.Name
 		}
-	}
-
-	// determine release artist
-	releaseArtist := ""
-	if len(response.ArtistCredit) > 0 {
-		if configFile.AutotaggerrUseCurrentArtistName {
-			// use current artist name if configured
-			releaseArtist = response.ArtistCredit[0].Artist.Name
-		} else {
-			// use original release artist name if configured
-			releaseArtist = response.ArtistCredit[0].Name
-		}
-	} else {
-		return models.FileTags{}, errors.New("failed to determine album artist")
 	}
 
 	releaseArtistID := ""
@@ -503,7 +584,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, configFile models.C
 			return nil, err
 		}
 		existing = m
-		changed, _ = utilities.DiffID3Tags(existing, desired)
+		changed, _ = utilities.DiffID3Tags(existing, desired, configFile)
 	default:
 		return nil, errors.New("unsupported file type")
 	}

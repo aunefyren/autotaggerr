@@ -233,6 +233,58 @@ func TestLidarrFindTrackFileByPathMultiDiscSameFilename(t *testing.T) {
 	}
 }
 
+// TestLidarrFindTrackFileByPathDiscFolderSpelling covers the same multi-disc release
+// when the two sides spell the media folder differently — "CD 02" on disk against
+// "CD2" in Lidarr's stored path. The disc *number* is the evidence, so the file must
+// still resolve to its own disc rather than dropping to unmatched.
+func TestLidarrFindTrackFileByPathDiscFolderSpelling(t *testing.T) {
+	resetLidarrCaches()
+	root := filepath.Join("/", "music")
+	trackPath := filepath.Join(root, "Some Artist", "Greatest Hits (2001)", "CD 02", "01 Intro.flac")
+
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/trackfile": []models.LidarrTrackFile{
+			{ID: 100, AlbumID: 42, ArtistID: 2, Path: "/data/music/Some Artist/Greatest Hits (2001)/CD1/01 Intro.flac"},
+			{ID: 200, AlbumID: 42, ArtistID: 2, Path: "/data/music/Some Artist/Greatest Hits (2001)/CD2/01 Intro.flac"},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	tf, err := client.FindTrackFileByPath(2, trackPath, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tf == nil || tf.ID != 200 {
+		t.Fatalf("CD 02 file resolved to %+v, want trackfile 200 — the disc number should match across folder spellings", tf)
+	}
+}
+
+// TestLidarrFindTrackFileByPathAmbiguous covers two trackfiles that both fit the
+// (album, media, basename) triple — a stale Lidarr row left behind by a move, say.
+// Picking the first is a coin flip between two discs, so the lookup must report no
+// match and let the file surface as unmatched.
+func TestLidarrFindTrackFileByPathAmbiguous(t *testing.T) {
+	resetLidarrCaches()
+	root := filepath.Join("/", "music")
+	trackPath := filepath.Join(root, "Some Artist", "Greatest Hits (2001)", "CD2", "01 Intro.flac")
+
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/trackfile": []models.LidarrTrackFile{
+			{ID: 100, AlbumID: 42, ArtistID: 2, Path: "/data/music/Some Artist/Greatest Hits (2001)/CD2/01 Intro.flac"},
+			{ID: 200, AlbumID: 42, ArtistID: 2, Path: "/data/music/Some Artist/Greatest Hits (2001)/CD 2/01 Intro.flac"},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	tf, err := client.FindTrackFileByPath(2, trackPath, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tf != nil {
+		t.Fatalf("expected no match for an ambiguous pair, got trackfile %d", tf.ID)
+	}
+}
+
 func TestLidarrFindTrackFileByPathNoMatch(t *testing.T) {
 	resetLidarrCaches()
 	root := filepath.Join("/", "music")
@@ -296,6 +348,33 @@ func TestLidarrGetMonitoredAlbumMBID(t *testing.T) {
 	}
 	if mbid == nil || *mbid != "monitored-rel" {
 		t.Fatalf("expected 'monitored-rel', got %v", mbid)
+	}
+}
+
+// TestLidarrGetMonitoredAlbumMBIDNoneMonitored covers the Lidarr state where an
+// album's releases are *all* unmonitored — no edition is selected. There is nothing
+// to tag against, so the answer is "no release", never a guess at one: picking the
+// first unmonitored edition would tag a whole album against a release the user did
+// not choose, and Lidarr's own statistics already disagree with the files in that
+// state (see models.DiscrepancyNoEdition).
+func TestLidarrGetMonitoredAlbumMBIDNoneMonitored(t *testing.T) {
+	resetLidarrCaches()
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/album": []models.LidarrAlbum{
+			{ID: 42, ArtistID: 2, Title: "Unselected Album", Releases: []models.LidarrAlbumRel{
+				{ID: 1, Monitored: false, ForeignReleaseID: "rel-a"},
+				{ID: 2, Monitored: false, ForeignReleaseID: "rel-b"},
+			}},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	mbid, err := client.GetMonitoredAlbumMBID(2, 42)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if mbid != nil {
+		t.Fatalf("expected no release when none is monitored, got %q", *mbid)
 	}
 }
 

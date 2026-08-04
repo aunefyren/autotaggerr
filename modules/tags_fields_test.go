@@ -50,7 +50,7 @@ func TestMP3FullFieldRoundTrip(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 
-	unchanged, written, _, err := SetMP3Tags(path, fullFileTags())
+	unchanged, written, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -88,12 +88,72 @@ func TestMP3FullFieldRoundTrip(t *testing.T) {
 
 	// A second write with the same metadata must converge to a no-op — this guards
 	// against the totals regressing (they must round-trip so the diff sees no change).
-	unchanged2, written2, _, err := SetMP3Tags(path, fullFileTags())
+	unchanged2, written2, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}
 	if !unchanged2 || written2 != 0 {
 		t.Errorf("second full write should be a no-op, got unchanged=%v written=%d", unchanged2, written2)
+	}
+}
+
+// TestMP3RemoveValuesClearsAndConverges is the property that makes remove_values safe
+// on MP3: a field emptied by the profile must actually leave the file, and the second
+// pass must be a no-op. The failure it guards is subtle — the reported diff is derived
+// from the change set, so a key the writer decides to skip is reported as written
+// while nothing happens, and every scan re-reports it forever.
+//
+// It covers the fields whose write blocks used to second-guess an empty value:
+// ARTISTS, the original-date trio, the paired track/disc frames and the ISRC TXXX
+// frame, plus a plain 1:1 field (ARTIST — the redundant-artist case).
+func TestMP3RemoveValuesClearsAndConverges(t *testing.T) {
+	requireTool(t, "ffprobe")
+	path := synthAudio(t, ".mp3")
+
+	removeValues := models.ConfigStruct{AutotaggerrRemoveValues: true}
+	if _, _, _, err := SetMP3Tags(path, fullFileTags(), removeValues); err != nil {
+		t.Fatalf("SetMP3Tags (full): %v", err)
+	}
+
+	cleared := fullFileTags()
+	cleared.Artist = ""
+	cleared.ArtistSemicolon = ""
+	cleared.OriginalDate = ""
+	cleared.OriginalYear = ""
+	cleared.ISRC = ""
+	cleared.TrackTotal = ""
+	cleared.DiscNumber = ""
+	cleared.DiscTotal = ""
+
+	unchanged, written, changes, err := SetMP3Tags(path, cleared, removeValues)
+	if err != nil {
+		t.Fatalf("SetMP3Tags (cleared): %v", err)
+	}
+	if unchanged || written == 0 {
+		t.Fatalf("clearing fields should be a change: unchanged=%v written=%d", unchanged, written)
+	}
+	if len(changes) == 0 {
+		t.Error("expected a field-level diff for the cleared fields")
+	}
+
+	tags, err := GetMP3Tags(path)
+	if err != nil {
+		t.Fatalf("GetMP3Tags: %v", err)
+	}
+	for _, key := range []string{"ARTIST", "ARTISTS", "ORIGINALDATE", "ORIGINALYEAR", "ISRC", "DISCNUMBER"} {
+		if got := firstTag(tags, key); got != "" {
+			t.Errorf("%s = %q, want it gone from the file", key, got)
+		}
+	}
+
+	// The whole point: writing the same cleared set again must do nothing.
+	unchanged2, written2, _, err := SetMP3Tags(path, cleared, removeValues)
+	if err != nil {
+		t.Fatalf("second SetMP3Tags (cleared): %v", err)
+	}
+	if !unchanged2 || written2 != 0 {
+		t.Fatalf("clearing must converge, or every scan rewrites the file: unchanged=%v written=%d",
+			unchanged2, written2)
 	}
 }
 
@@ -105,7 +165,7 @@ func TestMP3ISRCPreservesCase(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 
 	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", ISRC: "gb-abc-99-12345"}
-	if _, _, _, err := SetMP3Tags(path, meta); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
 
@@ -118,7 +178,7 @@ func TestMP3ISRCPreservesCase(t *testing.T) {
 	}
 
 	// And the mixed-case value must not trigger a rewrite on the second pass.
-	unchanged, _, _, err := SetMP3Tags(path, meta)
+	unchanged, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}
@@ -130,7 +190,7 @@ func TestMP3ISRCPreservesCase(t *testing.T) {
 func TestExtractFromID3v2(t *testing.T) {
 	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
-	if _, _, _, err := SetMP3Tags(path, fullFileTags()); err != nil {
+	if _, _, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
 

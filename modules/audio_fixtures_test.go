@@ -129,7 +129,7 @@ func TestMP3SetReadRoundTrip(t *testing.T) {
 		Title:  "Intro",
 		Genres: []string{"Hip Hop"},
 	}
-	unchanged, written, _, err := SetMP3Tags(path, meta)
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -159,10 +159,10 @@ func TestMP3IdempotentWrite(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 	meta := models.FileTags{Artist: "Artist", Album: "Album", Title: "Title"}
 
-	if _, _, _, err := SetMP3Tags(path, meta); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
 		t.Fatalf("first SetMP3Tags: %v", err)
 	}
-	unchanged, written, _, err := SetMP3Tags(path, meta)
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestMP3MultiISRCIdempotent(t *testing.T) {
 		ISRC:   "USUM72108711; USUM72108712",
 	}
 
-	if _, _, _, err := SetMP3Tags(path, meta); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
 		t.Fatalf("first SetMP3Tags: %v", err)
 	}
 
@@ -232,7 +232,7 @@ func TestMP3MultiISRCIdempotent(t *testing.T) {
 		t.Errorf("ISRC did not round-trip: got %q, want %q", got, meta.ISRC)
 	}
 
-	unchanged, written, _, err := SetMP3Tags(path, meta)
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}

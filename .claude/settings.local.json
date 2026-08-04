@@ -6,8 +6,9 @@
       "Bash(go vet *)",
       "Bash(go test *)",
       "Bash(npm run *)",
-      "Bash(gofmt -l routers/)",
-      "WebFetch(domain:github.com)"
+      "Bash(gofmt -l *)",
+      "WebFetch(domain:github.com)",
+      "Bash(gofmt -w *)"
     ]
   }
 }

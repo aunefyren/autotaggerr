@@ -332,6 +332,9 @@ func TestDiscrepancy(t *testing.T) {
 			rg: models.CollectionReleaseGroup{
 				Owned: true, OwnedTracks: 21, TotalTracks: 21,
 				InCatalog: true, CatalogOwnedTracks: 3, CatalogTotalTracks: 21,
+				// A healthy Lidarr album always names the edition it monitors; without
+				// one the disagreement is explained by that instead (see models).
+				CatalogReleaseMBID: "rel-1",
 			},
 			hasCatalog: true,
 			want:       models.DiscrepancyStaleCatalog,
@@ -347,9 +350,22 @@ func TestDiscrepancy(t *testing.T) {
 			rg: models.CollectionReleaseGroup{
 				Owned: true, OwnedTracks: 2, TotalTracks: 12,
 				InCatalog: true, CatalogOwnedTracks: 12, CatalogTotalTracks: 12,
+				CatalogReleaseMBID: "rel-1",
 			},
 			hasCatalog: true,
 			want:       models.DiscrepancyNotIndexed,
+		},
+		{
+			// Lidarr with no release selected for the album: its statistics describe an
+			// edition nobody chose, so the counts disagree with the files for a reason
+			// no rescan changes.
+			name: "lidarr has no edition selected",
+			rg: models.CollectionReleaseGroup{
+				Owned: true, OwnedTracks: 44, TotalTracks: 44,
+				InCatalog: true, CatalogOwnedTracks: 7, CatalogTotalTracks: 7,
+			},
+			hasCatalog: true,
+			want:       models.DiscrepancyNoEdition,
 		},
 		{
 			name: "agreement",

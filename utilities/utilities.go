@@ -259,11 +259,21 @@ func canonicalizeValues(vals []string) string {
 	return strings.Join(tmp, "\x1f")
 }
 
-func DiffID3Tags(existing map[string][]string, desired map[string]string) (map[string]string, bool) {
+// DiffID3Tags is DiffFlacTags for ID3: same comparison, same rule about empty
+// values. An empty desired value only becomes a change when the tagger profile's
+// remove_values is on, so the setting means the same thing on both engines — before,
+// ID3 skipped empties unconditionally and a profile that cleared a tag on FLAC
+// silently left it in place on MP3.
+//
+// The MP3 writer must actually apply every key returned here (ffmpeg deletes a tag
+// when given an empty value): its reported diff is derived from this change set, so a
+// key that is reported but not written would never converge and the file would be
+// rewritten on every scan.
+func DiffID3Tags(existing map[string][]string, desired map[string]string, configFile models.ConfigStruct) (map[string]string, bool) {
 	changes := make(map[string]string)
 	has := false
 	for k, want := range desired {
-		if strings.TrimSpace(want) == "" {
+		if strings.TrimSpace(want) == "" && !configFile.AutotaggerrRemoveValues {
 			continue
 		}
 		wantN := NormalizeTagValue(want)

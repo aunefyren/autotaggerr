@@ -32,6 +32,10 @@ import (
 // eventRetention caps how many Activity events are kept after a scan.
 const eventRetention = 200
 
+// defaultWorkers is the worker count a non-positive concurrency setting falls back
+// to, matching the config loader's default.
+const defaultWorkers = 4
+
 // maxErrorFilesRecorded bounds the error-file list stored on a scan event.
 const maxErrorFilesRecorded = 100
 
@@ -83,10 +87,13 @@ type Summary struct {
 // Runner owns scan execution and status. A single Runner instance is shared by
 // main (cron + startup) and the API.
 type Runner struct {
-	db          *gorm.DB
-	plex        *modules.PlexClient
-	version     string
-	concurrency int
+	db      *gorm.DB
+	plex    *modules.PlexClient
+	version string
+	// concurrency is atomic because the settings page can change it while the runner
+	// is alive: a scan reads it when it starts a walk, and the API writes it from a
+	// request goroutine.
+	concurrency atomic.Int64
 
 	// meta is the MusicBrainz metadata source the runner passes to the collection
 	// derivations it drives (SyncArtist). Defaulted to the real source in NewRunner;
@@ -133,13 +140,13 @@ type Runner struct {
 // Refresher.
 func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *Runner {
 	r := &Runner{
-		db:          db,
-		plex:        plex,
-		version:     cfg.AutotaggerrVersion,
-		concurrency: cfg.AutotaggerrProcessConcurrency,
-		meta:        modules.NewMetadataSource(),
-		wake:        make(chan struct{}, 1),
+		db:      db,
+		plex:    plex,
+		version: cfg.AutotaggerrVersion,
+		meta:    modules.NewMetadataSource(),
+		wake:    make(chan struct{}, 1),
 	}
+	r.SetConcurrency(cfg.AutotaggerrProcessConcurrency)
 	r.refresh = mirror.NewRunner(db, nil)
 	go r.worker()
 	return r
@@ -148,6 +155,20 @@ func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *
 // Refresher exposes the metadata runner so the cron job and the API can drive the
 // refresh verb without going through a scan.
 func (r *Runner) Refresher() *mirror.Runner { return r.refresh }
+
+// SetConcurrency changes how many files a scan processes in parallel. A running scan
+// keeps the worker count it started with — the pool is sized when the walk begins —
+// so the new value applies from the next one. A non-positive value falls back to the
+// same default the config loader uses, so a bad input never wedges the pool at zero.
+func (r *Runner) SetConcurrency(workers int) {
+	if workers < 1 {
+		workers = defaultWorkers
+	}
+	r.concurrency.Store(int64(workers))
+}
+
+// Concurrency reports the current worker count.
+func (r *Runner) Concurrency() int { return int(r.concurrency.Load()) }
 
 // Status returns a copy of the current/last scan summary plus the queue. Running is
 // taken from the atomic so it reflects both queue jobs and the interactive re-tags
@@ -624,7 +645,7 @@ func (r *Runner) runScope(scope Scope) {
 				r.setCurrent(a)
 			}
 		}
-		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.concurrency, scope.Force, onFile)
+		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.Concurrency(), scope.Force, onFile)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library.Path + "'. error: " + err.Error())
 			r.setStatus(func(s *Summary) { s.LastError = err.Error() })

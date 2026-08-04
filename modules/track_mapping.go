@@ -167,8 +167,15 @@ func parseTrackNumber(path string) (disc int, track int, ok bool) {
 // further up would misread a library root like "/music/CD Rips".
 func discFromFolder(path string) int {
 	normalized := strings.ReplaceAll(path, `\`, "/")
-	folder := filepath.Base(filepath.Dir(normalized))
-	if match := discFolderPattern.FindStringSubmatch(folder); match != nil {
+	return discNumberFromFolderName(filepath.Base(filepath.Dir(normalized)))
+}
+
+// discNumberFromFolderName reads the disc number out of a media folder *name*
+// ("CD2", "CD 02", "Disc-3"), or 0 when the name does not carry one. Comparing by
+// this number rather than by the literal name is what lets Lidarr's stored path and
+// the disk agree when only the padding or the separator differs.
+func discNumberFromFolderName(name string) int {
+	if match := discFolderPattern.FindStringSubmatch(name); match != nil {
 		disc, _ := strconv.Atoi(match[1])
 		return disc
 	}
