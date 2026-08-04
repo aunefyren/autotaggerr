@@ -151,6 +151,26 @@ func TestRouterServesHashedAssets(t *testing.T) {
 	}
 }
 
+// TestRouterServesFavicon: the favicon sits at the root of the bundle rather than
+// under assets/, which puts it one missed fs.Stat away from the SPA fallback. That
+// failure is silent — the browser gets 200 and a page of HTML where an image should
+// be, shows its default icon, and reports nothing. So assert both that it is served
+// and that it is not index.html wearing an .svg name.
+func TestRouterServesFavicon(t *testing.T) {
+	r := testRouter(t)
+
+	w := routerGet(t, r, "/favicon.svg")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /favicon.svg = %d, want 200 — is webui/public/favicon.svg in the build?", w.Code)
+	}
+	if ctype := w.Header().Get("Content-Type"); !strings.Contains(ctype, "image/svg") {
+		t.Errorf("GET /favicon.svg content type = %q, want it to mention image/svg", ctype)
+	}
+	if strings.Contains(w.Body.String(), `id="root"`) {
+		t.Error("GET /favicon.svg served index.html instead of the icon")
+	}
+}
+
 func truncateBody(s string) string {
 	if len(s) > 120 {
 		return s[:120] + "…"

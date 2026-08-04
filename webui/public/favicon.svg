@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32">
+  <!-- The sidebar's brand tile, standing on its own: a favicon has no document to
+       inherit colour from, so the accent gradient and the white glyph are stated
+       here rather than taken from the theme. Keep in step with components/Logo.tsx. -->
+  <defs>
+    <linearGradient id="a" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7B61FF"/>
+      <stop offset="1" stop-color="#4C7DFF"/>
+    </linearGradient>
+  </defs>
+  <rect width="32" height="32" rx="7" fill="url(#a)"/>
+  <!-- The 24px glyph inset to 20px and centred. Stroke is widened to 2.6 so it
+       survives being drawn at 16px in a browser tab. -->
+  <g transform="translate(6 6) scale(0.8333)" fill="none" stroke="#FFFFFF"
+     stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/>
+    <line x1="7" y1="7" x2="7.01" y2="7"/>
+  </g>
+</svg>

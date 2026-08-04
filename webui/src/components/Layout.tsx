@@ -1,6 +1,7 @@
 import { NavLink, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../auth";
 import { ArtworkCapabilitiesProvider } from "./Artwork";
+import { Logo } from "./Logo";
 
 const NAV = [
   { to: "/", label: "Dashboard", ic: "◧", end: true },
@@ -27,7 +28,7 @@ export default function Layout() {
     <div className="app">
       <aside className="sidebar">
         <div className="brand">
-          <span className="logo">🏷</span> Autotaggerr
+          <Logo /> Autotaggerr
         </div>
         {NAV.map((n) => (
           <NavLink key={n.to} to={n.to} end={n.end} className="navitem">

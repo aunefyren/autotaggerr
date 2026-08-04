@@ -2,6 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 import { useAuth } from "../auth";
 import { api, errMsg } from "../api";
 import { LoginProvider } from "../types";
+import { Logo } from "../components/Logo";
 
 export default function Login() {
   const { login } = useAuth();
@@ -46,7 +47,7 @@ export default function Login() {
     <div className="login-wrap">
       <form className="card login-card" onSubmit={submit}>
         <div className="brand">
-          <span className="logo">🏷</span> Autotaggerr
+          <Logo /> Autotaggerr
         </div>
         <div className="sub">Sign in to manage your library</div>
         <div className="stack">

@@ -322,6 +322,15 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Empty state** — centered, muted icon, one-line explanation, and a primary action. An empty
   screen is an invitation to act ("No libraries yet — add your first music folder").
 - **Modal** — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop `rgba(13,11,20,.7)`; focus-trapped.
+- **Brand mark** (`.brand .logo`, `Logo.tsx`) — a tag glyph on a 22px accent tile
+  (`linear-gradient(135deg, var(--accent), #4c7dff)`, `5px` radius), followed by the wordmark. It
+  appears exactly twice: the sidebar and the login card. **Drawn, never typed** — the mark was an
+  emoji (`🏷`), which renders as a different picture on every platform and badly on Windows; a logo
+  is the one element that may not vary by whose machine it is on. The glyph is inline SVG on
+  `currentColor`, so the artwork exists once and is tinted by the tile rather than duplicated per
+  colour. The **favicon** (`webui/public/favicon.svg`) is the same mark rebuilt standalone: a favicon
+  inherits nothing from the document, so it states the gradient and the white glyph itself, with a
+  wider stroke to survive 16px. Two files by necessity — keep the glyph and corner radius in step.
 
 ### Signature: the coverage meter
 The browsing counterpart to the tag-diff row, and the same colour language. One cell per item —
