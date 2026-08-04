@@ -345,3 +345,34 @@ func TestRefreshVerbsUnknownScope(t *testing.T) {
 		t.Error("runner should be idle after both refresh no-ops")
 	}
 }
+
+// TestScopeIsFull: the end-of-run manager mirror is earned by covering a whole
+// library. A per-artist or per-release-group run is an interactive action, and
+// SyncLidarr has no scope narrower than "every Lidarr artist in the collection" — so a
+// one-album button must not wait on a whole-collection mirror.
+func TestScopeIsFull(t *testing.T) {
+	lib := models.Library{Name: "L", Path: "/m"}
+
+	cases := []struct {
+		name  string
+		scope Scope
+		want  bool
+	}{
+		{"whole library", Scope{Targets: []Target{{Library: lib}}}, true},
+		{"one artist folder", Scope{Targets: []Target{{Library: lib, Roots: []string{"/m/Artist"}}}}, false},
+		{"nothing to scan", Scope{}, false},
+		{
+			name: "one full library among narrowed ones",
+			scope: Scope{Targets: []Target{
+				{Library: lib, Roots: []string{"/m/Artist"}},
+				{Library: lib},
+			}},
+			want: true,
+		},
+	}
+	for _, c := range cases {
+		if got := scopeIsFull(c.scope); got != c.want {
+			t.Errorf("%s: scopeIsFull = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

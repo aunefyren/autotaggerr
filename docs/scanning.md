@@ -155,6 +155,72 @@ version bump on first run after upgrading, since existing rows have no manager r
 sets `pinned`) is not the manager's to redo, and re-correlating one would overwrite the MB IDs the
 user chose by hand.
 
+## Pruning files that are gone
+
+`library_items` is keyed by **path**, and a scan only ever writes rows for files it finds — so for a
+long time nothing removed one. A file that a manager moved, renamed or deleted left its row behind
+with `status = ok` and its release still set, and `collection.Rebuild` counts exactly those rows
+(`status = ok AND mb_release_id <> ''`, no existence check). The library therefore kept owning albums
+it no longer had, under whatever artist the *old* path had resolved to. Lidarr moving an album
+between artist folders is the everyday way to produce one.
+
+Nothing self-healed it, either: `collection.ArtistTargets` derives the folder to re-scan *from the
+stale path*, and walking a folder that no longer exists yields an empty walk rather than an error, so
+every later scan confirmed the ghost by never visiting it.
+
+`scan.pruneMissingItems` runs per library at the end of its walk. It is an **existence check over the
+index**, not a diff against what the walk visited — deliberately, because the narrowed scopes (one
+artist, one release-group) visit a subset of a library and must conclude nothing about the rest of
+it. Rows outside the walked roots are never candidates; `pathInScope` is the same predicate the force
+re-correlate verb uses.
+
+Three guards are the whole design, because the failure mode is deleting a library's index rather
+than a few rows:
+
+- **It runs only after a successful walk.** A walk that failed partway is exactly the case where
+  "the file is not there" means "we could not look".
+- **Every root must exist.** An unmounted library, or one whose path moved, stats as "every file is
+  gone" and would otherwise empty its own index. An unavailable root refuses the whole pass.
+- **Only `fs.ErrNotExist` counts as gone.** A permission error, an I/O error or a dead network mount
+  leaves the row alone. Absence has to be proven, not assumed — a wrong deletion is the one reading
+  that cannot be recovered from.
+
+A **pinned** row is a manual attachment, so pruning one loses authored state. It still goes — the pin
+identifies a file that no longer exists — but it is counted and logged separately, because "your
+manual attachments went away" is not something a user should have to infer from a file count.
+
+The count rides the scan event as `files_removed` and appends a `· N removed` clause to the summary
+line only when something actually went. A move is delete-plus-create to a path-keyed index, so a
+moved file loses its pin; carrying pins across a move (matching on size + mtime) would be a separate
+feature.
+
+## The collection stage
+
+A run ends by re-deriving the collection and then refreshing the manager mirror —
+`collection.Rebuild` followed by `collection.SyncLidarr`, reported as the `collection` phase.
+
+Both now run **before the event is finished**, which is the point. A rebuild that moved an album
+between artists is news, and it used to happen after `events.Finish` had already written the run —
+so the run that caused it could not report it. The event carries `credit_changes` (see
+[collection.md](collection.md#removing-a-credit)) and a `· N credit change(s)` clause on the summary
+line when something moved.
+
+The **order is load-bearing**: the mirror only syncs artists that are already collection rows, so an
+artist the rebuild just discovered — which is how an album re-credited upstream reaches its new
+artist — is in the mirror's scope only once that rebuild has committed. Reversed, every such artist
+would wait a full extra cycle for their catalog, looking unmanaged in the meantime.
+
+The mirror had been reachable only from `POST /collection/sync-lidarr`, which meant the catalog block
+was stale by default: every disk/catalog comparison on an artist page was against whenever somebody
+last pressed a button, and `CatalogChecked` had never been true for an artist nobody had synced by
+hand.
+
+**Only full-library scans mirror.** `scopeIsFull` reuses `Target.full`, the same predicate that
+decides whether a library may claim it was scanned — a run too narrow to update a library's scan time
+is too narrow to be worth a whole-collection mirror. `SyncLidarr` has no scope narrower than "every
+Lidarr artist in the collection", so a per-artist or per-release-group button would otherwise wait on
+one. The nightly scan and the manual button both still cover it.
+
 ## Drift sync
 
 Catches upstream MusicBrainz changes and re-tags the files a scan would skip.
@@ -180,6 +246,13 @@ checked/changed, files re-tagged and errors.
 reverse-chronological feed with status pills, a live scanning banner, a "Scan all" button and a
 click-through detail modal (scan stat grid, per-file detail, drift detail).
 
+**Duration is derived, never stored.** The feed's Duration column and the detail modal both compute
+it from the row's own `started_at`/`finished_at`, so every event type has one — including the ones
+whose emitter never thought about it, and every row already in the table. `scan` and `mb_mirror` used
+to also write a `details.duration` string; that was the only reason those two had a figure and the
+other five did not, and it has been removed rather than copied into the rest. A running event counts
+up in the same format as the banner's elapsed counter; an event with no finish stamp reads `—`.
+
 Emitted today: `scan`, `drift_sync`, `lidarr_sync`, `mb_mirror`, `mb_migration`, `plex_refresh`,
 `health_check`.
 
@@ -204,7 +277,7 @@ called before `Finish` so its `Save` keeps the values rather than racing them.
 - **Scans** keep the live figures in lock-free atomics on the `scan.Runner`, so the per-file callback
   (`WalkAndProcess`'s `onFile`) never contends on the status mutex across the worker pool. `Total` is
   every supported file, counted up front across all targets (`modules.CountSupportedFiles`); `Phase`
-  moves through `refresh` → `scanning` → `drift` → `plex` → `migrations`; `Current` is the artist
+  moves through `refresh` → `scanning` → `drift` → `plex` → `migrations` → `collection`; `Current` is the artist
   folder of the most recently started file — a liveness indicator, not a strict cursor under
   concurrency. `Status()` overlays the atomics onto the summary while a scan runs, so `/scan/status`
   and the event row agree.

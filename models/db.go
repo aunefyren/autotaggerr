@@ -591,12 +591,37 @@ type CollectionDesire struct {
 	// RecordingMBIDs is the desired-song set; empty means the whole release-group
 	// or release. Stored as JSON so it needs no join table.
 	RecordingMBIDs []string `gorm:"serializer:json" json:"recording_mb_ids"`
-	// Auto marks an edition want that the rebuild derived from ownership rather than
-	// the user pinning it: when an "any" want is satisfied by a file, the want migrates
-	// to the owned edition as an auto row that keeps tracking the files (re-pointed when
-	// they change edition, pruned when they go). A hand-pinned edition is auto=false and
-	// the rebuild never touches it. See docs/wip.md follow-up C.
-	Auto bool `json:"auto"`
+	// Source is who authored this want, and therefore who may rewrite it. Only
+	// DesireSourceManual is the user's; the other two are maintained by a
+	// reconciliation pass that may re-point or prune its *own* rows and must never
+	// touch a hand-authored one. Empty is read as manual — see BackfillDesireSources.
+	Source string `json:"source"`
+}
+
+// Desire provenance. The distinction exists because "never recomputed" is a
+// guarantee about *authored* intent: a derived row has to be re-pointed as the
+// thing it derives from moves, and the only way to keep both properties is to know
+// which kind a row is.
+const (
+	// DesireSourceManual: the user asked for this. Never recomputed, outranks
+	// everything derived, and survives unfollowing or a manager change.
+	DesireSourceManual = "manual"
+	// DesireSourceAuto: narrowed from an "any edition" want to the edition whose
+	// files actually landed (native artists only). Re-pointed when the files change
+	// edition, pruned when they go. See collection.reconcileAutoDesires.
+	DesireSourceAuto = "auto"
+	// DesireSourceManager: mirrored from the library manager's own selection — for
+	// Lidarr, the monitored release of a monitored album. Lidarr owns identity for
+	// its artists, so this is that decision recorded as Autotaggerr's own row rather
+	// than read through the catalog columns, which is what lets the manager be
+	// detached later without losing what it decided. See
+	// collection.reconcileManagerDesires.
+	DesireSourceManager = "manager"
+)
+
+// Derived reports whether a reconciliation pass owns this row rather than the user.
+func (d CollectionDesire) Derived() bool {
+	return d.Source == DesireSourceAuto || d.Source == DesireSourceManager
 }
 
 // CollectionReleaseGroupArtist links a release-group to every artist credited on it.
@@ -617,6 +642,23 @@ type CollectionReleaseGroupArtist struct {
 	// Position is the artist's place in the MusicBrainz artist credit (0 = primary).
 	// It keeps "featuring" artists from being presented as the album's author.
 	Position int `json:"position"`
+
+	// FromDisk and FromCatalog record *which authority* put this link here, so the
+	// one writer allowed to remove a link can tell whose claim it would be removing.
+	// Both can be true — an album the files and the manager agree on — which is why
+	// this is two flags rather than one source column: the row is uniquely indexed on
+	// (release_group, artist), so a single value would have to pick a winner.
+	//
+	// FromDisk is set by collection.Rebuild, the only writer that reads a release's
+	// real artist credit. FromCatalog is set by the manager mirrors (SyncLidarr) and
+	// by native discography discovery (SyncArtist), which know only that *their*
+	// artist is credited somehow.
+	//
+	// A row with neither predates the columns. It is treated as a disk claim, because
+	// that is what makes a stale credit from before this existed cleanable at all; a
+	// legacy catalog link caught by that reading is restored by the next sync.
+	FromDisk    bool `json:"from_disk"`
+	FromCatalog bool `json:"from_catalog"`
 }
 
 // CollectionReleaseGroup is an album/EP/etc for an artist.
@@ -658,6 +700,14 @@ type CollectionReleaseGroup struct {
 	CatalogOwnedTracks int  `json:"catalog_owned_tracks"`
 	CatalogTotalTracks int  `json:"catalog_total_tracks"`
 	CatalogMonitored   bool `json:"catalog_monitored"`
+	// CatalogReleaseMBID is the edition the manager selected — Lidarr's monitored
+	// release. Empty when the manager did not say (native discovery, or an album
+	// Lidarr has no monitored release for). It is stored rather than only read
+	// through so the two selections can be compared: an album whose files sit on a
+	// different release than the manager monitors is exactly the divergence force
+	// re-correlate exists to fix, and it was previously invisible until a file
+	// failed to tag.
+	CatalogReleaseMBID string `json:"catalog_release_mb_id"`
 }
 
 // AcoustIDLookup caches one file's fingerprint and the candidates AcoustID
@@ -738,12 +788,15 @@ func (rg CollectionReleaseGroup) Complete() bool {
 	return rg.Owned && rg.TotalTracks > 0 && rg.OwnedTracks >= rg.TotalTracks
 }
 
-// Discrepancy compares the disk view against the catalog view. hasCatalog reports
-// whether the artist has a catalog at all — a manager mirror has run, or the artist
-// is monitored. Without one there is nothing to compare against, so nothing is
-// flagged; otherwise every album of an unmonitored native artist would look unmapped.
-func (rg CollectionReleaseGroup) Discrepancy(hasCatalog bool) string {
-	if !hasCatalog {
+// Discrepancy compares the disk view against the catalog view. catalogChecked reports
+// whether a manager has actually been *asked* about this album's artist — see
+// collection.CatalogChecked, which reads the artist's LastSyncedAt. Without an answer
+// there is nothing to compare against, so nothing is flagged; otherwise every album of
+// an unmonitored native artist would look unmapped, and an album whose artist was
+// never put to the manager would be reported as missing from a catalogue nobody
+// consulted.
+func (rg CollectionReleaseGroup) Discrepancy(catalogChecked bool) string {
+	if !catalogChecked {
 		return DiscrepancyNone
 	}
 	if rg.Owned && !rg.InCatalog {

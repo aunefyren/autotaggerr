@@ -62,21 +62,35 @@ export default function ReleaseGroup() {
   const anyDesire = desires.find((d) => !d.release_mb_id);
   const editionDesires = desires.filter((d) => d.release_mb_id);
 
-  // A want with no desire rows behind it is derived — from following the artist or
-  // from the manager — so this page can display and narrow it, but not switch it off.
-  const derivedWant = !!rg?.wanted && desires.length === 0;
+  // Derived means "wanted for a reason this page cannot switch off" — following the
+  // artist, or the manager. It is read from wanted_source, *not* from the absence of
+  // desire rows: a derived want has rows too now (the edition Lidarr selected, or the
+  // one the rebuild narrowed to), and treating rows as authorship offered controls
+  // that the API rejects with a 409.
+  const derivedWant = !!rg?.wanted && rg.wanted_source !== "explicit";
   const isWanted = desires.length > 0 || !!rg?.wanted;
-  // A derived want *means* any edition, whole album, so the row reads as ticked even
-  // though nothing is stored. Showing it unticked next to a wanted album was the
-  // page contradicting itself.
+
+  // Locked is the stronger condition: a manager owns identity for this artist, so
+  // *nothing* here may be written by hand — not the want, not the edition, not the
+  // tracks. Derived only freezes the want itself; locked freezes the narrowing too.
+  const locked = !!artist && !artist.identity_editable;
+
+  // A derived want with no edition marked *means* any edition, so the row reads as
+  // ticked even though nothing is stored. Showing it unticked next to a wanted album
+  // was the page contradicting itself.
   const anyEditionOn = !!anyDesire || (derivedWant && editionDesires.length === 0);
 
   const managerLabel =
     artist?.managed_by === "lidarr" || artist?.managed_by === "mixed" ? "Lidarr" : "the manager";
   const derivedReason =
     rg?.wanted_source === "manager"
-      ? `Wanted because ${managerLabel} monitors it.`
+      ? `${managerLabel} monitors this album${editionDesires.length > 0 ? " on this edition" : ""}.`
       : "Wanted because you follow this artist.";
+  // Why a control is frozen, in one sentence, wherever one is frozen. Locked outranks
+  // derived: under a manager the reason is the same for every control on the page.
+  const frozenReason = locked
+    ? `${managerLabel} decides what is wanted for this artist and which edition it is. Change it in ${managerLabel}.`
+    : derivedReason;
 
   // Which edition's tracklist is on screen. Kept in the URL so coming back from
   // elsewhere returns to the same one.
@@ -146,7 +160,7 @@ export default function ReleaseGroup() {
 
   if (err) return <ErrorNote message={err} />;
 
-  const summary = wantSummary({ isWanted, anyEditionOn, anyDesire, editionDesires, derivedWant, derivedReason });
+  const summary = wantSummary({ isWanted, anyEditionOn, anyDesire, editionDesires, derivedWant, derivedReason, editions });
 
   return (
     <div className="stack">
@@ -200,30 +214,38 @@ export default function ReleaseGroup() {
         </div>
 
         <div className="entity-actions">
-          {derivedWant && (
-            <Pill kind="off">
-              <span title={derivedReason}>{rg?.wanted_source === "manager" ? managerLabel : "auto"}</span>
-            </Pill>
+          {/* One pill, naming whichever authority applies — the manager if it owns
+              the artist, otherwise the follow. Both at once would be two labels for
+              one fact, and under a manager the follow is not the reason anyway. */}
+          {locked ? (
+            <Pill kind="off">Managed by {managerLabel}</Pill>
+          ) : (
+            derivedWant && <Pill kind="off">auto</Pill>
           )}
           {/* Frozen for a derived want, exactly as on the artist page: this control
               cannot switch off a want whose reason lives elsewhere. Narrowing it
-              below (an edition, a track) still works and makes the want yours. */}
+              below (an edition, a track) still works and makes the want yours —
+              unless a manager owns identity, where nothing here is writable. */}
           <button
             className={isWanted ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
             aria-pressed={isWanted}
-            disabled={busy || loading || derivedWant}
+            disabled={busy || loading || derivedWant || locked}
             title={
-              derivedWant
-                ? `${derivedReason} Pin it, or narrow it below, to make it yours.`
-                : isWanted
-                  ? "Wanted. Click to remove."
-                  : "Not wanted. Click to want any edition, whole album."
+              locked
+                ? frozenReason
+                : derivedWant
+                  ? `${derivedReason} Pin it, or narrow it below, to make it yours.`
+                  : isWanted
+                    ? "Wanted. Click to remove."
+                    : "Not wanted. Click to want any edition, whole album."
             }
             onClick={() => (desires.length > 0 ? dropAll() : save("", []))}
           >
             {isWanted ? "Wanted" : "Want"}
           </button>
-          {derivedWant && (
+          {/* Pinning writes a want, so it is not offered under a manager — the API
+              rejects it, and a button that always fails is worse than no button. */}
+          {derivedWant && !locked && (
             <button
               className="btn btn-secondary btn-sm"
               disabled={busy || loading}
@@ -253,7 +275,8 @@ export default function ReleaseGroup() {
             editionDesires={editionDesires}
             anyEditionOn={anyEditionOn}
             derivedWant={derivedWant}
-            derivedReason={derivedReason}
+            frozenReason={frozenReason}
+            locked={locked}
             selected={detailRelease}
             busy={busy}
             browse={browse}
@@ -268,7 +291,8 @@ export default function ReleaseGroup() {
             anyEditionOn={anyEditionOn}
             editionDesires={editionDesires}
             derivedWant={derivedWant}
-            derivedReason={derivedReason}
+            frozenReason={frozenReason}
+            locked={locked}
             busy={busy}
             onSaveAny={(recordings) => save("", recordings)}
             onSaveEdition={save}
@@ -291,6 +315,7 @@ function wantSummary({
   editionDesires,
   derivedWant,
   derivedReason,
+  editions,
 }: {
   isWanted: boolean;
   anyEditionOn: boolean;
@@ -298,9 +323,22 @@ function wantSummary({
   editionDesires: CollectionDesire[];
   derivedWant: boolean;
   derivedReason: string;
+  editions: Edition[];
 }): string {
   if (!isWanted) return "Not wanted";
-  if (derivedWant) return `${derivedReason} Any edition, whole album.`;
+  if (derivedWant) {
+    // A derived want can name an edition — Lidarr's monitored release does — so the
+    // line has to say which, or the page states "any edition" above a list with one
+    // ticked. Named by title where the edition list has it, since an MB ID here
+    // would say less than the pressing's name.
+    if (editionDesires.length === 1) {
+      const chosen = editions.find((e) => e.id === editionDesires[0].release_mb_id);
+      const named = chosen ? `the ${chosen.title}${chosen.date ? ` (${chosen.date.slice(0, 4)})` : ""} edition` : "one edition";
+      return `${derivedReason} Wanted: ${named}.`;
+    }
+    if (editionDesires.length > 1) return `${derivedReason} Wanted: ${editionDesires.length} editions.`;
+    return `${derivedReason} Any edition, whole album.`;
+  }
   if (anyEditionOn) {
     const picked = anyDesire?.recording_mb_ids?.length ?? 0;
     return picked > 0
@@ -334,7 +372,8 @@ function EditionList({
   editionDesires,
   anyEditionOn,
   derivedWant,
-  derivedReason,
+  frozenReason,
+  locked,
   selected,
   busy,
   browse,
@@ -347,7 +386,9 @@ function EditionList({
   editionDesires: CollectionDesire[];
   anyEditionOn: boolean;
   derivedWant: boolean;
-  derivedReason: string;
+  frozenReason: string;
+  /** A manager owns the edition choice: every checkbox here is state, not input. */
+  locked: boolean;
   selected: string | null;
   busy: boolean;
   browse: Browse;
@@ -418,15 +459,15 @@ function EditionList({
       <label
         className="edition-row any-row"
         title={
-          derivedWant
-            ? `${derivedReason} Any edition counts. Mark a specific edition below to narrow it.`
+          locked || derivedWant
+            ? `${frozenReason}${locked ? "" : " Any edition counts. Mark a specific edition below to narrow it."}`
             : "Any edition counts — whichever pressing turns up. This is what most people want."
         }
       >
         <input
           type="checkbox"
           checked={anyEditionOn}
-          disabled={busy || derivedWant}
+          disabled={busy || derivedWant || locked}
           onChange={() => onChooseAny()}
         />
         <div style={{ minWidth: 0 }}>
@@ -450,9 +491,15 @@ function EditionList({
               <input
                 type="checkbox"
                 checked={!!desire}
-                disabled={busy}
+                disabled={busy || locked}
                 aria-label={`Want the ${r.title} edition${r.date ? ` from ${r.date.slice(0, 4)}` : ""}`}
-                title={desire ? "Wanted. Untick to drop this edition." : "Want this edition — only marked editions will count."}
+                title={
+                  locked
+                    ? frozenReason
+                    : desire
+                      ? "Wanted. Untick to drop this edition."
+                      : "Want this edition — only marked editions will count."
+                }
                 onChange={() => (desire ? onDrop(r.id) : onWantEdition(r.id))}
               />
               {/* Row body = inspect. A button so it is keyboard-reachable; the
@@ -510,7 +557,8 @@ function TrackPane({
   anyEditionOn,
   editionDesires,
   derivedWant,
-  derivedReason,
+  frozenReason,
+  locked,
   busy,
   onSaveAny,
   onSaveEdition,
@@ -521,7 +569,9 @@ function TrackPane({
   anyEditionOn: boolean;
   editionDesires: CollectionDesire[];
   derivedWant: boolean;
-  derivedReason: string;
+  frozenReason: string;
+  /** A manager owns which track a file is: the tracklist is a readout here. */
+  locked: boolean;
   busy: boolean;
   onSaveAny: (recordings: string[]) => void;
   onSaveEdition: (releaseMbid: string, recordings: string[]) => void;
@@ -595,11 +645,13 @@ function TrackPane({
         <div className="eyebrow">Tracks</div>
         <div className="dim" style={{ fontSize: 11, marginTop: 2 }}>
           {tracks.data?.release.title}
-          {perEdition
-            ? " · ticks apply to this edition"
-            : anyEditionOn
-              ? " · ticks apply to any edition"
-              : " · ticking a track wants it from any edition"}
+          {locked
+            ? " · what is wanted, not something to edit here"
+            : perEdition
+              ? " · ticks apply to this edition"
+              : anyEditionOn
+                ? " · ticks apply to any edition"
+                : " · ticking a track wants it from any edition"}
         </div>
         {absent.length > 0 && (
           <div style={{ fontSize: 11, marginTop: 4, color: "var(--warning-text)" }}>
@@ -613,11 +665,13 @@ function TrackPane({
       <label
         className="track-row all-row"
         title={
-          derivedWant
-            ? `${derivedReason} That means every track. Untick individual tracks to narrow it and make it yours.`
-            : wholeThing
-              ? "Every track is wanted. Untick to stop wanting this."
-              : "Want every track, rather than the ones ticked below."
+          locked
+            ? frozenReason
+            : derivedWant
+              ? `${frozenReason} That means every track. Untick individual tracks to narrow it and make it yours.`
+              : wholeThing
+                ? "Every track is wanted. Untick to stop wanting this."
+                : "Want every track, rather than the ones ticked below."
         }
       >
         <input
@@ -629,8 +683,9 @@ function TrackPane({
           }}
           // Frozen for a derived want, like every other control that would otherwise
           // claim to switch off a want whose reason lives elsewhere. Narrowing by
-          // individual track still works, and that is what makes the want yours.
-          disabled={busy || list.length === 0 || derivedWant}
+          // individual track still works, and that is what makes the want yours —
+          // except under a manager, which owns the track a file maps to as well.
+          disabled={busy || list.length === 0 || derivedWant || locked}
           onChange={toggleAll}
         />
         <span style={{ color: "var(--text)", fontSize: 12 }}>All tracks</span>
@@ -647,11 +702,11 @@ function TrackPane({
         {list.map((t) => {
           const multiDisc = list.some((x) => x.medium !== t.medium);
           return (
-            <label key={t.track_id} className="track-row">
+            <label key={t.track_id} className="track-row" title={locked ? frozenReason : undefined}>
               <input
                 type="checkbox"
                 checked={isOn(t.recording_id)}
-                disabled={busy}
+                disabled={busy || locked}
                 onChange={() => toggle(t.recording_id)}
               />
               <span className="dim mono" style={{ fontSize: 11, minWidth: 28, textAlign: "right" }}>

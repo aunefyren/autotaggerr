@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 	"gorm.io/gorm"
@@ -141,9 +142,10 @@ func SetDesire(db *gorm.DB, in DesireInput) (models.CollectionDesire, error) {
 		// Save, not Update: the recordings column goes through GORM's json
 		// serializer, and a column-level Update writes the raw Go slice instead.
 		desire.RecordingMBIDs = in.RecordingMBIDs
-		// A hand re-assert makes the want manual: the rebuild must stop managing it as
-		// an auto row (it would otherwise re-point or prune the edition the user pinned).
-		desire.Auto = false
+		// A hand re-assert makes the want manual: the reconciliation passes must stop
+		// managing it as a derived row (they would otherwise re-point or prune the
+		// edition the user pinned).
+		desire.Source = models.DesireSourceManual
 		if err := db.Save(&desire).Error; err != nil {
 			return desire, err
 		}
@@ -155,11 +157,47 @@ func SetDesire(db *gorm.DB, in DesireInput) (models.CollectionDesire, error) {
 		ReleaseGroupMBID: in.ReleaseGroupMBID,
 		ReleaseMBID:      in.ReleaseMBID,
 		RecordingMBIDs:   in.RecordingMBIDs,
+		Source:           models.DesireSourceManual,
 	}
 	if err := db.Create(&desire).Error; err != nil {
 		return desire, err
 	}
 	return desire, nil
+}
+
+// BackfillDesireSources gives provenance to rows written before CollectionDesire had
+// any. It runs at startup and is a no-op once every row carries a source.
+//
+// The old schema said only "auto or not", in a boolean column AutoMigrate leaves in
+// place rather than dropping. Where that column still exists its true rows become
+// auto; everything else becomes manual, which is both the old meaning of auto=false
+// and the safe reading of an unknown row — a reconciliation pass may rewrite its own
+// rows, so mislabelling a hand-pinned want as derived would let it be re-pointed or
+// pruned, while mislabelling a derived one as manual merely leaves it in place.
+func BackfillDesireSources(db *gorm.DB) error {
+	if db == nil {
+		return nil
+	}
+
+	if db.Migrator().HasColumn(&models.CollectionDesire{}, "auto") {
+		// Raw column reference: the field is gone from the model, but the data is not.
+		if err := db.Model(&models.CollectionDesire{}).
+			Where("(source IS NULL OR source = '') AND auto = ?", true).
+			Update("source", models.DesireSourceAuto).Error; err != nil {
+			return err
+		}
+	}
+
+	res := db.Model(&models.CollectionDesire{}).
+		Where("source IS NULL OR source = ''").
+		Update("source", models.DesireSourceManual)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		logger.Log.Infof("gave %d existing want(s) a provenance", res.RowsAffected)
+	}
+	return nil
 }
 
 // ClearDesire removes a want. Nothing owned is touched: dropping a desire says "I no

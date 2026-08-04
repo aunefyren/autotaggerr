@@ -2,6 +2,7 @@ package database
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -41,6 +42,80 @@ func TestConnectMigratesSchema(t *testing.T) {
 func TestConnectUnsupportedType(t *testing.T) {
 	if _, err := Connect(models.DatabaseConfig{Type: "oracle"}); err == nil {
 		t.Fatal("expected error for unsupported database type")
+	}
+}
+
+// The connection settings below exist because of a production incident: during a
+// Lidarr sync, readers (every authenticated request reads the users table, and the UI
+// polls) waited on commit locks until one exceeded the driver's 5s timeout and the
+// request failed. Under WAL a reader never waits for a writer.
+
+func TestConnectEnablesWAL(t *testing.T) {
+	db := testDB(t)
+
+	var mode string
+	if err := db.Raw("PRAGMA journal_mode").Scan(&mode).Error; err != nil {
+		t.Fatalf("read journal_mode: %v", err)
+	}
+	if !strings.EqualFold(mode, "wal") {
+		t.Errorf("journal_mode = %q, want wal", mode)
+	}
+
+	// The pragma is only useful if the wait it configures is longer than the
+	// driver's own 5s default, which is what the failing requests hit.
+	var busy int
+	if err := db.Raw("PRAGMA busy_timeout").Scan(&busy).Error; err != nil {
+		t.Fatalf("read busy_timeout: %v", err)
+	}
+	if busy < 10000 {
+		t.Errorf("busy_timeout = %d, want at least 10000", busy)
+	}
+}
+
+// TestConnectCapsTheConnectionPool: SQLite serialises writers whatever the pool says,
+// so an unbounded pool buys no write concurrency and only adds contenders for the
+// same lock.
+func TestConnectCapsTheConnectionPool(t *testing.T) {
+	db := testDB(t)
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("DB: %v", err)
+	}
+	if got := sqlDB.Stats().MaxOpenConnections; got != sqliteMaxConns {
+		t.Errorf("MaxOpenConnections = %d, want %d", got, sqliteMaxConns)
+	}
+}
+
+// There is deliberately no test asserting "a read is not blocked by a write".
+//
+// The first version of this file had one — hold a write transaction open, read from
+// another goroutine, assert the read returns — and it passed identically with
+// journal_mode(DELETE), so it guarded nothing. The reason is that a rollback-journal
+// writer does *not* block readers for the life of its transaction: it holds RESERVED
+// while writing, which readers tolerate, and only escalates to EXCLUSIVE for the
+// commit itself. The window this configuration exists to close is that commit, whose
+// length depends on how much is being flushed and how fast the disk is — not
+// something to assert against a wall clock in a unit test without making it a flake.
+//
+// So the pragmas are asserted directly instead, and the reasoning for them lives in
+// database.go. A test that passes for the wrong reason is worse than no test: it
+// claims a guarantee nobody checked.
+
+// TestSQLiteDSNLeavesACustomDSNAlone: the query string is the escape hatch for
+// anyone who needs different settings, so appending to it would break it in exactly
+// the case someone reached for it.
+func TestSQLiteDSNLeavesACustomDSNAlone(t *testing.T) {
+	custom := "config/x.db?_pragma=journal_mode(DELETE)"
+	if got := sqliteDSN(models.DatabaseConfig{Type: "sqlite", DSN: custom}); got != custom {
+		t.Errorf("sqliteDSN(%q) = %q, want it unchanged", custom, got)
+	}
+
+	// A bare path gets the defaults, including on the empty (default-path) case.
+	for _, dsn := range []string{"", "config/autotaggerr.db"} {
+		got := sqliteDSN(models.DatabaseConfig{Type: "sqlite", DSN: dsn})
+		if !strings.Contains(got, "journal_mode%28WAL%29") {
+			t.Errorf("sqliteDSN(%q) = %q, want WAL", dsn, got)
+		}
 	}
 }
 

@@ -277,7 +277,15 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **State must be readable without hover** — never leave it to the `title`. The toggle's own label
   does this job (see above); add a `pill-off` pill only for what the label cannot say, such as *why*
   a control is frozen (**Managed by Lidarr**). Do not do both for the same fact: a "Following" pill
-  next to a "Following" button is one signal too many.
+  next to a "Following" button is one signal too many. One pill per *surface*, not per control —
+  the artist header carries "Managed by Lidarr" once, and the Follow settings panel below it says
+  the same thing in prose rather than repeating the pill.
+- **Disabled means "not now"; absent means "not here."** A control the user could plausibly use in
+  another state stays **disabled** with the reason in its `title` (Want on an album a manager owns —
+  it is still the control that explains the state). A control that could *never* succeed on this
+  surface is not rendered at all (**Pin** under a manager: pinning writes a want, and a manager-owned
+  artist rejects every write, so a permanently dimmed button would be furniture). The test is whether
+  the disabled state is explaining something; if it explains nothing, it is clutter.
 - **A derived state still has a value, so show it** — a want with no stored rows behind it is not
   "nothing wanted"; it means *any release, whole album*, and the editor must open on that. Seed the
   editor from what the derived state means, not from the empty table behind it, or the page

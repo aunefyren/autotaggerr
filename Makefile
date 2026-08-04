@@ -9,6 +9,12 @@
 # The frontend (webui/) is a separate Node build that emits web/dist, which the Go
 # binary embeds. `go build` knows nothing about it, which is why `make build` refreshes
 # the bundle first — the embedded UI is otherwise silently stale.
+#
+# webui/node_modules is platform-specific (esbuild ships a native binary per os/cpu), so
+# a tree installed on Windows cannot build under WSL or vice versa. `npm run build` — and
+# therefore every target below that reaches it — repairs that itself via webui's
+# `prebuild` hook. See docs/development.md, "Building the same checkout from Windows and
+# WSL"; note that `deps` and `update` install for the platform they are run on.
 
 .PHONY: build go ui run update test fmt vet check deps
 

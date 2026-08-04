@@ -706,7 +706,6 @@ func (r *Runner) finish(ev *models.Event, started time.Time, scope Scope, res Re
 		"gone_releases":    res.GoneReleases,
 		"relinked":         res.Relinked,
 		"cancelled":        cancelled,
-		"duration":         finished.Sub(started).String(),
 	}
 	if summary.LastError != "" {
 		details["last_error"] = summary.LastError

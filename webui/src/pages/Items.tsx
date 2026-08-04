@@ -52,7 +52,11 @@ export default function Items() {
   const toggle = (id: string) =>
     setPicked((current) => (current.includes(id) ? current.filter((x) => x !== id) : [...current, id]));
 
-  const allPicked = items.length > 0 && picked.length === items.length;
+  // Bulk attach writes an identity, so it can only ever include files whose identity
+  // is the user's to set. Select-all therefore means "every file here that can be
+  // attached", not "every row" — otherwise the count promises work the API rejects.
+  const attachable = items.filter((it) => it.identity_editable);
+  const allPicked = attachable.length > 0 && picked.length === attachable.length;
   const pickedItems = items.filter((it) => picked.includes(it.id));
 
   return (
@@ -103,8 +107,13 @@ export default function Items() {
                     <input
                       type="checkbox"
                       checked={allPicked}
-                      title="Select every file on this page"
-                      onChange={() => setPicked(allPicked ? [] : items.map((it) => it.id))}
+                      disabled={attachable.length === 0}
+                      title={
+                        attachable.length === 0
+                          ? "Nothing here can be attached by hand — Lidarr owns these files' identity."
+                          : "Select every file on this page that can be attached by hand"
+                      }
+                      onChange={() => setPicked(allPicked ? [] : attachable.map((it) => it.id))}
                     />
                   </th>
                   <th>Path</th>
@@ -118,7 +127,13 @@ export default function Items() {
                 {items.map((it) => (
                   <tr key={it.id} style={{ cursor: "pointer" }} onClick={() => setSelected(it)}>
                     <td onClick={(e) => e.stopPropagation()}>
-                      <input type="checkbox" checked={picked.includes(it.id)} onChange={() => toggle(it.id)} />
+                      <input
+                        type="checkbox"
+                        checked={picked.includes(it.id)}
+                        disabled={!it.identity_editable}
+                        title={it.identity_editable ? undefined : "Lidarr owns this file's identity"}
+                        onChange={() => toggle(it.id)}
+                      />
                     </td>
                     <td><span className="path">{it.path}</span></td>
                     <td onClick={(e) => e.stopPropagation()}>
@@ -143,7 +158,20 @@ export default function Items() {
                         >
                           Folder
                         </button>
-                        <button className="btn btn-secondary btn-sm" onClick={() => setAttaching(it)}>
+                        {/* Disabled, not hidden, for a Lidarr-managed file: the API
+                            rejects the attach (409) because Lidarr owns which release
+                            and track a file is, and a control that vanishes per row
+                            is harder to account for than a dimmed one. */}
+                        <button
+                          className="btn btn-secondary btn-sm"
+                          disabled={!it.identity_editable}
+                          title={
+                            it.identity_editable
+                              ? undefined
+                              : "Lidarr owns this file's identity — set the release in Lidarr, then re-correlate."
+                          }
+                          onClick={() => setAttaching(it)}
+                        >
                           {it.mb_release_id ? "Re-attach" : "Attach"}
                         </button>
                       </div>

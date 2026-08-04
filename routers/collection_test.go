@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/gin-gonic/gin"
@@ -24,9 +25,15 @@ import (
 // artistFixture creates an artist with the given follow state.
 func artistFixture(t *testing.T, db *gorm.DB, mbid, name, managedBy string, monitored bool) models.CollectionArtist {
 	t.Helper()
+	// Synced, because a fixture artist stands for one a manager has answered about:
+	// the catalog columns on their release-groups only ever come from a sync, and
+	// collection.CatalogChecked reads this to decide whether a disk/catalog
+	// disagreement may be reported at all.
+	synced := time.Now()
 	artist := models.CollectionArtist{
 		MBID: mbid, Name: name, ManagedBy: managedBy, Monitored: monitored,
 		Origin: models.CollectionOriginLibrary, FollowTypes: models.DefaultFollowTypes,
+		LastSyncedAt: &synced,
 	}
 	if err := db.Create(&artist).Error; err != nil {
 		t.Fatalf("create artist %s: %v", name, err)
@@ -41,6 +48,7 @@ type rgFixture struct {
 	inCatalog                             bool
 	catalogOwned, catalogTotal            int
 	catalogMonitored                      bool
+	catalogRelease                        string
 }
 
 func releaseGroupFixture(t *testing.T, db *gorm.DB, artistMBID string, f rgFixture) models.CollectionReleaseGroup {
@@ -51,6 +59,7 @@ func releaseGroupFixture(t *testing.T, db *gorm.DB, artistMBID string, f rgFixtu
 		Owned: f.owned, OwnedTracks: f.ownedTracks, TotalTracks: f.totalTracks,
 		InCatalog: f.inCatalog, CatalogOwnedTracks: f.catalogOwned,
 		CatalogTotalTracks: f.catalogTotal, CatalogMonitored: f.catalogMonitored,
+		CatalogReleaseMBID: f.catalogRelease,
 	}
 	if err := db.Create(&rg).Error; err != nil {
 		t.Fatalf("create release group %s: %v", f.title, err)
@@ -148,6 +157,52 @@ func TestListArtistsCountsPickedAlbumsNotDesireRows(t *testing.T) {
 	list := decodeJSON[[]map[string]any](t, r, "GET", "/api/v1/artists", token, nil)
 	if got := list[0]["picked_count"]; got != float64(1) {
 		t.Errorf("picked_count = %v, want 1 — three desire rows for one album is one pick", got)
+	}
+}
+
+// TestGetArtistReportsTheManagersChosenEdition is the handler half of the manager
+// trickle-down: Lidarr's monitored release has to survive the trip to the client as a
+// wanted edition, or the release-group page still shows a green album with nothing
+// marked. A field is not wired until the handler is tested.
+func TestGetArtistReportsTheManagersChosenEdition(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	artist := artistFixture(t, api.DB, "artist-1", "6LACK", models.ManagedByLidarr, false)
+	releaseGroupFixture(t, api.DB, artist.MBID, rgFixture{
+		mbid: "rg-1", title: "Album", primary: "Album", owned: true,
+		inCatalog: true, catalogMonitored: true, catalogRelease: "rel-1",
+	})
+	if err := api.DB.Create(&models.CollectionDesire{
+		ArtistMBID: artist.MBID, ReleaseGroupMBID: "rg-1", ReleaseMBID: "rel-1",
+		Source: models.DesireSourceManager,
+	}).Error; err != nil {
+		t.Fatalf("create desire: %v", err)
+	}
+
+	detail := decodeJSON[struct {
+		ReleaseGroups []map[string]any `json:"release_groups"`
+	}](t, r, "GET", "/api/v1/artists/"+artist.MBID, token, nil)
+
+	if len(detail.ReleaseGroups) != 1 {
+		t.Fatalf("release groups = %+v", detail.ReleaseGroups)
+	}
+	rg := detail.ReleaseGroups[0]
+	if rg["wanted"] != true || rg["wanted_source"] != "manager" {
+		t.Errorf("wanted=%v source=%v, want a manager want", rg["wanted"], rg["wanted_source"])
+	}
+	editions, _ := rg["desired_releases"].([]any)
+	if len(editions) != 1 || editions[0] != "rel-1" {
+		t.Errorf("desired_releases = %v, want the monitored edition", rg["desired_releases"])
+	}
+	if rg["identity_editable"] != false {
+		t.Errorf("identity_editable = %v, want false under Lidarr", rg["identity_editable"])
+	}
+
+	// And it is not a pick: nobody chose this here, so the artist list must not
+	// report one.
+	list := decodeJSON[[]map[string]any](t, r, "GET", "/api/v1/artists", token, nil)
+	if got := list[0]["picked_count"]; got != float64(0) {
+		t.Errorf("picked_count = %v, want 0 — a mirrored want is not a pick", got)
 	}
 }
 

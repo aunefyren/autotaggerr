@@ -11,14 +11,17 @@ import (
 	"github.com/aunefyren/autotaggerr/modules"
 )
 
-// TestScanSummaryLine: the base counts are always present, and the metadata-refresh
-// clause appears only when the inline refresh actually fetched or changed something —
-// an ordinary scan with nothing due upstream must read exactly as it did before.
+// TestScanSummaryLine: the base counts are always present, and the removed-files,
+// credit-change and metadata-refresh clauses appear only when they actually happened —
+// an ordinary scan with nothing gone, nothing moved and nothing due upstream must read
+// exactly as it did before.
 func TestScanSummaryLine(t *testing.T) {
 	base := "10 processed · 3 changed · 7 tags written · 0 errors"
 
 	cases := []struct {
 		name    string
+		removed int
+		credits int
 		refresh mirror.Result
 		want    string
 	}{
@@ -37,11 +40,29 @@ func TestScanSummaryLine(t *testing.T) {
 			refresh: mirror.Result{Checked: 5, Fetched: 4, ChangedReleases: []string{"rel-1", "rel-2"}},
 			want:    base + " · 4 releases refreshed, 2 changed upstream",
 		},
+		{
+			name:    "files pruned from the index",
+			removed: 12,
+			refresh: mirror.Result{Checked: 5},
+			want:    base + " · 12 removed",
+		},
+		{
+			name:    "pruned and refreshed, in that order",
+			removed: 2,
+			refresh: mirror.Result{Checked: 5, Fetched: 4},
+			want:    base + " · 2 removed · 4 releases refreshed",
+		},
+		{
+			name:    "an album changed artists upstream",
+			credits: 3,
+			refresh: mirror.Result{Checked: 5},
+			want:    base + " · 3 credit change(s)",
+		},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := scanSummaryLine(10, 3, 7, 0, c.refresh)
+			got := scanSummaryLine(10, 3, 7, 0, c.removed, c.credits, c.refresh)
 			if got != c.want {
 				t.Errorf("scanSummaryLine = %q, want %q", got, c.want)
 			}

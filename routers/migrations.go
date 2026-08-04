@@ -75,7 +75,7 @@ func (a *API) dismissMigration(c *gin.Context) {
 // not returned: the migration itself succeeded and is committed, and reporting the
 // rebuild as a failed approval would be misleading.
 func (a *API) rebuildAfterMigration() {
-	if _, _, err := collection.Rebuild(a.DB); err != nil {
+	if _, err := collection.Rebuild(a.DB); err != nil {
 		logger.Log.Warnf("failed to rebuild collection after migration: %s", err.Error())
 	}
 }

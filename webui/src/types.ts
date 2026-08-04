@@ -83,6 +83,12 @@ export interface LibraryItem {
   last_tagged_at: string | null;
   /** A manual attach that automatic resolution must not override. */
   pinned: boolean;
+  /**
+   * False when the file's library is managed by Lidarr: the release, the edition
+   * and the track are Lidarr's to decide, so attaching by hand is rejected by the
+   * API (409) and the controls are shown disabled rather than offered.
+   */
+  identity_editable: boolean;
 }
 
 /** One hit from the MusicBrainz release search used by manual attach. */
@@ -308,6 +314,12 @@ export interface CollectionArtist {
    * wanted, so the follow controls are shown frozen rather than as live toggles.
    */
   follow_governs: boolean;
+  /**
+   * Whether the user may set a MusicBrainz identity for this artist by hand —
+   * wanting an album or an edition, attaching a file. False under a manager, where
+   * every write is a 409, so the controls are disabled and the authority is named.
+   */
+  identity_editable: boolean;
   managed_by: string;
   /** "library" = materialised from files on disk; "manual" = added by hand. */
   origin: string;
@@ -348,9 +360,14 @@ export interface CollectionReleaseGroup {
   discrepancy: Discrepancy;
   /**
    * Wanted, and why — which is also what could change it. "explicit" = picked by
-   * hand and editable here; "auto" = derived from following the artist;
-   * "manager" = the library's manager (Lidarr) monitors it. Only an explicit want
-   * is a live toggle on the row; the derived ones are shown as frozen state.
+   * hand and editable here; "auto" = derived from following the artist, or from the
+   * rebuild narrowing a want to the edition you own; "manager" = the library's
+   * manager (Lidarr) monitors this album, or selected this edition. Only an explicit
+   * want is a live toggle on the row; the derived ones are shown as frozen state.
+   *
+   * This, not "are there desire rows", is what says a want is the user's: a derived
+   * want has rows too (the edition it narrowed to), and reading their presence as
+   * authorship offered controls that the API rejects.
    */
   wanted: boolean;
   wanted_source: "" | "explicit" | "auto" | "manager";
@@ -366,6 +383,11 @@ export interface CollectionReleaseGroup {
    * involved.
    */
   owned_editions: number;
+  /**
+   * False when a manager (Lidarr) owns this artist's identity: the want and edition
+   * controls on the row are then Lidarr's to decide, so they render as state.
+   */
+  identity_editable: boolean;
 }
 
 /** One MusicBrainz edition of a release-group, plus what is owned of *that* edition. */
@@ -430,13 +452,21 @@ export interface ArtistSearchResult {
   country: string;
 }
 
-/** An explicit want. Empty release_mb_id = any release of the group will do. */
+/** A want. Empty release_mb_id = any release of the group will do. */
 export interface CollectionDesire {
   id: string;
   artist_mb_id: string;
   release_group_mb_id: string;
   release_mb_id: string;
   recording_mb_ids: string[] | null;
+  /**
+   * Who authored it, and therefore who may rewrite it: "manual" is the user's and
+   * is never recomputed; "auto" was narrowed from an any-edition want to the edition
+   * whose files landed; "manager" mirrors Lidarr's monitored release. Prefer the
+   * release-group's wanted_source for what to render — this says which single row
+   * came from where.
+   */
+  source: "manual" | "auto" | "manager";
 }
 
 /**

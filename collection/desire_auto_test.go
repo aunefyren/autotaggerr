@@ -65,12 +65,12 @@ func TestReconcileAutoDesiresPromotesAnyToOwnedEdition(t *testing.T) {
 		t.Fatalf("desire: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
 	got := desiresFor(t, db, "rg-1")
-	if len(got) != 1 || got[0].ReleaseMBID != "rel-1" || !got[0].Auto {
+	if len(got) != 1 || got[0].ReleaseMBID != "rel-1" || got[0].Source != models.DesireSourceAuto {
 		t.Fatalf("want single auto want for rel-1, got %+v", got)
 	}
 }
@@ -90,16 +90,16 @@ func TestReconcileAutoDesiresRepointsOnReplacedFiles(t *testing.T) {
 		t.Fatalf("library: %v", err)
 	}
 	ownFile(t, db, "/m/a.flac", "rel-2", lib)
-	if err := db.Create(&models.CollectionDesire{ArtistMBID: "art-1", ReleaseGroupMBID: "rg-1", ReleaseMBID: "rel-1", Auto: true}).Error; err != nil {
+	if err := db.Create(&models.CollectionDesire{ArtistMBID: "art-1", ReleaseGroupMBID: "rg-1", ReleaseMBID: "rel-1", Source: models.DesireSourceAuto}).Error; err != nil {
 		t.Fatalf("desire: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
 	got := desiresFor(t, db, "rg-1")
-	if len(got) != 1 || got[0].ReleaseMBID != "rel-2" || !got[0].Auto {
+	if len(got) != 1 || got[0].ReleaseMBID != "rel-2" || got[0].Source != models.DesireSourceAuto {
 		t.Fatalf("want auto want re-pointed to rel-2, got %+v", got)
 	}
 }
@@ -118,17 +118,17 @@ func TestReconcileAutoDesiresLeavesManualEdition(t *testing.T) {
 		t.Fatalf("library: %v", err)
 	}
 	ownFile(t, db, "/m/a.flac", "rel-1", lib)
-	// Hand-pinned edition: auto=false. The reconcile must not adopt or re-point it.
-	if err := db.Create(&models.CollectionDesire{ArtistMBID: "art-1", ReleaseGroupMBID: "rg-1", ReleaseMBID: "rel-1", Auto: false}).Error; err != nil {
+	// Hand-pinned edition. The reconcile must not adopt or re-point it.
+	if err := db.Create(&models.CollectionDesire{ArtistMBID: "art-1", ReleaseGroupMBID: "rg-1", ReleaseMBID: "rel-1", Source: models.DesireSourceManual}).Error; err != nil {
 		t.Fatalf("desire: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
 	got := desiresFor(t, db, "rg-1")
-	if len(got) != 1 || got[0].Auto {
+	if len(got) != 1 || got[0].Source != models.DesireSourceManual {
 		t.Fatalf("manual edition must stay manual and single, got %+v", got)
 	}
 }
@@ -155,12 +155,12 @@ func TestReconcileAutoDesiresSkipsLidarrArtist(t *testing.T) {
 		t.Fatalf("desire: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
 	got := desiresFor(t, db, "rg-1")
-	if len(got) != 1 || got[0].ReleaseMBID != "" || got[0].Auto {
+	if len(got) != 1 || got[0].ReleaseMBID != "" || got[0].Derived() {
 		t.Fatalf("lidarr artist: the any want must be left untouched, got %+v", got)
 	}
 }
@@ -185,7 +185,7 @@ func TestReconcileAutoDesiresMultipleOwnedEditions(t *testing.T) {
 		t.Fatalf("desire: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestReconcileAutoDesiresMultipleOwnedEditions(t *testing.T) {
 		t.Fatalf("want one auto want per owned edition (2), got %+v", got)
 	}
 	for _, d := range got {
-		if !d.Auto || d.ReleaseMBID == "" {
+		if d.Source != models.DesireSourceAuto || d.ReleaseMBID == "" {
 			t.Errorf("want auto edition wants, got %+v", d)
 		}
 	}

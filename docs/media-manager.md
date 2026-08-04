@@ -95,6 +95,25 @@ keeps the scheme portable. Caches keep their natural key (the MB ID) instead.
 > zero value from the INSERT, so a user-chosen `false` is silently overridden by the default.
 > Callers set bools explicitly.
 
+**SQLite is configured for a writer that runs for minutes.** `database.Connect` appends pragmas to a
+bare DSN — `journal_mode(WAL)`, `busy_timeout(10000)`, `synchronous(NORMAL)` — and caps the pool at
+`sqliteMaxConns`. This is not tuning; it is a fix. In the default rollback-journal mode a *committing*
+writer takes an EXCLUSIVE lock and readers wait it out, and this app's write pattern is a Lidarr sync
+committing per album and ending in one large `collection.Rebuild` transaction. Against that, the UI
+polling `/scan/status` and `/events` — plus the users-table read every authenticated request does —
+met a near-continuous run of commit windows, until one exceeded the driver's own 5s busy timeout
+(`glebarez/go-sqlite` runs `pragma BUSY_TIMEOUT(5000)` on every connection) and the request failed.
+Under WAL a reader never waits for a writer at all. The pool cap follows from SQLite serialising
+writers regardless: extra connections buy no write concurrency, only more contenders for one lock.
+
+Two deliberate details. A DSN that already has a query string is left untouched — it is the escape
+hatch, and appending to it would break it in the one case someone used it. And if opening with WAL
+fails, `Connect` **falls back** to the bare DSN with a warning rather than refusing to start: WAL
+needs shared memory, which network mounts and some Docker volume drivers do not provide, and that is
+a supported way to run this. Because the pragma can also be accepted without taking effect, `Connect`
+reads `PRAGMA journal_mode` back and warns when it is not WAL — otherwise the app would run with
+exactly the contention this removes and nothing would say so.
+
 **Config split.** Bootstrap config (DB type/DSN, port, `private_key`, log level, timezone) stays in
 `config.json`/env. All domain config lives in the DB. First run seeds it idempotently from the
 existing `config.json` — MusicBrainz data source, Lidarr manager, libraries, default tagger profile

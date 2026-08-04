@@ -389,6 +389,55 @@ func TestDesiresAreDedupedAfterRemap(t *testing.T) {
 	}
 }
 
+// TestDedupedDesireKeepsTheStrongerProvenance: an upstream merge must not demote a
+// hand-authored want into a derived one. The reconciliation passes may re-point or
+// prune the rows they own, so a manual want that came out of a merge labelled
+// `manager` would be the user's pick quietly handed to the mirror.
+func TestDedupedDesireKeepsTheStrongerProvenance(t *testing.T) {
+	// Either creation order: the survivor is whichever row was written first, so the
+	// provenance must be merged rather than inherited from the keeper.
+	for _, order := range []struct {
+		name           string
+		first, second  string
+		firstRel, next string
+	}{
+		{"derived first", models.DesireSourceManager, models.DesireSourceManual, "rel-old", "rel-new"},
+		{"authored first", models.DesireSourceManual, models.DesireSourceManager, "rel-old", "rel-new"},
+	} {
+		t.Run(order.name, func(t *testing.T) {
+			db := testDB(t)
+			if err := db.Create(&models.CollectionDesire{
+				ArtistMBID: "art-1", ReleaseGroupMBID: "rg-1", ReleaseMBID: order.firstRel,
+				Source: order.first,
+			}).Error; err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if err := db.Create(&models.CollectionDesire{
+				ArtistMBID: "art-1", ReleaseGroupMBID: "rg-1", ReleaseMBID: order.next,
+				Source: order.second,
+			}).Error; err != nil {
+				t.Fatalf("create: %v", err)
+			}
+
+			m := pendingRedirect(t, db, models.MigrationEntityRelease, "rel-old", "rel-new")
+			if _, err := ApplyByID(db, m.ID); err != nil {
+				t.Fatalf("ApplyByID: %v", err)
+			}
+
+			var rows []models.CollectionDesire
+			if err := db.Find(&rows).Error; err != nil {
+				t.Fatalf("find: %v", err)
+			}
+			if len(rows) != 1 {
+				t.Fatalf("desires = %d, want 1 after dedupe", len(rows))
+			}
+			if rows[0].Source != models.DesireSourceManual {
+				t.Errorf("source = %q, want the authored one to survive", rows[0].Source)
+			}
+		})
+	}
+}
+
 // --- deletions ------------------------------------------------------------
 
 // Deletion is non-destructive by design: the files stay indexed and keep the MB IDs

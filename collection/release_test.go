@@ -82,7 +82,7 @@ func TestRebuildRecordsEveryOwnedEdition(t *testing.T) {
 		ownedFile(t, db, "L", "/m/remaster/"+string(rune('a'+i))+".flac", "rel-17")
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -135,7 +135,7 @@ func TestRebuildPrunesEditionsThatLostTheirFiles(t *testing.T) {
 	ownedFile(t, db, "L", "/m/a.flac", "rel-77")
 	ownedFile(t, db, "L", "/m/b.flac", "rel-17")
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	if editions, _ := OwnedReleases(db, "rg-1"); len(editions) != 2 {
@@ -147,7 +147,7 @@ func TestRebuildPrunesEditionsThatLostTheirFiles(t *testing.T) {
 		Update("mb_release_id", "rel-17").Error; err != nil {
 		t.Fatalf("re-attach: %v", err)
 	}
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -165,14 +165,14 @@ func TestRebuildPrunesEditionsThatLostTheirFiles(t *testing.T) {
 func TestRebuildClearsEditionsWhenNothingIsOwned(t *testing.T) {
 	db := editionFixtures(t)
 	ownedFile(t, db, "L", "/m/a.flac", "rel-77")
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
 	if err := db.Where("1 = 1").Delete(&models.LibraryItem{}).Error; err != nil {
 		t.Fatalf("clear items: %v", err)
 	}
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -188,7 +188,7 @@ func TestRebuildClearsEditionsWhenNothingIsOwned(t *testing.T) {
 func TestRebuildDoesNotTouchDesires(t *testing.T) {
 	db := editionFixtures(t)
 	ownedFile(t, db, "L", "/m/a.flac", "rel-77")
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -203,7 +203,7 @@ func TestRebuildDoesNotTouchDesires(t *testing.T) {
 	if err := db.Where("1 = 1").Delete(&models.LibraryItem{}).Error; err != nil {
 		t.Fatalf("clear items: %v", err)
 	}
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 

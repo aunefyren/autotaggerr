@@ -70,7 +70,7 @@ func (r *Rebuilder) Request() {
 
 func (r *Rebuilder) loop() {
 	for {
-		if _, _, err := Rebuild(r.db); err != nil {
+		if _, err := Rebuild(r.db); err != nil {
 			logger.Log.Warnf("failed to rebuild collection: %s", err.Error())
 		}
 

@@ -46,30 +46,48 @@ import (
 // single row fails. That resilience is deliberate and shared with the Lidarr sync —
 // one unwritable row must not abandon a whole re-derivation. So the guarantee here is
 // that the clear-and-re-establish is atomic, not that every row succeeded.
-func Rebuild(db *gorm.DB) (artistCount int, ownedCount int, err error) {
+func Rebuild(db *gorm.DB) (RebuildStats, error) {
 	if db == nil {
-		return 0, 0, nil
+		return RebuildStats{}, nil
 	}
-	err = db.Transaction(func(tx *gorm.DB) error {
+	var stats RebuildStats
+	err := db.Transaction(func(tx *gorm.DB) error {
 		var txErr error
-		artistCount, ownedCount, txErr = rebuildTx(tx)
+		stats, txErr = rebuildTx(tx)
 		return txErr
 	})
 	if err != nil {
-		return 0, 0, err
+		return RebuildStats{}, err
 	}
-	return artistCount, ownedCount, nil
+	return stats, nil
+}
+
+// RebuildStats is what one pass found and what it changed.
+//
+// Artists and Owned describe the collection as it now stands; CreditChanges describes
+// what moved to get there, and is the only one of the three that is news. An upstream
+// re-credit leaves no migration row — the release and the release-group both keep
+// their IDs, so nothing fails and nothing is queued for review — which made an album
+// silently changing artists the one identity change with no trace anywhere. It is
+// reported per run rather than stored, because the state it describes is already
+// correct by the time anyone reads it; what is missing is that it happened.
+type RebuildStats struct {
+	Artists int `json:"artists"`
+	Owned   int `json:"owned"`
+	// CreditChanges is release-groups whose primary credit moved plus credit links
+	// dropped because MusicBrainz no longer names the artist.
+	CreditChanges int `json:"credit_changes"`
 }
 
 // rebuildTx is the body of Rebuild, run inside the caller's transaction. Every write
 // below goes through the handle passed in, so a failure at any point rolls the whole
 // re-derivation back rather than leaving the disk view half-cleared.
-func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
+func rebuildTx(db *gorm.DB) (RebuildStats, error) {
 	// library -> manager type (for the per-artist "managed by" provenance)
 	managerType := map[uuid.UUID]string{}
 	var managers []models.Manager
 	if err := db.Find(&managers).Error; err != nil {
-		return 0, 0, err
+		return RebuildStats{}, err
 	}
 	for _, m := range managers {
 		managerType[m.ID] = m.Type
@@ -77,7 +95,7 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	libraryManager := map[uuid.UUID]string{}
 	var libraries []models.Library
 	if err := db.Find(&libraries).Error; err != nil {
-		return 0, 0, err
+		return RebuildStats{}, err
 	}
 	for _, l := range libraries {
 		switch {
@@ -99,7 +117,7 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	// manager mirror, which is the whole point of keeping them separate.
 	if err := db.Model(&models.CollectionReleaseGroup{}).Where("owned = ?", true).
 		Updates(map[string]any{"owned": false, "owned_tracks": 0, "total_tracks": 0}).Error; err != nil {
-		return 0, 0, err
+		return RebuildStats{}, err
 	}
 
 	type itemRow struct {
@@ -110,7 +128,7 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	if err := db.Model(&models.LibraryItem{}).
 		Where("status = ? AND mb_release_id <> ''", models.LibraryItemStatusOK).
 		Find(&rows).Error; err != nil {
-		return 0, 0, err
+		return RebuildStats{}, err
 	}
 
 	// Pass 1: count owned files per release, and gather artist + manager provenance.
@@ -121,7 +139,11 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		releaseOwned[r.MBReleaseID]++
 
 		release, ok := modules.CachedRelease(r.MBReleaseID)
-		if !ok || len(release.ArtistCredit) == 0 {
+		if !ok {
+			continue
+		}
+		albumCredit := albumArtistCredit(release)
+		if len(albumCredit) == 0 {
 			continue
 		}
 		mt := libraryManager[r.LibraryID]
@@ -132,7 +154,7 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		// Every credited artist, not just the first: on a collaboration the second
 		// artist owns these files just as much, and crediting only the first left them
 		// with no collection artist row and no provenance at all.
-		for _, credit := range release.ArtistCredit {
+		for _, credit := range albumCredit {
 			artistID := credit.Artist.ID
 			if artistID == "" {
 				continue
@@ -151,7 +173,7 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 	// album"), while the per-edition rows keep the detail that summary hides.
 	type rgInfo struct {
 		artistID, title, primary, secondary, date string
-		// credits is the release's full artist credit, in order. Rebuild is the only
+		// credits is the album's full artist credit, in order. Rebuild is the only
 		// writer that reads the release itself, so it is the only one that can record
 		// who else is on a collaboration.
 		credits      []string
@@ -165,20 +187,24 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 			continue
 		}
 		rgID := release.ReleaseGroup.ID
-		if rgID == "" || len(release.ArtistCredit) == 0 {
+		albumCredit := albumArtistCredit(release)
+		if rgID == "" || len(albumCredit) == 0 {
 			continue
 		}
 		total := 0
 		for _, m := range release.Media {
 			total += len(m.Tracks)
 		}
-		artistID := release.ArtistCredit[0].Artist.ID
-		credits := make([]string, 0, len(release.ArtistCredit))
-		for _, credit := range release.ArtistCredit {
+		credits := make([]string, 0, len(albumCredit))
+		for _, credit := range albumCredit {
 			if credit.Artist.ID != "" {
 				credits = append(credits, credit.Artist.ID)
 			}
 		}
+		if len(credits) == 0 {
+			continue
+		}
+		artistID := credits[0]
 
 		ownedEditions = append(ownedEditions, models.CollectionRelease{
 			MBID: relID, ReleaseGroupMBID: rgID, ArtistMBID: artistID,
@@ -201,31 +227,69 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 		}
 	}
 	if err := syncOwnedReleases(db, ownedEditions); err != nil {
-		return 0, 0, err
+		return RebuildStats{}, err
 	}
 
 	for artistID, mgrs := range artistManagers {
 		if err := upsertArtist(db, artistID, artistName[artistID], managedByLabel(mgrs)); err != nil {
-			return 0, 0, err
+			return RebuildStats{}, err
 		}
 	}
+	// Rebuild is the only writer that reports credit movement, because it is the only
+	// one reading MusicBrainz's own answer about whose album this is.
+	changes := &creditChanges{}
 	for rgID, info := range rgBest {
 		if err := upsertReleaseGroup(db, rgWrite{
 			mbID: rgID, artistMBID: info.artistID, credits: info.credits, title: info.title,
 			primary: info.primary, secondary: info.secondary, date: info.date,
-			disk: &diskState{owned: true, ownedTracks: info.owned, totalTracks: info.total},
+			disk:    &diskState{owned: true, ownedTracks: info.owned, totalTracks: info.total},
+			changes: changes,
 		}); err != nil {
-			return 0, 0, err
+			return RebuildStats{}, err
 		}
+	}
+
+	// The upserts above re-derived the credit graph, including unlinking artists
+	// MusicBrainz has moved a release-group off. That can leave an artist holding
+	// nothing at all, so this runs after them and never before.
+	if pruned, err := pruneOrphanArtists(db); err != nil {
+		return RebuildStats{}, err
+	} else if pruned > 0 {
+		logger.Log.Infof("removed %d collection artist(s) nothing is credited to any more", pruned)
 	}
 
 	// Runs last: it reads the artists' managed_by (upserted just above) and the owned
 	// editions to keep auto-selected edition wants tracking the files.
 	if err := reconcileAutoDesires(db, ownedEditions); err != nil {
-		return 0, 0, err
+		return RebuildStats{}, err
 	}
 
-	return len(artistManagers), len(rgBest), nil
+	return RebuildStats{Artists: len(artistManagers), Owned: len(rgBest), CreditChanges: changes.total()}, nil
+}
+
+// albumArtistCredit returns whose *album* a cached release belongs to: the
+// release-group's own MusicBrainz credit, falling back to the release's when the
+// group carries none.
+//
+// The two are credited independently upstream and routinely disagree. An artist
+// migration is applied to the release-group and to the pressings an editor gets
+// round to, so older editions keep the previous credit indefinitely — a soundtrack
+// moved from "Various Artists" to its composers still has Various Artists on its
+// original CD. Crediting ownership from the release therefore filed the album under
+// an artist the release-group itself no longer named, and no amount of re-scanning
+// fixed it, because the release was being read correctly.
+//
+// The fallback is what keeps this safe rather than merely different: a group with no
+// credit of its own (an older cache entry, or a payload that omits it) behaves
+// exactly as before instead of dropping the album out of the collection.
+//
+// The release's own credit is still the right answer for a *pressing* — it is simply
+// not the answer to "whose album is this", which is the only question Rebuild asks.
+func albumArtistCredit(release models.MusicBrainzReleaseResponse) []models.ArtistCredit {
+	if len(release.ReleaseGroup.ArtistCredit) > 0 {
+		return release.ReleaseGroup.ArtistCredit
+	}
+	return release.ArtistCredit
 }
 
 // reconcileAutoDesires keeps auto-selected edition wants tracking the files (follow-up
@@ -235,7 +299,9 @@ func rebuildTx(db *gorm.DB) (artistCount int, ownedCount int, err error) {
 // managed — under Lidarr the edition comes from the monitored release, not a desire — and
 // only albums the user actually asked for (an "any" want, or a prior auto want) are
 // touched, so owning a file never manufactures a want on its own. A hand-pinned edition
-// (auto=false) is never removed or re-pointed here; the flag is what tells them apart.
+// (source = manual) is never removed or re-pointed here; the provenance is what tells
+// them apart. Manager-derived rows belong to reconcileManagerDesires and are likewise
+// left alone — they only exist for artists this pass already skips.
 func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease) error {
 	ownedByRG := map[string]map[string]bool{}
 	for _, rel := range ownedEditions {
@@ -269,7 +335,7 @@ func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease)
 	// new one — does not lose the trigger midway.
 	autoManaged := map[string]bool{}
 	for _, d := range desires {
-		if editable[d.ArtistMBID] && (d.ReleaseMBID == "" || d.Auto) {
+		if editable[d.ArtistMBID] && (d.ReleaseMBID == "" || d.Source == models.DesireSourceAuto) {
 			autoManaged[d.ReleaseGroupMBID] = true
 		}
 	}
@@ -277,7 +343,7 @@ func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease)
 	// Prune stale auto wants: an auto edition no longer owned (files moved off it, or
 	// were removed) has stopped representing anything.
 	for _, d := range desires {
-		if d.Auto && !ownedByRG[d.ReleaseGroupMBID][d.ReleaseMBID] {
+		if d.Source == models.DesireSourceAuto && !ownedByRG[d.ReleaseGroupMBID][d.ReleaseMBID] {
 			if err := db.Delete(&models.CollectionDesire{}, "id = ?", d.ID).Error; err != nil {
 				return err
 			}
@@ -318,7 +384,8 @@ func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease)
 				continue // a manual or already-owned auto want covers this edition
 			}
 			if err := db.Create(&models.CollectionDesire{
-				ArtistMBID: artistMBID, ReleaseGroupMBID: rgMBID, ReleaseMBID: relID, Auto: true,
+				ArtistMBID: artistMBID, ReleaseGroupMBID: rgMBID, ReleaseMBID: relID,
+				Source: models.DesireSourceAuto,
 			}).Error; err != nil {
 				return err
 			}
@@ -511,6 +578,25 @@ func FollowGoverns(artist models.CollectionArtist) bool {
 	return artist.ManagedBy != models.ManagedByLidarr && artist.ManagedBy != models.ManagedByMixed
 }
 
+// CatalogChecked reports whether a manager has actually been asked what this artist's
+// catalogue contains — the precondition for comparing the disk view against it.
+//
+// It is the single definition of "there is a catalog to disagree with", and it reads
+// LastSyncedAt rather than the release-group rows because those answer a different
+// question. Deriving it from "does any of this artist's albums carry catalog state"
+// meant an album could be reported as absent from the manager on the strength of
+// *other* albums having been mirrored — so a release-group filed under the wrong
+// artist warned "not in Lidarr" about an album Lidarr had, under a different artist,
+// that nothing had ever put to Lidarr. Absence of an answer is not a negative answer.
+//
+// The false case is deliberately quiet: an artist no manager has synced gets no
+// discrepancy on any album, which is right for a native artist nobody follows and is
+// also what an unsynced Lidarr artist should show until the mirror has run once.
+// Both SyncArtist and SyncLidarr stamp LastSyncedAt, so this is per-manager-agnostic.
+func CatalogChecked(artist models.CollectionArtist) bool {
+	return artist.LastSyncedAt != nil
+}
+
 // IdentityEditable reports whether the user may set a MusicBrainz identity for this
 // artist's files by hand — attaching an unmatched file, wanting a specific edition,
 // choosing a release. It is the identity-side sibling of FollowGoverns: false when a
@@ -605,10 +691,12 @@ type diskState struct {
 }
 
 // catalogState is what a manager reports should exist. Zero totalTracks means the
-// manager did not say (native MB discovery).
+// manager did not say (native MB discovery), and an empty releaseMBID that it
+// selected no edition.
 type catalogState struct {
 	ownedTracks, totalTracks int
 	monitored                bool
+	releaseMBID              string
 }
 
 // rgWrite is one caller's knowledge of a release-group. Metadata is always written;
@@ -624,6 +712,10 @@ type rgWrite struct {
 	credits []string
 	disk    *diskState
 	catalog *catalogState
+	// changes, when non-nil, accumulates what this write altered about the credit
+	// graph. Only Rebuild sets it: a mirror rewriting its own catalog is not an
+	// upstream re-credit, and counting it would bury the signal in noise.
+	changes *creditChanges
 }
 
 // upsertReleaseGroup returns an error so Rebuild can roll back on a failed write.
@@ -651,6 +743,7 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 		updates["catalog_owned_tracks"] = w.catalog.ownedTracks
 		updates["catalog_total_tracks"] = w.catalog.totalTracks
 		updates["catalog_monitored"] = w.catalog.monitored
+		updates["catalog_release_mb_id"] = w.catalog.releaseMBID
 	}
 
 	// Whoever this write is about is credited, whether or not the caller knows the
@@ -660,10 +753,29 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 	if len(credited) == 0 && w.artistMBID != "" {
 		credited = []string{w.artistMBID}
 	}
-	defer linkReleaseGroupArtists(db, w.mbID, credited, len(w.credits) > 0)
+	// Only the disk writer reads a release-group's real credit, which is what makes it
+	// the only caller allowed to take a link away — and only for the group it just
+	// re-derived. Linking runs first so the prune sees this pass's own claims.
+	source := creditFromCatalog
+	if w.disk != nil {
+		source = creditFromDisk
+	}
+	defer func() {
+		linkReleaseGroupArtists(db, w.mbID, credited, len(w.credits) > 0, source)
+		if source == creditFromDisk && len(w.credits) > 0 {
+			w.changes.unlink(pruneReleaseGroupArtists(db, w.mbID, w.credits))
+		}
+	}()
 
 	var rg models.CollectionReleaseGroup
 	if err := db.Where("mb_id = ?", w.mbID).First(&rg).Error; err == nil {
+		// A primary credit moving between two named artists is an upstream re-credit.
+		// Filling in a blank one is not: that is this writer learning something, not
+		// MusicBrainz changing its mind.
+		if primary, ok := updates["artist_mb_id"].(string); ok && rg.ArtistMBID != "" && rg.ArtistMBID != primary {
+			logger.Log.Infof("release-group %s (%s) moved from artist %s to %s upstream", w.mbID, w.title, rg.ArtistMBID, primary)
+			w.changes.regroup()
+		}
 		if err := db.Model(&rg).Updates(updates).Error; err != nil {
 			logger.Log.Warnf("failed to update release-group %s: %s", w.mbID, err.Error())
 			return err
@@ -688,6 +800,7 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 		row.InCatalog = true
 		row.CatalogOwnedTracks, row.CatalogTotalTracks = w.catalog.ownedTracks, w.catalog.totalTracks
 		row.CatalogMonitored = w.catalog.monitored
+		row.CatalogReleaseMBID = w.catalog.releaseMBID
 	}
 	if err := db.Create(&row).Error; err != nil {
 		logger.Log.Warnf("failed to upsert release-group %s: %s", w.mbID, err.Error())
@@ -752,6 +865,7 @@ func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
 				Updates(map[string]any{
 					"in_catalog": false, "catalog_owned_tracks": 0,
 					"catalog_total_tracks": 0, "catalog_monitored": false,
+					"catalog_release_mb_id": "",
 				}).Error; err != nil {
 				logger.Log.Warnf("failed to reset catalog state for %s: %s", la.Name, err.Error())
 			}
@@ -768,12 +882,167 @@ func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
 						ownedTracks: al.Statistics.TrackFileCount,
 						totalTracks: al.Statistics.TrackCount,
 						monitored:   al.Monitored,
+						releaseMBID: monitoredRelease(al),
 					},
 				})
 				groups++
 			}
+			// Records that this artist has actually been put to a manager. It is what
+			// CatalogChecked reads, so an album with no catalog row can be reported as
+			// "the manager does not have this" rather than "we never asked".
+			now := time.Now()
+			if err := db.Model(&models.CollectionArtist{}).Where("mb_id = ?", la.ForeignArtistID).
+				Update("last_synced_at", now).Error; err != nil {
+				logger.Log.Warnf("failed to set last_synced_at for artist %s: %s", la.ForeignArtistID, err.Error())
+			}
 			artistsSynced++
 		}
 	}
+
+	// The catalog block is now current, so the wants derived from it can be. Failing
+	// here is logged rather than returned: the mirror itself landed, and a sync that
+	// reports failure after writing everything it fetched is the more confusing
+	// outcome. The next sync reconciles again.
+	if err := reconcileManagerDesires(db); err != nil {
+		logger.Log.Warnf("failed to reconcile manager-derived wants: %s", err.Error())
+	}
 	return artistsSynced, groups, nil
+}
+
+// monitoredRelease is the edition Lidarr selected for an album: the first release
+// flagged monitored that names a MusicBrainz release. Lidarr monitors exactly one,
+// but the field is a list and an unmonitored album has none, so "none" is a normal
+// answer rather than a failure.
+func monitoredRelease(al models.LidarrAlbum) string {
+	for _, rel := range al.Releases {
+		if rel.Monitored && strings.TrimSpace(rel.ForeignReleaseID) != "" {
+			return strings.TrimSpace(rel.ForeignReleaseID)
+		}
+	}
+	return ""
+}
+
+// reconcileManagerDesires records the manager's own selection as desire rows: one
+// per monitored album that names a monitored release. It is the manager-side sibling
+// of reconcileAutoDesires, and it exists for two reasons.
+//
+// The visible one: Lidarr's *album* want already reached the collection through
+// catalog_monitored, but its *edition* want stopped there, so an album that is green
+// in Lidarr on a specific release showed no edition wanted in Autotaggerr — the
+// authority had decided and nothing said so.
+//
+// The structural one: a want that only exists as a mirrored column disappears with
+// the mirror. As a row it is Autotaggerr's own record of what Lidarr decided, which
+// is what makes detaching the manager later a change of authority rather than a loss
+// of data.
+//
+// Three rules keep it from colliding with authored intent:
+//
+//   - It only ever deletes or re-points rows it owns (source = manager). A manual or
+//     auto row is never touched.
+//   - It skips a release-group that already carries a hand-authored want, whatever
+//     edition that want names. An explicit pick outranks anything derived, and a
+//     group holding both an "any" want and a specific one is the contradiction
+//     SetDesire exists to prevent.
+//   - It writes only for artists a manager actually owns, so a mirrored want can
+//     never appear on a natively-managed artist's page.
+func reconcileManagerDesires(db *gorm.DB) error {
+	var artists []models.CollectionArtist
+	if err := db.Where("managed_by IN ?", []string{models.ManagedByLidarr, models.ManagedByMixed}).
+		Find(&artists).Error; err != nil {
+		return err
+	}
+	managed := make(map[string]bool, len(artists))
+	for _, a := range artists {
+		managed[a.MBID] = true
+	}
+
+	var existing []models.CollectionDesire
+	if err := db.Find(&existing).Error; err != nil {
+		return err
+	}
+	// Hand-authored intent, per release-group: the veto on writing anything here.
+	// Read across every row of the group, not just the matching edition — wanting
+	// "any edition" of an album is still the user having answered this question.
+	authored := map[string]bool{}
+	current := map[string]models.CollectionDesire{}
+	for _, d := range existing {
+		if d.Source == models.DesireSourceManager {
+			current[d.ReleaseGroupMBID] = d
+			continue
+		}
+		authored[d.ReleaseGroupMBID] = true
+	}
+
+	// What the managers currently select. A row must be in the catalog, monitored,
+	// and name a release for there to be an edition want at all.
+	var groups []models.CollectionReleaseGroup
+	if err := db.Where("in_catalog = ? AND catalog_monitored = ? AND catalog_release_mb_id <> ''", true, true).
+		Find(&groups).Error; err != nil {
+		return err
+	}
+
+	// Through the credit links, not artist_mb_id alone: a collaboration is stored
+	// under its primary credit, which need not be the Lidarr artist — the same reason
+	// every other per-artist read here is keyed by release-group.
+	rgMBIDs := make([]string, 0, len(groups))
+	for _, rg := range groups {
+		rgMBIDs = append(rgMBIDs, rg.MBID)
+	}
+	credits, err := ArtistsByReleaseGroup(db, rgMBIDs)
+	if err != nil {
+		return err
+	}
+
+	type managerWant struct {
+		rg         models.CollectionReleaseGroup
+		artistMBID string
+	}
+	wanted := map[string]managerWant{}
+	for _, rg := range groups {
+		if authored[rg.MBID] {
+			continue
+		}
+		// The row belongs to the managed artist credited on it, so the desire is
+		// recorded against the page that can explain where it came from.
+		owner := ""
+		for _, artistMBID := range CreditedArtists(rg, credits) {
+			if managed[artistMBID] {
+				owner = artistMBID
+				break
+			}
+		}
+		if owner == "" {
+			continue
+		}
+		wanted[rg.MBID] = managerWant{rg: rg, artistMBID: owner}
+	}
+
+	// Prune first, so a re-point (Lidarr's selection moved) frees the group's row
+	// before the create below re-adds it at the new edition.
+	for rgMBID, d := range current {
+		want, keep := wanted[rgMBID]
+		if keep && want.rg.CatalogReleaseMBID == d.ReleaseMBID && want.artistMBID == d.ArtistMBID {
+			continue
+		}
+		if err := db.Delete(&models.CollectionDesire{}, "id = ?", d.ID).Error; err != nil {
+			return err
+		}
+		delete(current, rgMBID)
+	}
+
+	for rgMBID, want := range wanted {
+		if _, have := current[rgMBID]; have {
+			continue
+		}
+		if err := db.Create(&models.CollectionDesire{
+			ArtistMBID:       want.artistMBID,
+			ReleaseGroupMBID: rgMBID,
+			ReleaseMBID:      want.rg.CatalogReleaseMBID,
+			Source:           models.DesireSourceManager,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

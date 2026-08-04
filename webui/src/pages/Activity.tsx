@@ -27,6 +27,7 @@ const PHASE_LABELS: Record<string, string> = {
   drift: "Re-tagging changed releases",
   plex: "Refreshing Plex",
   migrations: "Applying identity changes",
+  collection: "Updating the collection",
   // metadata-pass phases
   artists: "Artists",
   discographies: "Discographies",
@@ -54,17 +55,47 @@ function isScanJob(job?: JobView): boolean {
   return job?.kind?.startsWith("scan") ?? false;
 }
 
-// A coarse elapsed string ("3m 20s", "1h 4m"). Recomputed on each poll-driven
-// re-render, which is close enough for a job measured in minutes to hours.
-function elapsed(from?: string): string {
-  if (!from) return "";
-  const secs = Math.max(0, Math.floor((Date.now() - new Date(from).getTime()) / 1000));
+// A coarse duration string ("3m 20s", "1h 4m"). One formatter for both the live
+// counter and a finished event's span, so a job reads the same while it works and
+// afterwards — the two are the same measurement, and two formats for it would
+// invite comparing a "1h 4m" against a "1h3m28.41s".
+function formatDuration(ms: number): string {
+  const secs = Math.max(0, Math.floor(ms / 1000));
   const h = Math.floor(secs / 3600);
   const m = Math.floor((secs % 3600) / 60);
   const s = secs % 60;
   if (h) return `${h}h ${m}m`;
   if (m) return `${m}m ${s}s`;
   return `${s}s`;
+}
+
+// How long a job has been running. Recomputed on each poll-driven re-render,
+// which is close enough for a job measured in minutes to hours.
+function elapsed(from?: string): string {
+  if (!from) return "";
+  return formatDuration(Date.now() - new Date(from).getTime());
+}
+
+/**
+ * How long an event took, derived from the row's own timestamps rather than read
+ * out of its details payload. Every event carries started_at and finished_at, so
+ * deriving gives a duration to all of them — including the five event types whose
+ * emitters never wrote one, and every row already in the database. A running event
+ * counts up; one that ended without a finish stamp says so rather than ticking
+ * forever.
+ */
+function eventDuration(ev: Event): string {
+  if (ev.finished_at) {
+    return formatDuration(new Date(ev.finished_at).getTime() - new Date(ev.started_at).getTime());
+  }
+  return ev.status === "running" ? elapsed(ev.started_at) : "—";
+}
+
+// The exact span behind the coarse figure, for when "1h 4m" is not precise enough.
+function durationTitle(ev: Event): string {
+  const from = new Date(ev.started_at).toLocaleString();
+  if (ev.finished_at) return `${from} → ${new Date(ev.finished_at).toLocaleString()}`;
+  return ev.status === "running" ? `Running since ${from}` : `Started ${from}, never finished`;
 }
 
 function EventStatus({ status }: { status: string }) {
@@ -192,6 +223,7 @@ export default function Activity() {
                 <th>When</th>
                 <th>Event</th>
                 <th>Status</th>
+                <th style={{ textAlign: "right" }}>Duration</th>
                 <th>Summary</th>
               </tr>
             </thead>
@@ -203,6 +235,9 @@ export default function Activity() {
                   </td>
                   <td style={{ color: "var(--text)" }}>{ev.title || TYPE_LABELS[ev.type] || ev.type}</td>
                   <td><EventStatus status={ev.status} /></td>
+                  <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(ev)}>
+                    {eventDuration(ev)}
+                  </td>
                   <td className="muted">
                     {ev.status === "running" && (ev.total ?? 0) > 0 ? (
                       <div className="row" style={{ gap: 8, alignItems: "center" }}>
@@ -246,9 +281,8 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
     <Modal title={event.title || TYPE_LABELS[event.type] || event.type} onClose={onClose} wide>
       <div className="row" style={{ gap: 10, marginBottom: 14 }}>
         <EventStatus status={event.status} />
-        <span className="dim mono" style={{ fontSize: 11 }}>
-          {new Date(event.started_at).toLocaleString()}
-          {typeof d?.duration === "string" ? ` · ${d.duration}` : ""}
+        <span className="dim mono" style={{ fontSize: 11 }} title={durationTitle(event)}>
+          {new Date(event.started_at).toLocaleString()} · {eventDuration(event)}
         </span>
       </div>
 

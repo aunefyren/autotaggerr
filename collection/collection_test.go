@@ -178,12 +178,12 @@ func TestRebuildPresent(t *testing.T) {
 		t.Fatalf("item: %v", err)
 	}
 
-	artists, owned, err := Rebuild(db)
+	stats, err := Rebuild(db)
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if artists != 1 || owned != 1 {
-		t.Fatalf("Rebuild counts = %d artists, %d owned; want 1, 1", artists, owned)
+	if stats.Artists != 1 || stats.Owned != 1 {
+		t.Fatalf("Rebuild counts = %d artists, %d owned; want 1, 1", stats.Artists, stats.Owned)
 	}
 
 	var a models.CollectionArtist
@@ -277,7 +277,7 @@ func TestRebuildPreservesCatalog(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -304,7 +304,7 @@ func TestRebuildClearsStaleDiskCounts(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil { // no library_items -> nothing owned
+	if _, err := Rebuild(db); err != nil { // no library_items -> nothing owned
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -483,7 +483,7 @@ func TestRebuildReportsUnknownProvenance(t *testing.T) {
 		t.Fatalf("item: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -564,15 +564,15 @@ func TestRebuildCreditsEveryArtist(t *testing.T) {
 		t.Fatalf("item: %v", err)
 	}
 
-	artists, owned, err := Rebuild(db)
+	stats, err := Rebuild(db)
 	if err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
-	if artists != 2 {
-		t.Errorf("Rebuild created %d artists, want 2 — the second credit owns these files too", artists)
+	if stats.Artists != 2 {
+		t.Errorf("Rebuild created %d artists, want 2 — the second credit owns these files too", stats.Artists)
 	}
-	if owned != 1 {
-		t.Errorf("owned release-groups = %d, want 1", owned)
+	if stats.Owned != 1 {
+		t.Errorf("owned release-groups = %d, want 1", stats.Owned)
 	}
 
 	// Both artists exist with provenance, not just the first credit.
@@ -724,7 +724,7 @@ func TestReleaseGroupsForArtistUnionsUnlinkedRows(t *testing.T) {
 	if err := db.Create(&models.CollectionReleaseGroup{MBID: "rg-collab", ArtistMBID: "art-9", Title: "Collab"}).Error; err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	linkReleaseGroupArtists(db, "rg-collab", []string{"art-9", "art-1"}, true)
+	linkReleaseGroupArtists(db, "rg-collab", []string{"art-9", "art-1"}, true, creditFromDisk)
 
 	groups, err := ReleaseGroupsForArtist(db, "art-1")
 	if err != nil {
@@ -770,7 +770,7 @@ func TestRebuildRollsBackOnFailure(t *testing.T) {
 		t.Fatalf("item: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 
@@ -787,7 +787,7 @@ func TestRebuildRollsBackOnFailure(t *testing.T) {
 	if err := db.Migrator().DropTable(&models.CollectionRelease{}); err != nil {
 		t.Fatalf("drop table: %v", err)
 	}
-	if _, _, err := Rebuild(db); err == nil {
+	if _, err := Rebuild(db); err == nil {
 		t.Fatal("expected the rebuild to fail once its writes cannot land")
 	}
 
@@ -805,9 +805,9 @@ func TestRebuildRollsBackOnFailure(t *testing.T) {
 }
 
 func TestRebuildWithoutDB(t *testing.T) {
-	artists, owned, err := Rebuild(nil)
-	if err != nil || artists != 0 || owned != 0 {
-		t.Fatalf("Rebuild(nil) = %d, %d, %v", artists, owned, err)
+	stats, err := Rebuild(nil)
+	if err != nil || stats.Artists != 0 || stats.Owned != 0 {
+		t.Fatalf("Rebuild(nil) = %+v, %v", stats, err)
 	}
 }
 
@@ -846,4 +846,132 @@ func TestRebuilderWithoutDB(t *testing.T) {
 	NewRebuilder(nil).Request()
 	var nilRebuilder *Rebuilder
 	nilRebuilder.Request()
+}
+
+// TestRebuildCreditsTheReleaseGroup is the production case that motivated reading the
+// release-group's own credit: a soundtrack whose group was migrated from "Various
+// Artists" to its composers, while the pressing on disk kept the old credit. Crediting
+// ownership from the release filed the album under an artist the group no longer named,
+// and re-scanning never fixed it because the release was being read correctly.
+func TestRebuildCreditsTheReleaseGroup(t *testing.T) {
+	db := testDB(t)
+	modules.SetDB(db)
+	defer modules.SetDB(nil)
+
+	seedCachedRelease(t, db, models.MusicBrainzReleaseResponse{
+		ID:    "rel-va-pressing",
+		Title: "Over the Hedge",
+		// The edition on disk is still credited to the placeholder.
+		ArtistCredit: []models.ArtistCredit{
+			{Name: "Various Artists", Artist: models.Artist{ID: models.VariousArtistsMBID, Name: "Various Artists"}},
+		},
+		ReleaseGroup: models.ReleaseGroup{
+			ID: "rg-soundtrack", Title: "Over the Hedge", PrimaryType: "Album",
+			SecondaryTypes: []string{"Soundtrack"},
+			// The group has moved on to the composers.
+			ArtistCredit: []models.ArtistCredit{
+				{Name: "Ben Folds", Artist: models.Artist{ID: "art-folds", Name: "Ben Folds"}},
+				{Name: "Rupert Gregson-Williams", Artist: models.Artist{ID: "art-rgw", Name: "Rupert Gregson-Williams"}},
+			},
+		},
+		Media: []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}, {ID: "t2"}}}},
+	})
+
+	lib := models.Library{Name: "L", Path: "/m"}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	if err := db.Create(&models.LibraryItem{LibraryID: lib.ID, Path: "/m/01.flac", Status: "ok", MBReleaseID: "rel-va-pressing"}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	if _, err := Rebuild(db); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	// The composers are the collection artists; the placeholder is not one of them.
+	for _, mbid := range []string{"art-folds", "art-rgw"} {
+		if err := db.Where("mb_id = ?", mbid).First(&models.CollectionArtist{}).Error; err != nil {
+			t.Errorf("artist %s not created from the release-group credit: %v", mbid, err)
+		}
+	}
+	if err := db.Where("mb_id = ?", models.VariousArtistsMBID).First(&models.CollectionArtist{}).Error; err == nil {
+		t.Error("Various Artists must not be created from a pressing whose release-group has moved off it")
+	}
+
+	// The album is on the composer's page, headed by the group's first credit.
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-soundtrack").First(&rg).Error; err != nil {
+		t.Fatalf("release-group not created: %v", err)
+	}
+	if rg.ArtistMBID != "art-folds" {
+		t.Errorf("release-group primary credit = %q, want art-folds", rg.ArtistMBID)
+	}
+	groups, err := ReleaseGroupsForArtist(db, "art-folds")
+	if err != nil {
+		t.Fatalf("ReleaseGroupsForArtist: %v", err)
+	}
+	if len(groups) != 1 || !groups[0].Owned {
+		t.Errorf("the composer should own the soundtrack, got %+v", groups)
+	}
+	if vaGroups, err := ReleaseGroupsForArtist(db, models.VariousArtistsMBID); err != nil {
+		t.Fatalf("ReleaseGroupsForArtist(VA): %v", err)
+	} else if len(vaGroups) != 0 {
+		t.Errorf("the placeholder should own nothing, got %+v", vaGroups)
+	}
+
+	// The owned edition follows the same credit, so a per-artist re-tag or
+	// re-correlate scoped to the placeholder cannot reach the composer's files.
+	var edition models.CollectionRelease
+	if err := db.Where("mb_id = ?", "rel-va-pressing").First(&edition).Error; err != nil {
+		t.Fatalf("owned edition not created: %v", err)
+	}
+	if edition.ArtistMBID != "art-folds" {
+		t.Errorf("owned edition artist = %q, want art-folds", edition.ArtistMBID)
+	}
+	if ids, err := ArtistReleaseMBIDs(db, models.VariousArtistsMBID); err != nil {
+		t.Fatalf("ArtistReleaseMBIDs(VA): %v", err)
+	} else if len(ids) != 0 {
+		t.Errorf("the placeholder still claims %v", ids)
+	}
+}
+
+// TestRebuildFallsBackToTheReleaseCredit: a release-group with no credit of its own —
+// an older cache entry, or a payload that omits it — must behave exactly as before
+// rather than dropping the album out of the collection.
+func TestRebuildFallsBackToTheReleaseCredit(t *testing.T) {
+	db := testDB(t)
+	modules.SetDB(db)
+	defer modules.SetDB(nil)
+
+	seedCachedRelease(t, db, models.MusicBrainzReleaseResponse{
+		ID:           "rel-legacy",
+		Title:        "Legacy Cache Entry",
+		ArtistCredit: []models.ArtistCredit{{Name: "The Band", Artist: models.Artist{ID: "art-1", Name: "The Band"}}},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-legacy", Title: "Legacy Cache Entry", PrimaryType: "Album"},
+		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}}}},
+	})
+
+	lib := models.Library{Name: "L", Path: "/m"}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	if err := db.Create(&models.LibraryItem{LibraryID: lib.ID, Path: "/m/legacy.flac", Status: "ok", MBReleaseID: "rel-legacy"}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	stats, err := Rebuild(db)
+	if err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if stats.Artists != 1 || stats.Owned != 1 {
+		t.Fatalf("Rebuild counts = %d artists, %d owned; want 1, 1", stats.Artists, stats.Owned)
+	}
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-legacy").First(&rg).Error; err != nil {
+		t.Fatalf("release-group not created: %v", err)
+	}
+	if rg.ArtistMBID != "art-1" || !rg.Owned {
+		t.Errorf("release-group = %+v, want owned and credited to art-1", rg)
+	}
 }

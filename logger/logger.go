@@ -8,7 +8,12 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-var Log *logrus.Logger
+// Log is usable before InitLogger has run. It starts as a plain stderr logger rather
+// than nil because the alternative is a nil-pointer panic in any code that logs
+// before startup reaches InitLogger — which is every package's test binary, and
+// would make "does this function log?" a hidden precondition of calling it.
+// InitLogger replaces it with the configured one.
+var Log = logrus.New()
 
 func InitLogger(configFile models.ConfigStruct) {
 	Log = logrus.New()

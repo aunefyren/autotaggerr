@@ -22,6 +22,24 @@ it later"):
 - `IssueToken` mints the JWT. Adding another method means adding a resolver, not touching
   middleware, the SPA, or the token format.
 
+### 401 means the credential is bad — not that we could not check it
+
+`auth.Middleware` answers **401 only when the credential is at fault**: none supplied, one that does
+not parse or verify, or one naming a user who no longer exists (`gorm.ErrRecordNotFound`). Any other
+failure of the lookup answers **503** with `Retry-After`, and is logged.
+
+This is not fastidiousness about status codes. The middleware resolves the user from the database on
+every request, and it used to return 401 for *any* error from that lookup. During a Lidarr sync a
+SQLITE_BUSY on that read was therefore reported as "your credential is bad" — and the SPA clears the
+session on any 401 (`api.ts`), so a lock wait logged the user out mid-sync, with a valid token. A
+failure to *check* a credential is not a statement about the credential, and a client cannot tell the
+difference if the server does not.
+
+The pragmas in [media-manager.md](media-manager.md#infrastructure) are what stop the lock wait
+happening; this is what stops it being destructive when something else does. Guarded by
+`auth/middleware_test.go`, in both directions — an unreadable store must not become a blanket excuse
+that lets a bad credential through.
+
 ## OIDC setup
 
 Providers are configured in the UI under **Login providers**, or via `/api/v1/auth-providers`.

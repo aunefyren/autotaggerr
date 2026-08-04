@@ -56,13 +56,44 @@ abandon a whole sync.
 | `CollectionReleaseGroup` | `Rebuild` (disk block) + `SyncLidarr`/`SyncArtist` (catalog block) | album-level ownership and catalog state |
 | `CollectionReleaseGroupArtist` | every writer, additively | which artists a release-group is credited to |
 | `CollectionRelease` | `Rebuild` only | one row per **owned edition**: per-edition track counts |
-| `CollectionDesire` | the user, via the API | authored intent — never recomputed |
+| `CollectionDesire` | the user via the API (`manual`), or a reconciliation pass (`auto`, `manager`) | what is wanted, and by whose authority — a `manual` row is never recomputed |
 
 Named `Collection*` to avoid clashing with the MusicBrainz response types.
 
 `Origin` (`library` \| `manual`) records how an artist *entered* the collection. `Rebuild` stamps
 `library` on create and never overwrites `manual`, so an artist you added by hand keeps that
 provenance once files for them appear — and a file-less artist is not treated as an anomaly.
+
+## Whose album it is: the release-group's credit, not the release's
+
+MusicBrainz credits releases and release-groups **independently**, and the two routinely disagree. An
+artist migration is applied to the release-group and to whichever pressings an editor gets round to,
+so older editions keep the previous credit indefinitely — a soundtrack moved from *Various Artists*
+to its composers still has Various Artists on its original CD.
+
+`Rebuild` is the sole writer of collection artists and of a release-group's primary credit, and it
+used to take both from `release.ArtistCredit`. That filed the album under an artist the group itself
+no longer named, and no amount of re-scanning fixed it, because the release was being read
+*correctly*. Under Lidarr it compounded: the artist the manager knows never enters the collection at
+all (`SyncLidarr` mirrors artists that are already `CollectionArtist` rows — it cannot introduce
+one), so the album showed under the stale artist, flagged `unmapped`, while the manager had it under
+the new one.
+
+`albumArtistCredit` answers it instead: the release-group's own credit, **falling back** to the
+release's when the group carries none. The fallback is what makes this safe rather than merely
+different — an older cache entry or a payload without the field behaves exactly as before instead of
+dropping the album out of the collection. It costs no fetches: the credit arrives inside every
+release payload under the `inc=` string `QueryMusicBrainzReleaseData` already sends, and is already
+in the persisted cache, so existing installs get the corrected attribution on their next rebuild.
+
+The release's own credit is still the right answer for a *pressing*. It is simply not the answer to
+"whose album is this", which is the only question `Rebuild` asks — including of `CollectionRelease`,
+whose `ArtistMBID` follows the same primary credit. An owned edition claiming a different artist from
+its release-group is what let `ArtistReleaseMBIDs` reach one artist's files from another artist's
+page, and a re-tag or re-correlate scoped to the stale artist would have walked them.
+
+One thing this deliberately does **not** do: special-case Various Artists. The placeholder is special
+only in that upstream migrates groups off it often — the rule is about credits, not about that MBID.
 
 ## A release-group can have more than one artist
 
@@ -79,10 +110,11 @@ showing it as owned the whole time.
 
 Two rules make it work:
 
-- **Links are additive.** Writers know different amounts — only `Rebuild` reads the release's real
-  artist credit; everyone else knows just that *their* artist is credited somehow. If a partial
-  writer could remove links, syncing the second artist would delete the first artist's claim, which
-  is the same bug from the other end.
+- **Links are additive for every writer but one.** Writers know different amounts — only `Rebuild`
+  reads the release-group's real artist credit; everyone else knows just that *their* artist is
+  credited somehow. If a partial writer could remove links, syncing the second artist would delete
+  the first artist's claim, which is the same bug from the other end. See
+  [removing a credit](#removing-a-credit) for the one writer that may subtract.
 - **Only a caller that knows the credit order may write the primary credit.** `rgWrite.credits`
   carries the full ordered credit and is set by `Rebuild` alone; an empty `credits` means "this
   artist is credited", never "this is the only artist".
@@ -99,6 +131,63 @@ Two related per-artist reads were keyed the same way and moved to release-group 
 zero owned editions on the other artist's page) and `DesiresForArtist` (a desire records the page it
 was created from, so wanting a collaboration from one artist left the other offering to want it
 again).
+
+### Removing a credit
+
+Reading the release-group's credit puts a migrated album on the right artist's page. It does not take
+it off the wrong one: reads **union** the link table, so a stale row is indistinguishable from a
+collaborator, and a purely additive table meant an upstream migration was permanent in the other
+direction.
+
+`pruneReleaseGroupArtists` is the one subtractive path, and `Rebuild` is its only caller — for a
+release-group it just re-derived from a cached release, with that group's full credit in hand. It is
+the only caller that can tell an artist who is *no longer* credited from an artist it merely does not
+know about, which is exactly the distinction the additive rule exists to protect.
+
+Whose claim a link represents is therefore stored on it. `CollectionReleaseGroupArtist` carries
+**`FromDisk`** (set by `Rebuild`, which read the real credit) and **`FromCatalog`** (set by
+`SyncLidarr` and `SyncArtist`, which know only that their own artist is credited). Two flags rather
+than one source column because both can be true — the row is uniquely indexed on
+`(release_group, artist)`, so a single value would have to pick a winner. A link the manager also
+wrote keeps the row and gives up only its disk half: Lidarr saying an album is this artist's is a
+separate authority's answer, and MusicBrainz re-crediting the group does not overrule it.
+
+A row with **neither** flag predates the columns and is read as a disk claim. That reading is what
+makes a stale credit from before this existed removable at all — which is the entire point, since the
+albums that need cleaning are the ones migrated before the flags were added. The cost is bounded and
+self-repairing: a legacy *catalog* link caught by that reading is deleted and re-created by the next
+sync.
+
+Unlinking can leave an artist holding nothing, and an artist row with an empty page is not neutral —
+it sits in the collection list claiming to be part of the library. `pruneOrphanArtists` runs at the
+end of `Rebuild`, after the links have been re-derived, with the same subtraction discipline as
+`PruneOrphanReleaseGroups`: only `origin = library`, not monitored, no desires, and no release-group
+or owned edition claiming them by link or by primary credit. Anything else means there is still a
+page worth opening.
+
+### Saying that it happened
+
+A merge leaves a `musicbrainz_migrations` row; a deletion leaves one too. A **re-credit leaves
+nothing** — the release keeps its ID, the release-group keeps its ID, so nothing fails, nothing is
+queued for review, and the album is simply under a different artist next time you look. It is the one
+identity change with no trace anywhere, which is exactly why it took a production report to find.
+
+`RebuildStats.CreditChanges` is that trace: release-groups whose primary credit moved between two
+*named* artists, plus links dropped because MusicBrainz no longer names the artist. It rides the scan
+event as `credit_changes` with a `· N credit change(s)` clause on the summary line (see
+[scanning.md](scanning.md#the-collection-stage)), and it is reported **per run rather than stored** —
+the state it describes is already correct by the time anyone reads it; what was missing is that it
+changed.
+
+Three things it deliberately does not count, because a number that fires on ordinary activity is one
+nobody reads:
+
+- **First sight of an album.** Filling in a blank credit is this writer learning something, not
+  MusicBrainz changing its mind.
+- **A manager write.** `creditChanges` is an accumulator passed *into* the release-group upsert, and
+  only `Rebuild` sets it. A mirror rewriting its own catalog is not an upstream re-credit.
+- **A settled move.** The run that makes the change reports it; the next rebuild over the same data
+  reports nothing.
 
 ## The disk/catalog split
 
@@ -122,8 +211,20 @@ win:
   not scanned yet).
 - `unmapped` — files on disk with no manager album at all.
 
-Suppressed when the artist has no catalog to compare against, since otherwise every album of an
+Suppressed when there is no manager answer to compare against — `collection.CatalogChecked`, the
+single definition of that, which reads the artist's `LastSyncedAt`. Otherwise every album of an
 unfollowed native artist would flag.
+
+That predicate used to be "does any of this artist's release-groups carry catalog state", and the
+difference matters: it let an album be reported absent from a catalogue *nothing had ever put it to*,
+on the strength of the artist's **other** albums having been mirrored. The production case was an
+album filed under the wrong artist (see [whose album it is](#whose-album-it-is-the-release-groups-credit-not-the-releases))
+warning "not in Lidarr" about an album Lidarr had all along under a different artist — one nothing
+had asked Lidarr about, because `SyncLidarr` only mirrors artists that are already collection rows
+and so can never introduce one. **Absence of an answer is not a negative answer.** Both `SyncArtist`
+and `SyncLidarr` stamp `LastSyncedAt`, so the rule is manager-agnostic; an artist no manager has
+synced simply reports no discrepancies at all, which is also the right answer for a native artist
+nobody follows.
 
 ## Per-edition ownership
 
@@ -177,13 +278,51 @@ Within one release-group a desire is *either* any-release *or* a set of specific
 one clears the other (`SetDesire` enforces it in both directions). Holding both at once is a
 contradiction the schema would otherwise store happily.
 
+**Every desire carries its provenance.** `CollectionDesire.Source` is `manual`, `auto` or `manager`,
+and it is what makes "never recomputed" a guarantee about *authored* intent rather than about every
+row. A derived row has to be re-pointed as the thing it derives from moves; the only way to keep both
+properties is to know which kind a row is. Each reconciliation pass may delete or re-point **only its
+own** rows, `SetDesire` stamps `manual` (so a hand re-assert takes a row back), and an unlabelled row
+reads as `manual` — the reading that cannot lose intent. `BackfillDesireSources` labels rows written
+before the column existed, from the legacy `auto` boolean AutoMigrate leaves behind.
+
 **Auto-narrowing (native only).** An `any`-release want self-narrows to the edition you actually own:
 when a file lands for an "any" desire, `reconcileAutoDesires` (last step of `rebuildTx`) replaces the
-`any` row with one `Auto`-flagged want per owned edition. The `CollectionDesire.Auto` bit is what
-keeps this honest — Rebuild may re-point an `auto` want when the files are replaced, but never touches
-a hand-pinned one (`SetDesire` clears `Auto` on a manual re-assert). Own two editions ⇒ one `auto`
-want each. Edge case (v1): deleting *every* file of a promoted album prunes its `auto` wants and drops
-it from wanted — re-add to restore. Lidarr artists are skipped: their edition is the monitored release.
+`any` row with one `auto` want per owned edition. Rebuild may re-point an `auto` want when the files
+are replaced, but never touches a hand-pinned one. Own two editions ⇒ one `auto` want each. Edge case
+(v1): deleting *every* file of a promoted album prunes its `auto` wants and drops it from wanted —
+re-add to restore. Lidarr artists are skipped; their edition arrives the other way, below.
+
+### Manager-derived wants
+
+Lidarr's *album* want has always reached the collection through `catalog_monitored`, but its
+*edition* want stopped there: `SyncLidarr` fetched each album's `releases[]` and kept only the
+counts, so an album green in Lidarr on a specific release showed **no edition wanted** here — the
+authority had decided and nothing said so. Two pieces close it:
+
+- `CollectionReleaseGroup.CatalogReleaseMBID` — the manager's selected edition, written beside
+  `catalog_monitored` and cleared with the rest of the catalog block. Storing it (rather than only
+  reading it through at tagging time, as `GetMonitoredAlbumMBID` does) is also what makes "Lidarr
+  monitors X, your files are on Y" comparable at all; that divergence is what force re-correlate
+  exists to fix, and it was previously invisible until a file failed to tag.
+- `reconcileManagerDesires` — run at the end of `SyncLidarr`, the manager-side sibling of
+  `reconcileAutoDesires`. One `manager` row per monitored album that names a monitored release,
+  re-pointed when Lidarr's selection moves, pruned when the album stops being monitored or leaves
+  the catalog. Monitoring an album with *no* monitored release stays an album-level want: inventing
+  an edition would be claiming a decision Lidarr has not taken.
+
+Three rules keep it clear of authored intent: it writes only for artists a manager owns (a mirrored
+want must never appear on a native artist's page), it touches only rows whose source is `manager`,
+and it **skips any release-group that already carries a hand-authored want** — an explicit pick
+outranks anything derived, and a group holding both an "any" want and a specific one is the
+contradiction `SetDesire` exists to prevent. Ownership of the album is unaffected either way: what
+is wanted is intent, what is owned is derived from disk, and keeping them apart is what lets the
+page report that the two disagree.
+
+Recording the mirror as rows rather than reading it through the catalog columns is deliberate: a
+want that exists only as a mirrored column disappears with the mirror. As a row it is Autotaggerr's
+own record of what Lidarr decided, which is what makes detaching the manager later a change of
+authority instead of a loss of data (see [wip.md](wip.md) for the detach verb itself).
 
 ## Following
 
@@ -206,11 +345,18 @@ for.
 `wanted_source` is derived server-side and names *what could change it*:
 
 - `explicit` — you picked this album; the row can unpick it.
-- `auto` — it follows from following the artist.
-- `manager` — the library's manager (Lidarr) monitors it.
+- `auto` — it follows from following the artist, or from the rebuild narrowing your want to the
+  edition you own.
+- `manager` — the library's manager (Lidarr) monitors it, or selected this edition.
 
 An explicit pick outranks anything derived, so it survives unfollowing, a manager change, or the
-manager dropping the album. Guarded by `routers/wanted_source_test.go`.
+manager dropping the album. Precedence runs manual desire → manager desire → auto desire → catalog
+monitoring → follow settings, and it is derived from the group's **desire rows themselves**:
+`newReleaseGroupView` takes the rows rather than the three things previously split out of them at
+each call site, because that split both threw away the provenance and was forgettable — one of the
+three callers dropped the recordings, so `GET /artists/:mbid` reported "whole album" for a want that
+had specific tracks while the discography endpoint reported it correctly. One argument cannot
+disagree with itself. Guarded by `routers/wanted_source_test.go`.
 
 Provenance has a real **unknown** state (`models.ManagedByUnknown`) for an artist whose library
 manager cannot be resolved. Absence of information is never presented as a positive claim that an
@@ -222,10 +368,15 @@ When an artist is managed by Lidarr, **Lidarr is the sole authority over *identi
 are wanted, which release/edition is selected, and which track a file maps to. Autotaggerr's job
 shrinks to *tagging* files to match Lidarr's answer and *refreshing Plex*. `mixed` counts as Lidarr:
 if Lidarr governs an artist at all, identity is Lidarr's, so the gate is one bit per artist, not a
-per-release negotiation. The whole `CollectionDesire` model above is therefore a **native-manager
-construct** — for a Lidarr artist the same facts arrive via `SyncLidarr` (`catalog_monitored` = the
-want, the monitored release = the chosen edition), and running both authorities at once is what
-produces contradictions ("20/32 on an old release" while the album is green in Lidarr).
+per-release negotiation. *Authoring* a desire is therefore a **native-manager** act — for a Lidarr
+artist the same facts arrive via `SyncLidarr` (`catalog_monitored` = the want, the monitored release
+= the chosen edition), and running both authorities at once is what produces contradictions ("20/32
+on an old release" while the album is green in Lidarr).
+
+What Lidarr decides is still *recorded* as `CollectionDesire` rows — see
+[manager-derived wants](#manager-derived-wants) — but they are written by the mirror and never by
+the user, so there is still exactly one authority per artist. The table is the shared vocabulary for
+"what is wanted"; who may write a row is what the manager boundary governs.
 
 The boundary is enforced by a single predicate and four mechanisms:
 
@@ -254,6 +405,31 @@ The boundary is enforced by a single predicate and four mechanisms:
   message pointing at force re-correlate, and the file lands as a visible `error` item the next scan
   re-attempts — rather than silently keeping its old tags.
 
+### The UI under a manager
+
+`identity_editable` reaches the artist view, the release-group view and the library-item view, and
+the UI reads it as **locked**: a manager owns identity here, so nothing on this surface writes it.
+That is deliberately stronger than *derived*. Derived freezes the want itself while still allowing a
+narrowing (picking an edition or a track is how a followed album becomes yours); locked freezes the
+narrowing too, because under Lidarr the edition and the track are its decisions as well.
+
+Concretely: the artist header carries a **Managed by Lidarr** pill beside the frozen Follow button
+(the reason used to live only in a `title`, which is state the page had but did not show); the album
+row's **Want** is disabled with the authority named; **Pin** is not rendered, since pinning writes a
+want that a locked artist rejects; the release-group page's edition and track checkboxes are readouts;
+and **Attach** on a Lidarr-managed file is disabled, with select-all picking only the files that can
+actually be attached.
+
+The part that was a *bug* rather than a gap: an album Lidarr does **not** monitor showed a live
+**Want** button, because the UI froze on "is this want derived" and an unwanted album has no want to
+derive. Clicking it hit the 409. Locked is a property of the artist, not of the want, which is why
+the flag rather than the want's shape is what the controls read.
+
+One consequence worth stating: the page must decide "is this want the user's" from `wanted_source`,
+**never** from whether desire rows exist. Since manager and auto wants are rows now, "has rows" means
+nothing about authorship — the release-group page read it that way and would have offered live
+controls on exactly the albums that reject them.
+
 ## Hard-won UI rules
 
 These came out of live testing and are recorded in [style-guide.md](style-guide.md); they are
@@ -272,11 +448,15 @@ repeated here because they are about *this* data model.
   under the header says what they add up to. Two controls for one intention is one too many, and the
   buttons were the weaker one.
 - **Derived state is never a toggle.** An `auto` or `manager` want is shown as state (a pill naming
-  the authority) with the toggle frozen, plus a separate **Pin** action to make it yours. A toggle
-  whose off direction silently does nothing is worse than a disabled one.
-- **A derived state still has a value.** A want with no desire rows means *any edition, whole
+  the authority) with the toggle frozen, plus a separate **Pin** action to make it yours — where
+  pinning is possible at all (see [the UI under a manager](#the-ui-under-a-manager)). A toggle whose
+  off direction silently does nothing is worse than a disabled one.
+- **A derived state still has a value.** A want with no *edition* rows means *any edition, whole
   album*, so the page shows **Any edition** and **All tracks** ticked (and frozen — narrowing is
-  allowed, switching it off is not) rather than an unticked list next to a wanted album.
+  allowed, switching it off is not) rather than an unticked list next to a wanted album. When the
+  derived want *does* name an edition (Lidarr's monitored release), that edition is ticked instead
+  and the summary line says which pressing by name — "any edition" above a list with one ticked is
+  the page arguing with itself.
 - **The label carries the state** — `Following`/`Follow`, `Wanted`/`Want`. An accent fill alone was
   consistently read as an invitation to click.
 - **One word per concept.** "Wanted" everywhere; never "monitor" in the UI (it is the DB field
@@ -358,6 +538,11 @@ error — a keyless fanart.tv is opt-out, not broken.
 
 `collection/` covers the rebuild, the disk/catalog separation, the Lidarr mapping (against a mock
 Lidarr), per-edition ownership and pruning, and that desires survive the most destructive rebuild.
+`desire_manager_test.go` covers the mirrored wants against a mock Lidarr whose album list a test can
+change between syncs: the monitored release is stored and wanted, it re-points when Lidarr's
+selection moves, it is pruned when monitoring stops, it is not invented when Lidarr selected no
+release, and it never overwrites a hand-authored want, appears on a native artist, or is disturbed by
+a rebuild that owns nothing.
 `routers/` covers the wanted-source rules and that recordings round-trip through the HTTP handler —
 added after a field reached the model, the service and the UI but was silently dropped by the
 handler in between. **A field is not wired until the handler is tested.**

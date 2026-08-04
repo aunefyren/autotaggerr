@@ -199,7 +199,12 @@ table.data td .path { font-family: var(--font-mono); color: var(--text); font-si
   content: ""; position: absolute; inset: 0; z-index: 1;
   background: linear-gradient(90deg, var(--surface-1) 0%, rgba(20, 18, 28, 0.86) 55%, rgba(20, 18, 28, 0.7) 100%);
 }
-.entity-head > * { position: relative; z-index: 2; }
+/* Content sits above the scrim — the backdrop is excluded by name, not by luck.
+   A bare `.entity-head > *` also matched the image (same specificity, later in the
+   file), which overrode its `position: absolute` into `relative` and dropped a
+   1200px atmosphere image into the flex row: header text squeezed to a one-word
+   column, and the image lifted above its own scrim. */
+.entity-head > *:not(.entity-backdrop) { position: relative; z-index: 2; }
 .entity-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
 .entity-head h1 { font-size: 20px; }
 .entity-title { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

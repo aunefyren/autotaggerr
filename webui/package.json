@@ -4,7 +4,10 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "ensure-native": "node tools/ensure-native.mjs",
+    "predev": "npm run ensure-native",
     "dev": "vite",
+    "prebuild": "npm run ensure-native",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },

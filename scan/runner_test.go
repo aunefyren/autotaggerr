@@ -88,12 +88,14 @@ func TestRunnerRunAll(t *testing.T) {
 	}
 
 	// The flusher should have counted the one file and left the final progress on the
-	// row: total==done==1, ending in the migrations phase.
+	// row: total==done==1, ending in the collection phase — the last stage before the
+	// event is finished, since re-deriving the collection and mirroring the manager
+	// now run inside the run they belong to rather than after it.
 	if ev.Total != 1 || ev.Done != 1 {
 		t.Errorf("event progress total/done = %d/%d, want 1/1", ev.Total, ev.Done)
 	}
-	if ev.Phase != PhaseMigrations {
-		t.Errorf("event ended in phase %q, want %q", ev.Phase, PhaseMigrations)
+	if ev.Phase != PhaseCollection {
+		t.Errorf("event ended in phase %q, want %q", ev.Phase, PhaseCollection)
 	}
 }
 

@@ -12,6 +12,17 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 ## Open work
 
+- **Detach a manager, keep its decisions.** The point of the mirrored wants that just shipped (see
+  [collection.md](collection.md#manager-derived-wants)): Lidarr's selections are now Autotaggerr's
+  own rows, so detaching is a change of authority rather than a loss of data. The verb is: flip the
+  artist's `managed_by` to native, convert its `manager` desires to `manual`, leave following off.
+  Correlations are already in `library_items`, so nothing else is at risk. Deliberately does *not*
+  invent follow settings — Lidarr monitors per album, not by rule, so a follow rule at detach time
+  would be fabricating intent the user never expressed. Still needs a verb, a confirm dialog, and a
+  decision about what happens to the `Manager` row itself when the last artist leaves it. Until it
+  exists, removing a Lidarr manager leaves its mirrored wants in place (nothing reconciles them
+  without a manager to sync), which is the safe half of the behaviour but shows a `manager`
+  provenance for an authority that is gone.
 - **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
   manual attach. The last unbuilt piece of the native manager.
 - **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
@@ -30,23 +41,21 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
 
-## Frontend follow-ups (separate repo)
+## Frontend follow-ups
 
-The backend for the manager-authority boundary and the auto-desire model has shipped (see
-[collection.md](collection.md#manager-authority--lidarr-owns-identity) and its desire-model section).
-The web frontend is a built bundle here (`web/dist`, no source in this repo), so these are handoff
-notes — the API contract exists and is tested; the UI has to catch up:
+The manager-authority boundary is now honoured end to end (see
+[collection.md](collection.md#the-ui-under-a-manager)). What is left:
 
-- **Honour `identity_editable`.** When false on the artist / release-group / library-item view, hide
-  or disable manual attach, "choose edition" and the want/desire controls, with a short "Managed by
-  Lidarr — change it in Lidarr" hint. `clearDesire` (`DELETE /artists/:mbid/desires`) stays available
-  even when locked — it only removes a stale want (mirrors detach).
 - **Re-correlate buttons**, behind a confirm dialog that says it **discards manual pins** and rewrites
   files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`), per-album on the release-group
   page (`POST /release-groups/:mbid/recorrelate`) and per-library on library settings
-  (`POST /libraries/:id/recorrelate`).
-- **Render an `auto` desire as state**, not an unpick toggle ("you have this edition"), and keep the
-  explicit "want a specific / another edition" controls behind `identity_editable`.
+  (`POST /libraries/:id/recorrelate`). These are the *action* half of the boundary — the read-only
+  half (naming the authority, freezing what it owns) has shipped, and this is what a user does when
+  Lidarr's answer and the files disagree.
+- **Clear a stale want under a manager.** `clearDesire` (`DELETE /artists/:mbid/desires`) is
+  deliberately ungated — it is a pure removal, like detach — but nothing in the UI offers it on a
+  locked surface, so a `manager` want left behind by a removed manager cannot be dismissed from the
+  page. Worth doing with the detach verb above, since they are the same need.
 - **Surface the scan's metadata-refresh stage in Activity.** A scan runs an inline metadata refresh
   as its first phase (no separate event — see [scanning.md](scanning.md) / the runner's phases), and
   the backend now records it two ways on the `scan` event, both currently unrendered:
@@ -60,6 +69,14 @@ notes — the API contract exists and is tested; the UI has to catch up:
     `path` is the release MBID and whose `tags_written` is how many of that release's files the drift
     stage re-tagged. Render these distinctly from file rows (a release changed upstream, not a file),
     ideally linking the MBID and grouping/omitting by `phase`. File rows keep `phase: ""`.
+- **Surface the scan's collection stage in Activity.** Same shape as the refresh stage above: the
+  summary line already gains a `· N credit change(s)` clause verbatim, but `details.credit_changes`
+  (an album moved between artists upstream — see
+  [collection.md](collection.md#saying-that-it-happened)), `details.files_removed` (index rows for
+  files that are gone — [scanning.md](scanning.md#pruning-files-that-are-gone)) and `details.mirror`
+  (`artists`/`albums` mirrored from Lidarr, absent on a narrowed scan) are all unrendered. A credit
+  change is the one worth a real affordance: it is the only identity change with no Migrations row to
+  click through to, so the count is currently the *only* way to notice one.
 
 ## Roadmap / ideas
 

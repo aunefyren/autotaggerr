@@ -150,6 +150,57 @@ func TestMiddlewareRejectsTokenForDeletedUser(t *testing.T) {
 	}
 }
 
+// TestMiddlewareReportsAnUnreadableStoreAsUnavailable is the guard for a production
+// incident: during a Lidarr sync the database was locked long enough for the user
+// lookup to time out (SQLITE_BUSY), the middleware called that 401, and the web UI —
+// which clears the session on any 401 — logged the user out mid-sync.
+//
+// A failure to *check* a credential is not a statement about the credential. The
+// store being unreachable is simulated by dropping the table out from under it,
+// which produces a driver error rather than "no rows" — the same shape as a lock
+// timeout, and the distinction the middleware now has to make.
+func TestMiddlewareReportsAnUnreadableStoreAsUnavailable(t *testing.T) {
+	db := oidcTestDB(t)
+	user := middlewareUser(t, db)
+	token, err := IssueToken(user, testKey, DefaultTokenTTL)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	if err := db.Migrator().DropTable(&models.User{}); err != nil {
+		t.Fatalf("drop users: %v", err)
+	}
+
+	for _, tc := range []struct{ name, header, value string }{
+		{"bearer token", "Authorization", "Bearer " + token},
+		{"api key", "X-Api-Key", "api-key-123"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w := guardedGet(guardedRouter(db), tc.header, tc.value)
+			if w.Code != http.StatusServiceUnavailable {
+				t.Errorf("status = %d, want 503 — a 401 here tells the client to discard a valid session: %s",
+					w.Code, w.Body.String())
+			}
+			// Clients back off on this; without it they retry as fast as they polled.
+			if got := w.Header().Get("Retry-After"); got == "" {
+				t.Error("no Retry-After on a 503")
+			}
+		})
+	}
+}
+
+// TestMiddlewareStillRejectsBadCredentialsWhenTheStoreWorks pins the other half of
+// the split: the 503 above must not become a blanket excuse that lets a bad
+// credential through as "probably infrastructure".
+func TestMiddlewareStillRejectsBadCredentialsWhenTheStoreWorks(t *testing.T) {
+	db := oidcTestDB(t)
+	middlewareUser(t, db)
+
+	w := guardedGet(guardedRouter(db), "X-Api-Key", "not-a-key")
+	if w.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
 func TestCurrentUserWithoutMiddleware(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())

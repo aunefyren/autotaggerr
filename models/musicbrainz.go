@@ -147,21 +147,18 @@ type ReleaseGroup struct {
 		Name  string `json:"name"`
 	} `json:"tags"`
 	PrimaryTypeID string `json:"primary-type-id"`
-	ArtistCredit  []struct {
-		Name   string `json:"name"`
-		Artist struct {
-			Name           string `json:"name"`
-			SortName       string `json:"sort-name"`
-			ID             string `json:"id"`
-			TypeID         string `json:"type-id"`
-			Country        string `json:"country"`
-			Disambiguation string `json:"disambiguation"`
-			Type           string `json:"type"`
-		} `json:"artist"`
-		Joinphrase string `json:"joinphrase"`
-	} `json:"artist-credit"`
-	Title string `json:"title"`
-	ID    string `json:"id"`
+	// ArtistCredit is the release-group's *own* credit, which is not the same thing
+	// as any one release's. MusicBrainz credits releases and release-groups
+	// independently, so during an upstream artist migration — where editors move the
+	// group first — the two disagree for as long as the older pressings keep the old
+	// credit. This is the authority on whose album it is; a release's credit is the
+	// authority only on whose pressing that edition is.
+	//
+	// It arrives inside every release payload under the inc= string
+	// QueryMusicBrainzReleaseData already uses, so reading it costs no extra fetch.
+	ArtistCredit []ArtistCredit `json:"artist-credit"`
+	Title        string         `json:"title"`
+	ID           string         `json:"id"`
 }
 
 type MusicBrainzMedia struct {

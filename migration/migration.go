@@ -570,6 +570,14 @@ func dedupeDesires(tx *gorm.DB) error {
 			merged = nil
 		}
 		keeper.RecordingMBIDs = merged
+		// The survivor takes the stronger provenance. A hand-authored want that
+		// merged into a derived one would become a row the reconciliation passes may
+		// re-point or prune — the user's pick quietly demoted to the mirror's, by an
+		// upstream merge they had no part in. Authored intent outranks derived here
+		// for the same reason it outranks it everywhere else.
+		if !d.Derived() {
+			keeper.Source = d.Source
+		}
 		if err := tx.Save(keeper).Error; err != nil {
 			return err
 		}

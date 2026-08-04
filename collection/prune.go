@@ -1,6 +1,7 @@
 package collection
 
 import (
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"gorm.io/gorm"
 )
@@ -112,6 +113,80 @@ func isOrphanReleaseGroup(db *gorm.DB, artistMBID, releaseGroupMBID string) (boo
 		return false, err
 	}
 	return editions == 0, nil
+}
+
+// pruneOrphanArtists removes collection artists that nothing points at any more.
+//
+// It exists because unlinking a release-group from an artist can leave that artist
+// holding nothing at all — the placeholder an album was migrated away from is the
+// ordinary case — and an artist row with an empty page is not a neutral leftover: it
+// sits in the collection list claiming to be part of the library.
+//
+// Like PruneOrphanReleaseGroups this works by subtraction, so the guards are the
+// design. A row goes only when every reading that could be innocent is ruled out:
+//
+//   - **Origin is `library`.** An artist added by hand is a statement of intent that
+//     owning nothing does not retract — that is the whole reason Origin exists.
+//   - **Not monitored.** Following someone is authored state, and an artist followed
+//     before their first file arrives owns nothing by definition.
+//   - **No desires.** Same rule the deletion path follows: what the user asked for is
+//     never collateral damage.
+//   - **No release-group claims it**, by credit link or by the primary-credit column,
+//     and **no owned edition** points at it. Any of the three means there is still a
+//     page worth opening.
+//
+// It runs inside Rebuild's transaction, after the links have been re-derived, so it
+// sees the post-prune credit graph rather than the one the pass started with.
+func pruneOrphanArtists(db *gorm.DB) (int, error) {
+	if db == nil {
+		return 0, nil
+	}
+
+	var artists []models.CollectionArtist
+	if err := db.Where("origin = ? AND monitored = ?", models.CollectionOriginLibrary, false).
+		Find(&artists).Error; err != nil {
+		return 0, err
+	}
+
+	pruned := 0
+	for _, artist := range artists {
+		orphan, err := isOrphanArtist(db, artist.MBID)
+		if err != nil {
+			return pruned, err
+		}
+		if !orphan {
+			continue
+		}
+		if err := db.Where("mb_id = ?", artist.MBID).Delete(&models.CollectionArtist{}).Error; err != nil {
+			return pruned, err
+		}
+		logger.Log.Infof("removed collection artist %q: nothing in the collection is credited to them any more", artist.Name)
+		pruned++
+	}
+	return pruned, nil
+}
+
+// isOrphanArtist reports whether nothing in the collection references this artist.
+func isOrphanArtist(db *gorm.DB, artistMBID string) (bool, error) {
+	counts := []struct {
+		model any
+		query string
+	}{
+		{&models.CollectionReleaseGroupArtist{}, "artist_mb_id = ?"},
+		{&models.CollectionReleaseGroup{}, "artist_mb_id = ?"},
+		{&models.CollectionRelease{}, "artist_mb_id = ?"},
+		{&models.CollectionDesire{}, "artist_mb_id = ?"},
+	}
+	for _, c := range counts {
+		var n int64
+		if err := db.Model(c.model).Where(c.query, artistMBID).Count(&n).Error; err != nil {
+			return false, err
+		}
+		if n > 0 {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // AllMBIDs is every release and artist the collection is keyed on — the full set a

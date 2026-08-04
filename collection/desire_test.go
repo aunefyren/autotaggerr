@@ -262,7 +262,7 @@ func TestRebuildMarksLibraryOrigin(t *testing.T) {
 		t.Fatalf("item: %v", err)
 	}
 
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild: %v", err)
 	}
 	var a models.CollectionArtist
@@ -295,7 +295,7 @@ func TestRebuildMarksLibraryOrigin(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("item 2: %v", err)
 	}
-	if _, _, err := Rebuild(db); err != nil {
+	if _, err := Rebuild(db); err != nil {
 		t.Fatalf("Rebuild 2: %v", err)
 	}
 

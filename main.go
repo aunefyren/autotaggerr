@@ -107,6 +107,13 @@ func main() {
 		logger.Log.Warnf("failed to link existing release-groups to their artists: %s", err.Error())
 	}
 
+	// Give wants written before provenance existed a source. Until they have one the
+	// reconciliation passes cannot tell a hand-pinned edition from one they may
+	// re-point, so this runs before anything can enqueue a scan or a sync. Idempotent.
+	if err := collection.BackfillDesireSources(db); err != nil {
+		logger.Log.Warnf("failed to backfill want provenance: %s", err.Error())
+	}
+
 	// Set GIN mode
 	if files.ConfigFile.AutotaggerrEnvironment != "test" {
 		gin.SetMode(gin.ReleaseMode)

@@ -47,7 +47,7 @@ A [`Makefile`](../Makefile) wraps these flows so the frontend step is never forg
 | `make ui` | verify prereqs, then rebuild `web/dist` only (installs deps first if missing/changed) |
 | `make run` | verify prereqs, rebuild `web/dist`, then `go run .` |
 | `make check` | verify the toolchain (Go, Node, npm, `tsc`) and print a clear report |
-| `make deps` | force a clean `npm ci --include=dev` in `webui/` (fixes a missing `tsc`) |
+| `make deps` | force a clean `npm ci --include=dev` in `webui/` (fixes a missing `tsc`); installs for the platform you run it on — see [below](#building-the-same-checkout-from-windows-and-wsl) |
 | `make update` | `go get -u` + `go mod tidy` + `npm update` + rebuild the bundle |
 | `make test` / `make fmt` / `make vet` | the CI gates locally |
 
@@ -61,6 +61,35 @@ platform error. **`tsc` is not a system tool** — it is a devDependency in `web
 "'tsc' is not recognized" failure means the frontend deps were not installed, or were installed
 without devDependencies (the common Windows cause is `NODE_ENV=production`, which makes `npm ci` skip
 them). The fix is `make deps` — or, without make, `cd webui && npm ci --include=dev`.
+
+### Building the same checkout from Windows and WSL
+
+`webui/node_modules` is **platform-specific**, so a tree installed on one side of the WSL boundary
+cannot build on the other without help. esbuild (via vite) ships its compiler as a native executable
+in a per-platform package — `@esbuild/win32-x64`, `@esbuild/linux-x64` — installed as an
+optionalDependency that npm selects from the host's os/cpu. Build with the wrong one and vite fails
+with a twenty-line "You installed esbuild for another platform" wall.
+
+This is handled: `npm run build` and `npm run dev` run **`webui/tools/ensure-native.mjs`** first
+(via npm's `prebuild`/`predev`), which installs the current platform's binary if it is absent.
+Alternating between Windows and WSL therefore costs a two-second install on the first build after
+each switch, not a failure. It only ever adds, uses `--no-save --no-package-lock` so neither
+`package.json` nor the lockfile moves, and is a no-op on the happy path — including in CI, where
+`npm ci` already installed the right one. `make ui`/`build`/`run` inherit it, since they all end in
+`npm run build`.
+
+Two caveats worth knowing:
+
+- **npm evicts the other platform's binary** when it installs one, so the two genuinely alternate
+  rather than coexisting. Installing both is not possible declaratively: npm applies the os/cpu
+  filter to direct dependencies too, silently skipping a foreign optionalDependency and erroring
+  with `EBADPLATFORM` on a foreign regular one. Forcing both in needs `--force` or a second
+  `--os`/`--cpu` install, neither of which belongs in a lockfile — hence repairing on demand.
+- **`make check` cannot see this problem.** `checkenv` checks for the platform's `tsc` *launcher*
+  (`.bin/tsc.cmd` vs `.bin/tsc`), but npm writes both of those regardless of platform, and the
+  esbuild binary it does not look at. So a cross-platform tree reports "All prerequisites present"
+  and then fails in vite. The `prebuild` guard is what actually fixes it; `make deps` (a full
+  `npm ci`) also works, but only for the platform you run it on.
 
 ## CI gates (`.github/workflows/go.yml`)
 

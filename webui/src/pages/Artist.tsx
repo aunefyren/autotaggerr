@@ -264,6 +264,12 @@ export default function Artist() {
             them. */}
         {artist && (
           <div className="entity-actions">
+            {/* Why the controls beside this are frozen, stated rather than left to a
+                tooltip. A disabled toggle whose cause is only in its title is state
+                the page has but does not show — the same failure the "Following"
+                label fixed for the toggle itself. It sits here, not only inside the
+                Settings disclosure, because that disclosure starts closed. */}
+            {!artist.follow_governs && <Pill kind="off">Managed by {managerLabel}</Pill>}
             <button
               className={artist.monitored ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
               aria-pressed={artist.monitored}
@@ -468,6 +474,10 @@ function ReleaseGroupRow({
   // manager. Rendering it as a pressed toggle claimed a control that does nothing —
   // clicking never un-wanted it, because the reason lives elsewhere.
   const derivedWant = g.wanted && !explicitlyWanted;
+  // Stronger than derived, and true whether or not the album is wanted: a manager
+  // owns identity for this artist, so every write here is a 409. An album Lidarr
+  // does *not* monitor used to show a live "Want" button that only failed on click.
+  const locked = !g.identity_editable;
 
   // What was actually asked for, in plain words — a refined want should never be a
   // mystery from the list.
@@ -602,21 +612,25 @@ function ReleaseGroupRow({
           <button
             className={g.wanted ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
             aria-pressed={g.wanted}
-            disabled={busy || derivedWant}
+            disabled={busy || derivedWant || locked}
             title={
-              explicitlyWanted
-                ? "Wanted. Click to remove."
-                : derivedWant
-                  ? g.wanted_source === "manager"
-                    ? `Wanted because ${manager} monitors it — not something this page can switch off. Pin it to keep it regardless.`
-                    : "Wanted because you follow this artist — not something this row can switch off. Unfollow above, or pin it to keep it."
-                  : "Not wanted. Click to want this album — any edition, whole album."
+              locked
+                ? `${manager} decides what is wanted for this artist. Add it in ${manager}; Autotaggerr mirrors what it monitors.`
+                : explicitlyWanted
+                  ? "Wanted. Click to remove."
+                  : derivedWant
+                    ? g.wanted_source === "manager"
+                      ? `Wanted because ${manager} monitors it — not something this page can switch off. Pin it to keep it regardless.`
+                      : "Wanted because you follow this artist — not something this row can switch off. Unfollow above, or pin it to keep it."
+                    : "Not wanted. Click to want this album — any edition, whole album."
             }
             onClick={toggleWanted}
           >
             {g.wanted ? "Wanted" : "Want"}
           </button>
-          {derivedWant && (
+          {/* Pinning writes a want, which a manager-owned artist rejects — so it is
+              offered only where it can succeed. */}
+          {derivedWant && !locked && (
             <button
               className="btn btn-secondary btn-sm"
               disabled={busy}
@@ -667,9 +681,11 @@ function FollowSettings({
 
   return (
     <div className="card" style={frozen ? { opacity: 0.75 } : undefined}>
+      {/* No "Managed by" pill here: the header carries it, and two pills for one
+          fact in one viewport is the duplication the style guide warns about. The
+          sentence below says the same thing with the detail this panel needs. */}
       <div className="row" style={{ gap: 8, marginBottom: 8 }}>
         <span className="eyebrow">Automatically want</span>
-        {frozen && <Pill kind="off">Managed by {manager}</Pill>}
       </div>
       <div className="dim" style={{ fontSize: 11, marginBottom: 10 }}>
         {frozen

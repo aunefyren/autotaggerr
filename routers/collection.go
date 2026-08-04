@@ -151,28 +151,68 @@ const (
 	wantedSourceManager  = "manager"
 )
 
-// desiredRecordings is a parameter rather than a field assigned by the caller
-// afterwards, because two of the three callers set it that way and the third
-// forgot — so `GET /artists/:mbid` reported "whole album" for a want that had
-// specific tracks, while the discography endpoint reported it correctly. The UI
-// falls back from one to the other when MusicBrainz is down, so the two must agree.
-// A required argument cannot be forgotten; a field set after construction can.
+// newReleaseGroupView takes the group's desire *rows* rather than the three things
+// derived from them (any-edition, editions, recordings), for two reasons.
+//
+// The first is that splitting them at the call site was forgettable: two of the three
+// callers passed recordings and the third did not, so `GET /artists/:mbid` reported
+// "whole album" for a want that had specific tracks while the discography endpoint
+// reported it correctly — and the UI falls back from one to the other when
+// MusicBrainz is down, so the two must agree. One argument cannot disagree with
+// itself.
+//
+// The second is that the split threw away the row's provenance, and provenance is
+// what decides whether the row is a toggle or a state. Only a hand-authored want is
+// explicit; a want the rebuild narrowed or the manager selected is derived, and
+// reporting it as explicit offered an unpick control that does not do what it says.
 func newReleaseGroupView(
 	rg models.CollectionReleaseGroup,
-	hasCatalog bool,
-	anyEdition bool,
+	catalogChecked bool,
 	artist models.CollectionArtist,
-	desiredReleases []string,
-	desiredRecordings []string,
+	desires []models.CollectionDesire,
 ) releaseGroupView {
-	explicit := anyEdition || len(desiredReleases) > 0
+	// Empty slices, not nil: the UI reads .length on both, and a JSON null would
+	// make every row check for it.
+	desiredReleases := []string{}
+	desiredRecordings := []string{}
+	anyEdition := false
+	var manual, manager, auto bool
+	for _, d := range desires {
+		if d.ReleaseMBID == "" {
+			anyEdition = true
+		} else {
+			desiredReleases = append(desiredReleases, d.ReleaseMBID)
+		}
+		// Across every desire of the group, whichever edition each names: the row
+		// reports what songs were asked for, not which edition they came from.
+		desiredRecordings = append(desiredRecordings, d.RecordingMBIDs...)
+
+		switch d.Source {
+		case models.DesireSourceManager:
+			manager = true
+		case models.DesireSourceAuto:
+			auto = true
+		default:
+			manual = true
+		}
+	}
+
 	source := ""
 	switch {
-	case explicit:
+	// An authored pick outranks everything derived: it survives unfollowing, a
+	// manager change, or the manager dropping the album.
+	case manual:
 		source = wantedSourceExplicit
-	// For a manager-owned artist the manager decides, and its own monitored flag is
-	// the honest answer — a native follow flag would be reporting an authority the
-	// page does not offer a control for.
+	// A row the manager selected, and the manager's own monitoring, are the same
+	// claim from the same authority — a native follow flag would be reporting an
+	// authority the page does not offer a control for.
+	case manager:
+		source = wantedSourceManager
+	// Narrowed from an "any edition" want to the edition whose files landed. Still
+	// the user's want, but the rebuild maintains which edition it names, so the row
+	// is state rather than a toggle.
+	case auto:
+		source = wantedSourceAuto
 	case !collection.FollowGoverns(artist):
 		if rg.InCatalog && rg.CatalogMonitored {
 			source = wantedSourceManager
@@ -180,18 +220,10 @@ func newReleaseGroupView(
 	case artist.Monitored && collection.FollowWantsStored(artist, rg.PrimaryType, rg.SecondaryTypes):
 		source = wantedSourceAuto
 	}
-	// Empty slices, not nil: the UI reads .length on both, and a JSON null would
-	// make every row check for it.
-	if desiredReleases == nil {
-		desiredReleases = []string{}
-	}
-	if desiredRecordings == nil {
-		desiredRecordings = []string{}
-	}
 	return releaseGroupView{
 		CollectionReleaseGroup: rg,
 		Complete:               rg.Complete(),
-		Discrepancy:            rg.Discrepancy(hasCatalog),
+		Discrepancy:            rg.Discrepancy(catalogChecked),
 		Wanted:                 source != "",
 		WantedSource:           source,
 		WantedAnyEdition:       anyEdition,
@@ -201,36 +233,32 @@ func newReleaseGroupView(
 	}
 }
 
-// hasCatalog reports, per artist MBID, whether any release-group carries catalog
-// state — i.e. whether there is a manager view to compare the disk against.
-//
-// credits maps release-group -> every credited artist; a nil map falls back to the
-// row's primary credit, which is right for a single-artist release-group and is all
-// the caller has when it did not load the links.
-func hasCatalog(groups []models.CollectionReleaseGroup, credits map[string][]string) map[string]bool {
-	out := map[string]bool{}
-	for _, rg := range groups {
-		if !rg.InCatalog {
-			continue
-		}
-		for _, artistMBID := range creditedArtists(rg, credits) {
-			out[artistMBID] = true
-		}
+// catalogChecked reports, per artist MBID, whether a manager has been asked what that
+// artist's catalogue holds — collection.CatalogChecked applied across a list, so the
+// overview and the detail pages cannot disagree about it.
+func catalogChecked(artists []models.CollectionArtist) map[string]bool {
+	out := make(map[string]bool, len(artists))
+	for _, artist := range artists {
+		out[artist.MBID] = collection.CatalogChecked(artist)
 	}
 	return out
 }
 
-// creditedArtists returns every artist a release-group belongs to, falling back to
-// its primary credit when the link map has nothing (an unlinked row, or a caller that
-// did not load them).
+// desiresByGroup buckets an artist's wants by release-group, which is the shape
+// newReleaseGroupView takes. A group with no wants is simply absent, and a nil slice
+// is the correct "nothing wanted" input.
+func desiresByGroup(desires []models.CollectionDesire) map[string][]models.CollectionDesire {
+	out := make(map[string][]models.CollectionDesire, len(desires))
+	for _, d := range desires {
+		out[d.ReleaseGroupMBID] = append(out[d.ReleaseGroupMBID], d)
+	}
+	return out
+}
+
+// creditedArtists is collection.CreditedArtists — kept as a local alias because it is
+// used per row in two loops here and the qualified name buries them.
 func creditedArtists(rg models.CollectionReleaseGroup, credits map[string][]string) []string {
-	if linked := credits[rg.MBID]; len(linked) > 0 {
-		return linked
-	}
-	if rg.ArtistMBID == "" {
-		return nil
-	}
-	return []string{rg.ArtistMBID}
+	return collection.CreditedArtists(rg, credits)
 }
 
 // listArtists returns the collection: artists with owned/missing counts.
@@ -255,6 +283,12 @@ func (a *API) listArtists(c *gin.Context) {
 	var desires []models.CollectionDesire
 	if err := a.DB.Find(&desires).Error; err == nil {
 		for _, d := range desires {
+			// Hand-authored rows only: a want the rebuild narrowed or the manager
+			// selected is not something this user picked, and counting it would put
+			// a "picked" number on a Lidarr artist nobody has picked anything for.
+			if d.Derived() {
+				continue
+			}
 			if picked[d.ArtistMBID] == nil {
 				picked[d.ArtistMBID] = map[string]bool{}
 			}
@@ -275,7 +309,7 @@ func (a *API) listArtists(c *gin.Context) {
 		logger.Log.Warnf("failed to load release-group artist links: %s", err.Error())
 	}
 
-	catalogued := hasCatalog(groups, credits)
+	catalogued := catalogChecked(artists)
 	for _, rg := range groups {
 		for _, artistMBID := range creditedArtists(rg, credits) {
 			g := byArtist[artistMBID]
@@ -339,31 +373,11 @@ func (a *API) getArtist(c *gin.Context) {
 	if err != nil {
 		logger.Log.Warnf("failed to load desires for %s: %s", mbid, err.Error())
 	}
-	// An empty ReleaseMBID is a want for the release-group itself ("any edition");
-	// a set one narrows the want to that edition.
-	anyEdition := map[string]bool{}
-	editions := map[string][]string{}
-	recordings := map[string][]string{}
-	for _, d := range desires {
-		if d.ReleaseMBID == "" {
-			anyEdition[d.ReleaseGroupMBID] = true
-		} else {
-			editions[d.ReleaseGroupMBID] = append(editions[d.ReleaseGroupMBID], d.ReleaseMBID)
-		}
-		// Across every desire of the group, whichever edition each names: the row
-		// reports what songs were asked for, not which edition they came from.
-		recordings[d.ReleaseGroupMBID] = append(recordings[d.ReleaseGroupMBID], d.RecordingMBIDs...)
-	}
+	byGroup := desiresByGroup(desires)
 
-	// Every group here is already this artist's, so catalog state is a plain "does
-	// any of them carry it".
-	catalogued := false
-	for _, rg := range groups {
-		if rg.InCatalog {
-			catalogued = true
-			break
-		}
-	}
+	// Whether there is a manager view to compare against is a property of the artist,
+	// not of whichever of their albums happens to have been mirrored.
+	catalogued := collection.CatalogChecked(artist)
 	// Counted by release-group rather than by artist: an edition of a collaboration
 	// is stored under its primary credit, so filtering by artist hid it from the
 	// other one.
@@ -373,7 +387,7 @@ func (a *API) getArtist(c *gin.Context) {
 	}
 	views := make([]releaseGroupView, 0, len(groups))
 	for _, rg := range groups {
-		view := newReleaseGroupView(rg, catalogued, anyEdition[rg.MBID], artist, editions[rg.MBID], recordings[rg.MBID])
+		view := newReleaseGroupView(rg, catalogued, artist, byGroup[rg.MBID])
 		view.OwnedEditions = editionCounts[rg.MBID]
 		views = append(views, view)
 	}
@@ -417,12 +431,16 @@ func (a *API) setArtistMonitored(c *gin.Context) {
 // rebuildCollection recomputes the owned (present) side from the index. Fast and
 // network-free (reads only cached releases).
 func (a *API) rebuildCollection(c *gin.Context) {
-	artists, owned, err := collection.Rebuild(a.DB)
+	stats, err := collection.Rebuild(a.DB)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild collection"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"artists": artists, "owned_release_groups": owned})
+	c.JSON(http.StatusOK, gin.H{
+		"artists":              stats.Artists,
+		"owned_release_groups": stats.Owned,
+		"credit_changes":       stats.CreditChanges,
+	})
 }
 
 // syncLidarr mirrors Lidarr's monitored/missing albums for Lidarr-managed artists
@@ -682,30 +700,17 @@ func (a *API) discography(c *gin.Context) {
 	}
 	byMBID := map[string]models.CollectionReleaseGroup{}
 	storedMBIDs := make([]string, 0, len(stored))
-	catalogued := false
 	for _, rg := range stored {
 		byMBID[rg.MBID] = rg
 		storedMBIDs = append(storedMBIDs, rg.MBID)
-		if rg.InCatalog {
-			catalogued = true
-		}
 	}
+	catalogued := collection.CatalogChecked(artist)
 
 	desires, err := collection.DesiresForArtist(a.DB, mbid, storedMBIDs)
 	if err != nil {
 		logger.Log.Warnf("failed to load desires for %s: %s", mbid, err.Error())
 	}
-	anyEdition := map[string]bool{}
-	editions := map[string][]string{}
-	recordings := map[string][]string{}
-	for _, d := range desires {
-		if d.ReleaseMBID == "" {
-			anyEdition[d.ReleaseGroupMBID] = true
-		} else {
-			editions[d.ReleaseGroupMBID] = append(editions[d.ReleaseGroupMBID], d.ReleaseMBID)
-		}
-		recordings[d.ReleaseGroupMBID] = append(recordings[d.ReleaseGroupMBID], d.RecordingMBIDs...)
-	}
+	byGroup := desiresByGroup(desires)
 
 	editionCounts, err := collection.OwnedReleaseCounts(a.DB, storedMBIDs)
 	if err != nil {
@@ -726,7 +731,7 @@ func (a *API) discography(c *gin.Context) {
 				FirstReleaseDate: g.FirstReleaseDate,
 			}
 		}
-		view := newReleaseGroupView(rg, catalogued, anyEdition[g.ID], artist, editions[g.ID], recordings[g.ID])
+		view := newReleaseGroupView(rg, catalogued, artist, byGroup[g.ID])
 		view.OwnedEditions = editionCounts[g.ID]
 		out = append(out, view)
 	}
@@ -738,7 +743,7 @@ func (a *API) discography(c *gin.Context) {
 		if seen[rg.MBID] {
 			continue
 		}
-		view := newReleaseGroupView(rg, catalogued, anyEdition[rg.MBID], artist, editions[rg.MBID], recordings[rg.MBID])
+		view := newReleaseGroupView(rg, catalogued, artist, byGroup[rg.MBID])
 		view.OwnedEditions = editionCounts[rg.MBID]
 		out = append(out, view)
 	}
@@ -838,36 +843,23 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 		logger.Log.Warnf("failed to load release-groups for %s: %s", artistMBID, err.Error())
 	}
 	siblingMBIDs := make([]string, 0, len(siblings))
-	catalogued := false
 	for _, sib := range siblings {
 		siblingMBIDs = append(siblingMBIDs, sib.MBID)
-		if sib.InCatalog {
-			catalogued = true
-		}
 	}
+	catalogued := collection.CatalogChecked(artist)
 
 	desires, err := collection.DesiresForArtist(a.DB, artistMBID, siblingMBIDs)
 	if err != nil {
 		logger.Log.Warnf("failed to load desires for %s: %s", artistMBID, err.Error())
 	}
 	mine := make([]models.CollectionDesire, 0, len(desires))
-	anyEdition := false
-	var editionIDs []string
-	var recordings []string
 	for _, d := range desires {
-		if d.ReleaseGroupMBID != rgMBID {
-			continue
+		if d.ReleaseGroupMBID == rgMBID {
+			mine = append(mine, d)
 		}
-		mine = append(mine, d)
-		if d.ReleaseMBID == "" {
-			anyEdition = true
-		} else {
-			editionIDs = append(editionIDs, d.ReleaseMBID)
-		}
-		recordings = append(recordings, d.RecordingMBIDs...)
 	}
 
-	view := newReleaseGroupView(rg, catalogued, anyEdition, artist, editionIDs, recordings)
+	view := newReleaseGroupView(rg, catalogued, artist, mine)
 
 	editions, err := collection.ReleaseGroupEditions(a.meta(), rgMBID)
 	if err != nil {

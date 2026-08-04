@@ -50,6 +50,7 @@ const (
 	PhaseDrift      = "drift"      // re-tagging files of upstream-changed releases
 	PhasePlex       = "plex"       // telling Plex to refresh changed albums
 	PhaseMigrations = "migrations" // applying MusicBrainz redirects/deletions
+	PhaseCollection = "collection" // re-deriving the collection and mirroring the manager
 )
 
 // Summary is the status of the current or most recent scan, plus the job queue.
@@ -530,6 +531,20 @@ func pathInScope(path string, roots []string) bool {
 	return false
 }
 
+// scopeIsFull reports whether a run covered at least one library in its entirety,
+// which is what earns the end-of-run manager mirror (see syncManagers). It reuses
+// Target.full, the same predicate that decides whether a library may claim it was
+// scanned — a run narrow enough not to update a library's scan time is narrow enough
+// not to be worth a whole-collection mirror either.
+func scopeIsFull(scope Scope) bool {
+	for _, target := range scope.Targets {
+		if target.full() {
+			return true
+		}
+	}
+	return false
+}
+
 // runScope executes a scan of a scope. It is only ever called by the queue worker,
 // which holds jobMu and the running flag for its duration — so this body takes no guard
 // of its own.
@@ -563,7 +578,7 @@ func (r *Runner) runScope(scope Scope) {
 
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(maxDetailItemsRecorded)
-	var processed, unchanged, tagsWritten int
+	var processed, unchanged, tagsWritten, removed int
 	var errorFiles []string
 	libraryNames := make([]string, 0, len(scope.Targets))
 
@@ -592,6 +607,8 @@ func (r *Runner) runScope(scope Scope) {
 	// a scheduled refresh it is perfectly able to run alongside would be absurd.
 	refreshResult := r.refresh.RunInline(context.Background(), mirror.DueScope(modules.MusicbrainzDueForRefresh()))
 
+	fullScan := scopeIsFull(scope)
+
 	r.setPhase(PhaseScanning)
 	for _, target := range scope.Targets {
 		library := target.Library
@@ -617,6 +634,16 @@ func (r *Runner) runScope(scope Scope) {
 		unchanged += u
 		tagsWritten += tw
 		errorFiles = append(errorFiles, errs...)
+
+		// Only after the walk succeeded: a walk that failed partway is exactly the case
+		// where "the file is not there" means "we could not look", and pruning on it
+		// would delete rows for files that are present. A failure here is logged and
+		// the run carries on — a stale index row is a wrong count, not a lost file.
+		n, err := pruneMissingItems(r.db, library, target.Roots)
+		if err != nil {
+			logger.Log.Warnf("failed to prune missing files in %q: %s", library.Name, err.Error())
+		}
+		removed += n
 
 		// Only a whole-library run may claim the library was scanned. A scan of one
 		// artist's folder says nothing about the rest of the library, and letting it
@@ -688,23 +715,38 @@ func (r *Runner) runScope(scope Scope) {
 	r.setPhase(PhaseMigrations)
 	migrations := r.applyMigrations()
 
+	// Re-derive the collection, then refresh the manager mirror against it. Both run
+	// before the event is finished so what they changed can ride it — a rebuild that
+	// moved an album between artists is news, and reporting it after the run it
+	// belongs to has been written means reporting it nowhere. Order matters: see
+	// syncManagers.
+	r.setPhase(PhaseCollection)
+	rebuild := r.rebuildCollection()
+	mirrored := map[string]any{}
+	if fullScan {
+		syncedArtists, syncedAlbums := r.syncManagers()
+		mirrored["artists"] = syncedArtists
+		mirrored["albums"] = syncedAlbums
+	}
+
 	// Stop the flusher before Finish writes the row: its final snapshot lands the last
 	// progress, and Finish then Saves the event without racing an in-flight update.
 	stopProgress()
 
-	summary := scanSummaryLine(processed, changed, tagsWritten, len(errorFiles), refreshResult)
+	summary := scanSummaryLine(processed, changed, tagsWritten, len(errorFiles), removed, rebuild.CreditChanges, refreshResult)
 	details := map[string]any{
-		"migrations":   migrations,
-		"processed":    processed,
-		"unchanged":    unchanged,
-		"changed":      changed,
-		"tags_written": tagsWritten,
-		"errors":       len(errorFiles),
-		"error_files":  recorded,
-		"libraries":    libraryNames,
-		"duration":     end.Sub(start).String(),
-		"mb_lookups":   mbStats,
-		"detail":       detailSummary(detail),
+		"migrations":    migrations,
+		"processed":     processed,
+		"unchanged":     unchanged,
+		"changed":       changed,
+		"tags_written":  tagsWritten,
+		"files_removed": removed,
+		"errors":        len(errorFiles),
+		"error_files":   recorded,
+		"libraries":     libraryNames,
+		"mb_lookups":    mbStats,
+		"detail":        detailSummary(detail),
+		"mirror":        mirrored,
 		"refresh": map[string]any{
 			"checked":          refreshResult.Checked,
 			"fetched":          refreshResult.Fetched,
@@ -730,15 +772,20 @@ func (r *Runner) runScope(scope Scope) {
 	events.Finish(r.db, event, status, summary, details)
 	events.AddItems(r.db, event, items)
 	events.Prune(r.db, eventRetention)
-	r.rebuildCollection()
 }
 
-// scanSummaryLine is the one-line summary stored on a scan event. It appends a
-// metadata-refresh clause only when the inline refresh actually fetched or changed
-// something, so an ordinary scan with nothing due upstream reads exactly as before
+// scanSummaryLine is the one-line summary stored on a scan event. The removed-files
+// and metadata-refresh clauses are appended only when they actually happened, so an
+// ordinary scan with nothing gone and nothing due upstream reads exactly as before
 // rather than trailing a "· 0 releases refreshed" that says nothing.
-func scanSummaryLine(processed, changed, tagsWritten, errorCount int, refresh mirror.Result) string {
+func scanSummaryLine(processed, changed, tagsWritten, errorCount, removed, creditChanges int, refresh mirror.Result) string {
 	s := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, errorCount)
+	if removed > 0 {
+		s += fmt.Sprintf(" · %d removed", removed)
+	}
+	if creditChanges > 0 {
+		s += fmt.Sprintf(" · %d credit change(s)", creditChanges)
+	}
 	if refresh.Fetched > 0 || len(refresh.ChangedReleases) > 0 {
 		s += fmt.Sprintf(" · %d releases refreshed", refresh.Fetched)
 		if n := len(refresh.ChangedReleases); n > 0 {
@@ -781,11 +828,44 @@ func (r *Runner) setStatus(f func(*Summary)) {
 }
 
 // rebuildCollection refreshes the present/collection view after a run. It is
-// best-effort — a failure is logged, not propagated.
-func (r *Runner) rebuildCollection() {
-	if _, _, err := collection.Rebuild(r.db); err != nil {
+// best-effort — a failure is logged, not propagated — and returns what the pass
+// changed so a run can report it.
+func (r *Runner) rebuildCollection() collection.RebuildStats {
+	stats, err := collection.Rebuild(r.db)
+	if err != nil {
 		logger.Log.Warnf("failed to rebuild collection: %s", err.Error())
 	}
+	return stats
+}
+
+// syncManagers refreshes the manager mirror at the end of a run, so the catalog half
+// of the collection is maintained by the same thing that maintains the disk half.
+//
+// It used to be reachable only from POST /collection/sync-lidarr, which meant the
+// catalog block was stale by default: every disk/catalog comparison on the artist page
+// was against whenever somebody last pressed a button. Worse, an artist newly
+// discovered by the rebuild — which is how an album re-credited upstream reaches its
+// new artist — had no catalog at all until then, so the run that found them left them
+// looking unmanaged.
+//
+// It must run *after* the rebuild for exactly that reason: the mirror only syncs
+// artists that are already collection rows, so an artist discovered by this run's
+// rebuild is only in the mirror's scope once that rebuild has committed.
+//
+// Only full-library scans do this. A per-artist or per-release-group scan is an
+// interactive action, and SyncLidarr has no narrower scope than "every Lidarr artist
+// in the collection" — making a one-album button wait on a whole-library mirror would
+// be a poor trade. The button and the nightly scan both still cover it.
+func (r *Runner) syncManagers() (artists, albums int) {
+	artists, albums, err := collection.SyncLidarr(r.db)
+	if err != nil {
+		logger.Log.Warnf("failed to sync the manager mirror: %s", err.Error())
+		return artists, albums
+	}
+	if artists > 0 {
+		logger.Log.Infof("mirrored %d album(s) for %d manager-owned artist(s)", albums, artists)
+	}
+	return artists, albums
 }
 
 // applyMigrations drains the pending MusicBrainz migration queue at a run boundary.
