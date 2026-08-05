@@ -286,6 +286,43 @@ type MusicbrainzEntityCache struct {
 	ExpiresAt time.Time `json:"expires_at"`
 }
 
+// Sources held in ProviderCache. Each is one endpoint of one service, keyed by
+// whatever identifier that service answers to: Lidarr's own numeric IDs, and for
+// Plex the album title, which is all the refresh path has to go on.
+const (
+	ProviderCacheLidarrArtists    = "lidarr_artists"
+	ProviderCacheLidarrAlbums     = "lidarr_albums"
+	ProviderCacheLidarrTracks     = "lidarr_tracks"
+	ProviderCacheLidarrTrackFiles = "lidarr_trackfiles"
+	ProviderCachePlexAlbumKeys    = "plex_album_keys"
+)
+
+// ProviderCache is the persistent cache for lookups against the services a library
+// is managed by — Lidarr and Plex. It replaces five JSON files under config/.
+//
+// One table rather than five because all five are the same shape: a keyed blob with
+// an expiry, differing only in which service answered. A sixth endpoint is a new
+// constant, not a migration.
+//
+// Those files were not merely a format choice. They were written by a *batched*
+// flusher that ran only during a scan, at the end of a refresh pass, or in one-shot
+// mode — and with no shutdown handler anywhere, a restart between a lookup and the
+// next flush dropped the writes. A Lidarr sync triggered from the Collection page
+// routinely never reached disk at all. Every write here goes through as it happens,
+// which is what removed the batching (and the whole dirty/flush mechanism) from the
+// codebase.
+type ProviderCache struct {
+	Source string `gorm:"primaryKey;size:32" json:"source"`
+	// Key is the service's own identifier. 191 characters is the classic index-safe
+	// limit, kept so the store can still move to MySQL; the only key not bounded by
+	// construction is a Plex album title, and one longer than that fails to cache
+	// rather than failing the lookup.
+	Key       string    `gorm:"primaryKey;size:191" json:"key"`
+	Payload   string    `gorm:"type:text" json:"-"`
+	FetchedAt time.Time `json:"fetched_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // ArtworkCacheEntry is the index over the artwork disk cache under
 // config/artwork/. The image bytes stay on disk — they are megabytes each and
 // nothing queries them — while this row carries the two things the filesystem
@@ -843,6 +880,7 @@ func AllDBModels() []any {
 		&LibraryItem{},
 		&MusicbrainzReleaseCache{},
 		&MusicbrainzEntityCache{},
+		&ProviderCache{},
 		&ArtworkCacheEntry{},
 		&MusicbrainzMigration{},
 		&User{},

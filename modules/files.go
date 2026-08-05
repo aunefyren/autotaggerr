@@ -10,7 +10,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
@@ -683,26 +682,9 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 		nextProgress    = 10       // progress thresholds (10%, 20%, ... 100%)
 	)
 
-	// Cache writes are batched (see cache.go): a background ticker flushes pending
-	// changes during long scans so a crash only loses a bounded amount of freshly
-	// fetched data, and a final flush runs once processing completes.
-	defer FlushCaches()
-	flushDone := make(chan struct{})
-	var flushWG sync.WaitGroup
-	flushWG.Add(1)
-	go func() {
-		defer flushWG.Done()
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-flushDone:
-				return
-			case <-ticker.C:
-				FlushCaches()
-			}
-		}
-	}()
+	// No cache flushing here any more: every cache writes through as it is
+	// populated (see cache.go), so a scan interrupted at minute 400 has already
+	// persisted everything it fetched by minute 399.
 
 	// second pass, actual processing — bounded worker pool
 	sem := make(chan struct{}, workers)
@@ -759,8 +741,6 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 	})
 
 	wg.Wait()
-	close(flushDone)
-	flushWG.Wait()
 
 	counter = int(counterAtomic.Load())
 	unchangedFiles = int(unchangedAtomic.Load())

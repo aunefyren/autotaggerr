@@ -72,13 +72,44 @@ makes a cold start rare; it does not replace the fallback.
 | Release-group editions (`/release?release-group=`) | `musicbrainz_entity_cache`, entity `editions` | 7–10.5 d |
 | Cover art / artist images | files under `config/artwork/`, indexed by `artwork_cache_entries` | 30 d |
 | "No artwork for this MBID" | `artwork_cache_entries` with `missing = true` | 7 d |
+| Lidarr artists / albums / tracks / track files | `provider_cache`, one source each | 1 h |
+| Plex album keys | `provider_cache`, source `plex_album_keys` | 1 h |
+| AcoustID fingerprints and candidates | `acoustid_lookups` | by file size + mtime |
 | Release / artist **search** | not cached | — |
 
 Search is the deliberate exception: a query is one-off, its results are ranked rather than
 authoritative, and the release a user picks out of them is fetched (and cached) separately.
 
-Every TTL is **jittered** — the stored expiry is the base plus a random fraction of it — so
-entries warmed together by one pass do not all come due in the same minute a week later.
+Every MusicBrainz TTL is **jittered** — the stored expiry is the base plus a random fraction of it —
+so entries warmed together by one pass do not all come due in the same minute a week later.
+
+**Nothing durable is memory-only, and nothing is a JSON file.** Every cache above keeps an
+in-memory front (that is the hot path — a scan asks for the same artist's track files once per
+track) over a database table warmed at startup by `modules.LoadAllCaches`, which `main` calls after
+`modules.SetDB`. The maps that exist only in memory are single-flight bookkeeping and rate-limiter
+timestamps: per-process facts that it would be wrong to persist.
+
+### The provider cache
+
+`models.ProviderCache` is keyed by `(source, key)` and holds what the services a library is managed
+by answered: Lidarr's artists, albums, tracks and track files, and Plex's album keys. One table
+rather than five, because all five are the same shape — a keyed blob with an expiry — so a sixth
+endpoint is a new constant rather than a migration.
+
+It replaced five JSON files under `config/`, and the format was the smaller half of the problem.
+Those files were written by a **batched** flusher: a write marked the cache dirty and `FlushCaches`
+rewrote the whole file later, and flushes ran only during a scan, at the end of a refresh pass, or
+in one-shot mode. With no shutdown handler anywhere, a restart between a lookup and the next flush
+dropped the writes — a Lidarr sync triggered from the Collection page routinely never reached disk
+at all. Every write now goes through as it happens, which is what let `registerCache`,
+`markCacheDirty`, `FlushCaches` and the 30-second flush goroutine be deleted outright. (The batching
+also carried a note that it was only safe because scans were single-threaded, which stopped being
+true when the worker pool arrived.)
+
+Each cache reads its legacy JSON file exactly once, while its source has no rows
+(`providerCacheImportJSON`), so an upgrade does not re-ask Lidarr for everything it already knew.
+Expired rows are **not** deleted: they are not restored into memory, they are overwritten by key on
+the next fetch, and removing them would empty the source and re-trigger that one-time import.
 
 ### The entity cache
 
@@ -109,6 +140,18 @@ upstream since it was cached is "absent" from it.
 
 Image bytes stay on disk. The database row carries only what the filesystem cannot express: when
 the image was fetched, and whether the providers said there is no image at all.
+
+The cache key is `entity_mbid_kind_size`, and **the size in it is the one that distinguishes an
+image, not the one that was asked for** (`artworkKeySize`). Covers round to the 250/500/1200 the
+Cover Art Archive actually serves. Artist images use `0`: fanart.tv returns whatever it has and
+ignores the requested size, so keying by it stored one portrait three times — 250 for a collection
+row, 500 for the artist page, 1200 for the backdrop — and, far worse, recorded "this artist has no
+image" separately at each, at one request apiece. Most artists have no fanart entry, so that was
+three requests per artist to learn the same nothing.
+
+`artworkMigrateArtistKeys` folds pre-existing artist rows onto the size-less key at startup, files
+and all, so the change does not present as an empty cache and re-ask the provider about a
+collection's worth of artists it had already declined.
 
 Images have the longest TTL of anything here, which is the right shape for data that is expensive
 to transfer and effectively immutable. It is not *infinite* — which is what it was before the

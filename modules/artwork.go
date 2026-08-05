@@ -167,8 +167,9 @@ func (m artworkMeta) fresh() bool { return time.Now().Before(m.expiresAt) }
 //
 // size is the requested edge length in pixels and is advisory: the Cover Art
 // Archive offers 250/500/1200 and the nearest is used, while fanart.tv serves
-// whatever it has. It is part of the cache key, so a thumbnail and a hero image
-// do not evict each other.
+// whatever it has. It reaches the cache key through artworkKeySize, so a thumbnail
+// and a hero cover do not evict each other while two requests for the same bytes
+// still share one entry.
 func GetArtwork(providers ArtworkProviders, entity, mbid, kind string, size int) (Artwork, error) {
 	if _, err := uuid.Parse(mbid); err != nil {
 		// The MBID becomes a file name in the cache, so a non-UUID is rejected
@@ -179,7 +180,7 @@ func GetArtwork(providers ArtworkProviders, entity, mbid, kind string, size int)
 		return Artwork{}, fmt.Errorf("%w: %s has no %q artwork", ErrBadArtworkRequest, entity, kind)
 	}
 
-	key := artworkCacheKey(entity, mbid, kind, size)
+	key := artworkCacheKey(entity, mbid, kind, artworkKeySize(entity, size))
 
 	if art, ok := readArtworkCache(key); ok {
 		return art, nil
@@ -433,6 +434,28 @@ func artworkCacheKey(entity, mbid, kind string, size int) string {
 	return fmt.Sprintf("%s_%s_%s_%d", entity, mbid, kind, size)
 }
 
+// artworkKeySize reduces a requested size to the one that actually distinguishes a
+// cached image, so two requests that resolve to identical bytes share one entry.
+//
+// **Artist images have no size dimension at all.** fanart.tv serves whatever it has
+// and ignores what was asked for, so keying by the requested size stored the same
+// portrait once per size a page happened to want — 250 for a collection row, 500 for
+// the artist page, 1200 for the backdrop — and, far worse, discovered "this artist
+// has no image" separately at each of them, at one upstream request apiece. Most
+// artists have no fanart entry, so that was three requests per artist to learn the
+// same nothing.
+//
+// **Covers do have variants**, but only the three the Cover Art Archive serves, and
+// `fetchCoverArt` already rounds to them. The key carries the size that will be
+// fetched rather than the one that was asked for, so 240 and 250 cannot end up as two
+// copies of one image.
+func artworkKeySize(entity string, size int) int {
+	if entity == ArtworkEntityArtist {
+		return 0
+	}
+	return nearestCoverArtSize(size)
+}
+
 func artworkCacheDir() string {
 	return filepath.Join("config", "artwork")
 }
@@ -620,11 +643,94 @@ func ResetArtworkNegativeCache() {
 	}
 }
 
+// canonicalArtistKey rewrites a legacy size-carrying artist key onto the size-less
+// one, reporting false for a key that is already canonical or is not an artist's.
+//
+// Keys are `entity_mbid_kind_size`, and none of the four components can contain an
+// underscore — entity names are fixed constants ("release-group" hyphenates for this
+// reason), the MBID is a validated UUID, and kind is a constant.
+func canonicalArtistKey(key string) (string, bool) {
+	parts := strings.Split(key, "_")
+	if len(parts) != 4 || parts[0] != ArtworkEntityArtist || parts[3] == "0" {
+		return "", false
+	}
+	return artworkCacheKey(parts[0], parts[1], parts[2], 0), true
+}
+
+// artworkMigrateArtistKeys folds artist entries onto the size-less key (see
+// artworkKeySize) so the change of key does not read as an empty cache.
+//
+// Without it, the first run after the upgrade re-downloads every artist portrait the
+// install already holds and re-asks fanart.tv about every artist it has already
+// declined — at ~2 req/s, and for a collection where most artists have no image, that
+// is the bulk of the cache paying to learn what it already knew.
+//
+// Idempotent, and safe to interrupt: a row already on the canonical key is left
+// alone, duplicates collapse onto the first one seen (they are the same image by
+// definition), and a row whose file cannot be moved is left where it is to miss and
+// refetch normally. Negative rows have no file at all, which is the expected case
+// rather than an error.
+func artworkMigrateArtistKeys() error {
+	var rows []models.ArtworkCacheEntry
+	if err := cacheDB.Find(&rows).Error; err != nil {
+		return err
+	}
+
+	canonical := map[string]bool{}
+	for _, r := range rows {
+		canonical[r.Key] = true
+	}
+
+	folded, dropped := 0, 0
+	for _, r := range rows {
+		target, legacy := canonicalArtistKey(r.Key)
+		if !legacy {
+			continue
+		}
+
+		if canonical[target] {
+			_ = os.Remove(artworkCachePath(r.Key))
+			if err := cacheDB.Delete(&models.ArtworkCacheEntry{}, "key = ?", r.Key).Error; err != nil {
+				return err
+			}
+			dropped++
+			continue
+		}
+
+		if err := os.Rename(artworkCachePath(r.Key), artworkCachePath(target)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Log.Debugf("could not move cached artwork %s: %s", r.Key, err.Error())
+			continue
+		}
+
+		row := r
+		row.Key = target
+		if err := cacheDB.Create(&row).Error; err != nil {
+			return err
+		}
+		if err := cacheDB.Delete(&models.ArtworkCacheEntry{}, "key = ?", r.Key).Error; err != nil {
+			return err
+		}
+		canonical[target] = true
+		folded++
+	}
+
+	if folded > 0 || dropped > 0 {
+		logger.Log.Infof("artwork cache: folded %d artist entr(ies) onto their size-less key, dropped %d duplicate(s)", folded, dropped)
+	}
+	return nil
+}
+
 // artworkLoadCache warms the index from the database at startup, so a restart
 // keeps both what has been fetched and what the providers said does not exist.
 func artworkLoadCache() error {
 	if cacheDB == nil {
 		return nil
+	}
+
+	// Before the rows are read, so the in-memory index is warmed with the keys the
+	// running code will ask for.
+	if err := artworkMigrateArtistKeys(); err != nil {
+		logger.Log.Warnf("could not fold legacy artist artwork keys: %s", err.Error())
 	}
 
 	var rows []models.ArtworkCacheEntry

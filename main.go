@@ -251,8 +251,6 @@ func main() {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
 
-		// persist any cache changes made while processing this file (writes are batched)
-		modules.FlushCaches()
 		for albumName, albumKey := range refreshSet.Snapshot() {
 			if err := plexClient.RefreshAlbum(albumKey); err != nil {
 				logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())

@@ -198,16 +198,12 @@ func MusicbrainzExtendExpiry(mbID string, ttl time.Duration) {
 	entry := musicbrainzReleaseCache[mbID]
 	musicbrainzReleaseCacheMu.Unlock()
 
-	if !ok {
+	if !ok || cacheDB == nil {
 		return
 	}
-	if cacheDB != nil {
-		if err := musicbrainzStoreDB(mbID, entry); err != nil {
-			logger.Log.Warnf("failed to extend MusicBrainz cache expiry for %s: %s", mbID, err.Error())
-		}
-		return
+	if err := musicbrainzStoreDB(mbID, entry); err != nil {
+		logger.Log.Warnf("failed to extend MusicBrainz cache expiry for %s: %s", mbID, err.Error())
 	}
-	markCacheDirty(cacheNameMusicbrainz)
 }
 
 // MusicbrainzReleaseFresh reports whether a release is cached and unexpired. The
@@ -327,8 +323,6 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 				logger.Log.Warnf("failed to persist MusicBrainz cache row %s: %s", canonicalID, err.Error())
 			}
 		}
-	} else {
-		markCacheDirty(cacheNameMusicbrainz)
 	}
 
 	logger.Log.Trace(fmt.Sprintf("api response: %+v", apiResponse))
@@ -377,53 +371,21 @@ func MusicBrainzDateStringToDateTime(dateStr string) (time.Time, error) {
 	return parsedTime, nil
 }
 
-func init() {
-	registerCache(cacheNameMusicbrainz, MusicbrainzSaveCache)
-}
-
-// MusicbrainzLoadCache warms the in-memory map at startup. With a database
-// configured it loads from the DB (migrating a legacy JSON cache once); otherwise
-// it reads the legacy JSON file.
+// MusicbrainzLoadCache warms the in-memory map at startup, importing the legacy
+// JSON cache once if the table is still empty.
+//
+// There is no JSON *write* path any more. Without a database the map is simply
+// process-local, which is the correct behaviour for a cache and is what the
+// `--file` one-shot and the tests actually want; the alternative was a whole-map
+// rewrite driven by a flusher that only ran during a scan.
 func MusicbrainzLoadCache() error {
-	if cacheDB != nil {
-		if err := musicbrainzMigrateJSONIfNeeded(); err != nil {
-			logger.Log.Warnf("MusicBrainz cache JSON migration failed: %s", err.Error())
-		}
-		return musicbrainzLoadFromDB()
-	}
-	return musicbrainzLoadCacheJSON()
-}
-
-func musicbrainzLoadCacheJSON() error {
-	data, err := os.ReadFile(musicbrainzReleaseCachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No cache yet
-		}
-		return err
-	}
-
-	musicbrainzReleaseCacheMu.Lock()
-	defer musicbrainzReleaseCacheMu.Unlock()
-	return json.Unmarshal(data, &musicbrainzReleaseCache)
-}
-
-// MusicbrainzSaveCache persists the JSON cache for the batched flush. It is a
-// no-op when a database is configured, because entries are written through to the
-// DB as they are fetched (see QueryMusicBrainzReleaseData).
-func MusicbrainzSaveCache() error {
-	if cacheDB != nil {
+	if cacheDB == nil {
 		return nil
 	}
-
-	musicbrainzReleaseCacheMu.RLock()
-	data, err := json.MarshalIndent(musicbrainzReleaseCache, "", "  ")
-	musicbrainzReleaseCacheMu.RUnlock()
-	if err != nil {
-		return err
+	if err := musicbrainzMigrateJSONIfNeeded(); err != nil {
+		logger.Log.Warnf("MusicBrainz cache JSON migration failed: %s", err.Error())
 	}
-
-	return os.WriteFile(musicbrainzReleaseCachePath, data, 0644)
+	return musicbrainzLoadFromDB()
 }
 
 // musicbrainzStoreDB upserts one release into the DB-backed cache. The MB ID is

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -36,17 +35,9 @@ var (
 	lidarrTrackFilesCacheMu       sync.RWMutex
 )
 
-func init() {
-	registerCache(cacheNameLidarrArtists, LidarrSaveArtistsCache)
-	registerCache(cacheNameLidarrAlbums, LidarrSaveAlbumsCache)
-	registerCache(cacheNameLidarrTracks, LidarrSaveTracksCache)
-	registerCache(cacheNameLidarrTrackFiles, LidarrSaveTrackFilesCache)
-}
-
-// LidarrInvalidateCaches drops every in-memory Lidarr cache and flags them dirty so
-// the emptied state is persisted. The next lookup re-fetches from Lidarr, which is
-// how a release selection changed in Lidarr reaches GetMonitoredAlbumMBID before the
-// 1h TTL would otherwise expire. It is a whole-cache flush rather than artist-scoped:
+// LidarrInvalidateCaches drops every Lidarr cache, in memory and in the database.
+// The next lookup re-fetches from Lidarr, which is how a release selection changed
+// in Lidarr reaches GetMonitoredAlbumMBID before the 1h TTL would otherwise expire. It is a whole-cache flush rather than artist-scoped:
 // the album/track/trackfile caches are keyed by Lidarr's own IDs, not by artist, so a
 // scoped drop would have to walk their values to map back — not worth it for an action
 // the user triggers by hand, and re-fetching from Lidarr is not rate-limited the way
@@ -55,22 +46,27 @@ func LidarrInvalidateCaches() {
 	lidarrArtistsCacheMu.Lock()
 	lidarrArtistsCache = map[string]models.CachedLidarrArtistRelease{}
 	lidarrArtistsCacheMu.Unlock()
-	markCacheDirty(cacheNameLidarrArtists)
 
 	lidarrAlbumsCacheMu.Lock()
 	lidarrAlbumsCache = map[string]models.CachedLidarrAlbumRelease{}
 	lidarrAlbumsCacheMu.Unlock()
-	markCacheDirty(cacheNameLidarrAlbums)
 
 	lidarrTracksCacheMu.Lock()
 	lidarrTracksCache = map[string]models.CachedLidarrTracksRelease{}
 	lidarrTracksCacheMu.Unlock()
-	markCacheDirty(cacheNameLidarrTracks)
 
 	lidarrTrackFilesCacheMu.Lock()
 	lidarrTrackFilesCache = map[string]models.CachedLidarrTrackFilesRelease{}
 	lidarrTrackFilesCacheMu.Unlock()
-	markCacheDirty(cacheNameLidarrTrackFiles)
+
+	// The rows go too. Emptying only the maps would have the next restart restore
+	// exactly what the user asked to discard.
+	for _, source := range []string{
+		models.ProviderCacheLidarrArtists, models.ProviderCacheLidarrAlbums,
+		models.ProviderCacheLidarrTracks, models.ProviderCacheLidarrTrackFiles,
+	} {
+		providerCacheDropSource(source)
+	}
 
 	logger.Log.Debug("invalidated Lidarr caches (artists, albums, tracks, trackfiles)")
 }
@@ -159,13 +155,17 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 	logger.Log.Debugf("we want artist: %s", want)
 
 	validArtists := []models.LidarrArtist{}
+	stored := make([]providerCacheItem, 0, len(artists))
 	lidarrArtistsCacheMu.Lock()
 	for i := range artists {
 		// add artist to cache
-		lidarrArtistsCache[strconv.FormatInt(artists[i].ID, 10)] = models.CachedLidarrArtistRelease{
+		key := strconv.FormatInt(artists[i].ID, 10)
+		entry := models.CachedLidarrArtistRelease{
 			Artist:    artists[i],
 			Timestamp: time.Now(),
 		}
+		lidarrArtistsCache[key] = entry
+		stored = append(stored, providerCacheItem{key: key, value: entry})
 
 		// Extract last folder from Lidarr's stored path
 		lidarrArtistFolder := filepath.Base(utilities.NormPath(artists[i].Path))
@@ -177,8 +177,9 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 	}
 	lidarrArtistsCacheMu.Unlock()
 
-	// persistence is batched; the whole artist list was just (re)populated
-	markCacheDirty(cacheNameLidarrArtists)
+	// The whole artist list was just (re)populated, so it persists as one statement
+	// rather than one per artist.
+	providerCachePutMany(models.ProviderCacheLidarrArtists, lidarrArtistsCacheDuration, stored...)
 
 	if len(validArtists) == 1 {
 		return validArtists, nil
@@ -212,13 +213,14 @@ func (c *LidarrClient) getTrackFilesByArtist(artistID int64) ([]models.LidarrTra
 		return nil, err
 	}
 
-	lidarrTrackFilesCacheMu.Lock()
-	lidarrTrackFilesCache[key] = models.CachedLidarrTrackFilesRelease{
+	entry := models.CachedLidarrTrackFilesRelease{
 		TrackFiles: files,
 		Timestamp:  time.Now(),
 	}
+	lidarrTrackFilesCacheMu.Lock()
+	lidarrTrackFilesCache[key] = entry
 	lidarrTrackFilesCacheMu.Unlock()
-	markCacheDirty(cacheNameLidarrTrackFiles)
+	providerCachePut(models.ProviderCacheLidarrTrackFiles, key, entry, lidarrTrackFilesCacheDuration)
 
 	return files, nil
 }
@@ -389,14 +391,18 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 
 	lidarrAlbumsCacheMu.Lock()
 	now := time.Now()
+	stored := make([]providerCacheItem, 0, len(albums))
 	for _, a := range albums {
-		lidarrAlbumsCache[strconv.FormatInt(a.ID, 10)] = models.CachedLidarrAlbumRelease{
+		key := strconv.FormatInt(a.ID, 10)
+		entry := models.CachedLidarrAlbumRelease{
 			Album:     a,
 			Timestamp: now,
 		}
+		lidarrAlbumsCache[key] = entry
+		stored = append(stored, providerCacheItem{key: key, value: entry})
 	}
 	lidarrAlbumsCacheMu.Unlock()
-	markCacheDirty(cacheNameLidarrAlbums)
+	providerCachePutMany(models.ProviderCacheLidarrAlbums, lidarrAlbumsCacheDuration, stored...)
 
 	for _, a := range albums {
 		if a.ID != albumID {
@@ -444,115 +450,57 @@ func (c *LidarrClient) GetTracksByAlbumAndArtistID(artistID int64, albumID int64
 	}
 
 	// add tracks to cache
-	lidarrTracksCacheMu.Lock()
-	lidarrTracksCache[albumKey] = models.CachedLidarrTracksRelease{
+	tracks := models.CachedLidarrTracksRelease{
 		Tracks:    t,
 		Timestamp: time.Now(),
 	}
+	lidarrTracksCacheMu.Lock()
+	lidarrTracksCache[albumKey] = tracks
 	lidarrTracksCacheMu.Unlock()
-	markCacheDirty(cacheNameLidarrTracks)
+	providerCachePut(models.ProviderCacheLidarrTracks, albumKey, tracks, lidarrTracksCacheDuration)
 
 	return t, nil
 }
 
+// The four Lidarr caches are warmed from the database at startup and written
+// through as they are populated. Each keeps its legacy JSON file readable exactly
+// once, so an upgrade does not re-ask Lidarr for every artist, album and track file
+// it already knew.
+
 func LidarrLoadArtistsCache() error {
-	data, err := os.ReadFile(lidarrArtistsCachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No cache yet
-		}
-		return err
-	}
+	providerCacheImportJSON(models.ProviderCacheLidarrArtists, lidarrArtistsCachePath, lidarrArtistsCacheDuration,
+		providerCacheDecodeMap[models.CachedLidarrArtistRelease])
 
 	lidarrArtistsCacheMu.Lock()
 	defer lidarrArtistsCacheMu.Unlock()
-	return json.Unmarshal(data, &lidarrArtistsCache)
-}
-
-func LidarrSaveArtistsCache() error {
-	lidarrArtistsCacheMu.RLock()
-	data, err := json.MarshalIndent(lidarrArtistsCache, "", "  ")
-	lidarrArtistsCacheMu.RUnlock()
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(lidarrArtistsCachePath, data, 0644)
+	return providerCacheRestore(models.ProviderCacheLidarrArtists, lidarrArtistsCache)
 }
 
 func LidarrLoadAlbumsCache() error {
-	data, err := os.ReadFile(lidarrAlbumsCachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No cache yet
-		}
-		return err
-	}
+	providerCacheImportJSON(models.ProviderCacheLidarrAlbums, lidarrAlbumsCachePath, lidarrAlbumsCacheDuration,
+		providerCacheDecodeMap[models.CachedLidarrAlbumRelease])
 
 	lidarrAlbumsCacheMu.Lock()
 	defer lidarrAlbumsCacheMu.Unlock()
-	return json.Unmarshal(data, &lidarrAlbumsCache)
-}
-
-func LidarrSaveAlbumsCache() error {
-	lidarrAlbumsCacheMu.RLock()
-	data, err := json.MarshalIndent(lidarrAlbumsCache, "", "  ")
-	lidarrAlbumsCacheMu.RUnlock()
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(lidarrAlbumsCachePath, data, 0644)
+	return providerCacheRestore(models.ProviderCacheLidarrAlbums, lidarrAlbumsCache)
 }
 
 func LidarrLoadTracksCache() error {
-	data, err := os.ReadFile(lidarrTracksCachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No cache yet
-		}
-		return err
-	}
+	providerCacheImportJSON(models.ProviderCacheLidarrTracks, lidarrTracksCachePath, lidarrTracksCacheDuration,
+		providerCacheDecodeMap[models.CachedLidarrTracksRelease])
 
 	lidarrTracksCacheMu.Lock()
 	defer lidarrTracksCacheMu.Unlock()
-	return json.Unmarshal(data, &lidarrTracksCache)
-}
-
-func LidarrSaveTracksCache() error {
-	lidarrTracksCacheMu.RLock()
-	data, err := json.MarshalIndent(lidarrTracksCache, "", "  ")
-	lidarrTracksCacheMu.RUnlock()
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(lidarrTracksCachePath, data, 0644)
+	return providerCacheRestore(models.ProviderCacheLidarrTracks, lidarrTracksCache)
 }
 
 func LidarrLoadTrackFilesCache() error {
-	data, err := os.ReadFile(lidarrTrackFilesCachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No cache yet
-		}
-		return err
-	}
+	providerCacheImportJSON(models.ProviderCacheLidarrTrackFiles, lidarrTrackFilesCachePath, lidarrTrackFilesCacheDuration,
+		providerCacheDecodeMap[models.CachedLidarrTrackFilesRelease])
 
 	lidarrTrackFilesCacheMu.Lock()
 	defer lidarrTrackFilesCacheMu.Unlock()
-	return json.Unmarshal(data, &lidarrTrackFilesCache)
-}
-
-func LidarrSaveTrackFilesCache() error {
-	lidarrTrackFilesCacheMu.RLock()
-	data, err := json.MarshalIndent(lidarrTrackFilesCache, "", "  ")
-	lidarrTrackFilesCacheMu.RUnlock()
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(lidarrTrackFilesCachePath, data, 0644)
+	return providerCacheRestore(models.ProviderCacheLidarrTrackFiles, lidarrTrackFilesCache)
 }
 
 // HealthCheck verifies Lidarr is reachable AND that our credentials actually get

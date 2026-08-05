@@ -7,6 +7,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 At the start of every session, read these before doing work:
 - **`docs/wip.md`** — what is *not done yet*: roadmap, known issues, ideas, in-flight work.
 - **`docs/development.md`** — code conventions, CI gates, and dev instructions to follow.
+- **`docs/style-guide.md`** — style guide for ANY UI work. Must be either followed or adapted.
 
 `docs/` holds all project documentation, one `*.md` per feature — start with
 **`docs/media-manager.md`** for how the components fit together; `docs/development.md` indexes the
@@ -83,8 +84,14 @@ Both are passed as pointers into the pipeline and may be `nil` — always nil-ch
 
 ## Caching & rate limiting
 
-Lookups are cached to JSON files under `./config/` and loaded into memory at process start
-(`MusicbrainzLoadCache`, `LidarrLoad*Cache`, `PlexLoadAlbumKeyCache`; matching `Save*` funcs).
+Every cache is a **database table with an in-memory front**, warmed once at process start by
+`modules.LoadAllCaches` (called after `modules.SetDB`). MusicBrainz releases and entities have their
+own tables; Lidarr and Plex share `provider_cache`, keyed by `(source, key)`; artwork keeps its
+bytes under `config/artwork/` with an index table. Writes are **write-through** — there is no dirty
+flag, no flush, and no JSON cache file (the `config/*.json` ones are read once for a legacy import
+and never written). A new cache follows that pattern; adding a batched writer back would reintroduce
+the restart hole that removed it. See [docs/mirror.md](docs/mirror.md#what-is-cached-and-where).
+
 MusicBrainz calls go through `RateLimit()` — respect it when adding new MusicBrainz requests.
 
 ## Concurrency

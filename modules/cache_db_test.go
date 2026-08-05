@@ -210,3 +210,86 @@ func TestArtworkStaleFallbackSkipsNegatives(t *testing.T) {
 		t.Fatal("a missing-marked entry must not resolve to an image")
 	}
 }
+
+// Changing the artist cache key must not read as an empty cache. Most artists have
+// no fanart entry, so a cold start after the upgrade would re-ask the provider about
+// every one of them at ~2 req/s to learn what the database already recorded.
+func TestArtworkMigrationFoldsLegacyArtistKeys(t *testing.T) {
+	t.Chdir(t.TempDir())
+	dbForCache(t)
+
+	// What the old keying left behind: a portrait fetched at 250 for a collection
+	// row, and the same artist's "no backdrop" answer recorded at 1200.
+	legacyThumb := artworkCacheKey(ArtworkEntityArtist, testMBID, ArtworkKindThumb, 250)
+	legacyBackground := artworkCacheKey(ArtworkEntityArtist, testMBID, ArtworkKindBackground, 1200)
+	writeArtworkCache(legacyThumb, Artwork{Data: jpegBytes, ContentType: "image/jpeg"})
+	rememberNoArtwork(legacyBackground)
+
+	// A restart: memory cleared, database kept.
+	artworkIndexMu.Lock()
+	artworkIndex = map[string]artworkMeta{}
+	artworkIndexMu.Unlock()
+
+	if err := artworkLoadCache(); err != nil {
+		t.Fatalf("artworkLoadCache: %v", err)
+	}
+
+	// The image is served under the key the running code now asks for, without
+	// touching a provider.
+	thumb := artworkCacheKey(ArtworkEntityArtist, testMBID, ArtworkKindThumb, 0)
+	art, ok := readArtworkCache(thumb)
+	if !ok {
+		t.Fatal("the cached portrait did not survive the key change")
+	}
+	if len(art.Data) == 0 || art.ContentType != "image/jpeg" {
+		t.Errorf("restored artwork = %+v", art)
+	}
+
+	// And the negative too, which is the bulk of the rows in a real install.
+	if !negativeCached(artworkCacheKey(ArtworkEntityArtist, testMBID, ArtworkKindBackground, 0)) {
+		t.Error("the recorded 'no backdrop' answer did not survive the key change")
+	}
+
+	// The legacy rows are gone rather than duplicated.
+	var remaining int64
+	if err := cacheDB.Model(&models.ArtworkCacheEntry{}).
+		Where("key IN ?", []string{legacyThumb, legacyBackground}).Count(&remaining).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if remaining != 0 {
+		t.Errorf("%d legacy row(s) left behind", remaining)
+	}
+
+	// Running again changes nothing: it has to be safe on every boot, not just the
+	// one after the upgrade.
+	if err := artworkMigrateArtistKeys(); err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if _, ok := readArtworkCache(thumb); !ok {
+		t.Error("a second migration pass lost the entry it had already folded")
+	}
+}
+
+// Two legacy entries for one artist are the same image by definition, so they
+// collapse onto one rather than fighting over the canonical key.
+func TestArtworkMigrationCollapsesDuplicates(t *testing.T) {
+	t.Chdir(t.TempDir())
+	dbForCache(t)
+
+	for _, size := range []int{250, 500} {
+		writeArtworkCache(artworkCacheKey(ArtworkEntityArtist, testMBID, ArtworkKindThumb, size),
+			Artwork{Data: jpegBytes, ContentType: "image/jpeg"})
+	}
+
+	if err := artworkMigrateArtistKeys(); err != nil {
+		t.Fatalf("artworkMigrateArtistKeys: %v", err)
+	}
+
+	var rows int64
+	if err := cacheDB.Model(&models.ArtworkCacheEntry{}).Count(&rows).Error; err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if rows != 1 {
+		t.Errorf("rows = %d, want 1 — duplicates should collapse", rows)
+	}
+}

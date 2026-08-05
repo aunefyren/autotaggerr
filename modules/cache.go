@@ -1,117 +1,55 @@
 package modules
 
 import (
-	"sync"
-
 	"github.com/aunefyren/autotaggerr/logger"
 	"gorm.io/gorm"
 )
 
-// cacheDB is the database handle used for DB-backed caches (the MusicBrainz
-// release cache today). It is nil until SetDB runs at startup; while nil, caches
-// fall back to their legacy JSON files, which keeps DB-less callers (and tests)
-// working unchanged.
+// cacheDB is the database handle behind every persistent cache. It is nil until
+// SetDB runs at startup; while nil, the caches degrade to process-local memory,
+// which is what the tests and the one-shot `--file` invocation want.
 var cacheDB *gorm.DB
 
-// SetDB wires the database handle for DB-backed caches. Call once at startup,
-// before LoadAllCaches.
+// SetDB wires the database handle for the caches. Call once at startup, before
+// LoadAllCaches.
 func SetDB(db *gorm.DB) {
 	cacheDB = db
 }
 
-// Cache writes used to be flushed to disk on every single cache miss, which on a
-// full-library scan meant rewriting each (growing) JSON file thousands of times.
-// Instead, the Save*Cache paths now mark a cache dirty (cheap, in-memory) and the
-// actual disk write is batched via FlushCaches, which is called periodically
-// during a scan and once when it finishes.
+// Every cache here is write-through: an entry is persisted as it is fetched, in the
+// same call.
 //
-// NOTE: this batching is currently only safe because a scan is single-threaded —
-// dirty marks and flushes all happen on the scan goroutine. When per-file
-// concurrency is added, the cache maps themselves must be guarded too.
+// It used to be batched. Writes marked a cache dirty and a FlushCaches call rewrote
+// the whole JSON file later — which meant the write only landed if a flush happened
+// to follow, and flushes ran during a scan, at the end of a refresh pass, or in
+// one-shot mode. Nothing flushed on shutdown, so a Lidarr sync triggered from the
+// Collection page routinely never reached disk at all, and a restart looked like a
+// cache that had silently forgotten an hour of work.
+//
+// Write-through is affordable because these are single rows written seconds apart,
+// not the thousands-per-scan churn that made a growing JSON blob expensive to
+// rewrite. The batching also carried a warning that it was only safe because scans
+// were single-threaded, which stopped being true when the worker pool arrived.
 
-const (
-	cacheNameMusicbrainz         = "musicbrainz_releases"
-	cacheNameMusicbrainzEntities = "musicbrainz_entities"
-	cacheNameArtwork             = "artwork"
-	cacheNameLidarrArtists       = "lidarr_artists"
-	cacheNameLidarrAlbums        = "lidarr_albums"
-	cacheNameLidarrTracks        = "lidarr_tracks"
-	cacheNameLidarrTrackFiles    = "lidarr_trackfiles"
-	cacheNamePlexAlbumKeys       = "plex_album_keys"
-)
-
-type cacheWriter func() error
-
-var (
-	cacheMu      sync.Mutex
-	cacheDirty   = map[string]bool{}
-	cacheWriters = map[string]cacheWriter{}
-)
-
-// registerCache wires a cache name to the function that persists it to disk.
-func registerCache(name string, write cacheWriter) {
-	cacheMu.Lock()
-	cacheWriters[name] = write
-	cacheMu.Unlock()
-}
-
-// markCacheDirty flags a cache as having unsaved in-memory changes.
-func markCacheDirty(name string) {
-	cacheMu.Lock()
-	cacheDirty[name] = true
-	cacheMu.Unlock()
-}
-
-// LoadAllCaches loads every on-disk cache into memory once. It is called at
-// startup so the hot per-file path never touches disk (and never races a
-// concurrent reader by reloading a cache mid-scan). Individual load failures are
-// logged and skipped — a missing or corrupt cache just starts empty.
+// LoadAllCaches warms every persistent cache into memory once, at startup, so the
+// hot per-file path never touches the database (and never races a concurrent reader
+// by reloading mid-scan). Individual failures are logged and skipped — a cache that
+// cannot be read just starts empty, which costs refetches and nothing else.
 func LoadAllCaches() {
 	loaders := map[string]func() error{
-		cacheNameMusicbrainz:         MusicbrainzLoadCache,
-		cacheNameMusicbrainzEntities: musicbrainzLoadEntityCache,
-		cacheNameArtwork:             artworkLoadCache,
-		cacheNameLidarrArtists:       LidarrLoadArtistsCache,
-		cacheNameLidarrAlbums:        LidarrLoadAlbumsCache,
-		cacheNameLidarrTracks:        LidarrLoadTracksCache,
-		cacheNameLidarrTrackFiles:    LidarrLoadTrackFilesCache,
-		cacheNamePlexAlbumKeys:       PlexLoadAlbumKeyCache,
+		"musicbrainz_releases": MusicbrainzLoadCache,
+		"musicbrainz_entities": musicbrainzLoadEntityCache,
+		"artwork":              artworkLoadCache,
+		"lidarr_artists":       LidarrLoadArtistsCache,
+		"lidarr_albums":        LidarrLoadAlbumsCache,
+		"lidarr_tracks":        LidarrLoadTracksCache,
+		"lidarr_trackfiles":    LidarrLoadTrackFilesCache,
+		"plex_album_keys":      PlexLoadAlbumKeyCache,
 	}
 
 	for name, load := range loaders {
 		if err := load(); err != nil {
 			logger.Log.Errorf("failed to load %s cache: %s", name, err.Error())
 		}
-	}
-}
-
-// FlushCaches persists every cache that has unsaved changes. It is a no-op for
-// caches that are already clean, so it is cheap to call at scan boundaries.
-func FlushCaches() {
-	cacheMu.Lock()
-	pending := make([]string, 0, len(cacheDirty))
-	for name, dirty := range cacheDirty {
-		if dirty {
-			pending = append(pending, name)
-		}
-	}
-	cacheMu.Unlock()
-
-	for _, name := range pending {
-		cacheMu.Lock()
-		write := cacheWriters[name]
-		cacheMu.Unlock()
-		if write == nil {
-			continue
-		}
-
-		if err := write(); err != nil {
-			logger.Log.Errorf("failed to flush %s cache: %s", name, err.Error())
-			continue
-		}
-
-		cacheMu.Lock()
-		cacheDirty[name] = false
-		cacheMu.Unlock()
 	}
 }

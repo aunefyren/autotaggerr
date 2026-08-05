@@ -733,11 +733,6 @@ func (r *Runner) finish(ev *models.Event, started time.Time, scope Scope, res Re
 	// some is still an "ok" outcome with a count — not a failed job.
 	events.Finish(r.db, ev, models.EventStatusOK, line, details)
 	events.Prune(r.db, eventRetention)
-
-	// Releases persist per row as they are fetched, but the Lidarr and Plex JSON
-	// caches still batch — flush so a pass that ran for hours is not lost to a
-	// restart minutes later.
-	modules.FlushCaches()
 }
 
 func summaryLine(res Result, took time.Duration) string {

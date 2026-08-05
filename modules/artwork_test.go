@@ -238,6 +238,79 @@ func TestArtworkCacheKeySeparatesSizes(t *testing.T) {
 	}
 }
 
+// The size in a cache key must mean "a different image", not "a different request".
+func TestArtworkKeySize(t *testing.T) {
+	// Artist images have no size dimension: fanart.tv serves what it has whatever
+	// was asked for, so every request shares one entry.
+	for _, size := range []int{250, 500, 1200} {
+		if got := artworkKeySize(ArtworkEntityArtist, size); got != 0 {
+			t.Errorf("artworkKeySize(artist, %d) = %d; want 0", size, got)
+		}
+	}
+	// Covers round to the variant that will actually be fetched, so a request for
+	// 240 and one for 250 cannot become two copies of the same image.
+	cases := map[int]int{240: 250, 250: 250, 251: 500, 1200: 1200, 4000: 1200}
+	for in, want := range cases {
+		if got := artworkKeySize(ArtworkEntityReleaseGroup, in); got != want {
+			t.Errorf("artworkKeySize(release-group, %d) = %d; want %d", in, got, want)
+		}
+	}
+}
+
+// One artist, three sizes, one upstream fetch. The collection row asks at 250 and
+// the artist page at 500; before the key was normalised that was two downloads of
+// identical bytes and two files on disk.
+func TestGetArtworkFanartSharesOneEntryAcrossSizes(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ResetArtworkNegativeCache()
+
+	imageServer, imageCalls := artworkTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "image/jpeg")
+		_, _ = w.Write(jpegBytes)
+	})
+	indexServer, indexCalls := artworkTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"name":"Kate Bush","artistthumb":[{"id":"1","url":%q,"likes":"9"}]}`, imageServer.URL+"/thumb.jpg")
+	})
+
+	providers := ArtworkProviders{FanartEnabled: true, FanartBaseURL: indexServer.URL, FanartAPIKey: "test-key"}
+	for _, size := range []int{250, 500, 1200} {
+		if _, err := GetArtwork(providers, ArtworkEntityArtist, testMBID, ArtworkKindThumb, size); err != nil {
+			t.Fatalf("thumb at %d: %v", size, err)
+		}
+	}
+
+	if got := atomic.LoadInt64(indexCalls); got != 1 {
+		t.Errorf("fanart index calls = %d; want 1 — size must not split the cache", got)
+	}
+	if got := atomic.LoadInt64(imageCalls); got != 1 {
+		t.Errorf("image downloads = %d; want 1", got)
+	}
+}
+
+// The same for the negative, which is the case that actually dominates: most
+// artists have no fanart entry, and discovering that once per requested size cost
+// three rate-limited requests per artist to learn the same nothing.
+func TestGetArtworkFanartRemembersMissingOnceAcrossSizes(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ResetArtworkNegativeCache()
+
+	indexServer, indexCalls := artworkTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+
+	providers := ArtworkProviders{FanartEnabled: true, FanartBaseURL: indexServer.URL, FanartAPIKey: "test-key"}
+	for _, size := range []int{250, 500, 1200} {
+		if _, err := GetArtwork(providers, ArtworkEntityArtist, testMBID, ArtworkKindThumb, size); !errors.Is(err, ErrNoArtwork) {
+			t.Fatalf("thumb at %d: err = %v; want ErrNoArtwork", size, err)
+		}
+	}
+
+	if got := atomic.LoadInt64(indexCalls); got != 1 {
+		t.Errorf("fanart index calls = %d; want 1 — the negative must be shared across sizes", got)
+	}
+}
+
 // TestSniffImageType: fanart.tv serves a mix of formats behind extensionless URLs
 // and CDNs mislabel Content-Type, so the bytes are the only reliable answer. The
 // negative cases matter most — an error page cached as a cover would be served

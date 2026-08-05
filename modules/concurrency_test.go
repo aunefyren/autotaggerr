@@ -2,7 +2,6 @@ package modules
 
 import (
 	"fmt"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -42,21 +41,17 @@ func TestAlbumRefreshSetConcurrent(t *testing.T) {
 }
 
 // TestMusicbrainzCacheConcurrentAccess hammers the release cache with concurrent
-// inserts (as QueryMusicBrainzReleaseData does) while flushing it to disk (marshal
-// under the read lock). Run with -race, this catches unsynchronized map access.
+// inserts (as QueryMusicBrainzReleaseData does) while a reader walks it under the
+// read lock. Run with -race, this catches unsynchronized map access.
 func TestMusicbrainzCacheConcurrentAccess(t *testing.T) {
-	// redirect the on-disk path to a temp file and start from an empty cache
-	origPath := musicbrainzReleaseCachePath
-	musicbrainzReleaseCachePath = filepath.Join(t.TempDir(), "mb_releases.json")
 	musicbrainzReleaseCacheMu.Lock()
 	musicbrainzReleaseCache = map[string]models.CachedMusicBrainzRelease{}
 	musicbrainzReleaseCacheMu.Unlock()
-	t.Cleanup(func() { musicbrainzReleaseCachePath = origPath })
 
 	var wg sync.WaitGroup
 	stop := make(chan struct{})
 
-	// flusher: repeatedly marshal + write the cache
+	// reader: repeatedly walk the whole map, as the due-for-refresh sweep does
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -65,10 +60,7 @@ func TestMusicbrainzCacheConcurrentAccess(t *testing.T) {
 			case <-stop:
 				return
 			default:
-				if err := MusicbrainzSaveCache(); err != nil {
-					t.Errorf("save failed: %v", err)
-					return
-				}
+				MusicbrainzDueForRefresh()
 			}
 		}
 	}()

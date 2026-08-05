@@ -74,6 +74,28 @@ runs) — that property is the thing to protect, not to fix.
 - After B and C, forcing is reachable from two buttons, both of which say so and both of which
   confirm — and from nothing else at all.
 
+## Every cache in the database
+
+Shipped. Nothing durable is memory-only, nothing is a JSON file, and the batched flusher is gone —
+see [mirror.md](mirror.md#what-is-cached-and-where) and
+[mirror.md](mirror.md#the-provider-cache). What is left from that audit:
+
+- **No graceful shutdown.** `main.go` has no `signal.Notify` and no `Shutdown`, so a container
+  restart kills the process mid-job. The caches no longer care (every write is write-through), but a
+  scan interrupted this way still leaves its event `running` until `events.ReconcileRunning` closes
+  it on the next boot. That is the right safety net and a poor substitute for stopping on purpose:
+  a handler that cancels the runner's context, waits for `scan.Runner.Wait`, and finishes the open
+  event as cancelled would make a restart a normal outcome rather than a crash to be repaired.
+- **The legacy JSON files are left on disk** after their one-time import. Harmless, and deliberate —
+  an import that had deleted its own source would be unrecoverable if it went wrong — but
+  `config/*.json` now contains six files nothing reads. Worth a cleanup pass once the import has
+  been in a release long enough to trust.
+- **The DB-less path is now cache-less.** With no database configured the caches are process-local
+  (which is correct for a cache, and what the tests want), but `MusicbrainzLoadCache` returning early
+  means the one-shot `--file` invocation keeps nothing between runs. In practice `main` always
+  connects a database first, so this only affects tests — worth confirming before anyone relies on
+  `--file` in a loop.
+
 ## Frontend follow-ups
 
 The manager-authority boundary is now honoured end to end (see

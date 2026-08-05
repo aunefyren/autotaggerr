@@ -138,13 +138,12 @@ func DropCachedRelease(mbID string) {
 	delete(musicbrainzReleaseCache, mbID)
 	musicbrainzReleaseCacheMu.Unlock()
 
-	if cacheDB != nil {
-		if err := cacheDB.Delete(&models.MusicbrainzReleaseCache{}, "mb_id = ?", mbID).Error; err != nil {
-			logger.Log.Warnf("failed to drop MusicBrainz cache row %s: %s", mbID, err.Error())
-		}
+	if cacheDB == nil {
 		return
 	}
-	markCacheDirty(cacheNameMusicbrainz)
+	if err := cacheDB.Delete(&models.MusicbrainzReleaseCache{}, "mb_id = ?", mbID).Error; err != nil {
+		logger.Log.Warnf("failed to drop MusicBrainz cache row %s: %s", mbID, err.Error())
+	}
 }
 
 // There was a VerifyArtistIdentity here: it forgot an artist's cached lookup and

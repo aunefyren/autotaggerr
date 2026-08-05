@@ -328,13 +328,14 @@ the file-tags view (`.diff` / `.diffrow`), so it is learned once.
 ## Caching and rate limits
 
 - The **MusicBrainz release cache lives in the DB** (`musicbrainz_release_caches`), write-through on
-  fetch, with a one-time import from the legacy JSON file at startup and a JSON fallback when no DB
-  is wired.
+  fetch, with a one-time import from the legacy JSON file at startup.
 - Cache expiry is **jittered 7–14 days** so entries fetched together in one scan do not all expire
   at once.
-- The remaining JSON caches (Lidarr artists/albums/track-files, Plex album keys) are loaded once at
-  startup, kept warm in memory, and written back in batches — marked dirty and flushed periodically
-  and at scan end, instead of rewriting a growing JSON file on every miss.
+- The **Lidarr and Plex caches live in the DB** too (`provider_cache`, one source per endpoint),
+  loaded into memory at startup and written through as they are populated. They used to be JSON
+  files flushed in batches from inside a scan; with no shutdown handler, anything cached outside one
+  was lost on restart. Nothing is marked dirty and nothing is flushed any more — see
+  [mirror.md](mirror.md#the-provider-cache).
 - **Concurrent fetches of the same release are coalesced.** The cache is only written once a fetch
   completes, so several workers starting on tracks of the same album all miss it and would each
   issue the same request — every one of them serialized behind the global limiter. An album's tracks

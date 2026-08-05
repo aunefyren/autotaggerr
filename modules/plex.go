@@ -2,14 +2,12 @@ package modules
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
-	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -302,33 +300,16 @@ func (p *PlexClient) buildURL(path string, q map[string]string) string {
 	return u.String()
 }
 
-func init() {
-	registerCache(cacheNamePlexAlbumKeys, PlexSaveAlbumKeyCache)
-}
-
+// PlexLoadAlbumKeyCache warms the album-key map from the database at startup, and
+// reads the legacy JSON file exactly once so an upgrade keeps the keys it already
+// resolved.
 func PlexLoadAlbumKeyCache() error {
-	data, err := os.ReadFile(plexAlbumKeyCachePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil // No cache yet
-		}
-		return err
-	}
+	providerCacheImportJSON(models.ProviderCachePlexAlbumKeys, plexAlbumKeyCachePath, plexAlbumKeyCacheDuration,
+		providerCacheDecodeMap[models.PlexAlbumKeyCache])
 
 	plexAlbumKeyCacheMu.Lock()
 	defer plexAlbumKeyCacheMu.Unlock()
-	return json.Unmarshal(data, &plexAlbumKeyCache)
-}
-
-func PlexSaveAlbumKeyCache() error {
-	plexAlbumKeyCacheMu.RLock()
-	data, err := json.MarshalIndent(plexAlbumKeyCache, "", "  ")
-	plexAlbumKeyCacheMu.RUnlock()
-	if err != nil {
-		return err
-	}
-
-	return os.WriteFile(plexAlbumKeyCachePath, data, 0644)
+	return providerCacheRestore(models.ProviderCachePlexAlbumKeys, plexAlbumKeyCache)
 }
 
 func PlexRefreshForFile(unchanged bool, tagsWritten int, refreshSet *AlbumRefreshSet, plexClient PlexClient, albumTitle string, releaseArtist string, trackTitle string) error {
@@ -366,13 +347,14 @@ func PlexRefreshForFile(unchanged bool, tagsWritten int, refreshSet *AlbumRefres
 		logger.Log.Trace(albumKey)
 
 		// add album key to cache
-		plexAlbumKeyCacheMu.Lock()
-		plexAlbumKeyCache[albumTitle] = models.PlexAlbumKeyCache{
+		entry := models.PlexAlbumKeyCache{
 			AlbumKey:  albumKey,
 			Timestamp: time.Now(),
 		}
+		plexAlbumKeyCacheMu.Lock()
+		plexAlbumKeyCache[albumTitle] = entry
 		plexAlbumKeyCacheMu.Unlock()
-		markCacheDirty(cacheNamePlexAlbumKeys)
+		providerCachePut(models.ProviderCachePlexAlbumKeys, albumTitle, entry, plexAlbumKeyCacheDuration)
 	}
 
 	if !unchanged && tagsWritten > 0 {
