@@ -18,12 +18,16 @@ export type ArtworkEntity = "release-group" | "release" | "artist";
 
 /**
  * Which artwork kinds a request could actually return. When a provider is disabled
- * (or, for fanart, keyless) every request for its kind 404s, so we render the
- * monogram directly and never fire the <img> — a page of hundreds of artists is the
- * difference between zero requests and hundreds of logged 404s. Defaults match the
- * server's seed (covers on, artist art opt-in) so the common install shows covers
+ * (or, for fanart, keyless) every request for its kind comes back empty, so we render
+ * the monogram directly and never fire the <img> — a page of hundreds of artists is
+ * the difference between zero requests and hundreds of pointless ones. Defaults match
+ * the server's seed (covers on, artist art opt-in) so the common install shows covers
  * immediately and never attempts artist art it does not have; the fetched value
  * corrects both a beat later.
+ *
+ * This covers the whole-provider case only. With fanart configured, most individual
+ * artists still have no image there — the server answers those 204, and the <img>
+ * error event below is what falls back.
  */
 export interface ArtworkCapabilities {
   cover: boolean;
@@ -88,7 +92,7 @@ export function Artwork({
   const key = `${entity}:${mbid}:${kind ?? ""}`;
 
   // The provider for this entity's kind may be off, in which case the request can
-  // only 404 — fall straight to the monogram and never touch the network.
+  // only come back empty — fall straight to the monogram and never touch the network.
   const supported = entity === "artist" ? caps.artist : caps.cover;
 
   if (!mbid || failed || !supported) {

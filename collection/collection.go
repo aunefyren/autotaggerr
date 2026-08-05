@@ -494,12 +494,18 @@ func SyncArtist(db *gorm.DB, meta metadata.MetadataSource, artistMBID string) (w
 		return 0, err
 	}
 
-	// Verify the artist's own identity first. Nothing else re-reads an artist on a
-	// schedule — releases are walked constantly by the drift sync, artists are not —
-	// so without this an artist merged upstream stays undetected until somebody opens
-	// their page. One extra request against the several this sync already spends.
-	if err := modules.VerifyArtistIdentity(meta, artistMBID); err != nil {
-		logger.Log.Debugf("could not verify identity of artist %s: %s", artistMBID, err.Error())
+	// Read the artist through the cache, so one that was just added is in the mirror
+	// before anyone opens their page.
+	//
+	// This used to drop the cached copy first and re-read over the network, to catch
+	// an artist merged upstream. The justification was that nothing else re-read an
+	// artist on a schedule; that stopped being true when the refresh pass began
+	// covering every artist in the collection on its TTL, and redirects are recorded
+	// on the HTTP path by whatever fetch sees them. What was left was a follow toggle
+	// silently spending a rate-limited request and discarding the stale fallback with
+	// it — a cache reset nothing in the UI announced.
+	if _, err := meta.GetArtist(artistMBID); err != nil {
+		logger.Log.Debugf("could not read artist %s: %s", artistMBID, err.Error())
 	}
 
 	groups, complete, err := meta.GetArtistReleaseGroups(artistMBID)

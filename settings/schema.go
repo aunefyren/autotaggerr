@@ -158,16 +158,20 @@ func Sections() []Section {
 			},
 		},
 		{
+			// "Mirror" stays the package name, the config keys and the word the docs use
+			// for the local copy. It is not a word the UI says: every surface a user
+			// presses calls this one thing a metadata refresh, and a settings section
+			// named after the implementation is how a second name gets learned.
 			ID:          "mirror",
-			Title:       "MusicBrainz mirror",
-			Description: "The local copy of MusicBrainz that browsing reads instead of the rate-limited API.",
+			Title:       "Metadata refresh",
+			Description: "Keeping the local copy of MusicBrainz current, so browsing reads it instead of the rate-limited API.",
 			Fields: []Field{
 				{
 					// Stored as "disabled" but shown as "enabled": a bool missing from an
 					// existing config.json decodes as false, and false has to keep meaning
 					// the default. The inversion lives here so the UI can say the useful
 					// thing without the file changing meaning.
-					Key: "autotaggerr_mirror_enabled", Label: "Keep the mirror refreshed", Type: TypeBool, Tier: TierLive,
+					Key: "autotaggerr_mirror_enabled", Label: "Keep metadata refreshed", Type: TypeBool, Tier: TierLive,
 					Help: "Off stops the scheduled refresh; on-demand lookups still work.",
 					get:  func(c models.ConfigStruct) any { return !c.AutotaggerrMirrorDisabled },
 					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrMirrorDisabled = !v }),

@@ -37,6 +37,12 @@ const PHASE_LABELS: Record<string, string> = {
 };
 
 // Labels for the kinds of job the queue holds, so a pending row reads as words.
+//
+// Noun form throughout: a queue entry is a record of work, not a control. The
+// buttons that start these say the verb ("Refresh metadata"); everything that
+// reports on them says the thing ("Metadata refresh"). A pass that ignored the
+// cache is the only one that reads differently, because it is the only one that
+// did something different.
 const JOB_KIND_LABELS: Record<string, string> = {
   scan_all: "Scan",
   scan_library: "Scan",
@@ -44,7 +50,7 @@ const JOB_KIND_LABELS: Record<string, string> = {
   retag_library: "Tag files",
   retag_artist: "Tag files",
   refresh_all: "Metadata refresh",
-  refresh_verify: "Verify identities",
+  refresh_verify: "Full metadata refresh",
   refresh_artist: "Metadata refresh",
   refresh_library: "Metadata refresh",
 };
@@ -149,8 +155,10 @@ export default function Activity() {
       <div className="page-head">
         <h1>Activity</h1>
         <div className="row">
-          <button className="btn btn-secondary btn-sm" onClick={start("/sync", "Metadata sync started")} disabled={status.data?.running}>
-            Check for updates
+          {/* The same call the Metadata page's button makes. It says the same words
+              for that reason: one verb, named once, wherever it is offered. */}
+          <button className="btn btn-secondary btn-sm" onClick={start("/sync", "Metadata refresh started")} disabled={status.data?.running}>
+            Refresh metadata
           </button>
           <button className="btn btn-primary btn-sm" onClick={start("/scan", "Scan started")} disabled={status.data?.running}>
             {status.data?.running ? "Working…" : "Scan all libraries"}

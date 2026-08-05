@@ -24,8 +24,12 @@ func (metadataSource) GetArtist(artistID string) (models.MusicBrainzArtistLookup
 	return GetMusicBrainzArtist(artistID)
 }
 
+// GetArtistReleaseGroups routes to the *cached* discography, not the pager beneath
+// it. Pointing it at the pager meant every caller of the port — collection.SyncArtist
+// above all, which runs on every follow toggle — paged the discography over the
+// network each time, neither reading the cache nor filling it.
 func (metadataSource) GetArtistReleaseGroups(artistID string) ([]models.MusicBrainzArtistReleaseGroup, bool, error) {
-	return GetMusicBrainzArtistReleaseGroups(artistID)
+	return GetArtistDiscography(artistID)
 }
 
 func (metadataSource) GetReleaseGroupReleases(releaseGroupID string) ([]models.MusicBrainzReleaseSearchResult, error) {

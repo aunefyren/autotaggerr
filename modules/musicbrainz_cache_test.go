@@ -113,8 +113,9 @@ func TestMBCacheForgetEntity(t *testing.T) {
 	mbCachePut(models.MBEntityArtist, "a1", models.MusicBrainzArtistLookup{ID: "a1"})
 	MusicbrainzForgetEntity(models.MBEntityArtist, "a1")
 
-	// Forgotten means gone, not merely expired: VerifyArtistIdentity relies on the
-	// stale fallback disappearing so a transport failure surfaces as an error.
+	// Forgotten means gone, not merely expired. Applying a migration relies on it: the
+	// entry describes an entity that no longer answers under that ID, so even the
+	// stale fallback has to disappear rather than keep naming something retired.
 	var stale models.MusicBrainzArtistLookup
 	if mbCacheGetStale(models.MBEntityArtist, "a1", &stale) {
 		t.Fatal("expected the entry to be dropped entirely")

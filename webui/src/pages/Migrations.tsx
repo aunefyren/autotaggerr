@@ -68,7 +68,7 @@ export default function Migrations() {
     setVerifying(true);
     try {
       await api.post("/migrations/verify");
-      toast("info", "Metadata refresh started — follow it on the Metadata page");
+      toast("info", "Full metadata refresh started — follow it on the Metadata page");
     } catch (e) {
       toast("err", errMsg(e));
     } finally {
@@ -123,7 +123,10 @@ export default function Migrations() {
             onClick={verify}
             title="Refresh every artist, release-group and release in the collection, ignoring cached copies — which is how merges and deletions are found. One rate-limited request each, so a large collection takes hours; watch it on the Metadata page. Reads only: no files are written, and anything found is queued under your approval policy."
           >
-            {verifying ? "Refreshing…" : "Refresh metadata"}
+            {/* The parenthetical is not decoration: on every other page these words
+                honour the cache, and this one does not. Naming the difference is
+                what stops the shared verb from being a trap. */}
+            {verifying ? "Refreshing…" : "Refresh metadata (ignore cache)"}
           </button>
         </div>
       </div>

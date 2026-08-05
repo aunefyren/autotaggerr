@@ -215,6 +215,13 @@ func CollectionScope(db *gorm.DB, force bool) (Scope, error) {
 // bespoke function. The old per-artist refresh skipped them, so opening an album
 // after refreshing its artist still blocked on the rate limiter — the exact stall
 // the refresh was pressed to avoid.
+//
+// It honours the cache. This scope used to force, on the reading that asking by hand
+// means "check now" — but forcing is what makes a refresh expensive, and a button
+// whose words match the cheap collection-wide one should not be the costly reading of
+// them. What a user wants from this button is the artist's metadata brought up to
+// date, which is what an unforced pass does; ignoring cached copies is a deliberate
+// choice offered in exactly one place (see CollectionScope's force).
 func ArtistScope(db *gorm.DB, artistMBID string) (Scope, error) {
 	var artist models.CollectionArtist
 	if err := db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
@@ -224,7 +231,6 @@ func ArtistScope(db *gorm.DB, artistMBID string) (Scope, error) {
 	scope := Scope{
 		Title:   "Metadata refresh for " + artist.Name,
 		Artists: []string{artistMBID},
-		Force:   true,
 		Detail:  map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID},
 	}
 
@@ -255,8 +261,12 @@ func ArtistScope(db *gorm.DB, artistMBID string) (Scope, error) {
 //
 // Derived from the file index rather than from the collection tables, because a
 // library is a set of *files* — the collection is aggregated across libraries and
-// cannot say which of them a release came from. Forced, like ArtistScope: asking for
-// one library by hand is asking for it to be checked now.
+// cannot say which of them a release came from.
+//
+// Honours the cache, like ArtistScope, and more obviously so: a library is
+// collection-sized, so forcing one costs what forcing everything costs. It used to
+// force, which meant the button beside *Scan* on the Libraries page was quietly the
+// most expensive action in the app.
 func LibraryScope(db *gorm.DB, libraryID uuid.UUID) (Scope, error) {
 	var library models.Library
 	if err := db.First(&library, "id = ?", libraryID).Error; err != nil {
@@ -265,7 +275,6 @@ func LibraryScope(db *gorm.DB, libraryID uuid.UUID) (Scope, error) {
 
 	scope := Scope{
 		Title:  "Metadata refresh for " + library.Name,
-		Force:  true,
 		Detail: map[string]any{"library": library.Name, "library_id": libraryID.String()},
 	}
 
@@ -545,7 +554,7 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 	case models.MBEntityArtist:
 		_, err = r.meta.GetArtist(mbid)
 	case models.MBEntityDiscography:
-		_, err = modules.GetArtistDiscography(mbid)
+		_, _, err = modules.GetArtistDiscography(mbid)
 	case models.MBEntityEditions:
 		_, err = r.meta.GetReleaseGroupReleases(mbid)
 	case entityRelease:

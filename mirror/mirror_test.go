@@ -73,7 +73,7 @@ func TestCollectionScopeCoversEveryKind(t *testing.T) {
 
 // Asking by hand means "check now", so the artist scope ignores the TTL — and it
 // must include edition lists, which the old per-artist refresh never fetched.
-func TestArtistScopeForcesAndCoversEditions(t *testing.T) {
+func TestArtistScopeCoversEditions(t *testing.T) {
 	db := testDB(t)
 	if err := db.Create(&models.CollectionArtist{MBID: "a1", Name: "Talk Talk"}).Error; err != nil {
 		t.Fatalf("seed artist: %v", err)
@@ -89,14 +89,72 @@ func TestArtistScopeForcesAndCoversEditions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ArtistScope: %v", err)
 	}
-	if !scope.Force {
-		t.Error("a manual refresh must ignore the TTL")
-	}
 	if len(scope.Groups) != 1 {
 		t.Errorf("edition lists missing from the artist scope: %+v", scope.Groups)
 	}
 	if len(scope.Releases) != 1 {
 		t.Errorf("releases missing from the artist scope: %+v", scope.Releases)
+	}
+}
+
+// TestOnlyAnExplicitForceIgnoresTheCache is the invariant behind "ignoring the cache
+// is deliberate and rare": forcing is reachable through exactly one argument, on one
+// constructor, and no scope builds itself that way.
+//
+// It is worth a test rather than a comment because the failure is silent and
+// expensive. A scope that forces re-reads every entity it covers at one rate-limited
+// request each — hours, for a collection-sized scope — and nothing about a running
+// pass says which reading it is. Every scheduled entry point (the nightly refresh,
+// the scan's DueScope stage, both startup runs) builds one of the scopes below, so
+// this is what stops a schedule from ever silently becoming a full re-read.
+func TestOnlyAnExplicitForceIgnoresTheCache(t *testing.T) {
+	db := testDB(t)
+	if err := db.Create(&models.CollectionArtist{MBID: "a1", Name: "Talk Talk"}).Error; err != nil {
+		t.Fatalf("seed artist: %v", err)
+	}
+	lib := models.Library{Name: "Music", Path: "/music"}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("seed library: %v", err)
+	}
+
+	artist, err := ArtistScope(db, "a1")
+	if err != nil {
+		t.Fatalf("ArtistScope: %v", err)
+	}
+	library, err := LibraryScope(db, lib.ID)
+	if err != nil {
+		t.Fatalf("LibraryScope: %v", err)
+	}
+	collection, err := CollectionScope(db, false)
+	if err != nil {
+		t.Fatalf("CollectionScope: %v", err)
+	}
+
+	for name, scope := range map[string]Scope{
+		"ArtistScope":            artist,
+		"LibraryScope":           library,
+		"CollectionScope(false)": collection,
+		"DueScope":               DueScope([]string{"rel-1"}),
+	} {
+		if scope.Force {
+			t.Errorf("%s ignores the cache; only CollectionScope(db, true) may", name)
+		}
+	}
+
+	forced, err := CollectionScope(db, true)
+	if err != nil {
+		t.Fatalf("CollectionScope(force): %v", err)
+	}
+	if !forced.Force {
+		t.Error("CollectionScope(db, true) must ignore the cache — it is the one way to ask")
+	}
+	// The title is how a user tells the two apart after the fact, so it moves with the
+	// flag rather than being set alongside it.
+	if forced.Title != "Full metadata refresh" {
+		t.Errorf("forced title = %q, want %q", forced.Title, "Full metadata refresh")
+	}
+	if collection.Title != "Metadata refresh" {
+		t.Errorf("unforced title = %q, want %q", collection.Title, "Metadata refresh")
 	}
 }
 
@@ -642,9 +700,6 @@ func TestLibraryScopeFollowsTheFileIndex(t *testing.T) {
 	}
 	if len(scope.Artists) != 1 || scope.Artists[0] != "art-1" {
 		t.Errorf("artists = %+v", scope.Artists)
-	}
-	if !scope.Force {
-		t.Error("asking for one library by hand means check it now")
 	}
 }
 

@@ -254,12 +254,15 @@ func TestGetArtistDiscographyCachesAndPages(t *testing.T) {
 			artistReleaseGroupPageSize+1, artistReleaseGroupPageSize, releaseGroupJSON(1, artistReleaseGroupPageSize))
 	})
 
-	groups, err := GetArtistDiscography("a1")
+	groups, complete, err := GetArtistDiscography("a1")
 	if err != nil {
 		t.Fatalf("GetArtistDiscography: %v", err)
 	}
 	if len(groups) != artistReleaseGroupPageSize+1 {
 		t.Fatalf("groups = %d, want %d — paging stopped early", len(groups), artistReleaseGroupPageSize+1)
+	}
+	if !complete {
+		t.Error("paging reached the end, so the list is complete")
 	}
 	if calls != 2 {
 		t.Errorf("upstream calls = %d, want 2 (one page each)", calls)
@@ -267,11 +270,21 @@ func TestGetArtistDiscographyCachesAndPages(t *testing.T) {
 
 	// Browsing an artist pages through up to five rate-limited requests, so
 	// re-opening the same artist must not repeat them.
-	if _, err := GetArtistDiscography("a1"); err != nil {
+	cached, cachedComplete, err := GetArtistDiscography("a1")
+	if err != nil {
 		t.Fatalf("second call: %v", err)
 	}
 	if calls != 2 {
 		t.Errorf("upstream calls after a cached read = %d, want 2", calls)
+	}
+	if len(cached) != len(groups) {
+		t.Errorf("cached groups = %d, want %d", len(cached), len(groups))
+	}
+	// The completeness flag is cached with the list. Without it the one caller that
+	// prunes on absence has to bypass the cache to recover it, which is what made a
+	// follow toggle cost a full re-page every time.
+	if !cachedComplete {
+		t.Error("a cached complete list must still report complete")
 	}
 }
 
@@ -287,23 +300,28 @@ func TestGetArtistDiscographyServesStaleWhenMBIsDown(t *testing.T) {
 		fmt.Fprint(w, `{"release-group-count":1,"release-groups":[{"id":"rg-1","title":"Spirit of Eden","primary-type":"Album"}]}`)
 	})
 
-	if _, err := GetArtistDiscography("a1"); err != nil {
+	if _, _, err := GetArtistDiscography("a1"); err != nil {
 		t.Fatalf("warm the cache: %v", err)
 	}
 	expireEntityCache(t, models.MBEntityDiscography, "a1")
 	fail = true
 
-	groups, err := GetArtistDiscography("a1")
+	groups, complete, err := GetArtistDiscography("a1")
 	if err != nil {
 		t.Fatalf("a stale discography beats an empty page: %v", err)
 	}
 	if len(groups) != 1 || groups[0].Title != "Spirit of Eden" {
 		t.Errorf("groups = %+v, want the stale entry", groups)
 	}
+	// A stale list renders a page fine and must never delete rows: anything added
+	// upstream since it was cached is "absent" from it.
+	if complete {
+		t.Error("a stale list must not be reported as complete")
+	}
 
 	// With nothing cached at all, the failure has to surface.
 	resetBrowseCaches(t)
-	if _, err := GetArtistDiscography("a2"); err == nil {
+	if _, _, err := GetArtistDiscography("a2"); err == nil {
 		t.Error("a cold-cache failure was reported as success")
 	}
 }
@@ -323,7 +341,7 @@ func TestGetArtistDiscographyIsConcurrencySafe(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := GetArtistDiscography("a1"); err != nil {
+			if _, _, err := GetArtistDiscography("a1"); err != nil {
 				t.Errorf("concurrent read: %v", err)
 			}
 		}()

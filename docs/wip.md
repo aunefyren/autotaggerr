@@ -41,6 +41,39 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
 
+## Metadata refresh: one name, one default
+
+An audit of every surface that reaches MusicBrainz found two problems. The verb has five user-facing
+names, and — worse — the same words mean different things on different pages: on the Metadata page
+*Refresh metadata* honours the cache unless a box is ticked, while on Artist, Libraries and
+Migrations the identical words are an unconditional forced re-read. A user who learns one meaning
+misjudges the other three, and the expensive reading is the one that is silent.
+
+Nothing on a schedule forces (nightly `SyncDrift`, the weekly scan's `DueScope` stage, both startup
+runs) — that property is the thing to protect, not to fix.
+
+**The two rules this work establishes:**
+
+1. **One verb, two forms.** Shipped — the rule and what it renamed now live in
+   [mirror.md](mirror.md#one-name-two-forms).
+2. **Ignoring the cache happens in exactly one place, and only on purpose.** The *place* is done —
+   `CollectionScope`'s `force` is now the only thing that sets `Scope.Force`, and a test holds that
+   line; see [mirror.md](mirror.md#scopes) and
+   [mb-migration.md](mb-migration.md#detection-is-separate-from-application). Making it *on purpose*
+   is pass C.
+
+### Pass C — forcing is always deliberate
+
+- The Metadata page keeps *Ignore cached copies*, but a forced pass goes behind a **confirm dialog**
+  that states the cost in the terms that matter (one rate-limited request per entity; hours on a
+  large collection; reads only, no files written), and the checkbox **resets to off** after a pass
+  starts so it cannot persist into a later click.
+- The Migrations page's forced pass routes through the same dialog rather than duplicating the verb
+  with different semantics — finding merges is why the option exists, so it keeps a way in. Its
+  label already says **Refresh metadata (ignore cache)**; the dialog is what makes it deliberate.
+- After B and C, forcing is reachable from two buttons, both of which say so and both of which
+  confirm — and from nothing else at all.
+
 ## Frontend follow-ups
 
 The manager-authority boundary is now honoured end to end (see
@@ -98,7 +131,20 @@ The manager-authority boundary is now honoured end to end (see
   Mapping to current content, creating folders, renaming and keeping up to date.
   Configurable structure? 
   Link to file importing feature?
-
+- *Multiple artists on album*
+  We do not tag multiple artists on albums, because Plex does not allow it.
+  We should make this configurable in the Tagger, default off.
+- *MusicBrainz settings on /settings*
+  Autotaggerr allows multiple metadata sources, so this does not make sense
+  These are not tenant wide settings
+  Should probably be moved to the data-sources page, applying only to the selected metadata source
+- *Does the collection page work with several libraries?*
+  The page seems very one dimensional, with dynamic buttons.
+  What happens if I have multiple libraries, perhaps either Lidarr or Autotaggerr managed?
+- *I can add artists on a collection where Lidarr is the only manager*
+  Or, at least the button is there.
+  Does that make sense?
+  
 - **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
   `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID
   (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still

@@ -176,31 +176,82 @@ func GetMusicBrainzArtist(artistID string) (models.MusicBrainzArtistLookup, erro
 	return parsed, nil
 }
 
+// cachedDiscography is what a `discography` cache entry holds: the release-group
+// list, and whether the paging that produced it reached the end.
+//
+// The completeness flag is cached alongside the list because a caller that prunes on
+// absence needs it, and it cannot be recovered from the list itself — a truncated
+// discography and a short one look identical. Without it, the only caller that prunes
+// had to bypass the cache entirely to get the flag back, which is what made a follow
+// toggle cost up to five rate-limited requests every time.
+type cachedDiscography struct {
+	Groups   []models.MusicBrainzArtistReleaseGroup `json:"groups"`
+	Complete bool                                   `json:"complete"`
+}
+
+// decodeDiscography reads a cached payload in either shape it may have on disk.
+//
+// Rows written before the completeness flag existed hold the bare list. They decode
+// with Complete false — the safe reading, since the flag is what licenses deleting
+// rows and a row that never recorded it may not license anything. They are rewritten
+// in the current shape the next time the entry is refetched, so this is a fallback
+// that empties itself rather than a format to maintain.
+func decodeDiscography(payload []byte) (cachedDiscography, bool) {
+	for _, b := range payload {
+		switch b {
+		case ' ', '\t', '\r', '\n':
+			continue
+		case '[':
+			var groups []models.MusicBrainzArtistReleaseGroup
+			if json.Unmarshal(payload, &groups) != nil {
+				return cachedDiscography{}, false
+			}
+			return cachedDiscography{Groups: groups}, true
+		default:
+			var entry cachedDiscography
+			if json.Unmarshal(payload, &entry) != nil {
+				return cachedDiscography{}, false
+			}
+			return entry, true
+		}
+	}
+	return cachedDiscography{}, false
+}
+
 // GetArtistDiscography returns an artist's full release-group list, cached in the
-// persistent entity cache. Browsing an artist pages through up to five
-// rate-limited requests, so without a cache re-opening the same artist stalls the
-// UI for seconds at a time.
+// persistent entity cache, and whether that list is complete (see
+// GetMusicBrainzArtistReleaseGroups — a caller that treats absence as meaningful must
+// not act on a truncated one).
+//
+// Browsing an artist pages through up to five rate-limited requests, so without a
+// cache re-opening the same artist stalls the UI for seconds at a time. This is the
+// cached entry point every caller should use; the uncached pager underneath it exists
+// to be the thing this wraps.
 //
 // Unlike the sync path it filters nothing: browsing a catalog should show the
 // catalog, and deciding what counts as wanted is a separate question.
-func GetArtistDiscography(artistID string) ([]models.MusicBrainzArtistReleaseGroup, error) {
-	var fresh []models.MusicBrainzArtistReleaseGroup
-	if mbCacheGet(models.MBEntityDiscography, artistID, &fresh) {
-		return fresh, nil
+func GetArtistDiscography(artistID string) ([]models.MusicBrainzArtistReleaseGroup, bool, error) {
+	var cached cachedDiscography
+	payload, fresh, ok := mbCachePayload(models.MBEntityDiscography, artistID)
+	if ok {
+		cached, ok = decodeDiscography(payload)
+	}
+	if ok && fresh {
+		return cached.Groups, cached.Complete, nil
 	}
 
-	var stale []models.MusicBrainzArtistReleaseGroup
-	ok := mbCacheGetStale(models.MBEntityDiscography, artistID, &stale)
-
-	groups, _, err := GetMusicBrainzArtistReleaseGroups(artistID)
+	groups, complete, err := GetMusicBrainzArtistReleaseGroups(artistID)
 	if err != nil {
-		// Serve a stale copy rather than an empty page when MusicBrainz is down.
+		// Serve a stale copy rather than an empty page when MusicBrainz is down — but
+		// never as complete. A stale list is a fine answer for a page to render and a
+		// terrible one to delete rows against: anything added upstream since it was
+		// cached is "absent" from it.
 		if ok {
-			return stale, nil
+			return cached.Groups, false, nil
 		}
-		return nil, err
+		return nil, false, err
 	}
 
-	mbCachePut(models.MBEntityDiscography, artistID, groups)
-	return groups, nil
+	mbCachePut(models.MBEntityDiscography, artistID, cachedDiscography{Groups: groups, Complete: complete})
+	return groups, complete, nil
 }

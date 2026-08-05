@@ -44,12 +44,18 @@ whose metadata is in hand. The old key is dropped when the migration is applied.
 Since the drift sync re-reads every cached release on its 7–14 day TTL, full coverage of releases
 arrives within a fortnight at zero rate-limit cost.
 
-Artists are the exception, and needed help. Nothing re-reads an artist on a schedule the way the
-drift sync walks releases, so an artist merged upstream would sit undetected until somebody happened
-to open their page. `modules.VerifyArtistIdentity` re-reads one artist with the 24-hour lookup cache
-**bypassed** — a warm cache would answer the exact question being asked without going near
-MusicBrainz — and `collection.SyncArtist` now calls it, so any artist whose discography is synced
-verifies their own identity for one extra request on top of the several that sync already spends.
+Artists used to be the exception. Nothing re-read an artist on a schedule the way the drift sync
+walks releases, so a merge could sit undetected until somebody opened their page — and
+`modules.VerifyArtistIdentity` closed that gap by dropping an artist's cached lookup and re-reading
+it, called from `collection.SyncArtist`.
+
+**That gap is closed by the refresh pass instead, and the function is gone.** `CollectionScope`
+covers every artist in the collection (`PhaseArtists`), so each is re-read on its TTL like any
+release, and the redirect is recorded on the HTTP path by that fetch. What remained of the old
+mechanism was a follow toggle spending a rate-limited request and discarding the stale fallback with
+it — a cache reset nothing in the UI announced, for coverage that already existed. A deliberate
+re-read is still available and is the forced pass, which **expires** rather than forgets, so a
+failed re-read still leaves something to serve.
 
 ### The manual sweep
 
@@ -186,9 +192,17 @@ Two refusals matter as much as the guards:
   `maxArtistReleaseGroupPages` (500 groups), and against a truncated list "absent" means "past page
   five". `GetMusicBrainzArtistReleaseGroups` returns a `complete` flag for exactly this caller; the
   prune is skipped unless it is true, and an error yields `complete=false` too, since a discography
-  that failed halfway is indistinguishable from a short one.
+  that failed halfway is indistinguishable from a short one. The flag is **cached with the list**
+  (see [mirror.md](mirror.md#the-entity-cache)) so that needing it is not a reason to bypass the
+  cache — which is what it used to be, at 1–5 rate-limited requests per follow toggle.
 - **An empty discography is not evidence either.** It is far more likely a service quirk than an
   artist whose entire catalogue was merged away, so it prunes nothing.
+
+Since the discography is read through the cache, the list a prune runs against may be days old, and
+a release-group added upstream in the meantime is "absent" from it. The six guards are what make
+that safe rather than the freshness of the list: such a group is owned, or listed by a manager, or
+desired, or credited elsewhere — any one of which stops the prune. A group that satisfies none of
+them is one nobody has heard of, cached copy or not.
 
 The prune also runs against the **unfiltered** discography, not the follow-filtered subset
 `SyncArtist` upserts — comparing against the filtered set would delete every release-group of a type

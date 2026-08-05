@@ -964,9 +964,14 @@ func (r *Runner) syncDriftNow() {
 // refresh that reaches the network finds them, and queues them under the same
 // approval policy.
 //
+// Which is why it is *titled* one — "Full metadata refresh", the same words
+// CollectionScope writes onto the event. A queue reading "Verify identities" above
+// an event reading "Full metadata refresh" described one pass as two things, and the
+// Go name is the only place the old word survives.
+//
 // Run via `go` for background execution.
 func (r *Runner) VerifyIdentities() {
-	r.enqueue(job{jobRefreshVerify, "refresh_verify", "Verify identities", r.verifyIdentitiesNow})
+	r.enqueue(job{jobRefreshVerify, "refresh_verify", "Full metadata refresh", r.verifyIdentitiesNow})
 }
 
 func (r *Runner) verifyIdentitiesNow() {
@@ -988,7 +993,7 @@ func (r *Runner) verifyIdentitiesNow() {
 //
 // Run via `go` for background execution.
 func (r *Runner) RefreshArtist(artistMBID string) {
-	r.enqueue(job{jobRefreshArtist, "refresh_artist:" + artistMBID, "Refresh metadata", func() {
+	r.enqueue(job{jobRefreshArtist, "refresh_artist:" + artistMBID, "Metadata refresh", func() {
 		r.refreshArtistNow(artistMBID)
 	}})
 }
@@ -1004,6 +1009,10 @@ func (r *Runner) refreshArtistNow(artistMBID string) {
 	// because upserting the release-group rows is what makes a newly released album
 	// appear in the collection at all — the cache alone would hold it and show
 	// nobody.
+	//
+	// Doing both used to mean paging the discography twice over the network, since
+	// this sync bypassed the cache and the scope below forced. Now the sync fills the
+	// cache and the pass finds it fresh, so the second read costs nothing.
 	if _, err := collection.SyncArtist(r.db, r.meta, artistMBID); err != nil {
 		logger.Log.Warnf("failed to sync discography for %s: %s", artistMBID, err.Error())
 	}
@@ -1021,7 +1030,7 @@ func (r *Runner) refreshArtistNow(artistMBID string) {
 //
 // Run via `go` for background execution.
 func (r *Runner) RefreshLibrary(libraryID uuid.UUID) {
-	r.enqueue(job{jobRefreshLibrary, "refresh_library:" + libraryID.String(), "Refresh metadata", func() {
+	r.enqueue(job{jobRefreshLibrary, "refresh_library:" + libraryID.String(), "Metadata refresh", func() {
 		r.refreshLibraryNow(libraryID)
 	}})
 }

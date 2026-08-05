@@ -253,10 +253,12 @@ func TestDropCachedRelease(t *testing.T) {
 	}
 }
 
-// Artist redirects have no other systematic way of being found, and a warm 24-hour
-// lookup cache would answer the very question being asked without going near
-// MusicBrainz. Bypassing it is the whole point of this call.
-func TestVerifyArtistIdentityBypassesTheCache(t *testing.T) {
+// A warm lookup cache answers an artist read without going near MusicBrainz, so a
+// merge upstream is invisible to it. Expiring the entry first is how a forced pass
+// (mirror.refreshOne) makes the request happen — and this is the surviving mechanism
+// for finding an artist redirect, now that the discography sync no longer forgets the
+// cached copy on every follow toggle.
+func TestExpiringAnArtistDetectsARedirectBehindAWarmCache(t *testing.T) {
 	db := withMigrationDB(t)
 	resetArtistLookupCache(t)
 
@@ -289,11 +291,14 @@ func TestVerifyArtistIdentityBypassesTheCache(t *testing.T) {
 		t.Fatalf("server hit %d times; the second lookup should have been cached", hits)
 	}
 
-	if err := VerifyArtistIdentity(NewMetadataSource(), "art-old"); err != nil {
-		t.Fatalf("VerifyArtistIdentity: %v", err)
+	// What a forced refresh does: expire, then read. Expiring rather than forgetting
+	// keeps the stale copy as a fallback if the re-read then fails.
+	MusicbrainzExpireEntity(models.MBEntityArtist, "art-old")
+	if _, err := NewMetadataSource().GetArtist("art-old"); err != nil {
+		t.Fatalf("forced artist read: %v", err)
 	}
 	if hits != 2 {
-		t.Errorf("server hit %d times; verification must go to the network", hits)
+		t.Errorf("server hit %d times; an expired entry must go to the network", hits)
 	}
 
 	var m models.MusicbrainzMigration

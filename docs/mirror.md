@@ -29,6 +29,27 @@ upstream; the scan re-tags them in its own drift stage, and a user who wants it 
 
 This package (`mirror`) is the refresh verb. `scan.Runner` owns the two that write.
 
+### One name, two forms
+
+A verb the user can press needs exactly one name, or the same action read on two pages looks like
+two actions. The rule:
+
+- **A control says the verb**: *Refresh metadata*. Every button that starts one — Metadata,
+  Activity, Libraries, the artist page — says those two words and nothing else.
+- **A record says the noun**: *Metadata refresh*. Queue entries, event rows, log lines and job
+  titles describe a thing that ran, not a thing to press. A pass that ignored the cache is a **Full
+  metadata refresh**, the only variant that reads differently — because it is the only one that
+  behaved differently.
+
+Nothing says *sync*, *check for updates* or *verify identities*. Those were three separate names
+this verb accumulated, each on a different page, and the last of them titled a queue entry whose
+own event said "Full metadata refresh".
+
+**"Mirror" is not a UI word.** It is the package name, the config keys (`autotaggerr_mirror_*`),
+the route (`/mirror`) and this document's word for the local copy. The settings section that
+configures it is titled *Metadata refresh*, and the nav item is *Metadata* — which names the area,
+not the verb, and is the one place the two forms do not apply.
+
 ## Why a mirror rather than a cache
 
 MusicBrainz is not slow — it is **rate limited to roughly one request per second**, and that
@@ -74,6 +95,16 @@ expensive to rewrite.
 A payload that no longer decodes into the caller's type counts as a **miss**, so a response shape
 that changed between versions self-heals on the next fetch instead of surfacing as an error.
 
+The `discography` entry is the one that stores more than the response: `{groups, complete}`, where
+`complete` says the paging reached the end rather than stopping at
+`maxArtistReleaseGroupPages`. Pruning release-groups on absence needs that flag, and it cannot be
+recovered from the list — a truncated discography and a short one look identical — so before it was
+cached the only caller that prunes had to bypass the cache to get it back. Entries written before
+the flag hold the bare list and decode with `complete` false, which is the safe reading and empties
+itself as they refresh (`decodeDiscography`). A stale copy served because MusicBrainz is down is
+likewise never complete: it renders a page fine and must never delete rows, since anything added
+upstream since it was cached is "absent" from it.
+
 ### Artwork
 
 Image bytes stay on disk. The database row carries only what the filesystem cannot express: when
@@ -110,16 +141,26 @@ pressed to avoid.
 | --- | --- | --- |
 | `CollectionScope(db, false)` | everything the collection refers to | no |
 | `CollectionScope(db, true)` | the same, re-read from scratch | **yes** |
-| `ArtistScope` | one artist, their discography, editions and releases | **yes** |
+| `ArtistScope` | one artist, their discography, editions and releases | no |
+| `LibraryScope` | everything one library's files point at | no |
 | `DueScope` | only releases whose TTL has elapsed | no |
 
 `CollectionScope` takes its release set from `collection.AllMBIDs`, which unions the **file index**
 with the owned-editions table. Reading only `collection_releases` is what made a collection
 refresh quietly skip releases that files on disk actually point at.
 
-`Force` (ignore the TTL) is what asking by hand means. A user who suspects a release is wrong is
-not helped by "it was checked recently, come back in a week". Scheduled passes leave it off and
-re-read only what expired.
+**One argument, on one constructor, is the only way to ignore the cache.** `CollectionScope`'s
+`force` sets `Scope.Force`; nothing else sets it, and `TestOnlyAnExplicitForceIgnoresTheCache`
+holds that line. The failure it guards against is silent and expensive — a forced scope re-reads
+every entity it covers at one rate-limited request each, and a running pass looks the same either
+way.
+
+`ArtistScope` and `LibraryScope` used to force, on the reading that asking by hand means "check
+now". That is a fair description of the intent and a poor description of the cost: it made the
+per-artist button the expensive reading of words that mean the cheap thing everywhere else, and the
+per-library one — a library being collection-sized — as expensive as re-reading everything. What a
+user wants from either is *up to date*, which is what an unforced pass delivers. Distrusting every
+cached copy is a different request, and it is asked in one place.
 
 ## The refresh pass
 
@@ -205,7 +246,9 @@ forced refresh does not.
 
 What used to be *Check every ID now* is therefore `CollectionScope(db, force: true)`. It records a
 `mb_mirror` event titled **Full metadata refresh**, distinguished by title rather than by type —
-the same way `LibraryScope` and `ArtistScope` both emit `scan`.
+the same way `LibraryScope` and `ArtistScope` both emit `scan`. The queue entry
+`Runner.VerifyIdentities` enqueues carries that same title, so the pass is named identically
+wherever it is watched; `VerifyIdentities` survives as the Go name only.
 
 Whatever a refresh finds is queued through `migration.ProcessPending` under
 `migration.PolicyFromConfig`, so **a category held for review stays held**. A background job that
@@ -263,6 +306,10 @@ The **no-writes contract is stated on the page**, not left to this document. It 
 between this verb and a scan, and someone deciding whether to press a button needs to know it
 without reading `docs/`. The artist page's three buttons carry the same information in their
 tooltips: which of them write tags, and what *Refresh metadata* hands off to.
+
+The Migrations page offers the forced pass as **Refresh metadata (ignore cache)**. The
+parenthetical is not decoration: everywhere else those two words honour the cache, and a button
+that quietly means the expensive reading of a shared verb is the trap this naming exists to avoid.
 
 ## Interaction with migrations
 

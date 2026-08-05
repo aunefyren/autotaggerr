@@ -105,6 +105,20 @@ func mbCacheGetStale(entity, mbid string, out any) bool {
 	return json.Unmarshal(rec.payload, out) == nil
 }
 
+// mbCachePayload returns an entry's raw JSON and whether it is still within its TTL.
+//
+// It exists for the one cached value whose payload *shape* changed after rows were
+// already in the database. Deciding which shape to decode needs the bytes: trying the
+// current shape and falling back on a decode error would read a legitimately empty
+// value as a miss and refetch it on every call, forever.
+func mbCachePayload(entity, mbid string) (payload []byte, fresh, ok bool) {
+	rec, found := mbCacheLookup(entity, mbid)
+	if !found {
+		return nil, false, false
+	}
+	return rec.payload, time.Now().Before(rec.expiresAt), true
+}
+
 func mbCacheLookup(entity, mbid string) (mbCacheRecord, bool) {
 	mbEntityCacheMu.RLock()
 	defer mbEntityCacheMu.RUnlock()

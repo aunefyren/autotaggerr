@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
-	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 )
 
@@ -148,36 +147,17 @@ func DropCachedRelease(mbID string) {
 	markCacheDirty(cacheNameMusicbrainz)
 }
 
-// VerifyArtistIdentity re-reads an artist from MusicBrainz with the lookup cache
-// bypassed, purely to learn whether the ID still resolves to the same entity.
+// There was a VerifyArtistIdentity here: it forgot an artist's cached lookup and
+// re-read it over the network, purely to learn whether the ID still resolved to the
+// same entity. It existed because nothing re-read an artist on a schedule, so a merge
+// could sit undetected until somebody opened the page.
 //
-// Artist redirects have no other systematic way of being found. Releases are re-read
-// constantly — the drift sync walks every cached release on its TTL — but nothing
-// re-reads an artist unless someone asks, so an artist merged upstream can sit
-// undetected for as long as nobody opens their page. This is what the discography
-// sync and the manual sweep call to close that gap.
-//
-// Errors are returned rather than logged so a sweep can distinguish "gone" (which is
-// a result) from a transport failure (which is not).
-//
-// The re-read goes through the injected MetadataSource so a caller (and its tests)
-// can supply a fake; the cache-forget stays a local concern because bypassing the
-// cache is the whole point of the call.
-func VerifyArtistIdentity(meta metadata.MetadataSource, artistMBID string) error {
-	if artistMBID == "" {
-		return nil
-	}
-
-	// The cache is the thing being bypassed: a cached hit would answer the request
-	// without ever asking MusicBrainz, which is exactly the question here. Dropping
-	// the entry outright (rather than ignoring it) also removes the stale fallback,
-	// so a transport failure surfaces as an error instead of being papered over with
-	// the very copy this call exists to re-verify.
-	MusicbrainzForgetEntity(models.MBEntityArtist, artistMBID)
-
-	_, err := meta.GetArtist(artistMBID)
-	return err
-}
+// That premise is gone. CollectionScope puts every artist in the refresh pass, so
+// each is re-read on its TTL, and redirects are recorded on the HTTP path by whatever
+// fetch happens to see one — no dedicated re-read required. Its only caller was the
+// discography sync, where it turned a follow toggle into a rate-limited request and a
+// discarded stale fallback. A deliberate re-read is still available: it is the forced
+// pass, which expires rather than forgets (see mirror.refreshOne).
 
 // CachedReleaseGroupID returns the release-group MBID a cached release belongs to,
 // which is how a release moving between groups is noticed without an extra request.

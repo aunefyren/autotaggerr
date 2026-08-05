@@ -553,6 +553,20 @@ nothing — every response is a cover or a photo keyed by an MBID, the endpoint 
 rather than only ones in this collection, and the credentials stay server-side. The negative cache is
 bounded (`artworkNegativeMax`) precisely because an unauthenticated caller can ask about any id.
 
+**A missing image answers `204 No Content`, not `404`.** Most artists have no fanart.tv entry and
+many releases have no cover, so one pass over a collection page asks for hundreds of images that
+legitimately do not exist. As 404s that traffic is indistinguishable from a client probing for
+files, and a log-watcher in front of the app (fail2ban and friends) bans the user for their own
+browsing. 204 is also the more honest reading — the request was understood and answered, and the
+answer is that there is no image for this entity.
+
+The empty body still fires the `<img>` error event, so the monogram tile takes over exactly as
+before. Serving a placeholder image instead would suppress that event and replace a tile showing the
+artist's initials with a generic glyph, to fix something that is only about status codes.
+`artworkCapabilities` still short-circuits the *whole-provider* case, so a disabled or keyless
+provider produces no requests at all; the 204 is for the per-entity case, which cannot be known
+without asking.
+
 ## Tests
 
 `modules/artwork_test.go` covers the artwork path against a stub provider: that the disk cache and the

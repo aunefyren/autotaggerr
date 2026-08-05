@@ -19,7 +19,7 @@ import (
 
 // artworkProviders resolves the enabled artwork data sources. Both are optional;
 // an absent source simply means that kind of image is unavailable, which the
-// handler reports as a 404 and the UI renders as a monogram tile.
+// handler reports as a 204 and the UI renders as a monogram tile.
 func artworkProviders(db *gorm.DB) modules.ArtworkProviders {
 	providers := modules.ArtworkProviders{}
 
@@ -53,9 +53,9 @@ const artworkMaxSize = 1200
 //	GET /artwork/artist/:mbid?kind=thumb      artist portrait
 //	GET /artwork/artist/:mbid?kind=background artist backdrop
 //
-// A missing image is a 404 with no body worth reading: the <img> tag's error event
-// is what the UI acts on, and "this album has no cover" is the ordinary case, not
-// something to report as a failure.
+// A missing image is a 204 with no body: the <img> tag's error event is what the UI
+// acts on, and "this album has no cover" is the ordinary case, not something to
+// report as a failure.
 func (a *API) artwork(c *gin.Context) {
 	entity := c.Param("entity")
 	mbid := c.Param("mbid")
@@ -81,14 +81,29 @@ func (a *API) artwork(c *gin.Context) {
 	art, err := modules.GetArtwork(artworkProviders(a.DB), entity, mbid, kind, size)
 	if err != nil {
 		if errors.Is(err, modules.ErrNoArtwork) {
-			// Cache the negative. "No image for this MBID" is as stable an answer as
-			// the image itself — a disabled provider will keep saying no, and an
-			// enabled one rarely gains art an existing entity lacked — so without a
-			// cache header the browser re-asks on every navigation, turning one
-			// coverless collection into a 404 flood in the reverse-proxy logs. A day
-			// is short enough that enabling a provider is picked up the same session.
+			// 204, not 404. Most artists have no fanart.tv entry and most releases have
+			// no cover, so an ordinary collection page asks for hundreds of images that
+			// legitimately do not exist. As 404s that is indistinguishable from a client
+			// probing for files, and log-watchers (fail2ban and friends) ban the user for
+			// their own browsing — which is what this endpoint actually did.
+			//
+			// "No content" is also the more honest reading: the request was understood
+			// and answered, and the answer is that there is no image. The resource is
+			// the artwork *for* an entity, not a file that may or may not be there.
+			//
+			// An empty body still fires the <img> error event, so the UI's monogram tile
+			// keeps working. Serving a placeholder image instead would suppress that
+			// event and replace a tile showing the artist's initials with a generic
+			// glyph — worse, to fix a problem that is about status codes.
+			//
+			// Cache the negative regardless. "No image for this MBID" is as stable an
+			// answer as the image itself — a disabled provider will keep saying no, and
+			// an enabled one rarely gains art an existing entity lacked — so without a
+			// cache header the browser re-asks on every navigation. 204 is cacheable by
+			// default (RFC 7231 §6.1), so this is honoured. A day is short enough that
+			// enabling a provider is picked up the same session.
 			c.Header("Cache-Control", "public, max-age=86400")
-			c.Status(http.StatusNotFound)
+			c.Status(http.StatusNoContent)
 			return
 		}
 		// A malformed URL is this caller's mistake, and no provider was contacted —
@@ -117,9 +132,13 @@ func (a *API) artwork(c *gin.Context) {
 
 // artworkCapabilities reports which kinds of artwork can actually be served, so the
 // UI can render a monogram tile directly instead of firing an <img> request that is
-// certain to 404. It reflects the same truth the artwork handler enforces — fanart
-// enabled but keyless still reports false, because it cannot resolve an image — so a
-// provider that cannot deliver produces no requests, and therefore no 404s to log.
+// certain to come back empty. It reflects the same truth the artwork handler enforces
+// — fanart enabled but keyless still reports false, because it cannot resolve an
+// image — so a provider that cannot deliver produces no requests at all.
+//
+// It answers the whole-provider case. The per-entity case (fanart configured, this
+// particular artist unknown to it) cannot be known without asking, which is why the
+// answer to that one is a 204 rather than an error.
 //
 //	GET /artwork-capabilities -> {"cover": bool, "artist": bool}
 func (a *API) artworkCapabilities(c *gin.Context) {

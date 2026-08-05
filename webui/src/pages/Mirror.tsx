@@ -110,7 +110,7 @@ export default function Mirror() {
               onClick={act(`/mirror/sync${force ? "?force=true" : ""}`, "Metadata refresh started")}
               title="Re-reads MusicBrainz for everything the collection refers to. One rate-limited request per entity, so a first pass over a large collection takes hours. Reads only: no files are written."
             >
-              Start refresh
+              Refresh metadata
             </button>
           )}
         </div>
@@ -178,7 +178,7 @@ export default function Mirror() {
 
           <div className="row" style={{ gap: 18, flexWrap: "wrap" }}>
             <Stat n={s.fetched} l="fetched" hint="Cost a MusicBrainz request" />
-            <Stat n={s.fresh} l="already cached" hint="Served from the local mirror" />
+            <Stat n={s.fresh} l="already cached" hint="Answered from the local copy, without a MusicBrainz request" />
             <Stat n={s.errors} l="failed" hint="Logged and skipped; the pass continues" />
             <Stat
               n={s.changed_releases}

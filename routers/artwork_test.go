@@ -104,27 +104,43 @@ func TestArtworkServesFromCacheOnRepeat(t *testing.T) {
 	}
 }
 
-func TestArtworkWithoutProviderIs404(t *testing.T) {
+func TestArtworkWithoutProviderIsNoContent(t *testing.T) {
 	r, _ := artworkAPI(t)
 	// No data source rows at all: unconfigured is "no image", which the UI renders
 	// as a monogram. A 5xx here would light up an error state for a normal setup.
 	w := getArtwork(r, "/api/v1/artwork/release-group/"+artworkTestMBID)
-	if w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404: %s", w.Code, w.Body.String())
+	if w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204: %s", w.Code, w.Body.String())
+	}
+}
+
+// A missing image must not be reported as an error status. Most artists have no
+// fanart.tv entry and most releases have no cover, so one collection page asks for
+// hundreds of images that legitimately do not exist — and as 404s that is
+// indistinguishable from a client probing for files, which gets the user banned by
+// their own log-watcher for their own browsing.
+func TestArtworkMissingIsNotAnErrorStatus(t *testing.T) {
+	r, _ := artworkAPI(t)
+	w := getArtwork(r, "/api/v1/artwork/release-group/"+artworkTestMBID)
+	if w.Code >= 400 {
+		t.Errorf("status = %d; a missing image must not be a 4xx", w.Code)
+	}
+	// Empty, so the <img> error event still fires and the monogram tile takes over.
+	if w.Body.Len() != 0 {
+		t.Errorf("body = %d bytes, want empty", w.Body.Len())
 	}
 }
 
 func TestArtworkNegativeIsCacheable(t *testing.T) {
 	r, _ := artworkAPI(t)
 	// "No image" is a stable answer, and the browser must be told so: without a
-	// Cache-Control header a coverless collection re-asks on every navigation, and a
-	// reverse proxy watching for 404 floods can ban the client for its own traffic.
+	// Cache-Control header a coverless collection re-asks on every navigation.
 	w := getArtwork(r, "/api/v1/artwork/release-group/"+artworkTestMBID)
-	if w.Code != http.StatusNotFound {
-		t.Fatalf("status = %d, want 404", w.Code)
+	if w.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", w.Code)
 	}
 	if got := w.Header().Get("Cache-Control"); got == "" {
-		t.Error("404 has no Cache-Control — the browser will re-ask on every navigation")
+		t.Error("the negative has no Cache-Control — the browser will re-ask on every navigation")
 	}
 }
 
@@ -136,8 +152,8 @@ func TestArtworkIgnoresDisabledProvider(t *testing.T) {
 	defer stub.Close()
 	addDataSource(t, db, models.DataSourceTypeCoverArtArchive, stub.URL, "", false)
 
-	if w := getArtwork(r, "/api/v1/artwork/release-group/"+artworkTestMBID); w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", w.Code)
+	if w := getArtwork(r, "/api/v1/artwork/release-group/"+artworkTestMBID); w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", w.Code)
 	}
 }
 
@@ -147,8 +163,8 @@ func TestArtworkArtistNeedsFanart(t *testing.T) {
 	// make artist images look available.
 	addDataSource(t, db, models.DataSourceTypeCoverArtArchive, "http://127.0.0.1:1", "", true)
 
-	if w := getArtwork(r, "/api/v1/artwork/artist/"+artworkTestMBID); w.Code != http.StatusNotFound {
-		t.Errorf("status = %d, want 404", w.Code)
+	if w := getArtwork(r, "/api/v1/artwork/artist/"+artworkTestMBID); w.Code != http.StatusNoContent {
+		t.Errorf("status = %d, want 204", w.Code)
 	}
 }
 
@@ -264,7 +280,8 @@ func TestArtworkProvidersResolution(t *testing.T) {
 }
 
 func TestArtworkCapabilities(t *testing.T) {
-	// The endpoint is what lets the UI skip requests that could only 404, so it must
+	// The endpoint is what lets the UI skip requests that could only come back empty,
+	// so it must
 	// report exactly what the artwork handler can deliver: a disabled — or, for
 	// fanart, keyless — provider is not a capability, however configured it looks.
 	cases := []struct {

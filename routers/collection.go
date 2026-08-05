@@ -684,7 +684,7 @@ func (a *API) discography(c *gin.Context) {
 		return
 	}
 
-	groups, err := modules.GetArtistDiscography(mbid)
+	groups, _, err := modules.GetArtistDiscography(mbid)
 	if err != nil {
 		logger.Log.Errorf("failed to load discography for %s: %s", mbid, err.Error())
 		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load the discography from MusicBrainz"})
@@ -825,7 +825,7 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 	var rg models.CollectionReleaseGroup
 	if err := a.DB.Where("mb_id = ?", rgMBID).First(&rg).Error; err != nil {
 		rg = models.CollectionReleaseGroup{MBID: rgMBID, ArtistMBID: artistMBID}
-		if groups, dErr := modules.GetArtistDiscography(artistMBID); dErr == nil {
+		if groups, _, dErr := modules.GetArtistDiscography(artistMBID); dErr == nil {
 			for _, g := range groups {
 				if g.ID == rgMBID {
 					rg.Title = g.Title
