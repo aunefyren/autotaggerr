@@ -49,6 +49,58 @@ export function Modal({ title, children, onClose, wide }: { title: string; child
   );
 }
 
+/**
+ * A confirm step for an action whose cost is not visible from its button.
+ *
+ * The `body` is the whole point and is required: a dialog that only asks "are you
+ * sure?" adds a click without adding information, and people learn to dismiss it
+ * without reading. What goes in it is what the button cannot say — how long the
+ * work takes, what it overwrites, what it leaves alone.
+ *
+ * `confirmLabel` restates the verb rather than saying "OK", so the last thing read
+ * before committing names the thing being committed to.
+ */
+export function ConfirmDialog({
+  title,
+  body,
+  confirmLabel,
+  danger,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  title: string;
+  body: ReactNode;
+  confirmLabel: string;
+  /** Use for anything that overwrites or discards. Not for merely expensive work. */
+  danger?: boolean;
+  busy?: boolean;
+  onConfirm: () => void;
+  onCancel: () => void;
+}) {
+  return (
+    <Modal title={title} onClose={onCancel}>
+      <div className="stack" style={{ fontSize: 12, color: "var(--text-dim)", gap: 8 }}>
+        {body}
+      </div>
+      <div className="modal-actions">
+        {/* Cancel first and Cancel is the plain one: the escape from a dialog you
+            opened by accident should not be the button styled to be pressed. */}
+        <button className="btn btn-secondary btn-sm" onClick={onCancel} disabled={busy}>
+          Cancel
+        </button>
+        <button
+          className={`btn btn-sm ${danger ? "btn-danger" : "btn-primary"}`}
+          onClick={onConfirm}
+          disabled={busy}
+        >
+          {busy ? "Working…" : confirmLabel}
+        </button>
+      </div>
+    </Modal>
+  );
+}
+
 export function EmptyState({ icon, message, action }: { icon: string; message: string; action?: ReactNode }) {
   return (
     <div className="empty">

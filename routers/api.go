@@ -187,6 +187,11 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/artists/:mbid/follow", a.updateFollow)
 		protected.POST("/artists/:mbid/desires", a.setDesire)
 		protected.DELETE("/artists/:mbid/desires", a.clearDesire)
+		// Detaching is a change of authority over one artist: the manager stops
+		// deciding what is wanted for it, and what the manager had decided is kept as
+		// the user's own. DELETE is the undo, not a deletion of anything.
+		protected.POST("/artists/:mbid/detach", a.detachArtist)
+		protected.DELETE("/artists/:mbid/detach", a.reattachArtist)
 		protected.POST("/collection/rebuild", a.rebuildCollection)
 		protected.POST("/collection/sync-lidarr", a.syncLidarr)
 

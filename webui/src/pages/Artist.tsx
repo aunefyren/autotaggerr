@@ -3,7 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, ScanStatus } from "../types";
-import { ErrorNote, Pill } from "../components/ui";
+import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
@@ -18,10 +18,21 @@ import {
   useBrowse,
 } from "../components/browse";
 
-function ManagedBy({ managed_by }: { managed_by: string }) {
-  if (managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
-  if (managed_by === "mixed") return <Pill kind="scan">Lidarr + native</Pill>;
-  if (managed_by === "autotaggerr") return <Pill kind="chg">Native</Pill>;
+function ManagedBy({ artist }: { artist: CollectionArtist }) {
+  // Detached reads as its own state rather than plain "Native". Both mean Autotaggerr
+  // decides, but only one of them is a decision *someone made* — and the artist's
+  // files still sit in a managed library, which the plain label would deny.
+  if (artist.manager_detached)
+    return (
+      <Pill kind="chg">
+        <span title="Detached from its manager: Autotaggerr decides what is wanted for this artist, even though its files live in a managed library.">
+          Native · detached
+        </span>
+      </Pill>
+    );
+  if (artist.managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
+  if (artist.managed_by === "mixed") return <Pill kind="scan">Lidarr + native</Pill>;
+  if (artist.managed_by === "autotaggerr") return <Pill kind="chg">Native</Pill>;
   return (
     <Pill kind="off">
       <span title="This artist's library has no resolvable manager — reassign one on the Libraries page">Unknown</span>
@@ -121,6 +132,10 @@ export default function Artist() {
 
   const [busy, setBusy] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // Which authority dialog is open, if any. One piece of state rather than two
+  // booleans: detaching and reattaching are opposite answers to one question, and
+  // both being open at once is not a state that should be representable.
+  const [authorityAsk, setAuthorityAsk] = useState<"detach" | "reattach" | null>(null);
   const browse = useBrowse("year", "desc");
 
   const artist = detail.data?.artist;
@@ -165,6 +180,37 @@ export default function Artist() {
       setTimeout(() => status.reload(), 300);
     } catch (e) {
       toast("err", errMsg(e));
+    }
+  };
+
+  const detach = async () => {
+    setBusy(true);
+    try {
+      const r = await api.post<{ wants_kept: number; follow_cleared: boolean }>(`/artists/${mbid}/detach`);
+      // The counts are the reassurance: the whole promise of detaching is that the
+      // manager's decisions survive it, so the toast says how many did.
+      const kept = r.wants_kept === 1 ? "1 want kept" : `${r.wants_kept} wants kept`;
+      toast("info", r.follow_cleared ? `Detached — ${kept}, following switched off` : `Detached — ${kept}`);
+      setAuthorityAsk(null);
+      refresh();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const reattach = async () => {
+    setBusy(true);
+    try {
+      await api.del(`/artists/${mbid}/detach`);
+      toast("info", "Reattached — the manager decides what is wanted again");
+      setAuthorityAsk(null);
+      refresh();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -253,7 +299,7 @@ export default function Artist() {
           </div>
 
           <div className="entity-meta">
-            {artist && <ManagedBy managed_by={artist.managed_by} />}
+            {artist && <ManagedBy artist={artist} />}
             {artist?.origin === "manual" && (
               <span className="dim" style={{ fontSize: 11 }} title="Added by hand">added</span>
             )}
@@ -352,7 +398,73 @@ export default function Artist() {
       </div>
 
       {artist && settingsOpen && (
-        <FollowSettings artist={artist} busy={busy} onChange={updateFollow} manager={managerLabel} />
+        <>
+          <FollowSettings artist={artist} busy={busy} onChange={updateFollow} manager={managerLabel} />
+          {/* Authority sits under the follow settings because it is the question
+              those settings depend on: they are frozen above until this is answered
+              natively. Inside the disclosure, not the header — it is a decision you
+              make once, and a permanently visible "Detach" beside Scan and Tag files
+              would read as an everyday command. */}
+          <ManagerAuthority
+            artist={artist}
+            busy={busy}
+            manager={managerLabel}
+            onDetach={() => setAuthorityAsk("detach")}
+            onReattach={() => setAuthorityAsk("reattach")}
+          />
+        </>
+      )}
+
+      {authorityAsk === "detach" && (
+        <ConfirmDialog
+          title="Detach this artist from its manager?"
+          confirmLabel="Detach"
+          busy={busy}
+          onCancel={() => setAuthorityAsk(null)}
+          onConfirm={detach}
+          body={
+            <>
+              <p>
+                Autotaggerr takes over deciding what is wanted for this artist. Nothing on disk
+                changes, and nothing is removed from {managerLabel}.
+              </p>
+              <p>
+                <strong>What {managerLabel} already decided is kept.</strong> Every album it monitors
+                for this artist becomes your own want, on the same edition, so the list above reads
+                the same afterwards — it just stops being {managerLabel}&apos;s to change.
+              </p>
+              <p>
+                Following is switched off, so detaching cannot quietly start wanting the whole back
+                catalogue. Turn it on above if you want that. {managerLabel} stops being asked about
+                this artist at all, so its albums will no longer appear or disappear on their own.
+              </p>
+              <p className="dim">You can hand the artist back at any time.</p>
+            </>
+          }
+        />
+      )}
+
+      {authorityAsk === "reattach" && (
+        <ConfirmDialog
+          title="Hand this artist back to its manager?"
+          confirmLabel="Reattach"
+          busy={busy}
+          onCancel={() => setAuthorityAsk(null)}
+          onConfirm={reattach}
+          body={
+            <>
+              <p>
+                Whatever manages this artist&apos;s libraries decides what is wanted for it again,
+                and the follow settings above stop applying.
+              </p>
+              <p>
+                The wants detaching kept stay yours — they are not handed back with the artist. The
+                manager leaves those albums alone, because an album you have asked for explicitly is
+                never something it overrides.
+              </p>
+            </>
+          }
+        />
       )}
 
       <TableToolbar
@@ -441,6 +553,7 @@ export default function Artist() {
                         key={g.mb_id}
                         g={g}
                         manager={managerLabel}
+                        managerGoverns={isLidarr}
                         artistMbid={mbid}
                         onChanged={refresh}
                       />
@@ -466,11 +579,14 @@ function lifeSpan(info?: ArtistInfo): string {
 function ReleaseGroupRow({
   g,
   manager,
+  managerGoverns,
   artistMbid,
   onChanged,
 }: {
   g: CollectionReleaseGroup;
   manager: string;
+  /** Whether a manager still decides for this artist — see `stale` below. */
+  managerGoverns: boolean;
   artistMbid: string;
   onChanged: () => void;
 }) {
@@ -488,6 +604,14 @@ function ReleaseGroupRow({
   // owns identity for this artist, so every write here is a 409. An album Lidarr
   // does *not* monitor used to show a live "Want" button that only failed on click.
   const locked = !g.identity_editable;
+
+  // A mirrored want whose authority no longer governs the artist: the manager was
+  // deleted, or the artist was detached before this row was re-labelled. Nothing
+  // reconciles it — the Lidarr sync returns early when no manager is configured, and
+  // that is deliberate, since it cannot tell "unmonitored" from "gone" — so without an
+  // affordance here the row is permanently stuck: derived, so the toggle is frozen,
+  // and pointing at an authority that cannot be asked to change its mind.
+  const stale = derivedWant && g.wanted_source === "manager" && !managerGoverns;
 
   // What was actually asked for, in plain words — a refined want should never be a
   // mystery from the list.
@@ -525,14 +649,38 @@ function ReleaseGroupRow({
     }
   };
 
+  // Both forms of "stop wanting this" remove the same rows: the "any edition" want and
+  // every pinned edition of the group. One function, so an edition can never be left
+  // behind by whichever button was pressed.
+  const clearWants = async () => {
+    for (const rel of ["", ...(g.desired_releases ?? [])]) {
+      const q = new URLSearchParams({ release_group_mb_id: g.mb_id, release_mb_id: rel });
+      await api.del(`/artists/${artistMbid}/desires?${q.toString()}`);
+    }
+  };
+
+  /**
+   * Removes a want whose authority is gone. Its own action rather than un-freezing
+   * the toggle: the toggle means "I want this / I do not", and this row's want was
+   * never the user's answer to that — it is someone else's answer that outlived them.
+   */
+  const dismissWant = async () => {
+    setBusy(true);
+    try {
+      await clearWants();
+      onChanged();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggleWanted = async () => {
     setBusy(true);
     try {
       if (explicitlyWanted) {
-        for (const rel of ["", ...(g.desired_releases ?? [])]) {
-          const q = new URLSearchParams({ release_group_mb_id: g.mb_id, release_mb_id: rel });
-          await api.del(`/artists/${artistMbid}/desires?${q.toString()}`);
-        }
+        await clearWants();
       } else {
         await api.post(`/artists/${artistMbid}/desires`, {
           release_group_mb_id: g.mb_id,
@@ -597,12 +745,14 @@ function ReleaseGroupRow({
           // where to change it.
           <span
             title={
-              g.wanted_source === "manager"
-                ? `${manager} monitors this album. Change it in ${manager}, or pin it here to keep it regardless.`
-                : "Wanted because you follow this artist. Change the follow settings above, or pin it to keep it if you stop following."
+              stale
+                ? "Left behind by a manager that no longer governs this artist. Pin it to keep it, or dismiss it."
+                : g.wanted_source === "manager"
+                  ? `${manager} monitors this album. Change it in ${manager}, or pin it here to keep it regardless.`
+                  : "Wanted because you follow this artist. Change the follow settings above, or pin it to keep it if you stop following."
             }
           >
-            <Pill kind="off">{g.wanted_source === "manager" ? manager : "auto"}</Pill>
+            <Pill kind="off">{stale ? "was managed" : g.wanted_source === "manager" ? manager : "auto"}</Pill>
           </span>
         ) : wantSummary ? (
           <span className="mono" style={{ fontSize: 11, color: "var(--accent-text)" }} title="Explicitly wanted">
@@ -650,9 +800,71 @@ function ReleaseGroupRow({
               Pin
             </button>
           )}
+          {/* Offered only when nothing can recreate the row. While the manager still
+              governs, dismissing would be undone by its next sync — a button that
+              works and then silently reverts is worse than no button. */}
+          {stale && (
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={busy}
+              title="Remove this want. It came from a manager that no longer decides for this artist, and nothing will bring it back. Files on disk are not touched."
+              onClick={dismissWant}
+            >
+              Dismiss
+            </button>
+          )}
         </div>
       </td>
     </tr>
+  );
+}
+
+/**
+ * Who decides what is wanted for this artist, and how to change that.
+ *
+ * It renders in all three states rather than only where there is a button, because
+ * "Autotaggerr decides this one" is the answer to the same question and a panel that
+ * disappears once answered leaves the user unsure whether they ever answered it. The
+ * natively-managed case is a sentence with no control, which is the honest shape:
+ * there is no authority to take back.
+ */
+function ManagerAuthority({
+  artist,
+  busy,
+  manager,
+  onDetach,
+  onReattach,
+}: {
+  artist: CollectionArtist;
+  busy: boolean;
+  manager: string;
+  onDetach: () => void;
+  onReattach: () => void;
+}) {
+  return (
+    <div className="card">
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <span className="eyebrow">Authority</span>
+      </div>
+      <div className="row" style={{ justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}>
+        <div className="dim" style={{ fontSize: 11, maxWidth: "58ch" }}>
+          {artist.manager_detached
+            ? "Detached. Autotaggerr decides what is wanted for this artist, even though its files live in a managed library. The wants it kept from the manager are yours now."
+            : artist.detachable
+              ? `${manager} decides what is wanted for this artist, and Autotaggerr mirrors it. Detaching takes that over and keeps what ${manager} already decided.`
+              : "Autotaggerr already decides what is wanted for this artist — no manager governs it, so there is nothing to detach."}
+        </div>
+        {artist.manager_detached ? (
+          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onReattach}>
+            Reattach
+          </button>
+        ) : artist.detachable ? (
+          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={onDetach}>
+            Detach
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }
 

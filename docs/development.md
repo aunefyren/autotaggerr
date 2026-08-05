@@ -179,11 +179,13 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
   `Error`/`Debug` do not interpret `%` directives (`go vet` catches this).
 - **External clients** (`modules/lidarr.go`, `modules/plex.go`) are only constructed when their
   config is present and may be `nil`. Always nil-check before use in the pipeline.
-- **Caching**: Lidarr/Plex lookups cache to JSON under `./config/` with `*LoadCache`/`*SaveCache`
-  helpers loaded at startup; MusicBrainz lookups are DB-backed and write through as they are
-  fetched (`musicbrainz_release_cache`, `musicbrainz_entity_cache`). MusicBrainz requests go
-  through `RateLimit()` — route any new MusicBrainz call through it, and cache the result via
-  `mbCachePut` so the mirror can keep it warm. See `docs/mirror.md`.
+- **Caching**: every cache is a database table with an in-memory front, warmed once by
+  `modules.LoadAllCaches` at startup and **written through** as entries are fetched — there is no
+  batched flusher and no JSON cache file. MusicBrainz releases and entities have their own tables;
+  Lidarr and Plex share `provider_cache` via `modules/provider_cache.go`, keyed by `(source, key)`.
+  The `config/*.json` files are read once for a legacy import (`providerCacheImportJSON`) and never
+  written. MusicBrainz requests go through `RateLimit()` — route any new MusicBrainz call through
+  it, and cache the result via `mbCachePut` so the mirror can keep it warm. See `docs/mirror.md`.
 - **UI follows the style guide.** Once `docs/style-guide.md` exists, *every* UI change must consult it
   and either follow it or deliberately reshape it (updating the guide in the same change). Reuse the
   shared design tokens, colors, elements, and principles as much as possible — do not introduce

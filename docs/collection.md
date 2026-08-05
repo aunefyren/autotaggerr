@@ -346,8 +346,70 @@ page report that the two disagree.
 
 Recording the mirror as rows rather than reading it through the catalog columns is deliberate: a
 want that exists only as a mirrored column disappears with the mirror. As a row it is Autotaggerr's
-own record of what Lidarr decided, which is what makes detaching the manager later a change of
-authority instead of a loss of data (see [wip.md](wip.md) for the detach verb itself).
+own record of what Lidarr decided, which is what makes [detaching](#detaching-a-manager) a change of
+authority instead of a loss of data.
+
+## Detaching a manager
+
+`collection.DetachArtist` takes authority over one artist back from its library's manager. It is
+only possible because the manager's selections are already Autotaggerr's own rows, so it re-labels
+what is stored rather than re-deriving anything. Three things change, and deliberately nothing else:
+
+- **`ManagedBy` is held at native.** That is the whole mechanism: `SyncLidarr` and
+  `reconcileManagerDesires` both select on `managed_by IN (lidarr, mixed)`, so a detached artist
+  stops being asked about and stops having its rows maintained.
+- **The manager's wants become `manual`.** They *must* — those passes prune rows they own, and a
+  `manager` row on an artist no manager governs is exactly what the next `reconcileManagerDesires`
+  deletes as an orphan. Re-labelling is what keeps the decisions.
+- **Following is switched off.** The non-obvious one. Following is *stored* under a manager but does
+  not govern (see `FollowGoverns`), so a Lidarr artist can be carrying a stale `Monitored` flag set
+  before it was ever managed. Detaching makes following govern again, so leaving the flag alone
+  would turn a detach into "and also auto-want the entire back catalogue" — from a control the page
+  does not show. Following is offered right there afterwards.
+
+It deliberately does **not** invent follow settings from what the manager wanted. Lidarr monitors
+per album, not by rule, so there is no rule to recover; any follow-types guess would be fabricating
+intent that was never expressed.
+
+**`ManagerDetached` is stored, not derived.** `managed_by` is re-derived from the library's manager
+by `rebuildTx` on every scan, so a detach that only wrote `managed_by` would appear to work and then
+silently undo itself. `upsertArtist` honours the flag, and `TestRebuildDoesNotRevertADetach` holds
+that line.
+
+`ReattachArtist` (`DELETE /artists/:mbid/detach`) clears the override and re-derives provenance
+immediately via `deriveArtistManager`, rather than leaving the page wrong until the next scan. It is
+**not a perfect inverse**, and that is the safe direction: wants that detach made manual stay manual.
+Handing them back would give rows the user may since have edited to a pass that can re-point or
+prune them, and `reconcileManagerDesires` already treats a hand-authored want as a veto — so the
+manager simply leaves those albums alone.
+
+### Deleting a manager detaches its artists
+
+`deleteManager` calls `DetachManagerArtists` first. Once the manager row is gone, nothing can
+reconcile its mirrored wants: `SyncLidarr` returns early when no enabled Lidarr manager is
+configured, and that early return is *correct* — a reconcile with zero managers cannot tell "Lidarr
+unmonitored this album" from "Lidarr is gone", and would delete the decisions rather than keep them.
+So deletion is the last moment at which the information is still there to keep. Without this the
+artists fell to `ManagedByUnknown` while their wants kept a `manager` provenance naming an authority
+that no longer existed.
+
+**What happens to a `Manager` row that ends up governing nothing: nothing.** A manager is
+configuration owned by *libraries* — a base URL and a credential — not a container of artists.
+Deleting one because its last artist walked away would throw away what the user configured, and it
+would be wrong on its own terms: its libraries are still its, so the next file to appear in one is
+managed by it again. An empty manager is idle, not obsolete.
+
+### Clearing a want whose authority is gone
+
+`clearDesire` is ungated (see [the gate predicate](#manager-authority--lidarr-owns-identity)), but a
+mirrored want renders as *derived* — frozen toggle, **Pin** offered — so until now there was no way
+to remove one from the page. The artist row offers **Dismiss** when a `manager` want's authority no
+longer governs the artist: the manager was deleted, or the artist was detached before that row was
+re-labelled. The pill reads **was managed** rather than naming a manager that cannot be asked to
+change its mind.
+
+It is offered *only* in that case. While the manager still governs, dismissing would be undone by
+its next sync, and a button that works and then silently reverts is worse than no button.
 
 ## Following
 
@@ -455,6 +517,16 @@ One consequence worth stating: the page must decide "is this want the user's" fr
 nothing about authorship — the release-group page read it that way and would have offered live
 controls on exactly the albums that reject them.
 
+Locking is the read-only half of the boundary — naming the authority and freezing what it owns. The
+**action** half is [detaching](#detaching-a-manager), which sits in the artist's Settings disclosure
+under an **Authority** heading rather than in the header beside Scan and Tag files: it is a decision
+made once, and a permanently visible *Detach* would read as an everyday command. The panel renders
+in all three states (managed, detached, natively managed), because "Autotaggerr already decides this
+one" answers the same question, and a panel that disappears once answered leaves the user unsure
+whether they ever answered it. The header pill reads **Native · detached** rather than plain
+*Native*: both mean Autotaggerr decides, but only one is a decision someone made, and the artist's
+files do still live in a managed library.
+
 ## Hard-won UI rules
 
 These came out of live testing and are recorded in [style-guide.md](style-guide.md); they are
@@ -499,6 +571,8 @@ repeated here because they are about *this* data model.
 | `POST /artists` · `GET /search/artists` | add an artist you own nothing of |
 | `POST /artists/:mbid/follow` | follow settings, then re-sync with them |
 | `POST\|DELETE /artists/:mbid/desires` | author or clear intent |
+| `POST /artists/:mbid/detach` | [take authority back](#detaching-a-manager) from the manager, keeping its decisions as manual wants. **409** when no manager governs the artist — the request is well-formed and was true of an earlier state, so the page is out of date rather than wrong. Idempotent. |
+| `DELETE /artists/:mbid/detach` | hand the artist back; provenance is re-derived at once. Kept wants stay manual. |
 | `POST /collection/rebuild` · `POST /collection/sync-lidarr` | re-derive the disk view / mirror Lidarr |
 
 `Rebuild` also runs automatically after every scan and drift sync.

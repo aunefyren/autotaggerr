@@ -4,6 +4,7 @@ import { useFetch } from "../hooks";
 import { MirrorStatus } from "../types";
 import { CoverageBar } from "../components/CoverageBar";
 import { ErrorNote, Pill } from "../components/ui";
+import { ForceRefreshDialog } from "../components/ForceRefreshDialog";
 import { useToast } from "../toast";
 
 /**
@@ -58,6 +59,7 @@ export default function Mirror() {
   // Ignoring the cache is a modifier on the verb, not a second verb — the same
   // choice the Migrations page makes when it asks for a full re-read.
   const [force, setForce] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   // Poll while a pass runs. Every three seconds is plenty for a job whose unit of
   // work is a rate-limited request.
@@ -74,6 +76,29 @@ export default function Mirror() {
       setTimeout(() => status.reload(), 400);
     } catch (e) {
       toast("err", errMsg(e));
+    }
+  };
+
+  /**
+   * Starts a pass, and puts the forced one behind the shared confirm dialog.
+   *
+   * The reset afterwards is the other half of making forcing deliberate: the
+   * checkbox is a modifier on a button that is pressed again later, so leaving it
+   * ticked turns one considered decision into a setting, and the *next* press —
+   * possibly days later, possibly by someone who did not tick it — silently costs
+   * hours. It resets whether or not the request succeeded, because what must not
+   * persist is the intent, not the outcome.
+   */
+  const startRefresh = async () => {
+    setConfirming(false);
+    try {
+      await api.post(`/mirror/sync${force ? "?force=true" : ""}`);
+      toast("info", force ? "Full metadata refresh started — cached copies ignored" : "Metadata refresh started");
+      setTimeout(() => status.reload(), 400);
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setForce(false);
     }
   };
 
@@ -107,7 +132,9 @@ export default function Mirror() {
           ) : (
             <button
               className="btn btn-primary btn-sm"
-              onClick={act(`/mirror/sync${force ? "?force=true" : ""}`, "Metadata refresh started")}
+              // Only the forced pass confirms. Adding a dialog to the ordinary one
+              // would train people to click through the dialog that matters.
+              onClick={() => (force ? setConfirming(true) : startRefresh())}
               title="Re-reads MusicBrainz for everything the collection refers to. One rate-limited request per entity, so a first pass over a large collection takes hours. Reads only: no files are written."
             >
               Refresh metadata
@@ -115,6 +142,14 @@ export default function Mirror() {
           )}
         </div>
       </div>
+
+      {confirming && (
+        <ForceRefreshDialog
+          entities={cachedTotal}
+          onCancel={() => setConfirming(false)}
+          onConfirm={startRefresh}
+        />
+      )}
 
       <div className="row" style={{ gap: 8, alignItems: "center" }}>
         <label className="row" style={{ gap: 6, alignItems: "center", fontSize: 12 }}>

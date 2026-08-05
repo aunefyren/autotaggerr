@@ -571,6 +571,16 @@ type CollectionArtist struct {
 	// Rebuild could not tell "not owned yet" from "stale row".
 	Origin string `json:"origin"`
 
+	// ManagerDetached records that the user took authority over this artist back from
+	// the manager of the library its files sit in. It is stored rather than derived
+	// because ManagedBy is *re-derived from the library's manager* on every Rebuild —
+	// a detach that only wrote ManagedBy would be silently reverted by the next scan.
+	//
+	// While set, ManagedBy is held at ManagedByAutotaggerr however the library is
+	// configured, which is what makes SyncLidarr and reconcileManagerDesires skip the
+	// artist. See collection.DetachArtist.
+	ManagerDetached bool `json:"manager_detached"`
+
 	// FollowTypes is the comma-separated set of MusicBrainz primary types that
 	// following this artist auto-wants, e.g. "Album,EP". Empty means the default
 	// (album + EP). Following always includes releases that appear later — that is

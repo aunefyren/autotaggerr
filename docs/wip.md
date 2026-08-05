@@ -12,17 +12,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 ## Open work
 
-- **Detach a manager, keep its decisions.** The point of the mirrored wants that just shipped (see
-  [collection.md](collection.md#manager-derived-wants)): Lidarr's selections are now Autotaggerr's
-  own rows, so detaching is a change of authority rather than a loss of data. The verb is: flip the
-  artist's `managed_by` to native, convert its `manager` desires to `manual`, leave following off.
-  Correlations are already in `library_items`, so nothing else is at risk. Deliberately does *not*
-  invent follow settings — Lidarr monitors per album, not by rule, so a follow rule at detach time
-  would be fabricating intent the user never expressed. Still needs a verb, a confirm dialog, and a
-  decision about what happens to the `Manager` row itself when the last artist leaves it. Until it
-  exists, removing a Lidarr manager leaves its mirrored wants in place (nothing reconciles them
-  without a manager to sync), which is the safe half of the behaviour but shows a `manager`
-  provenance for an authority that is gone.
 - **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
   manual attach. The last unbuilt piece of the native manager.
 - **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
@@ -40,39 +29,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 - **Event retention is fixed** at the newest 200 events (detail rows cascade with them), and the
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
-
-## Metadata refresh: one name, one default
-
-An audit of every surface that reaches MusicBrainz found two problems. The verb has five user-facing
-names, and — worse — the same words mean different things on different pages: on the Metadata page
-*Refresh metadata* honours the cache unless a box is ticked, while on Artist, Libraries and
-Migrations the identical words are an unconditional forced re-read. A user who learns one meaning
-misjudges the other three, and the expensive reading is the one that is silent.
-
-Nothing on a schedule forces (nightly `SyncDrift`, the weekly scan's `DueScope` stage, both startup
-runs) — that property is the thing to protect, not to fix.
-
-**The two rules this work establishes:**
-
-1. **One verb, two forms.** Shipped — the rule and what it renamed now live in
-   [mirror.md](mirror.md#one-name-two-forms).
-2. **Ignoring the cache happens in exactly one place, and only on purpose.** The *place* is done —
-   `CollectionScope`'s `force` is now the only thing that sets `Scope.Force`, and a test holds that
-   line; see [mirror.md](mirror.md#scopes) and
-   [mb-migration.md](mb-migration.md#detection-is-separate-from-application). Making it *on purpose*
-   is pass C.
-
-### Pass C — forcing is always deliberate
-
-- The Metadata page keeps *Ignore cached copies*, but a forced pass goes behind a **confirm dialog**
-  that states the cost in the terms that matter (one rate-limited request per entity; hours on a
-  large collection; reads only, no files written), and the checkbox **resets to off** after a pass
-  starts so it cannot persist into a later click.
-- The Migrations page's forced pass routes through the same dialog rather than duplicating the verb
-  with different semantics — finding merges is why the option exists, so it keeps a way in. Its
-  label already says **Refresh metadata (ignore cache)**; the dialog is what makes it deliberate.
-- After B and C, forcing is reachable from two buttons, both of which say so and both of which
-  confirm — and from nothing else at all.
 
 ## Every cache in the database
 
@@ -99,18 +55,15 @@ see [mirror.md](mirror.md#what-is-cached-and-where) and
 ## Frontend follow-ups
 
 The manager-authority boundary is now honoured end to end (see
-[collection.md](collection.md#the-ui-under-a-manager)). What is left:
+[collection.md](collection.md#the-ui-under-a-manager)), and so is taking that authority back
+([detach](collection.md#detaching-a-manager)). What is left:
 
 - **Re-correlate buttons**, behind a confirm dialog that says it **discards manual pins** and rewrites
   files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`), per-album on the release-group
   page (`POST /release-groups/:mbid/recorrelate`) and per-library on library settings
-  (`POST /libraries/:id/recorrelate`). These are the *action* half of the boundary — the read-only
-  half (naming the authority, freezing what it owns) has shipped, and this is what a user does when
-  Lidarr's answer and the files disagree.
-- **Clear a stale want under a manager.** `clearDesire` (`DELETE /artists/:mbid/desires`) is
-  deliberately ungated — it is a pure removal, like detach — but nothing in the UI offers it on a
-  locked surface, so a `manager` want left behind by a removed manager cannot be dismissed from the
-  page. Worth doing with the detach verb above, since they are the same need.
+  (`POST /libraries/:id/recorrelate`). This is what a user does when Lidarr's answer and the files
+  disagree — the remaining action-half endpoint with no UI. Use the shared `ConfirmDialog`
+  (`ui.tsx`, `danger`: it discards pins) rather than a new one.
 - **Surface the scan's metadata-refresh stage in Activity.** A scan runs an inline metadata refresh
   as its first phase (no separate event — see [scanning.md](scanning.md) / the runner's phases), and
   the backend now records it two ways on the `scan` event, both currently unrendered:
@@ -166,6 +119,10 @@ The manager-authority boundary is now honoured end to end (see
 - *I can add artists on a collection where Lidarr is the only manager*
   Or, at least the button is there.
   Does that make sense?
+- *Lidarr differences to our tagger**
+  Lidarr uses Title casing on genres. Is this wise? Should we?
+  Lidarr has multiple genres on 'GENRE' separated by '; '. Should we?
+  Lidarr tags MP3s with 'ORIGINALYEAR', we remove this. Shold we?
   
 - **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
   `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID

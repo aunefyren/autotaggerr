@@ -205,6 +205,28 @@ per-library one — a library being collection-sized — as expensive as re-read
 user wants from either is *up to date*, which is what an unforced pass delivers. Distrusting every
 cached copy is a different request, and it is asked in one place.
 
+### Forcing is always deliberate
+
+One place is necessary but not sufficient: the argument still had to be *chosen* rather than
+carried in. Two rules complete it, both in the UI (`components/ForceRefreshDialog.tsx`):
+
+- **A forced pass confirms; an ordinary one does not.** The dialog states the cost in the terms that
+  decide it — one rate-limited request per entity, an estimate in hours derived from the cached-entity
+  count, and *reads only, no files written*, which is what makes the wait acceptable rather than
+  alarming. Confirming the ordinary pass too would train people to click through the dialog that
+  matters.
+- **The checkbox resets to off once a pass starts.** *Ignore cached copies* is a modifier on a button
+  that gets pressed again later, so leaving it ticked turns one considered decision into a setting,
+  and the next press — days later, possibly by someone who did not tick it — silently costs hours. It
+  resets whether or not the request succeeded: what must not persist is the intent, not the outcome.
+
+Forcing is now reachable from exactly two buttons — the Metadata page's checkbox and the Migrations
+page's *Refresh metadata (ignore cache)* — and both come through the same dialog. A second copy of
+the wording is how the verb drifted in the first place.
+
+Nothing on a schedule forces: the nightly `SyncDrift`, the weekly scan's `DueScope` stage and both
+startup runs are all unforced. That property is the one to protect.
+
 ## The refresh pass
 
 A pass walks its scope in this order:
@@ -353,6 +375,9 @@ tooltips: which of them write tags, and what *Refresh metadata* hands off to.
 The Migrations page offers the forced pass as **Refresh metadata (ignore cache)**. The
 parenthetical is not decoration: everywhere else those two words honour the cache, and a button
 that quietly means the expensive reading of a shared verb is the trap this naming exists to avoid.
+Finding merges is *why* forcing exists, so that page keeps a way in — it routes through the shared
+confirm dialog rather than duplicating the verb with semantics of its own (see
+[forcing is always deliberate](#forcing-is-always-deliberate)).
 
 ## Interaction with migrations
 

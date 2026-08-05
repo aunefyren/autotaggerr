@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
@@ -12,6 +13,7 @@ import (
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // artistView is an artist plus whether following actually governs it. Derived
@@ -25,6 +27,10 @@ type artistView struct {
 	// artist's MB identity: the UI uses it to hide the attach / choose-edition / want
 	// controls, which the API would reject anyway (see requireIdentityEditable).
 	IdentityEditable bool `json:"identity_editable"`
+	// Detachable is whether there is an authority to take back — derived here rather
+	// than inferred in the UI from managed_by, so the button and the endpoint agree on
+	// when detaching is a meaningful thing to offer.
+	Detachable bool `json:"detachable"`
 }
 
 func newArtistView(artist models.CollectionArtist) artistView {
@@ -32,6 +38,7 @@ func newArtistView(artist models.CollectionArtist) artistView {
 		CollectionArtist: artist,
 		FollowGoverns:    collection.FollowGoverns(artist),
 		IdentityEditable: collection.IdentityEditable(artist),
+		Detachable:       collection.Detachable(artist),
 	}
 }
 
@@ -576,6 +583,49 @@ func (a *API) requireArtistIdentityEditable(c *gin.Context, artistMBID string) b
 		return false
 	}
 	return true
+}
+
+// detachArtist takes authority over an artist back from its library's manager,
+// keeping the manager's selections as the user's own wants. See collection.DetachArtist
+// for what changes and why following is switched off with it.
+func (a *API) detachArtist(c *gin.Context) {
+	result, err := collection.DetachArtist(a.DB, c.Param("mbid"))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+		return
+	}
+	if errors.Is(err, collection.ErrNotManaged) {
+		// 409, not 400: the request is well-formed and was true of some earlier state
+		// of the artist — the page is simply out of date.
+		c.JSON(http.StatusConflict, gin.H{"error": "no manager governs this artist, so there is nothing to detach"})
+		return
+	}
+	if err != nil {
+		logger.Log.Warnf("failed to detach artist %s: %s", c.Param("mbid"), err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to detach the artist"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"artist":         newArtistView(result.Artist),
+		"wants_kept":     result.WantsKept,
+		"follow_cleared": result.FollowCleared,
+	})
+}
+
+// reattachArtist hands an artist back to whatever manages its libraries. The wants
+// detaching made manual stay manual — see collection.ReattachArtist.
+func (a *API) reattachArtist(c *gin.Context) {
+	artist, err := collection.ReattachArtist(a.DB, c.Param("mbid"))
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+		return
+	}
+	if err != nil {
+		logger.Log.Warnf("failed to reattach artist %s: %s", c.Param("mbid"), err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reattach the artist"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"artist": newArtistView(artist)})
 }
 
 // clearDesire drops a want. Owned files are never touched.

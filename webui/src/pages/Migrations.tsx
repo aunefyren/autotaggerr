@@ -3,6 +3,7 @@ import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { MusicbrainzMigration, MigrationList, MigrationPolicy } from "../types";
 import { EmptyState, ErrorNote, IdChip, Pill } from "../components/ui";
+import { ForceRefreshDialog } from "../components/ForceRefreshDialog";
 import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
 
@@ -14,6 +15,11 @@ import { useToast } from "../toast";
  * second dialog asking whether you meant it. Applied and dismissed rows stay
  * visible below, because "what did it decide while I was not looking" is the
  * question this page exists to answer.
+ *
+ * The forced refresh at the top is the exception, and not really one: it is not a row
+ * in this table, it is the Metadata page's verb reached from here. So it confirms
+ * through that page's dialog rather than a copy — the cost is the same wherever it is
+ * started, and the words for it live in exactly one place.
  */
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -58,13 +64,20 @@ export default function Migrations() {
   const policy = useFetch<MigrationPolicy>(() => api.get("/migrations/policy"));
   const [busy, setBusy] = useState<string | null>(null);
   const [verifying, setVerifying] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   // Finding a merge is not an activity of its own — it is what a metadata refresh
   // notices while fetching. So this is the ordinary refresh verb with the cache
   // ignored, not a fourth thing with its own name. It runs for as long as the
   // collection is large, so this only reports that it started; the Metadata and
   // Activity pages are where it is watched.
+  //
+  // It goes behind the same dialog the Metadata page uses rather than a second one of
+  // its own: it is the same verb at the same cost, and duplicating the wording is how
+  // one verb came to mean two things. Finding merges is the reason forcing exists, so
+  // this keeps a way in — the dialog is what makes it deliberate.
   const verify = async () => {
+    setConfirming(false);
     setVerifying(true);
     try {
       await api.post("/migrations/verify");
@@ -120,7 +133,7 @@ export default function Migrations() {
           <button
             className="btn btn-secondary btn-sm"
             disabled={verifying}
-            onClick={verify}
+            onClick={() => setConfirming(true)}
             title="Refresh every artist, release-group and release in the collection, ignoring cached copies — which is how merges and deletions are found. One rate-limited request each, so a large collection takes hours; watch it on the Metadata page. Reads only: no files are written, and anything found is queued under your approval policy."
           >
             {/* The parenthetical is not decoration: on every other page these words
@@ -142,6 +155,10 @@ export default function Migrations() {
           ? ` Currently held for review: ${holding.join(", ")}.`
           : " Nothing is currently held for review."}
       </p>
+
+      {confirming && (
+        <ForceRefreshDialog busy={verifying} onCancel={() => setConfirming(false)} onConfirm={verify} />
+      )}
 
       {list.err && <ErrorNote message={list.err} />}
 

@@ -7,7 +7,9 @@ import (
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/auth"
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
@@ -226,8 +228,33 @@ func validManagerType(t string) bool {
 	return t == models.ManagerTypeLidarr || t == models.ManagerTypeAutotaggerr
 }
 
-func (a *API) getManager(c *gin.Context)    { getEntity[models.Manager](a, c) }
-func (a *API) deleteManager(c *gin.Context) { deleteEntity[models.Manager](a, c) }
+func (a *API) getManager(c *gin.Context) { getEntity[models.Manager](a, c) }
+
+// deleteManager removes a manager, but first hands the artists it governs back to
+// Autotaggerr rather than letting them fall to "managed by an authority that no longer
+// exists".
+//
+// The detach is not a courtesy: the manager's selections are stored as desire rows it
+// owns, and once its row is gone nothing can reconcile them — SyncLidarr returns early
+// with no managers configured, deliberately, because a reconcile that cannot tell
+// "unmonitored" from "gone" would delete those decisions instead of keeping them. So
+// deleting is the last moment at which the information is still there to keep. See
+// collection.DetachManagerArtists, which also explains why nothing happens to a Manager
+// row that ends up governing nothing.
+func (a *API) deleteManager(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	// Best-effort and logged, not fatal: a manager the user asked to delete must still
+	// delete. The cost of failing here is stranded provenance, not lost files.
+	if detached, err := collection.DetachManagerArtists(a.DB, id); err != nil {
+		logger.Log.Warnf("failed to detach artists from manager %s before deleting it: %s", id, err.Error())
+	} else if detached > 0 {
+		logger.Log.Infof("detached %d artist(s) from manager %s before deleting it", detached, id)
+	}
+	deleteEntity[models.Manager](a, c)
+}
 
 func (a *API) createManager(c *gin.Context) {
 	var in managerInput

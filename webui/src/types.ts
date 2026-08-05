@@ -320,6 +320,18 @@ export interface CollectionArtist {
    * every write is a 409, so the controls are disabled and the authority is named.
    */
   identity_editable: boolean;
+  /**
+   * Whether a manager currently governs this artist, so taking that authority back
+   * is a meaningful thing to offer. Derived server-side alongside the two flags
+   * above, so the button and the endpoint cannot disagree about when it applies.
+   */
+  detachable: boolean;
+  /**
+   * Whether the user has already taken authority back from the manager. Stored, not
+   * derived: managed_by is recomputed from the library's manager on every scan, so
+   * this is what keeps a detach from being undone by the next one.
+   */
+  manager_detached: boolean;
   managed_by: string;
   /** "library" = materialised from files on disk; "manual" = added by hand. */
   origin: string;

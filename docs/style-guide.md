@@ -342,6 +342,15 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Empty state** — centered, muted icon, one-line explanation, and a primary action. An empty
   screen is an invitation to act ("No libraries yet — add your first music folder").
 - **Modal** — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop `rgba(13,11,20,.7)`; focus-trapped.
+- **Confirm dialog** (`ConfirmDialog`, `ui.tsx`) — a Modal with a required **body** and a confirm
+  button that **restates the verb** ("Detach", "Ignore cache and refresh"), never "OK". The body is
+  the whole component: a dialog that only asks *are you sure?* adds a click without adding
+  information, and people learn to dismiss it unread. It carries what the button cannot — how long
+  the work takes, what it overwrites, what it leaves alone. **Cancel comes first and is the plain
+  one**: the escape from a dialog you opened by accident must not be the button styled to be pressed.
+  Use `danger` for anything that overwrites or discards; expensive-but-safe work stays `primary`.
+  Confirm the *consequential* variant only — putting a dialog on the cheap sibling of an expensive
+  action trains people to click through the one that matters.
 - **Brand mark** (`.brand .logo`, `Logo.tsx`) — a tag glyph on a 22px accent tile
   (`linear-gradient(135deg, var(--accent), #4c7dff)`, `5px` radius), followed by the wordmark. It
   appears exactly twice: the sidebar and the login card. **Drawn, never typed** — the mark was an

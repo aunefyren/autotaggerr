@@ -84,31 +84,9 @@ type RebuildStats struct {
 // re-derivation back rather than leaving the disk view half-cleared.
 func rebuildTx(db *gorm.DB) (RebuildStats, error) {
 	// library -> manager type (for the per-artist "managed by" provenance)
-	managerType := map[uuid.UUID]string{}
-	var managers []models.Manager
-	if err := db.Find(&managers).Error; err != nil {
+	libraryManager, err := libraryManagerTypes(db)
+	if err != nil {
 		return RebuildStats{}, err
-	}
-	for _, m := range managers {
-		managerType[m.ID] = m.Type
-	}
-	libraryManager := map[uuid.UUID]string{}
-	var libraries []models.Library
-	if err := db.Find(&libraries).Error; err != nil {
-		return RebuildStats{}, err
-	}
-	for _, l := range libraries {
-		switch {
-		case l.ManagerID == nil:
-			// No manager assigned is the documented native default, not unknown.
-			libraryManager[l.ID] = models.ManagerTypeAutotaggerr
-		case managerType[*l.ManagerID] != "":
-			libraryManager[l.ID] = managerType[*l.ManagerID]
-		default:
-			// Dangling reference: the manager row is gone. Say so rather than
-			// letting it fall through to "native".
-			libraryManager[l.ID] = models.ManagedByUnknown
-		}
 	}
 
 	// Clear the disk view wholesale; it is re-established below. Track counts must
@@ -120,14 +98,8 @@ func rebuildTx(db *gorm.DB) (RebuildStats, error) {
 		return RebuildStats{}, err
 	}
 
-	type itemRow struct {
-		MBReleaseID string
-		LibraryID   uuid.UUID
-	}
-	var rows []itemRow
-	if err := db.Model(&models.LibraryItem{}).
-		Where("status = ? AND mb_release_id <> ''", models.LibraryItemStatusOK).
-		Find(&rows).Error; err != nil {
+	rows, err := ownedItemRows(db)
+	if err != nil {
 		return RebuildStats{}, err
 	}
 
@@ -646,6 +618,44 @@ func splitTypes(csv string) []string {
 	return out
 }
 
+// libraryManagerTypes maps every library to the kind of manager that owns it, which
+// is where an artist's provenance ultimately comes from: an artist is managed by
+// whatever manages the libraries their files sit in.
+//
+// Shared by Rebuild (which derives provenance for every artist at once) and
+// deriveArtistManager (which does it for one), so the three-way answer below —
+// native, the manager's type, or unknown — has a single definition.
+func libraryManagerTypes(db *gorm.DB) (map[uuid.UUID]string, error) {
+	managerType := map[uuid.UUID]string{}
+	var managers []models.Manager
+	if err := db.Find(&managers).Error; err != nil {
+		return nil, err
+	}
+	for _, m := range managers {
+		managerType[m.ID] = m.Type
+	}
+
+	libraryManager := map[uuid.UUID]string{}
+	var libraries []models.Library
+	if err := db.Find(&libraries).Error; err != nil {
+		return nil, err
+	}
+	for _, l := range libraries {
+		switch {
+		case l.ManagerID == nil:
+			// No manager assigned is the documented native default, not unknown.
+			libraryManager[l.ID] = models.ManagerTypeAutotaggerr
+		case managerType[*l.ManagerID] != "":
+			libraryManager[l.ID] = managerType[*l.ManagerID]
+		default:
+			// Dangling reference: the manager row is gone. Say so rather than
+			// letting it fall through to "native".
+			libraryManager[l.ID] = models.ManagedByUnknown
+		}
+	}
+	return libraryManager, nil
+}
+
 // managedByLabel summarises which managers own an artist's files. Unknown is a
 // real answer, not a fallback: an artist whose provenance cannot be determined must
 // not be reported as natively managed, because that is a claim rather than an
@@ -671,6 +681,13 @@ func managedByLabel(mgrs map[string]bool) string {
 func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
 	var a models.CollectionArtist
 	if err := db.Where("mb_id = ?", mbID).First(&a).Error; err == nil {
+		// A detached artist keeps its native provenance whatever manages the library
+		// its files are in. Without this the re-derivation below would hand the artist
+		// straight back to the manager on the next scan, so the detach would appear to
+		// work and then quietly undo itself — see models.CollectionArtist.
+		if a.ManagerDetached {
+			managedBy = models.ManagedByAutotaggerr
+		}
 		// Preserve Monitored / LastSyncedAt / Origin; refresh name + provenance.
 		// Origin records how the artist *entered* the collection, so an artist added
 		// by hand keeps that origin once files for it show up.
