@@ -282,8 +282,15 @@ called before `Finish` so its `Save` keeps the values rather than racing them.
   concurrency. `Status()` overlays the atomics onto the summary while a scan runs, so `/scan/status`
   and the event row agree.
 - **Metadata passes** (`mb_mirror`, including the identity sweep) already tracked `Total`/`Done`/
-  `Phase` in `mirror.Summary`; the same flusher now mirrors them onto the event row, so a sweep that
-  runs for hours shows progress in the feed rather than only on `/mirror/status`.
+  `Phase` in `mirror.Summary`; the same flusher mirrors them onto the event row through
+  `mirror.Runner.Progress()`, so a sweep that runs for hours shows progress in the feed rather than
+  only on `/mirror/status`.
+- **`/scan/status` reports whichever counters belong to the running job.** The atomics are written by
+  scans alone, so `Status()` reads them for a scan job and calls `mirror.Runner.Progress()` for a
+  refresh one — the same counters the refresh flushes onto its event, which is what stops the status
+  banner and that event's row in the feed describing the same pass differently. Every job also clears
+  the atomics as it starts (`resetProgress`, in the queue worker and in `RetagItems`), so a job that
+  publishes no progress of its own is never drawn with the previous scan's finished bar.
 - The **Activity** feed polls while any event is running (not only during a scan), shows the bar +
   phase + current + elapsed in the banner and inline on running rows; the **Dashboard** and **Artist**
   scan widgets show the bar too.

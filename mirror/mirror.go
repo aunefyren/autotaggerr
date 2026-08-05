@@ -444,7 +444,7 @@ func (r *Runner) run(ctx context.Context, scope Scope) (Result, error) {
 	// Flush the pass's live Total/Done/Phase onto the event row so the Activity feed
 	// draws a bar for a long refresh — the sweep especially, which runs for hours.
 	// Stopped before finish so its Save keeps the last progress rather than racing it.
-	stopProgress := events.StartProgress(r.db, event, r.progressSnapshot)
+	stopProgress := events.StartProgress(r.db, event, r.Progress)
 	res, cancelled := r.execute(ctx, scope, true)
 	stopProgress()
 
@@ -452,10 +452,16 @@ func (r *Runner) run(ctx context.Context, scope Scope) (Result, error) {
 	return res, nil
 }
 
-// progressSnapshot reads the pass's live counters for the event-progress flusher.
-// Phase names the stage; the scope title is already the event's Title, so Current is
-// left empty here.
-func (r *Runner) progressSnapshot() events.Progress {
+// Progress reads the pass's live counters for the event-progress flusher. Phase names
+// the stage; the scope title is already the event's Title, so Current is left empty
+// here.
+//
+// Exported because the scan runner reports it too: a refresh queued as a job is what
+// /scan/status describes while it runs, and reading the same counters is what keeps
+// the status banner and the event row in the feed from telling two different stories.
+// It is the cheap half of Status(), without the cache-coverage counts a poll does not
+// need.
+func (r *Runner) Progress() events.Progress {
 	r.statusMu.Lock()
 	defer r.statusMu.Unlock()
 	return events.Progress{Total: r.summary.Total, Done: r.summary.Done, Phase: r.summary.Phase}

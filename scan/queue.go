@@ -43,6 +43,17 @@ func (k jobKind) fileWriting() bool {
 	return false
 }
 
+// metadataRefresh reports whether a kind is a metadata pass. Those count entities on
+// the mirror runner rather than files in the scan's own counters, which is where
+// Status() reads their progress from.
+func (k jobKind) metadataRefresh() bool {
+	switch k {
+	case jobRefreshAll, jobRefreshVerify, jobRefreshArtist, jobRefreshLibrary:
+		return true
+	}
+	return false
+}
+
 // job is one unit of queued work: a stable identity for dedup/priority/display, plus
 // the closure that performs it.
 type job struct {
@@ -129,6 +140,10 @@ func (r *Runner) worker() {
 		cur := j.view()
 		r.jobMu.Lock()
 		r.running.Store(true)
+		// Clear the previous job's progress before this one is visible as running, so
+		// no window exists where the status reports the last scan's bar under this
+		// job's name.
+		r.resetProgress()
 		r.setStatus(func(s *Summary) { s.CurrentJob = &cur; s.Queue = views })
 
 		runJob(j)

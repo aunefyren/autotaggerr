@@ -172,8 +172,14 @@ func (r *Runner) Concurrency() int { return int(r.concurrency.Load()) }
 
 // Status returns a copy of the current/last scan summary plus the queue. Running is
 // taken from the atomic so it reflects both queue jobs and the interactive re-tags
-// that never touch the summary; while a job runs the live progress atomics are folded
-// in, so a scan shows a moving bar without the per-file path taking the status lock.
+// that never touch the summary; while a job runs the live progress of whatever is
+// running is folded in, so a scan shows a moving bar without the per-file path taking
+// the status lock.
+//
+// Which progress that is depends on the job. Only a scan writes the atomics; a
+// metadata refresh counts entities on the mirror runner, so its progress is read from
+// there — the same counters that runner flushes onto its event row, so the status
+// banner and the feed cannot disagree about a pass they both describe.
 func (r *Runner) Status() Summary {
 	r.statusMu.Lock()
 	s := r.summary
@@ -181,9 +187,24 @@ func (r *Runner) Status() Summary {
 	s.Running = r.running.Load()
 	if s.Running {
 		p := r.progressSnapshot()
+		if r.refresh != nil && s.CurrentJob != nil && jobKind(s.CurrentJob.Kind).metadataRefresh() {
+			p = r.refresh.Progress()
+		}
 		s.Total, s.Done, s.Phase, s.Current = p.Total, p.Done, p.Phase, p.Current
 	}
 	return s
+}
+
+// resetProgress clears the live progress atomics. Every job starts by calling it, so
+// no run can inherit the one before it: the atomics are written by scans alone, and a
+// status poll during a metadata refresh or an interactive re-tag would otherwise
+// report the last scan's final numbers — a full bar, its closing phase and the artist
+// it ended on — as though they belonged to the job actually running.
+func (r *Runner) resetProgress() {
+	r.progTotal.Store(0)
+	r.progDone.Store(0)
+	r.setPhase("")
+	r.setCurrent("")
 }
 
 // setPhase records the stage a running scan is in, for Summary.Phase and the event
@@ -586,9 +607,7 @@ func (r *Runner) runScope(scope Scope) {
 	// Reset the live progress atomics and start the flusher that writes them onto the
 	// running event, so the Activity feed can draw a bar. Stopped before Finish, whose
 	// Save must not race the flusher for the row.
-	r.progDone.Store(0)
-	r.progTotal.Store(0)
-	r.setCurrent("")
+	r.resetProgress()
 	r.setPhase(PhaseRefresh)
 	stopProgress := events.StartProgress(r.db, event, r.progressSnapshot)
 
@@ -1341,6 +1360,10 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	defer r.jobMu.Unlock()
 	r.running.Store(true)
 	defer r.running.Store(false)
+	// A re-tag reports no progress of its own, and it flips Running with no CurrentJob
+	// behind it — so the bar has to be cleared here too, or a status poll during one
+	// shows the last scan's.
+	r.resetProgress()
 
 	libraries := map[uuid.UUID]models.Library{}
 	results := make([]RetagResult, 0, len(itemIDs))

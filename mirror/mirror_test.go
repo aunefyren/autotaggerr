@@ -307,6 +307,28 @@ func TestStatusReportsCacheCoverage(t *testing.T) {
 	}
 }
 
+// Progress is read by two callers that must agree: the flusher that writes a running
+// pass onto its event row, and the scan runner's status endpoint while the pass is the
+// queued job in flight. Both draw the same bar, so it has to be the live summary and
+// not a copy taken when the pass began.
+func TestProgressTracksTheLivePass(t *testing.T) {
+	r := NewRunner(testDB(t), nil)
+
+	r.setStatus(func(s *Summary) {
+		*s = Summary{Running: true, Total: 26373, Done: 19963, Phase: PhaseEditions}
+	})
+
+	p := r.Progress()
+	if p.Total != 26373 || p.Done != 19963 || p.Phase != PhaseEditions {
+		t.Errorf("progress = %d/%d phase=%q, want 19963/26373 phase=%q", p.Done, p.Total, p.Phase, PhaseEditions)
+	}
+
+	r.setStatus(func(s *Summary) { s.Done = 20500; s.Phase = PhaseReleases })
+	if p := r.Progress(); p.Done != 20500 || p.Phase != PhaseReleases {
+		t.Errorf("progress after the pass moved on = %d phase=%q, want 20500 phase=%q", p.Done, p.Phase, PhaseReleases)
+	}
+}
+
 // finish is what writes the Activity event a multi-hour pass is watched through,
 // so it is worth asserting separately from a pass that can reach the network.
 func TestFinishRecordsAnEvent(t *testing.T) {

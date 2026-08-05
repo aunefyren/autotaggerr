@@ -110,3 +110,52 @@ func TestQueuePrioritisesFileJobs(t *testing.T) {
 		t.Errorf("run order = %v, want [scan meta] — a file job should precede a pending refresh", order)
 	}
 }
+
+// TestJobDoesNotInheritPreviousProgress: the live progress atomics are written by
+// scans alone, so a job that reports none of its own must not be described with the
+// last scan's. Left unreset, a status poll during a metadata refresh showed the
+// finished scan's full bar, its closing phase and the artist it ended on, all under
+// the refresh's name — while the same refresh's event row in the feed showed its real
+// position.
+func TestJobDoesNotInheritPreviousProgress(t *testing.T) {
+	r := newQueueRunner()
+
+	// The state a completed scan leaves behind.
+	r.progTotal.Store(17858)
+	r.progDone.Store(17858)
+	r.setPhase(PhaseCollection)
+	r.setCurrent("Some Artist")
+
+	var during Summary
+	r.enqueue(job{jobRefreshAll, "refresh", "Metadata refresh", func() { during = r.Status() }})
+	r.waitIdle(t)
+
+	if !during.Running {
+		t.Fatal("status taken inside a job should report running")
+	}
+	if during.Total != 0 || during.Done != 0 || during.Phase != "" || during.Current != "" {
+		t.Errorf("progress during a refresh = %d/%d phase=%q current=%q, want all empty — not the previous scan's",
+			during.Done, during.Total, during.Phase, during.Current)
+	}
+}
+
+// TestScanJobReportsItsOwnProgress is the other half: clearing the atomics between
+// jobs must not cost a running scan the bar it publishes into them.
+func TestScanJobReportsItsOwnProgress(t *testing.T) {
+	r := newQueueRunner()
+
+	var during Summary
+	r.enqueue(job{jobScanAll, "scan", "Scan all libraries", func() {
+		r.progTotal.Store(200)
+		r.progDone.Store(75)
+		r.setPhase(PhaseScanning)
+		r.setCurrent("Some Artist")
+		during = r.Status()
+	}})
+	r.waitIdle(t)
+
+	if during.Total != 200 || during.Done != 75 || during.Phase != PhaseScanning || during.Current != "Some Artist" {
+		t.Errorf("progress during a scan = %d/%d phase=%q current=%q, want 75/200 phase=%q current=%q",
+			during.Done, during.Total, during.Phase, during.Current, PhaseScanning, "Some Artist")
+	}
+}
