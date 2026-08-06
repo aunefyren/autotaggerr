@@ -164,7 +164,7 @@ func Sections() []Section {
 			// named after the implementation is how a second name gets learned.
 			ID:          "mirror",
 			Title:       "Metadata refresh",
-			Description: "Keeping the local copy of MusicBrainz current, so browsing reads it instead of the rate-limited API.",
+			Description: "Keeping the local copy of your metadata sources current, so browsing reads it instead of their rate-limited APIs.",
 			Fields: []Field{
 				{
 					// Stored as "disabled" but shown as "enabled": a bool missing from an
@@ -192,9 +192,16 @@ func Sections() []Section {
 			},
 		},
 		{
+			// Named for what the setting governs, not for who supplies the data. A
+			// metadata source is a component you configure zero, one or several of, and
+			// only MusicBrainz is implemented today — but *whether an identity change
+			// needs approval* is a policy about this library, not a property of the
+			// service that reported it. Naming the section after the one current source
+			// would have to be undone by the second, and would read as absent to anyone
+			// running none.
 			ID:    "migrations",
-			Title: "MusicBrainz migrations",
-			Description: "MusicBrainz merges and deletes entities. Each switch holds that kind of change " +
+			Title: "Metadata migrations",
+			Description: "Metadata sources merge and delete entities. Each switch holds that kind of change " +
 				"for your approval instead of applying it; off means it is applied as it is found.",
 			Fields: []Field{
 				{

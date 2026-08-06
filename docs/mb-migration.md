@@ -77,6 +77,11 @@ less.
 A detected migration is `pending`. It is applied immediately unless its category is held for
 review, in which case it waits for a human on the **Migrations** page.
 
+These four live on **/settings** under *Metadata migrations*, not on the data source that reported
+the change. Holding a merge for approval is a decision about this library, so it holds across every
+configured metadata source and stays meaningful with none — see
+[settings.md](settings.md#sections-are-named-for-what-they-govern-not-who-supplies-the-data).
+
 | Config key | Holds |
 |------------|-------|
 | `autotaggerr_migration_review_releases` | merged releases |

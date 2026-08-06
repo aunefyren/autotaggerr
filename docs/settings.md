@@ -15,6 +15,25 @@ It is closures rather than struct tags over `ConfigStruct` for two reasons. Tags
 labels, help, options and validation anyway, and a field that is *deliberately* absent from the UI
 has to be a decision someone wrote down rather than an omission nobody notices.
 
+## Sections are named for what they govern, not who supplies the data
+
+A setting on this page is **tenant-wide policy**. It holds whether you have configured zero, one or
+several of the components it touches, which is why the naming avoids the name of any one of them:
+the *Metadata refresh* and *Metadata migrations* sections say what they decide, not that MusicBrainz
+is currently the only metadata source implemented.
+
+The distinction that keeps this honest is *policy vs. connection*. "Hold merged releases for my
+approval" is a decision about this library and belongs here, whatever answered the lookup. A base
+URL, a credential or a rate limit is a property of one configured source and belongs on its own row
+under **Data sources** — see [Managed elsewhere](#managed-elsewhere) for the same split applied to
+managers, libraries and tagger profiles.
+
+Naming a section after the current implementation costs twice: the second source makes the name
+wrong, and someone running none reads a section about a service they do not use as irrelevant when
+it in fact governs them. This is the same discipline
+[mirror.md](mirror.md#the-three-verbs) applies to *mirror* — the package name, never a word the UI
+says.
+
 ## Tiers: when an edit takes effect
 
 | Tier | Meaning | Examples |

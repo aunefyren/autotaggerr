@@ -79,11 +79,6 @@ see [mirror.md](mirror.md#what-is-cached-and-where) and
   an import that had deleted its own source would be unrecoverable if it went wrong — but
   `config/*.json` now contains six files nothing reads. Worth a cleanup pass once the import has
   been in a release long enough to trust.
-- **The DB-less path is now cache-less.** With no database configured the caches are process-local
-  (which is correct for a cache, and what the tests want), but `MusicbrainzLoadCache` returning early
-  means the one-shot `--file` invocation keeps nothing between runs. In practice `main` always
-  connects a database first, so this only affects tests — worth confirming before anyone relies on
-  `--file` in a loop.
 
 ## Frontend follow-ups
 
@@ -110,6 +105,9 @@ The manager-authority boundary is now honoured end to end (see
     `path` is the release MBID and whose `tags_written` is how many of that release's files the drift
     stage re-tagged. Render these distinctly from file rows (a release changed upstream, not a file),
     ideally linking the MBID and grouping/omitting by `phase`. File rows keep `phase: ""`.
+    Not to be confused with the `ev.phase` already rendered in the feed row (`Activity.tsx`): that is
+    the *running job's* live stage, a different field on a different object. `FileDetail` reads
+    neither this `phase` nor any `details.*` key below.
 - **Surface the scan's collection stage in Activity.** Same shape as the refresh stage above: the
   summary line already gains a `· N credit change(s)` clause verbatim, but `details.credit_changes`
   (an album moved between artists upstream — see
@@ -129,8 +127,7 @@ The manager-authority boundary is now honoured end to end (see
   `<albumartist>` + MB IDs) for NFO-first players like Jellyfin/Kodi. Open design questions:
   overwrite vs. merge vs. create-if-absent (Jellyfin-generated NFOs carry extra data like
   `<lockdata>`, `<dateadded>`, artwork paths, AudioDB IDs); Kodi-plain vs. Emby/Jellyfin dialect;
-  only useful if Jellyfin's NFO *saver* is off, otherwise it rewrites the file. Would fix the
-  duplicate-artist issue below at the source.
+  only useful if Jellyfin's NFO *saver* is off, otherwise it rewrites the file.
 - **Granular actions beyond the artist.** The three per-artist actions have shipped (see
   [scanning.md](scanning.md)) on a `scan.Scope` built to extend. A release-group or single-album
   scope needs a new constructor and UI, not new machinery — worth doing once the artist actions have
@@ -139,28 +136,27 @@ The manager-authority boundary is now honoured end to end (see
   Mapping to current content, creating folders, renaming and keeping up to date.
   Configurable structure? 
   Link to file importing feature?
-- *Multiple artists on album*
-  We do not tag multiple artists on albums, because Plex does not allow it.
-  We should make this configurable in the Tagger, default off.
-- *MusicBrainz settings on /settings*
-  Autotaggerr allows multiple metadata sources, so this does not make sense
-  These are not tenant wide settings
-  Should probably be moved to the data-sources page, applying only to the selected metadata source
+- **Tagger profile toggles for Lidarr parity.** Four flags on one settings surface, currently
+  hardcoded, each a question about matching what Lidarr writes:
+  - **Multiple artists on album** — not tagged today because Plex does not allow it. Configurable,
+    default off.
+  - **Genre casing** — Lidarr Title-cases genres. Should we?
+  - **Multiple genres** — Lidarr puts them all on `GENRE` separated by `; `. Should we?
+  - **`ORIGINALYEAR` on MP3s** — Lidarr writes it, we remove it. Should we?
 - *Does the collection page work with several libraries?*
   The page seems very one dimensional, with dynamic buttons.
   What happens if I have multiple libraries, perhaps either Lidarr or Autotaggerr managed?
+  What happens if I have multiple metadata managers? Do the global settings like migrations and such apply correctly?
 - *I can add artists on a collection where Lidarr is the only manager*
   Or, at least the button is there.
   Does that make sense?
-- *Lidarr differences to our tagger**
-  Lidarr uses Title casing on genres. Is this wise? Should we?
-  Lidarr has multiple genres on 'GENRE' separated by '; '. Should we?
-  Lidarr tags MP3s with 'ORIGINALYEAR', we remove this. Shold we?
 - *Rebuilding/scanning the library is not an activity?*
+  Confirmed: `events.Begin` is called for Process, Tag files, Lidarr sync, Plex refresh, migrations,
+  mirror and health — never for `collection.Rebuild`. Deciding *which* rebuilds deserve an event is
+  the work: it runs inline as a scan's last phase and again asynchronously from the coalescing
+  `Rebuilder` after every attach.
 - *Cascading/grouped actions should maybe just create multiple activities*
   It is not very clear what order things happen in, and what does what
-- *Some activities have more info in the summary than in the pop up modal*
-
 - **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
   `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID
   (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still
