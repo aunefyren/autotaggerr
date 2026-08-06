@@ -5,12 +5,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 )
 
@@ -229,6 +231,222 @@ func TestGetMusicBrainzReleaseCoalescesError(t *testing.T) {
 	}
 	if n := atomic.LoadInt32(&hits); n != 2 {
 		t.Errorf("server hit %d times after retry, want 2 — a failure must not be cached", n)
+	}
+}
+
+// seedExpiredRelease puts an already-expired entry in the release cache: the state
+// a library reaches on its own after a week of not being scanned.
+func seedExpiredRelease(mbID, title string) {
+	musicbrainzReleaseCacheMu.Lock()
+	musicbrainzReleaseCache[mbID] = models.CachedMusicBrainzRelease{
+		Release:   models.MusicBrainzReleaseResponse{ID: mbID, Title: title},
+		Timestamp: time.Now().Add(-8 * 24 * time.Hour),
+		ExpiresAt: time.Now().Add(-time.Hour),
+	}
+	musicbrainzReleaseCacheMu.Unlock()
+}
+
+// TestGetMusicBrainzReleaseServesStaleOnOutage is the regression for albums going
+// mismatched during a MusicBrainz outage. An expired entry is not a reason to have
+// no answer: failing here discards the correlation for every file on the album,
+// which then drops out of the disk view.
+func TestGetMusicBrainzReleaseServesStaleOnOutage(t *testing.T) {
+	for _, status := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusInternalServerError} {
+		withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		})
+		seedExpiredRelease("rel-stale", "Still Known")
+
+		got, err := GetMusicBrainzRelease("rel-stale")
+		if err != nil {
+			t.Fatalf("HTTP %d: expected the stale entry to stand in, got error: %v", status, err)
+		}
+		if got.Title != "Still Known" {
+			t.Errorf("HTTP %d: served %q, want the cached title", status, got.Title)
+		}
+	}
+}
+
+// A transport failure is the same case as a 5xx — the service is unreachable, which
+// is not an answer about the release.
+func TestGetMusicBrainzReleaseServesStaleOnTransportFailure(t *testing.T) {
+	srv := withMockMB(t, func(w http.ResponseWriter, r *http.Request) {})
+	srv.Close() // nothing is listening: the request fails before any status exists
+	seedExpiredRelease("rel-dead-socket", "Unreachable")
+
+	got, err := GetMusicBrainzRelease("rel-dead-socket")
+	if err != nil {
+		t.Fatalf("expected the stale entry to stand in, got error: %v", err)
+	}
+	if got.Title != "Unreachable" {
+		t.Errorf("served %q, want the cached title", got.Title)
+	}
+}
+
+// A gone entity is an *answer*, and the one case the fallback must not swallow:
+// serving the copy we still hold would keep files pointed at an ID that will never
+// resolve again, and would hide the migration that deals with it.
+func TestGetMusicBrainzReleaseDoesNotServeStaleWhenGone(t *testing.T) {
+	for _, status := range []int{http.StatusNotFound, http.StatusGone} {
+		withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+		})
+		seedExpiredRelease("rel-deleted", "Deleted Upstream")
+
+		if _, err := GetMusicBrainzRelease("rel-deleted"); !errors.Is(err, ErrEntityGone) {
+			t.Errorf("HTTP %d: expected ErrEntityGone, got %v", status, err)
+		}
+	}
+}
+
+// With nothing cached there is nothing to stand in with, so the failure must still
+// reach the caller rather than becoming an empty release — an empty one would read
+// downstream as "track not in release", which looks like a correlation problem.
+func TestGetMusicBrainzReleaseFailsWithoutStaleEntry(t *testing.T) {
+	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	if _, err := GetMusicBrainzRelease("rel-never-seen"); err == nil {
+		t.Fatal("expected an error when there is no cached entry to fall back to")
+	}
+}
+
+// The fallback has to land before the coalesced waiters are released, or it only
+// rescues whichever goroutine happened to lead — and an album's tracks miss the
+// cache together, which is the case that matters.
+func TestGetMusicBrainzReleaseStaleFallbackReachesWaiters(t *testing.T) {
+	var hits int32
+	release := make(chan struct{})
+	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+		if atomic.AddInt32(&hits, 1) == 1 {
+			select {
+			case <-release:
+			case <-time.After(10 * time.Second):
+			}
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	seedExpiredRelease("rel-album", "Shared Album")
+	MusicbrainzResetStats()
+
+	var wg sync.WaitGroup
+	results := make([]models.MusicBrainzReleaseResponse, 2)
+	errs := make([]error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			results[i], errs[i] = GetMusicBrainzRelease("rel-album")
+		}(i)
+	}
+	waitFor(t, func() bool { return MusicbrainzStatsSnapshot().Coalesced == 1 })
+	close(release)
+	wg.Wait()
+
+	for i := range results {
+		if errs[i] != nil {
+			t.Errorf("caller %d: got error %v, want the stale release", i, errs[i])
+		}
+		if results[i].Title != "Shared Album" {
+			t.Errorf("caller %d: served %q, want the cached title", i, results[i].Title)
+		}
+	}
+}
+
+// A stale serve must not be mistaken for a refresh: the entry stays expired so the
+// next run re-checks it, and only a real response may extend its life.
+func TestGetMusicBrainzReleaseStaleServeDoesNotRefreshEntry(t *testing.T) {
+	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+	seedExpiredRelease("rel-still-stale", "Unchanged")
+
+	if _, err := GetMusicBrainzRelease("rel-still-stale"); err != nil {
+		t.Fatalf("expected the stale entry to stand in, got error: %v", err)
+	}
+	if _, fresh := cachedFreshRelease("rel-still-stale"); fresh {
+		t.Error("the stale entry was marked fresh by being served; the next run would skip re-checking it")
+	}
+}
+
+// TestTransientClassification pins which failures are worth retrying. The pair of
+// sentinels is the whole point: a caller deciding what to persist about a file has to
+// tell "MusicBrainz was down" from "this release is gone" from "this request is
+// wrong", and only the first should be shrugged off and re-attempted.
+func TestTransientClassification(t *testing.T) {
+	cases := []struct {
+		status    int
+		transient bool
+		gone      bool
+	}{
+		{http.StatusServiceUnavailable, true, false},
+		{http.StatusTooManyRequests, true, false},
+		{http.StatusInternalServerError, true, false},
+		{http.StatusBadGateway, true, false},
+		{http.StatusGatewayTimeout, true, false},
+		{http.StatusNotFound, false, true},
+		{http.StatusGone, false, true},
+		// A 400 or a 401 is a request this client keeps getting wrong. Retrying it
+		// forever would hide a misconfiguration, so it is neither.
+		{http.StatusBadRequest, false, false},
+		{http.StatusUnauthorized, false, false},
+	}
+
+	for _, c := range cases {
+		withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(c.status)
+		})
+		// No cached entry: the stale fallback must not stand in and mask the error
+		// being classified here.
+		_, err := GetMusicBrainzRelease("rel-classify")
+		if err == nil {
+			t.Fatalf("HTTP %d: expected an error", c.status)
+		}
+		if got := errors.Is(err, ErrTransient); got != c.transient {
+			t.Errorf("HTTP %d: ErrTransient = %v, want %v (%v)", c.status, got, c.transient, err)
+		}
+		if got := errors.Is(err, ErrEntityGone); got != c.gone {
+			t.Errorf("HTTP %d: ErrEntityGone = %v, want %v (%v)", c.status, got, c.gone, err)
+		}
+	}
+}
+
+// A transport failure never produced a status to classify, so it has to be marked
+// transient on its own — and the cause must stay reachable underneath, or a handler
+// loses the ability to ask what actually broke.
+func TestTransientErrorKeepsItsCause(t *testing.T) {
+	srv := withMockMB(t, func(w http.ResponseWriter, r *http.Request) {})
+	srv.Close()
+
+	_, err := GetMusicBrainzRelease("rel-no-socket")
+	if err == nil {
+		t.Fatal("expected an error with nothing listening")
+	}
+	if !errors.Is(err, ErrTransient) {
+		t.Errorf("a transport failure is transient, got %v", err)
+	}
+	var urlErr *url.Error
+	if !errors.As(err, &urlErr) {
+		t.Errorf("the underlying cause was dropped from the chain: %v", err)
+	}
+}
+
+// The other MusicBrainz fetch paths classify the same way — they share the outage,
+// so they must share the verdict.
+func TestTransientClassificationAcrossFetchPaths(t *testing.T) {
+	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	})
+
+	if _, err := GetMusicBrainzArtist("artist-down"); !errors.Is(err, ErrTransient) {
+		t.Errorf("artist lookup: want ErrTransient, got %v", err)
+	}
+	if _, _, err := GetMusicBrainzArtistReleaseGroups("artist-down"); !errors.Is(err, ErrTransient) {
+		t.Errorf("artist release-groups: want ErrTransient, got %v", err)
+	}
+	if _, err := SearchMusicBrainzReleases(metadata.ReleaseSearchQuery{Text: "anything"}); !errors.Is(err, ErrTransient) {
+		t.Errorf("release search: want ErrTransient, got %v", err)
 	}
 }
 

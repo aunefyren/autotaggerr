@@ -295,10 +295,23 @@ type itemRow struct {
 }
 
 // ownedItemRows lists every correlated file in the index.
+//
+// Correlated, not *successfully processed*: the disk view answers "what is on disk",
+// and a file is on disk whether or not the last attempt to tag it worked. This used
+// to require status = ok, which meant any failure — MusicBrainz unreachable, metaflac
+// refusing to write, a permission error — took the file out of the collection. A
+// scan interrupted by an outage therefore emptied whole albums, which then reported
+// `not_indexed` against a manager that could see the files perfectly well.
+//
+// Unmatched is the one status still excluded, and for the opposite reason: it is not
+// a failed attempt at all, it is the manager saying it does not know this file. There
+// is no identity to aggregate against, only a stale one left over from before, and
+// counting a file the manager has disowned would put the album back in the collection
+// on the strength of an answer that has been withdrawn.
 func ownedItemRows(db *gorm.DB) ([]itemRow, error) {
 	var rows []itemRow
 	err := db.Model(&models.LibraryItem{}).
-		Where("status = ? AND mb_release_id <> ''", models.LibraryItemStatusOK).
+		Where("status <> ? AND mb_release_id <> ''", models.LibraryItemStatusUnmatched).
 		Find(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the library index: %w", err)

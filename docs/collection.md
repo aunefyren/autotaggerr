@@ -248,6 +248,39 @@ win:
 - `no_edition` — the counts disagree **and** the manager named no edition, which is the reason they
   disagree. See below.
 
+### The disk view counts files, not successes
+
+`ownedItemRows` selects every **correlated** file — `mb_release_id <> ''` — and excludes exactly one
+status: `unmatched`. Not "every file that processed cleanly", which is what it used to be, and the
+difference is the whole point of the block being called *disk*. A file is on disk whether or not the
+last attempt to tag it worked; whether MusicBrainz answered, whether `metaflac` could write, whether
+the volume was read-only. None of those are facts about the disk.
+
+Requiring `status = ok` made every one of them empty the album instead. A scan interrupted by a
+MusicBrainz outage failed each file it had already correlated, the index dropped their MB IDs, the
+next rebuild found nothing on disk for that release-group, and the row reported `not_indexed` —
+*"the manager has files Autotaggerr never indexed."* The files were indexed. The index had been told
+to forget them, and then the discrepancy blamed the gap on never having scanned them.
+
+So `library_items` now keeps three separate facts apart, and only the first feeds this view:
+
+| Fact | Columns | Written when |
+|---|---|---|
+| **identity** — what the file is | `mb_release_id`, `mb_recording_id`, `correlation_source` | whenever a correlation resolves, whatever happens next |
+| **owned** — is it on disk | derived here, from identity | follows identity, never the outcome of an attempt |
+| **the last attempt** | `status`, `error`, `last_error_at`, `last_error_transient` | every run; this is the admin's surface, not this view's input |
+
+`unmatched` is excluded because it is the one state that is *not* a failed attempt: the manager is
+saying it does not know this file. Any MB ID still on the row is a leftover from before, not
+identity, and counting it would restore the album on the strength of an answer that has been
+withdrawn.
+
+Nothing schedules a retry for a file that failed, and nothing needs to: `processed_version` is
+stamped only by a success, and `shouldSkip` refuses to skip a file whose version does not match, so
+the next run re-attempts it. The **absence** of that column is the retry mechanism — a test pins it,
+because tidying the write onto the shared path would silently turn a transient outage into a
+permanent skip.
+
 ### An album with no edition selected
 
 Lidarr picks one release per album — the `monitored` flag on `album.releases[]` — and its

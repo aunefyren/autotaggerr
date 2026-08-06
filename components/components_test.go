@@ -713,3 +713,199 @@ func TestTaggerForLibrary(t *testing.T) {
 		t.Error("a bare library must still resolve a tagger")
 	}
 }
+
+// correlated is the state every test below starts from: a file the manager has
+// already identified. What varies is only what happens next.
+func correlated() models.Correlation {
+	return models.Correlation{
+		MBReleaseID:      "rel-1",
+		MBReleaseTrackID: "trk-1",
+		MBRecordingID:    "rec-1",
+		Source:           models.CorrelationSourceTags,
+	}
+}
+
+// TestRecordItemKeepsIdentityThroughFailure is the regression for albums going
+// mismatched during a MusicBrainz outage. The manager resolved this file before
+// anything was attempted on it; failing to *act* on that answer is not a reason to
+// forget it. Dropping the MB IDs here is what took the file out of the disk view and
+// made its album report `not_indexed` against a manager that could see it fine.
+func TestRecordItemKeepsIdentityThroughFailure(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	path := "/music/Artist/Album (2020)/01 Track.flac"
+
+	outage := fmt.Errorf("failed to get MB release data: %w", modules.ErrTransient)
+	recordItem(db, library.ID, path, correlated(), false, "v-test", models.ManagerTypeAutotaggerr, outage)
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if item.MBReleaseID != "rel-1" || item.MBReleaseTrackID != "trk-1" || item.MBRecordingID != "rec-1" {
+		t.Errorf("the correlation was discarded by a failure that says nothing about it: %+v", item)
+	}
+	if item.CorrelationSource != models.CorrelationSourceTags || item.CorrelatedByManager != models.ManagerTypeAutotaggerr {
+		t.Errorf("correlation provenance lost: %+v", item)
+	}
+	if item.CorrelatedAt == nil {
+		t.Error("CorrelatedAt not stamped despite a resolved correlation")
+	}
+
+	// The failure is still recorded — identity surviving must not mean the problem
+	// is hidden from whoever has to fix it.
+	if item.Status != models.LibraryItemStatusError || item.Error == "" {
+		t.Errorf("the failure was not recorded: %+v", item)
+	}
+	if item.LastErrorAt == nil {
+		t.Error("LastErrorAt not stamped; an undated error cannot be told from a stale one")
+	}
+	if !item.LastErrorTransient {
+		t.Error("an ErrTransient failure must be marked as one — it needs no admin, only a retry")
+	}
+}
+
+// A failure the app cannot wait out is the other half: recorded the same way, but
+// not marked transient, because someone has to go and fix it.
+func TestRecordItemMarksNonTransientFailure(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	path := "/music/Artist/Album (2020)/02 Track.flac"
+
+	recordItem(db, library.ID, path, correlated(), false, "v-test", models.ManagerTypeAutotaggerr,
+		errors.New("metaflac: permission denied"))
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if item.MBReleaseID != "rel-1" {
+		t.Errorf("identity discarded on a non-transient failure too: %+v", item)
+	}
+	if item.LastErrorTransient {
+		t.Error("a permission error will not fix itself; marking it transient hides it among the retryable ones")
+	}
+	if item.LastErrorAt == nil {
+		t.Error("LastErrorAt not stamped")
+	}
+}
+
+// TestRecordItemFailureLeavesFileRetryable pins the invariant the whole retry story
+// rests on: ProcessedVersion is stamped only by a success, so the next run refuses to
+// skip a file that failed. Nothing schedules the retry — the absence of this column
+// *is* the retry, which is exactly the kind of thing a later refactor breaks by
+// "tidying up" the write.
+func TestRecordItemFailureLeavesFileRetryable(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	path := synthFlac(t) // a real file, so shouldSkip can stat it
+
+	recordItem(db, library.ID, path, correlated(), false, "v-test", models.ManagerTypeAutotaggerr,
+		fmt.Errorf("MusicBrainz down: %w", modules.ErrTransient))
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if item.ProcessedVersion != "" {
+		t.Errorf("ProcessedVersion = %q after a failure; the next run would skip this file forever", item.ProcessedVersion)
+	}
+	if shouldSkip(db, path, "v-test", models.ManagerTypeAutotaggerr) {
+		t.Error("a failed file was skipped by the next run — it can never recover")
+	}
+}
+
+// A success has to clear what a failure left behind, or a problem fixed weeks ago
+// still reads as current.
+func TestRecordItemSuccessClearsPriorFailure(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	path := "/music/Artist/Album (2020)/03 Track.flac"
+
+	recordItem(db, library.ID, path, correlated(), false, "v-test", models.ManagerTypeAutotaggerr,
+		fmt.Errorf("MusicBrainz down: %w", modules.ErrTransient))
+	recordItem(db, library.ID, path, correlated(), false, "v-test", models.ManagerTypeAutotaggerr, nil)
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if item.Status != models.LibraryItemStatusOK || item.Error != "" {
+		t.Errorf("status not cleared by the recovery: %+v", item)
+	}
+	if item.LastErrorAt != nil || item.LastErrorTransient {
+		t.Errorf("stale failure metadata survived a success: %+v", item)
+	}
+	if item.ProcessedVersion != "v-test" {
+		t.Errorf("ProcessedVersion = %q, want it stamped by the success", item.ProcessedVersion)
+	}
+}
+
+// Unmatched is not a failure and must not start looking like one: the manager simply
+// does not know this file, which is a state the user is not expected to fix.
+func TestRecordItemUnmatchedCarriesNoError(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	path := "/music/Artist/Album (2020)/04 Track.flac"
+
+	recordItem(db, library.ID, path, models.Correlation{}, true, "v-test", models.ManagerTypeLidarr,
+		fmt.Errorf("no album: %w", modules.ErrUnmatched))
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if item.Status != models.LibraryItemStatusUnmatched {
+		t.Errorf("status = %q, want unmatched", item.Status)
+	}
+	if item.Error != "" || item.LastErrorAt != nil || item.LastErrorTransient {
+		t.Errorf("unmatched recorded as a failure: %+v", item)
+	}
+}
+
+// A pinned correlation still outranks the manager's on the failure path — the guard
+// moved along with the block it guards, and a hand-picked release must not be
+// overwritten just because the write that followed it failed.
+func TestRecordItemFailureRespectsPin(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	path := "/music/Artist/Album (2020)/05 Track.flac"
+
+	pinned := models.LibraryItem{
+		LibraryID: library.ID, Path: path, Pinned: true,
+		MBReleaseID: "rel-manual", MBReleaseTrackID: "trk-manual",
+		CorrelationSource: models.CorrelationSourceManual,
+	}
+	if err := db.Create(&pinned).Error; err != nil {
+		t.Fatalf("create pinned item: %v", err)
+	}
+
+	recordItem(db, library.ID, path, correlated(), false, "v-test", models.ManagerTypeAutotaggerr,
+		fmt.Errorf("MusicBrainz down: %w", modules.ErrTransient))
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if item.MBReleaseID != "rel-manual" || item.CorrelationSource != models.CorrelationSourceManual {
+		t.Errorf("the pin was overwritten on the failure path: %+v", item)
+	}
+}

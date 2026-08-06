@@ -136,6 +136,30 @@ itself as they refresh (`decodeDiscography`). A stale copy served because MusicB
 likewise never complete: it renders a page fine and must never delete rows, since anything added
 upstream since it was cached is "absent" from it.
 
+### An expiry is not an expiry date
+
+Every MusicBrainz fetch falls back to its **expired** cache entry when the request fails: artists,
+discographies, editions and artwork through `mbCacheGetStale`, and releases through
+`staleCachedRelease` (their own map and table, same job). An expiry says when data is worth
+re-checking, not when it stops describing the entity — and between those two readings sat a real
+bug. The release path was the one lookup without a fallback, so a release held for months with its
+TTL lapsed by an hour was discarded over a single 503, taking with it the correlation for every file
+on that album. For releases the fallback lands *before* the in-flight coalescing releases its
+waiters, because an album's tracks miss the cache together and so must survive together.
+
+The release path diverges from the artist path in one place, deliberately. `GetMusicBrainzArtist`
+serves a stale artist through a 404 once the deletion is recorded; `GetMusicBrainzRelease` lets
+`ErrEntityGone` propagate instead. The difference is what the answer is used for: an artist lookup
+renders a page, while a release drives the tags written to disk, and re-tagging an album against a
+release MusicBrainz has deleted is a write that would have to be undone. The deletion is recorded
+either way, so the pending migration is what keeps the album visible and offers a way to repoint it.
+
+The fallback asks "is it *gone*?" rather than "is it `ErrTransient`?" — `ErrTransient` (any 5xx, 429,
+or a transport failure) marks what is *known* to be worth retrying, not a list of the only things
+that may fail. A 400 or an unparseable body is still not MusicBrainz saying anything about the
+entity, and week-old truth beats dropping an album out of the disk view over a failure mode nobody
+anticipated.
+
 ### Artwork
 
 Image bytes stay on disk. The database row carries only what the filesystem cannot express: when

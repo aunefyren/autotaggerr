@@ -63,13 +63,18 @@ func SearchMusicBrainzReleases(query metadata.ReleaseSearchQuery) (metadata.Rele
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return metadata.ReleaseSearchPage{}, fmt.Errorf("MusicBrainz search failed: %w", err)
+		return metadata.ReleaseSearchPage{}, newTransientError(err, "MusicBrainz search failed")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		snippet := readBodySnippet(resp.Body)
+		if transientStatus(resp.StatusCode) {
+			return metadata.ReleaseSearchPage{}, newTransientError(nil,
+				"MusicBrainz unavailable for search %q (HTTP %d, retry later): %s", lucene, resp.StatusCode, snippet)
+		}
 		return metadata.ReleaseSearchPage{}, fmt.Errorf("MusicBrainz returned HTTP %d for search %q: %s",
-			resp.StatusCode, lucene, readBodySnippet(resp.Body))
+			resp.StatusCode, lucene, snippet)
 	}
 
 	body, err := io.ReadAll(resp.Body)
@@ -276,12 +281,16 @@ func musicbrainzGetJSON(endpoint string, out any) error {
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("MusicBrainz request failed: %w", err)
+		return newTransientError(err, "MusicBrainz request failed")
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("MusicBrainz returned HTTP %d: %s", resp.StatusCode, readBodySnippet(resp.Body))
+		snippet := readBodySnippet(resp.Body)
+		if transientStatus(resp.StatusCode) {
+			return newTransientError(nil, "MusicBrainz unavailable (HTTP %d, retry later): %s", resp.StatusCode, snippet)
+		}
+		return fmt.Errorf("MusicBrainz returned HTTP %d: %s", resp.StatusCode, snippet)
 	}
 
 	body, err := io.ReadAll(resp.Body)

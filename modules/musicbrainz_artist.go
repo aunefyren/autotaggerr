@@ -68,7 +68,7 @@ func GetMusicBrainzArtistReleaseGroups(artistID string) ([]models.MusicBrainzArt
 
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
-			return all, false, fmt.Errorf("MusicBrainz request failed for artist %q: %w", artistID, err)
+			return all, false, newTransientError(err, "MusicBrainz request failed for artist %q", artistID)
 		}
 		if resp.StatusCode != http.StatusOK {
 			snippet := readBodySnippet(resp.Body)
@@ -76,6 +76,9 @@ func GetMusicBrainzArtistReleaseGroups(artistID string) ([]models.MusicBrainzArt
 			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
 				RecordDeletion(models.MigrationEntityArtist, artistID)
 				return all, false, newGoneError(models.MigrationEntityArtist, artistID, resp.StatusCode, snippet)
+			}
+			if transientStatus(resp.StatusCode) {
+				return all, false, newTransientError(nil, "MusicBrainz unavailable for artist %q (HTTP %d, retry later): %s", artistID, resp.StatusCode, snippet)
 			}
 			return all, false, fmt.Errorf("MusicBrainz returned HTTP %d for artist %q: %s", resp.StatusCode, artistID, snippet)
 		}
@@ -135,7 +138,7 @@ func GetMusicBrainzArtist(artistID string) (models.MusicBrainzArtistLookup, erro
 			// Stale beats blank: these are facts about a person, not live data.
 			return stale, nil
 		}
-		return models.MusicBrainzArtistLookup{}, fmt.Errorf("MusicBrainz request failed for artist %q: %w", artistID, err)
+		return models.MusicBrainzArtistLookup{}, newTransientError(err, "MusicBrainz request failed for artist %q", artistID)
 	}
 	defer resp.Body.Close()
 
@@ -153,6 +156,10 @@ func GetMusicBrainzArtist(artistID string) (models.MusicBrainzArtistLookup, erro
 		}
 		if ok {
 			return stale, nil
+		}
+		if transientStatus(resp.StatusCode) {
+			return models.MusicBrainzArtistLookup{}, newTransientError(nil,
+				"MusicBrainz unavailable for artist %q (HTTP %d, retry later): %s", artistID, resp.StatusCode, snippet)
 		}
 		return models.MusicBrainzArtistLookup{}, fmt.Errorf("MusicBrainz returned HTTP %d for artist %q: %s",
 			resp.StatusCode, artistID, snippet)

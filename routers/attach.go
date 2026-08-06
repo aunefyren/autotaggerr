@@ -266,7 +266,12 @@ func (a *API) saveCorrelation(itemID uuid.UUID, releaseID string, track modules.
 		"correlated_at":       now,
 		"pinned":              true,
 		"status":              models.LibraryItemStatusOK,
-		"error":               "",
+		// A hand-picked correlation settles whatever the last automatic attempt
+		// failed at, so the failure it recorded is cleared with it — leaving a dated
+		// error on a file someone just identified would read as a live problem.
+		"error":                "",
+		"last_error_at":        nil,
+		"last_error_transient": false,
 	}).Error
 	if err != nil {
 		return err

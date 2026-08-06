@@ -343,40 +343,60 @@ func recordItem(db *gorm.DB, libraryID uuid.UUID, filePath string, correlation m
 		item.ModTime = &mod
 	}
 
-	if procErr != nil {
-		// ErrUnmatched is its own state: the manager owns identity and does not know
-		// this file. It is not an error the user must fix, so it carries no error text
-		// and does not read as a failed file in the feed.
-		if errors.Is(procErr, modules.ErrUnmatched) {
-			item.Status = models.LibraryItemStatusUnmatched
-			item.Error = ""
-		} else {
-			item.Status = models.LibraryItemStatusError
-			item.Error = procErr.Error()
+	// Identity first, and unconditionally: what a file *is* was resolved before
+	// anything was attempted on it, and it stays true whether or not the attempt
+	// succeeded. This used to live in the success branch, which meant a MusicBrainz
+	// outage mid-scan discarded a correlation the manager had just resolved — the
+	// file then had no release to aggregate against, left the disk view, and its
+	// album reported `not_indexed` against the manager. The files were indexed. The
+	// index had been told to forget them.
+	if correlation.MBReleaseID != "" {
+		// Never override a manual/pinned correlation with an automatic one — the MB
+		// IDs included, not just the source label. Guarding only the label left a
+		// re-processed pinned file (version bump, edited file) pointing at the
+		// manager's release while still reporting "manual".
+		if !item.Pinned {
+			item.MBReleaseID = correlation.MBReleaseID
+			item.MBRecordingID = correlation.MBRecordingID
+			item.MBReleaseTrackID = correlation.MBReleaseTrackID
+			item.CorrelationSource = correlation.Source
+			item.CorrelatedByManager = managerType
 		}
-	} else {
+		if item.CorrelatedAt == nil {
+			item.CorrelatedAt = &now
+		}
+	}
+
+	// Then the outcome of this attempt, which is a separate fact about a separate
+	// thing. Nothing below is input to the collection — it is what an admin reads.
+	switch {
+	case procErr == nil:
 		item.Status = models.LibraryItemStatusOK
 		item.Error = ""
+		item.LastErrorAt = nil
+		item.LastErrorTransient = false
+		// ProcessedVersion is stamped *only* here, and that is what makes a failed
+		// file retry for free: shouldSkip refuses to skip a file whose version does
+		// not match, so anything that failed is re-attempted on the very next run
+		// with no queue, no backoff and no bookkeeping. Stamping it on a failure
+		// path would silently turn a transient outage into a permanent skip.
 		item.ProcessedVersion = processedVersion
-		if correlation.MBReleaseID != "" {
-			// Never override a manual/pinned correlation with an automatic one — the MB
-			// IDs included, not just the source label. Guarding only the label left a
-			// re-processed pinned file (version bump, edited file) pointing at the
-			// manager's release while still reporting "manual".
-			if !item.Pinned {
-				item.MBReleaseID = correlation.MBReleaseID
-				item.MBRecordingID = correlation.MBRecordingID
-				item.MBReleaseTrackID = correlation.MBReleaseTrackID
-				item.CorrelationSource = correlation.Source
-				item.CorrelatedByManager = managerType
-			}
-			if item.CorrelatedAt == nil {
-				item.CorrelatedAt = &now
-			}
-		}
 		if !unchanged {
 			item.LastTaggedAt = &now
 		}
+	case errors.Is(procErr, modules.ErrUnmatched):
+		// ErrUnmatched is its own state: the manager owns identity and does not know
+		// this file. It is not an error the user must fix, so it carries no error text
+		// and does not read as a failed file in the feed.
+		item.Status = models.LibraryItemStatusUnmatched
+		item.Error = ""
+		item.LastErrorAt = nil
+		item.LastErrorTransient = false
+	default:
+		item.Status = models.LibraryItemStatusError
+		item.Error = procErr.Error()
+		item.LastErrorAt = &now
+		item.LastErrorTransient = errors.Is(procErr, modules.ErrTransient)
 	}
 
 	if err := db.Save(&item).Error; err != nil {

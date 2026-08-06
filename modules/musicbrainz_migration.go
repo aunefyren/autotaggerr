@@ -3,6 +3,7 @@ package modules
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -30,6 +31,57 @@ import (
 // which previously both arrived as an opaque error string: a scan marked the file
 // as errored either way, and a drift sync retried the dead ID on every run forever.
 var ErrEntityGone = errors.New("entity no longer exists on MusicBrainz")
+
+// ErrTransient reports the other half of that distinction: the lookup failed for a
+// reason that says nothing about the entity. The service was unreachable, throttled,
+// or answered with a server error, and the same request a minute later may well
+// succeed.
+//
+// It exists because "failed" and "does not exist" were being recorded identically.
+// A file whose release could not be fetched had its correlation discarded and left
+// the disk view, so an outage mid-scan made whole albums read as mismatched against
+// the manager — the deletion path at least records a migration, while an outage left
+// nothing behind but an error string. Callers that decide what to *persist* about a
+// file need to tell the two apart; callers that just want data can keep treating any
+// error as "no data".
+var ErrTransient = errors.New("MusicBrainz lookup failed transiently")
+
+// TransientError carries the message its call site already wrote, wrapping both
+// ErrTransient and the underlying cause so errors.Is finds either. A struct rather
+// than the entity-bearing shape of GoneError because nothing acts on *which* entity
+// failed transiently — a gone ID has a migration to record against it, an outage has
+// only a retry — and because the generic fetch helpers do not always have an MBID to
+// name.
+type TransientError struct {
+	Msg   string
+	Cause error
+}
+
+func (e *TransientError) Error() string { return e.Msg }
+
+// Unwrap returns both edges: the sentinel callers branch on, and the cause, so a
+// handler can still ask whether it was a timeout underneath.
+func (e *TransientError) Unwrap() []error {
+	if e.Cause == nil {
+		return []error{ErrTransient}
+	}
+	return []error{ErrTransient, e.Cause}
+}
+
+// newTransientError builds the sentinel-wrapping error. A nil cause is fine — an
+// HTTP status is a complete explanation on its own.
+func newTransientError(cause error, format string, args ...any) error {
+	return &TransientError{Msg: fmt.Sprintf(format, args...), Cause: cause}
+}
+
+// transientStatus reports whether an HTTP status means "ask again later" rather than
+// anything about the entity. Any 5xx is the server's own problem by definition, and
+// 429 is the rate limiter asking for exactly that. A 4xx other than 429 is not here
+// on purpose: a 400 or a 401 is a request this client will keep getting wrong, and
+// quietly retrying it forever would hide a misconfiguration.
+func transientStatus(status int) bool {
+	return status >= 500 || status == http.StatusTooManyRequests
+}
 
 // GoneError wraps ErrEntityGone with the entity it refers to, so a handler can act
 // on the specific ID without parsing a message.

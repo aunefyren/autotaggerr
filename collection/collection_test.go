@@ -991,3 +991,109 @@ func TestRebuildFallsBackToTheReleaseCredit(t *testing.T) {
 		t.Errorf("release-group = %+v, want owned and credited to art-1", rg)
 	}
 }
+
+// seedThreeTrackRelease caches one release with three tracks and returns a library
+// to hang files off. Shared by the disk-view tests below, which differ only in what
+// state their files are in.
+func seedThreeTrackRelease(t *testing.T, db *gorm.DB) models.Library {
+	t.Helper()
+	release := models.MusicBrainzReleaseResponse{
+		ID:           "rel-outage",
+		Title:        "Album One",
+		ArtistCredit: []models.ArtistCredit{{Name: "The Band", Artist: models.Artist{ID: "art-outage", Name: "The Band"}}},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-outage", Title: "Album One", PrimaryType: "Album"},
+		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}, {ID: "t2"}, {ID: "t3"}}}},
+	}
+	payload, _ := json.Marshal(release)
+	if err := db.Create(&models.MusicbrainzReleaseCache{
+		MBID: "rel-outage", Payload: string(payload), FetchedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}).Error; err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if err := modules.MusicbrainzLoadCache(); err != nil {
+		t.Fatalf("load cache: %v", err)
+	}
+
+	lib := models.Library{Name: "L", Path: "/m"}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	return lib
+}
+
+// TestRebuildCountsFilesThatFailedToTag is the end of the reported bug: a scan
+// interrupted by a MusicBrainz outage must not empty the album. The files are on
+// disk and the index knows exactly what they are — only the last attempt to write
+// tags failed, which is a fact about the attempt, not about the disk.
+func TestRebuildCountsFilesThatFailedToTag(t *testing.T) {
+	db := testDB(t)
+	modules.SetDB(db)
+	defer modules.SetDB(nil)
+	lib := seedThreeTrackRelease(t, db)
+
+	// One file tagged cleanly before the outage started, two caught by it.
+	files := []struct {
+		path   string
+		status string
+	}{
+		{"/m/a.flac", models.LibraryItemStatusOK},
+		{"/m/b.flac", models.LibraryItemStatusError},
+		{"/m/c.flac", models.LibraryItemStatusError},
+	}
+	for _, f := range files {
+		item := models.LibraryItem{LibraryID: lib.ID, Path: f.path, Status: f.status, MBReleaseID: "rel-outage"}
+		if f.status == models.LibraryItemStatusError {
+			now := time.Now()
+			item.Error = "failed to get MB release data: MusicBrainz unavailable"
+			item.LastErrorAt = &now
+			item.LastErrorTransient = true
+		}
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("item %s: %v", f.path, err)
+		}
+	}
+
+	if _, err := Rebuild(db); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-outage").First(&rg).Error; err != nil {
+		t.Fatalf("release-group not created: %v", err)
+	}
+	if !rg.Owned {
+		t.Error("the album left the disk view because tagging failed; the files never left the disk")
+	}
+	if rg.OwnedTracks != 3 || rg.TotalTracks != 3 {
+		t.Errorf("track completeness = %d/%d, want 3/3 — a failed tag write is not a missing file",
+			rg.OwnedTracks, rg.TotalTracks)
+	}
+}
+
+// Unmatched is the one state that still leaves the disk view, and for the opposite
+// reason: the manager has withdrawn its answer about what this file is. The stale MB
+// ID left on the row is not identity, it is a leftover, and counting it would put the
+// album back on the strength of an answer nobody stands behind.
+func TestRebuildIgnoresUnmatchedFiles(t *testing.T) {
+	db := testDB(t)
+	modules.SetDB(db)
+	defer modules.SetDB(nil)
+	lib := seedThreeTrackRelease(t, db)
+
+	if err := db.Create(&models.LibraryItem{
+		LibraryID: lib.ID, Path: "/m/a.flac",
+		Status: models.LibraryItemStatusUnmatched, MBReleaseID: "rel-outage",
+	}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+
+	if _, err := Rebuild(db); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	var rg models.CollectionReleaseGroup
+	err := db.Where("mb_id = ?", "rg-outage").First(&rg).Error
+	if err == nil && rg.Owned {
+		t.Error("an unmatched file was counted as owned on the strength of a withdrawn correlation")
+	}
+}

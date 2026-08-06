@@ -244,9 +244,23 @@ type LibraryItem struct {
 	// upgrades that change tag logic re-process everything once.
 	ProcessedVersion string `json:"processed_version"`
 	// Pinned marks a manual correlation that automatic resolution must never override.
-	Pinned bool   `json:"pinned"`
+	Pinned bool `json:"pinned"`
+	// Status is what the *last attempt* did, not what the file is. The MB ID columns
+	// above are the file's identity and outlive any failure to act on it — a lookup
+	// that fails must not erase what a file is, or the file leaves the disk view and
+	// its album reads as mismatched against the manager.
 	Status string `json:"status"`
 	Error  string `json:"error"`
+	// LastErrorAt dates the failure in Error. A bare string cannot answer "is this
+	// still happening or did it clear weeks ago", which is the first thing worth
+	// knowing when a failure shows up in a list.
+	LastErrorAt *time.Time `json:"last_error_at"`
+	// LastErrorTransient marks a failure the app expects to survive on its own —
+	// MusicBrainz unreachable, throttled, or 5xx (modules.ErrTransient). It is the
+	// difference between "this will retry" and "an admin has to fix this", which
+	// matters most during an outage, when every file in a run fails at once and
+	// would otherwise be indistinguishable from a library full of broken files.
+	LastErrorTransient bool `json:"last_error_transient"`
 }
 
 // MusicbrainzReleaseCache replaces config/mb_releases.json. Its primary key is the

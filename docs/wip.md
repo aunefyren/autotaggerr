@@ -33,6 +33,36 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
 
+## A failed lookup must not erase what a file is
+
+Shipped. A MusicBrainz outage mid-scan used to empty whole albums: the failed release fetch made
+`recordItem` discard a correlation the manager had already resolved, the files left the disk view,
+and the album reported `not_indexed` against a manager that could see them fine. Identity, ownership
+and the outcome of the last attempt are now three separate facts — see
+[collection.md](collection.md#the-disk-view-counts-files-not-successes) for the rule and
+[mirror.md](mirror.md#an-expiry-is-not-an-expiry-date) for the stale-cache fallback that stops most
+outages reaching the index at all. What is left:
+
+- **Six other queries still filter on `status = OK`** to answer "which files belong to this
+  artist/album" (`collection/paths.go`, `scan/runner.go`, `routers/scan_items.go`). They feed retag
+  and the per-artist counts, and by the same logic should follow identity too — excluding an errored
+  file from a retag is precisely what blocks it from recovering once the cause is fixed. Wider diff
+  than the collection fix, so: own pass, own tests.
+- **A successful re-tag does not clear a stale `error` status.** `scan/runner.go`'s re-tag path
+  updates `processed_version` and the timestamps but never touches `status`/`error`, so a file that
+  failed and was then fixed by a re-tag keeps reporting the old failure. It also records nothing at
+  all when the re-tag itself fails. Belongs with the pass above — both are the re-tag path not
+  sharing `recordItem`'s understanding of what a status means.
+- **Nothing lets an admin ask "what failed?"**. The rows now carry `error`, `last_error_at` and
+  `last_error_transient`, which is exactly the split needed to separate "MusicBrainz was down, this
+  will retry" from "someone has to fix this" — but the Items page has no failure filter and Activity
+  does not use the transient flag to keep an outage from reading as hundreds of broken files. Belongs
+  with the Activity-rendering work under [Frontend follow-ups](#frontend-follow-ups).
+- **A retry with backoff** inside the fetch (one attempt spaced by the existing `RateLimit()`
+  interval) would absorb most single 503s before any of this matters. Kept separate because it
+  interacts with the in-flight coalescing and the limiter; the shipped work makes an outage
+  *survivable*, which is the part that has to be true regardless.
+
 ## Every cache in the database
 
 Shipped. Nothing durable is memory-only, nothing is a JSON file, and the batched flusher is gone —
@@ -130,9 +160,7 @@ The manager-authority boundary is now honoured end to end (see
 - *Cascading/grouped actions should maybe just create multiple activities*
   It is not very clear what order things happen in, and what does what
 - *Some activities have more info in the summary than in the pop up modal*
-- *It seems a 503 on MB refresh causes Autotaggerr to drop the file*
-  The file is dropped, and albums become mismatched with Lidarr
-  
+
 - **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
   `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID
   (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still

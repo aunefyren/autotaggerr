@@ -154,7 +154,17 @@ func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, erro
 	statFetches.Add(1)
 	// propagate the real cause (HTTP status / transport / parse) instead of a
 	// generic message, so the file-level log can tell them apart
-	fetch.release, fetch.err = QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
+	release, err := QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
+	if err != nil {
+		// Standing in for the failure *here* rather than at the call site is what makes
+		// it worth anything: the fallback lands before the result is handed to the
+		// coalesced waiters, so an album whose tracks all missed the cache together
+		// survives an outage together.
+		if stale, ok := staleCachedRelease(mbID, err); ok {
+			release, err = stale, nil
+		}
+	}
+	fetch.release, fetch.err = release, err
 
 	inflightFetchesMu.Lock()
 	delete(inflightFetches, mbID)
@@ -174,6 +184,58 @@ func cachedFreshRelease(mbID string) (models.MusicBrainzReleaseResponse, bool) {
 	if !ok || !time.Now().Before(cached.ExpiresAt) {
 		return models.MusicBrainzReleaseResponse{}, false
 	}
+	return cached.Release, true
+}
+
+// staleCachedRelease returns an *expired* cached release to stand in for a fetch
+// that failed, or false if there is nothing usable to stand in with. It is the
+// release cache's mbCacheGetStale — same job, but releases have their own map and
+// table rather than living in the entity cache, so they need their own reader.
+//
+// An expiry says when the data is worth re-checking, not when it stops describing
+// the release. Between those two readings sits the whole bug this exists for: a
+// release held for months, its TTL lapsed by an hour, thrown away over one 503 —
+// and with it the correlation for every file on that album, which then left the disk
+// view and made the album read as mismatched against the manager. Week-old track
+// titles are a better answer than no answer, by a wide margin.
+//
+// A gone entity is the case that must NOT be served from stale: MusicBrainz saying
+// the release no longer exists is an *answer*, and the migration recorded from it is
+// how a dead ID gets dealt with once instead of re-failing every run. Papering over
+// it with the copy we happen to still hold would keep the file pointed at an ID
+// nothing upstream will ever resolve again.
+//
+// This is a deliberate divergence from GetMusicBrainzArtist, which *does* serve a
+// stale artist through a 404 once the deletion is recorded. The difference is what
+// the answer is used for: an artist lookup renders a page, while a release drives
+// the tags written to disk. Re-tagging a whole album against a release MusicBrainz
+// has deleted is a write we would have to undo. Refusing here costs nothing the
+// album cares about — the deletion is already recorded by the caller, so the pending
+// migration is what keeps the album visible and gives the user a way to repoint it.
+//
+// Everything else falls back, and note that this asks "is it gone?" rather than the
+// narrower "is it ErrTransient?" — deliberately, now that both sentinels exist. A
+// 400, an unparseable body, an unread response: none of them are MusicBrainz saying
+// anything about this release, and answering with week-old truth beats dropping an
+// album out of the disk view over a failure mode nobody anticipated. ErrTransient
+// marks what is *known* to be worth retrying; it is not a list of the only things
+// that may fail. The empty-ID guard is for a cache entry that somehow holds no release:
+// returning it would send the caller into "track not in release", which reads as a
+// correlation problem and is a far worse failure than the one being handled.
+func staleCachedRelease(mbID string, fetchErr error) (models.MusicBrainzReleaseResponse, bool) {
+	if errors.Is(fetchErr, ErrEntityGone) {
+		return models.MusicBrainzReleaseResponse{}, false
+	}
+
+	musicbrainzReleaseCacheMu.RLock()
+	cached, ok := musicbrainzReleaseCache[mbID]
+	musicbrainzReleaseCacheMu.RUnlock()
+	if !ok || cached.Release.ID == "" {
+		return models.MusicBrainzReleaseResponse{}, false
+	}
+
+	logger.Log.Warnf("serving stale cached release %s (cached %s, expired %s) because the fetch failed: %s",
+		mbID, cached.Timestamp.Format(time.RFC3339), cached.ExpiresAt.Format(time.RFC3339), fetchErr.Error())
 	return cached.Release, true
 }
 
@@ -254,14 +316,14 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		// transport failure (DNS, timeout, connection reset) — usually transient
-		return apiResponse, fmt.Errorf("MusicBrainz request failed for release %q (transport error, likely transient): %w", mbID, err)
+		return apiResponse, newTransientError(err, "MusicBrainz request failed for release %q (transport error)", mbID)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		snippet := readBodySnippet(resp.Body)
-		switch resp.StatusCode {
-		case http.StatusNotFound, http.StatusGone:
+		switch {
+		case resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone:
 			// The release genuinely does not exist upstream: deleted, or an ID that
 			// was never valid. A *merged* ID does not land here — MusicBrainz still
 			// resolves those, which is handled below. Recorded as a migration so the
@@ -269,8 +331,8 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 			// returned as ErrEntityGone so callers can tell it from an outage.
 			RecordDeletion(models.MigrationEntityRelease, mbID)
 			return apiResponse, newGoneError(models.MigrationEntityRelease, mbID, resp.StatusCode, snippet)
-		case http.StatusServiceUnavailable, http.StatusTooManyRequests:
-			return apiResponse, fmt.Errorf("MusicBrainz throttled/unavailable for release %q (HTTP %d, transient — retry later): %s", mbID, resp.StatusCode, snippet)
+		case transientStatus(resp.StatusCode):
+			return apiResponse, newTransientError(nil, "MusicBrainz throttled/unavailable for release %q (HTTP %d, retry later): %s", mbID, resp.StatusCode, snippet)
 		default:
 			return apiResponse, fmt.Errorf("MusicBrainz returned HTTP %d for release %q: %s", resp.StatusCode, mbID, snippet)
 		}
