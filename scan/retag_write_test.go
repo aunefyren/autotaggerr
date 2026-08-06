@@ -2,6 +2,7 @@ package scan
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -13,23 +14,37 @@ import (
 	"gorm.io/gorm"
 )
 
-// synthFlac creates a short silent FLAC, or skips the test when the audio tools are
-// absent (they are installed in CI). Real audio is needed because the write path goes
-// through metaflac.
-func synthFlac(t *testing.T) string {
+// requireAudioTools skips the test when the audio tools are absent (they are
+// installed in CI). Real audio is needed because the write path goes through
+// metaflac.
+func requireAudioTools(t *testing.T) {
 	t.Helper()
 	for _, tool := range []string{"ffmpeg", "metaflac"} {
 		if _, err := exec.LookPath(tool); err != nil {
 			t.Skipf("%q not on PATH; skipping", tool)
 		}
 	}
-	path := filepath.Join(t.TempDir(), "01 track.flac")
+}
+
+// synthFlacAt creates a short silent FLAC at path, making its directory first.
+func synthFlacAt(t *testing.T, path string) string {
+	t.Helper()
+	requireAudioTools(t)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.Command("ffmpeg", "-nostdin", "-loglevel", "error",
 		"-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "0.1", path)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("ffmpeg synth failed: %v\n%s", err, out)
 	}
 	return path
+}
+
+// synthFlac creates a silent FLAC in a temp dir of its own.
+func synthFlac(t *testing.T) string {
+	t.Helper()
+	return synthFlacAt(t, filepath.Join(t.TempDir(), "01 track.flac"))
 }
 
 // seedReleaseCache puts a release in the MusicBrainz cache so TagResolvedFile resolves

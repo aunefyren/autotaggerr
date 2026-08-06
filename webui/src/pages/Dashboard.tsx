@@ -16,9 +16,9 @@ const LABELS: Record<string, string> = {
 
 export default function Dashboard() {
   const health = useFetch<Health>(() => api.get("/health"));
-  const scan = useFetch<ScanStatus>(() => api.get("/scan/status"));
+  const scan = useFetch<ScanStatus>(() => api.get("/process/status"));
 
-  // Keep the scan card live while a run is in progress.
+  // Keep the run card live while a job is in progress.
   const running = scan.data?.running ?? false;
   useEffect(() => {
     if (!running) return;
@@ -45,7 +45,7 @@ export default function Dashboard() {
         <div className="card" style={{ borderColor: "var(--border-strong)" }}>
           <div className="eyebrow" style={{ marginBottom: 8 }}>Get started</div>
           <div className="muted" style={{ marginBottom: 12 }}>
-            Add a music folder as a library, then run a scan to correlate and tag its files.
+            Add a music folder as a library, then process it to correlate and tag its files.
           </div>
           <Link to="/libraries" className="btn btn-primary btn-sm" style={{ textDecoration: "none" }}>
             Add your first library
@@ -64,7 +64,7 @@ export default function Dashboard() {
 
       <div className="card">
         <div className="row" style={{ justifyContent: "space-between", marginBottom: 10 }}>
-          <div className="eyebrow">Latest scan</div>
+          <div className="eyebrow">Latest run</div>
           <Link to="/activity" className="mono" style={{ fontSize: 12 }}>
             View activity →
           </Link>
@@ -95,7 +95,7 @@ export default function Dashboard() {
             )}
           </div>
         ) : (
-          <div className="muted">No scans yet. Start one from the Activity page.</div>
+          <div className="muted">Nothing processed yet. Start a run from the Collection page.</div>
         )}
       </div>
     </div>

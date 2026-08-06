@@ -435,12 +435,16 @@ func (a *API) setArtistMonitored(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"monitored": body.Monitored, "wanted": wanted})
 }
 
-// rebuildCollection recomputes the owned (present) side from the index. Fast and
-// network-free (reads only cached releases).
-func (a *API) rebuildCollection(c *gin.Context) {
+// scanCollection re-derives the owned (present) side from the index — the *Scan*
+// verb at collection scope. Fast and network-free (it reads only cached releases),
+// which is why it answers inline instead of queueing.
+//
+// It is the cheapest of the four verbs and the one that makes the collection view
+// agree with what the index already knows. Discovering files on disk is Process.
+func (a *API) scanCollection(c *gin.Context) {
 	stats, err := collection.Rebuild(a.DB)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to rebuild collection"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan the library"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{

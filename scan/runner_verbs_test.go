@@ -89,11 +89,11 @@ func TestRunLibraryScansOneLibrary(t *testing.T) {
 		t.Errorf("errors = %d, want 1 (the invalid flac)", s.Errors)
 	}
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeScan).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeProcess).First(&ev).Error; err != nil {
 		t.Fatalf("scan event not recorded: %v", err)
 	}
-	if ev.Title != "Scan of L" {
-		t.Errorf("title = %q, want %q", ev.Title, "Scan of L")
+	if ev.Title != "Processing L" {
+		t.Errorf("title = %q, want %q", ev.Title, "Processing L")
 	}
 }
 
@@ -119,7 +119,7 @@ func TestForceRecorrelateArtist(t *testing.T) {
 		t.Errorf("errors = %d, want 1", s.Errors)
 	}
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeScan).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeProcess).First(&ev).Error; err != nil {
 		t.Fatalf("scan event not recorded: %v", err)
 	}
 	if ev.Title != "Re-correlate Artist" {
@@ -146,7 +146,7 @@ func TestForceRecorrelateReleaseGroup(t *testing.T) {
 	r.waitIdle(t)
 
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeScan).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeProcess).First(&ev).Error; err != nil {
 		t.Fatalf("scan event not recorded: %v", err)
 	}
 	// forceTitle falls back to the kind when the release-group name is not in Detail.
@@ -180,7 +180,7 @@ func TestForceRecorrelateLibrary(t *testing.T) {
 	r.waitIdle(t)
 
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeScan).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeProcess).First(&ev).Error; err != nil {
 		t.Fatalf("scan event not recorded: %v", err)
 	}
 	if ev.Title != "Re-correlate Main" {
@@ -227,6 +227,38 @@ func TestRetagLibraryEmpty(t *testing.T) {
 	}
 	if ev.Details["library"] != "L" {
 		t.Errorf("event details lost the library: %#v", ev.Details)
+	}
+}
+
+// TestRetagAllCoversEveryEnabledLibrary: Tag files at collection scope is one job
+// over every enabled library, not one per library — so it records a single event, and
+// a disabled library is not in it.
+func TestRetagAllCoversEveryEnabledLibrary(t *testing.T) {
+	db := newTestDB(t)
+	for _, lib := range []models.Library{
+		{Name: "A", Path: t.TempDir(), Enabled: true},
+		{Name: "B", Path: t.TempDir(), Enabled: true},
+		{Name: "Off", Path: t.TempDir(), Enabled: false},
+	} {
+		if err := db.Create(&lib).Error; err != nil {
+			t.Fatalf("create library %s: %v", lib.Name, err)
+		}
+	}
+
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r.RetagAll()
+	r.waitIdle(t)
+
+	var events []models.Event
+	if err := db.Where("type = ?", models.EventTypeDriftSync).Find(&events).Error; err != nil {
+		t.Fatalf("read events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("recorded %d events, want 1 — the collection-wide re-tag is one job", len(events))
+	}
+	names, _ := events[0].Details["libraries"].([]any)
+	if len(names) != 2 {
+		t.Errorf("libraries in scope = %v, want the two enabled ones", events[0].Details["libraries"])
 	}
 }
 

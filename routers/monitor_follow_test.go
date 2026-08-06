@@ -79,11 +79,11 @@ func TestUpdateFollowUnknownArtist(t *testing.T) {
 	}
 }
 
-// TestRebuildCollection: the manual rebuild endpoint accepts the request.
-func TestRebuildCollection(t *testing.T) {
+// TestScanCollection: the collection-wide Scan endpoint accepts the request.
+func TestScanCollection(t *testing.T) {
 	r, _ := setupAPI(t)
 	token := loginToken(t, r)
-	w := do(r, "POST", "/api/v1/collection/rebuild", token, nil)
+	w := do(r, "POST", "/api/v1/scan", token, nil)
 	if w.Code != http.StatusOK && w.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 200/202: %s", w.Code, w.Body.String())
 	}

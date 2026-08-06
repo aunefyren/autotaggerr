@@ -55,6 +55,11 @@ Config lives in `./config/config.json` (auto-created on first run by `files.Load
 Everything flows through **`modules/`** (the business logic). `main.go` wires clients and
 scheduling; `models/` holds structs; `files/` handles config; `utilities/` has path/string helpers.
 
+**The four verbs** — *Process* (walk, resolve, tag), *Scan* (re-derive the collection from the
+index), *Refresh metadata*, *Tag files* — are named in
+[docs/scanning.md](docs/scanning.md#the-four-verbs-and-why-none-of-them-cascades). The Go package
+`scan` owns *Process*, not *Scan*; the *Scan* verb is `collection.Rebuild`.
+
 **Two entry paths, one core:**
 - Scheduled/startup: `main.processLibraries` → `modules.ScanFolderRecursive` walks each
   configured library and calls `ProcessTrackFile` per audio file.
@@ -71,7 +76,7 @@ scheduling; `models/` holds structs; `files/` handles config; `utilities/` has p
    which dispatches to `SetFlacTags` (metaflac) or `SetMP3Tags` (ffmpeg) by extension.
    Tag writes are diffed first — unchanged files are skipped and reported separately.
 4. Changed albums are collected into an `albumsWhoNeedMetadataRefresh` map (album name → Plex
-   key) and, after the scan, `plexClient.RefreshAlbum` is called for each.
+   key) and, after the run, `plexClient.RefreshAlbum` is called for each.
 
 **Path convention matters:** metadata resolution and Lidarr/Plex lookups assume the library
 layout `<root>/<ARTIST>/<ALBUM> (<YEAR>)/[<MEDIA FOLDER>]/<TRACKS>`. `--fileRoot` is the
@@ -96,7 +101,7 @@ MusicBrainz calls go through `RateLimit()` — respect it when adding new MusicB
 
 ## Concurrency
 
-Every background verb (scans, re-tags, metadata refreshes) is enqueued onto a **single serial job
+Every background verb (processing runs, re-tags, metadata refreshes) is enqueued onto a **single serial job
 queue** in `scan.Runner`, drained by one worker goroutine that holds `jobMu` per job (`scan/queue.go`).
 The cron job, the startup run and the API all enqueue; jobs dedup by key and file-writing jobs take
 priority over pending metadata jobs. Interactive `RetagItems` stays synchronous and `TryLock`s

@@ -10,7 +10,7 @@ you point it at — one artist, one library, everything:
 
 | Verb | Reads | Writes files |
 | --- | --- | --- |
-| **Scan** | disk + MusicBrainz | **yes** |
+| **Process** | disk + MusicBrainz | **yes** |
 | **Refresh metadata** | MusicBrainz | no |
 | **Tag files** | the local database | **yes** |
 
@@ -24,7 +24,7 @@ it claims is the wrong place to be clever — *Refresh metadata* used to re-tag 
 release that had changed, which meant a button about reading could rewrite hundreds of files.
 
 What replaces the cascade is a handover. A refresh **reports** the releases whose metadata changed
-upstream; the scan re-tags them in its own drift stage, and a user who wants it immediately presses
+upstream; the next processing run re-tags them in its drift stage, and a user who wants it immediately presses
 *Tag files*. Nothing is lost, and nothing happens that was not asked for.
 
 This package (`mirror`) is the refresh verb. `scan.Runner` owns the two that write.
@@ -84,7 +84,7 @@ Every MusicBrainz TTL is **jittered** — the stored expiry is the base plus a r
 so entries warmed together by one pass do not all come due in the same minute a week later.
 
 **Nothing durable is memory-only, and nothing is a JSON file.** Every cache above keeps an
-in-memory front (that is the hot path — a scan asks for the same artist's track files once per
+in-memory front (that is the hot path — a run asks for the same artist's track files once per
 track) over a database table warmed at startup by `modules.LoadAllCaches`, which `main` calls after
 `modules.SetDB`. The maps that exist only in memory are single-flight bookkeeping and rate-limiter
 timestamps: per-process facts that it would be wrong to persist.
@@ -98,12 +98,12 @@ endpoint is a new constant rather than a migration.
 
 It replaced five JSON files under `config/`, and the format was the smaller half of the problem.
 Those files were written by a **batched** flusher: a write marked the cache dirty and `FlushCaches`
-rewrote the whole file later, and flushes ran only during a scan, at the end of a refresh pass, or
+rewrote the whole file later, and flushes ran only during a run, at the end of a refresh pass, or
 in one-shot mode. With no shutdown handler anywhere, a restart between a lookup and the next flush
 dropped the writes — a Lidarr sync triggered from the Collection page routinely never reached disk
 at all. Every write now goes through as it happens, which is what let `registerCache`,
 `markCacheDirty`, `FlushCaches` and the 30-second flush goroutine be deleted outright. (The batching
-also carried a note that it was only safe because scans were single-threaded, which stopped being
+also carried a note that it was only safe because runs were single-threaded, which stopped being
 true when the worker pool arrived.)
 
 Each cache reads its legacy JSON file exactly once, while its source has no rows
@@ -120,7 +120,7 @@ endpoint is a new constant rather than a schema change.
 
 Reads go through an in-memory front warmed at startup (`modules.LoadAllCaches`); writes go
 through to the database immediately. Write-through rather than batched, because these are single
-rows fetched seconds apart — not the thousands-per-scan churn that made the old release JSON file
+rows fetched seconds apart — not the thousands-per-run churn that made the old release JSON file
 expensive to rewrite.
 
 A payload that no longer decodes into the caller's type counts as a **miss**, so a response shape
@@ -156,7 +156,7 @@ collection's worth of artists it had already declined.
 Images have the longest TTL of anything here, which is the right shape for data that is expensive
 to transfer and effectively immutable. It is not *infinite* — which is what it was before the
 index existed — because the Cover Art Archive gets better over time: a release with no art, or
-with a poor scan, eventually gets a proper one, and without an expiry that improvement would
+with a poor scan of the artwork, eventually gets a proper one, and without an expiry that improvement would
 never reach an install that once cached the placeholder.
 
 A failed *refresh* falls back to the copy already on disk. Giving images an expiry is about
@@ -224,7 +224,7 @@ Forcing is now reachable from exactly two buttons — the Metadata page's checkb
 page's *Refresh metadata (ignore cache)* — and both come through the same dialog. A second copy of
 the wording is how the verb drifted in the first place.
 
-Nothing on a schedule forces: the nightly `SyncDrift`, the weekly scan's `DueScope` stage and both
+Nothing on a schedule forces: the nightly `SyncDrift`, the weekly run's `DueScope` stage and both
 startup runs are all unforced. That property is the one to protect.
 
 ## The refresh pass
@@ -245,8 +245,8 @@ Two properties make a multi-hour first pass tolerable:
 - **It is resumable.** A pass fetches only what is missing or expired, so an interrupted run
   costs nothing on the next one and no cursor has to be persisted. "Where it left off" is just
   "what is still not fresh".
-- **It yields.** While a library scan is running, the pass pauses and re-checks every 15 seconds.
-  Both draw on the same one-request-per-second budget, and the scan is the one with a user
+- **It yields.** While a processing run is in flight, the pass pauses and re-checks every 15 seconds.
+  Both draw on the same one-request-per-second budget, and the run is the one with a user
   attached.
 
 Errors are counted and logged per entity, never fatal: one artist MusicBrainz cannot answer for
@@ -311,7 +311,7 @@ forced refresh does not.
 
 What used to be *Check every ID now* is therefore `CollectionScope(db, force: true)`. It records a
 `mb_mirror` event titled **Full metadata refresh**, distinguished by title rather than by type —
-the same way `LibraryScope` and `ArtistScope` both emit `scan`. The queue entry
+the same way `LibraryScope` and `ArtistScope` both emit `process`. The queue entry
 `Runner.VerifyIdentities` enqueues carries that same title, so the pass is named identically
 wherever it is watched; `VerifyIdentities` survives as the Go name only.
 
@@ -328,35 +328,35 @@ identity check read releases and artists only — roughly double the requests. T
 (forcing a discography is how a release added upstream is found), but it is a real increase, and
 the button says so.
 
-## How the scan uses this
+## How processing uses this
 
-A scan reads files through the *cache*, so without a refresh stage it would tag from a week-old
+A processing run reads files through the *cache*, so without a refresh stage it would tag from a week-old
 copy and never notice a release that changed upstream. `scan.Runner.Run` therefore:
 
-1. runs `RunInline` over `DueScope` — expired releases only, so a nightly scan does not re-fetch
+1. runs `RunInline` over `DueScope` — expired releases only, so a nightly run does not re-fetch
    the collection;
 2. walks and tags as before;
 3. **re-tags the files of every release the refresh reported as changed.**
 
 Step 3 is necessary because `components.shouldSkip` drops files whose size and mtime are
 unchanged — which is every file of a release that changed only upstream. The walk cannot catch
-them by construction. This is the one place drift turns into file writes, and it lives in the scan
-because writing files is the scan's job.
+them by construction. This is the one place drift turns into file writes, and it lives in the processing run
+because writing files is the processing run's job.
 
-`RunInline` deliberately skips the pass guard and the Activity event: the scan already holds the
-file-writing guard and reports under its own event, and a scan blocked by a scheduled refresh it
+`RunInline` deliberately skips the pass guard and the Activity event: the run already holds the
+file-writing guard and reports under its own event, and a run blocked by a scheduled refresh it
 could happily run alongside would be absurd.
 
 ## Concurrency
 
 Mutual exclusion is keyed on **whether a job writes files**, not on which runner owns it:
 
-- file-writing work (scan, tag) — exclusive, one at a time
+- file-writing work (process, tag) — exclusive, one at a time
 - metadata-only work (refresh) — runs alongside, and yields at entity boundaries when
   file-writing work wants in
 
 Without this, a collection-wide refresh — hours long — would hold a single shared guard and reject
-a user's per-artist scan for that entire time. A long background job must not starve short
+a user's per-artist run for that entire time. A long background job must not starve short
 interactive ones.
 
 ## UI
@@ -368,7 +368,7 @@ runs. The trigger is a secondary action — the nightly schedule is what normall
 "Stop" needs no confirmation, because stopping costs nothing.
 
 The **no-writes contract is stated on the page**, not left to this document. It is the difference
-between this verb and a scan, and someone deciding whether to press a button needs to know it
+between this verb and processing, and someone deciding whether to press a button needs to know it
 without reading `docs/`. The artist page's three buttons carry the same information in their
 tooltips: which of them write tags, and what *Refresh metadata* hands off to.
 

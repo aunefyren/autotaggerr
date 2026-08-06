@@ -52,7 +52,13 @@ const (
 
 	UserRoleAdmin = "admin"
 
-	EventTypeScan        = "scan"
+	// EventTypeProcess is the full pipeline (walk, metadata, tag). It was recorded
+	// as "scan" until the verbs were named apart: Scan is now the cheap re-derivation
+	// of the collection from the index, which records no event of its own. Rows
+	// written under the old value are rewritten once at startup by
+	// events.MigrateLegacyTypes.
+	EventTypeProcess     = "process"
+	EventTypeLegacyScan  = "scan"
 	EventTypeDriftSync   = "drift_sync"
 	EventTypeLidarrSync  = "lidarr_sync"
 	EventTypePlexRefresh = "plex_refresh"

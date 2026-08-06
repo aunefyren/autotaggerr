@@ -165,7 +165,7 @@ export default function Migrations() {
       {!list.err && !list.loading && rows.length === 0 && (
         <EmptyState
           icon="⇄"
-          message="No MusicBrainz identity changes have been detected. This is the normal state — merges are found during scans and metadata syncs."
+          message="No MusicBrainz identity changes have been detected. This is the normal state — merges are found while processing and during metadata refreshes."
         />
       )}
 

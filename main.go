@@ -181,8 +181,12 @@ func main() {
 	// restart.
 	events.ReconcileRunning(db)
 
+	// Rewrite events recorded under a type name that has since been renamed, so the
+	// feed describes old runs with the verb they would be called today.
+	events.MigrateLegacyTypes(db)
+
 	// Shared scan runner: the cron job, the startup run, and the API all drive
-	// library scans through this one instance (single-run guard + status).
+	// library processing through this one instance (single-run guard + status).
 	scanRunner = scan.NewRunner(db, plexClient, files.ConfigFile)
 
 	// The metadata-refresh runner is owned by the scan runner and already wired to

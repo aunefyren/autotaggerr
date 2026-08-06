@@ -20,22 +20,33 @@ const (
 	maxItemsLimit     = 500
 )
 
-// triggerScan starts a full scan of all enabled libraries in the background.
-func (a *API) triggerScan(c *gin.Context) {
+// The four verbs, at every scope they are offered.
+//
+//	Process — walk the folders, resolve metadata, write tags. The full pipeline.
+//	Scan    — re-derive what the collection holds from the files already indexed.
+//	Refresh — re-read MusicBrainz. Writes no files.
+//	Tag     — rewrite tags from correlations already stored.
+//
+// Process is the only one that reads the disk and the only one that can discover a
+// file; Scan is the cheap one that makes the collection view agree with the index.
+// None of them triggers another.
+
+// processAll runs the full pipeline over every enabled library in the background.
+func (a *API) processAll(c *gin.Context) {
 	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 		return
 	}
-	// No busy check: overlapping requests queue rather than 409, and an identical scan
+	// No busy check: overlapping requests queue rather than 409, and an identical run
 	// already queued or running is collapsed by the runner's dedup.
 	a.Scan.RunAll()
-	c.JSON(http.StatusAccepted, gin.H{"status": "scan queued"})
+	c.JSON(http.StatusAccepted, gin.H{"status": "processing queued"})
 }
 
-// scanLibrary starts a background scan of a single library.
-func (a *API) scanLibrary(c *gin.Context) {
+// processLibrary runs the full pipeline over a single library.
+func (a *API) processLibrary(c *gin.Context) {
 	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 		return
 	}
 	id, ok := a.idParam(c)
@@ -48,22 +59,46 @@ func (a *API) scanLibrary(c *gin.Context) {
 		return
 	}
 	if err := a.Scan.RunLibrary(id); err != nil {
-		logger.Log.Error("failed to queue library scan. error: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to queue the scan"})
+		logger.Log.Error("failed to queue library processing. error: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to queue the run"})
 		return
 	}
-	c.JSON(http.StatusAccepted, gin.H{"status": "scan queued"})
+	c.JSON(http.StatusAccepted, gin.H{"status": "processing queued"})
 }
 
-// triggerSync starts a background metadata sync: re-check due MusicBrainz releases
-// and re-tag files whose release changed upstream.
-func (a *API) triggerSync(c *gin.Context) {
+// refreshAll re-reads the MusicBrainz metadata that is due, for the whole
+// collection. Writes no files: what changed upstream is reported, and the next
+// process run (or Tag files) applies it.
+func (a *API) refreshAll(c *gin.Context) {
 	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 		return
 	}
 	a.Scan.SyncDrift()
-	c.JSON(http.StatusAccepted, gin.H{"status": "sync queued"})
+	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued"})
+}
+
+// retagAll rewrites every indexed file in every enabled library from the metadata
+// already stored — Tag files at collection scope. Like its narrower twins it refuses
+// when there is nothing indexed, rather than recording a run that tagged nothing.
+func (a *API) retagAll(c *gin.Context) {
+	if a.Scan == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+		return
+	}
+
+	var count int64
+	a.DB.Model(&models.LibraryItem{}).
+		Joins("JOIN libraries ON libraries.id = library_items.library_id").
+		Where("libraries.enabled = ? AND library_items.status = ?", true, models.LibraryItemStatusOK).
+		Count(&count)
+	if count == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files — process a library first"})
+		return
+	}
+
+	a.Scan.RetagAll()
+	c.JSON(http.StatusAccepted, gin.H{"status": "tagging queued", "files": count})
 }
 
 // refreshLibrary and retagLibrary are the library-scoped halves of the verb grid:
@@ -90,7 +125,7 @@ func (a *API) retagLibrary(c *gin.Context) {
 	a.DB.Model(&models.LibraryItem{}).
 		Where("library_id = ? AND status = ?", lib.ID, models.LibraryItemStatusOK).Count(&count)
 	if count == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files in this library — run a scan first"})
+		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files in this library — process it first"})
 		return
 	}
 
@@ -106,7 +141,7 @@ func (a *API) retagLibrary(c *gin.Context) {
 // guards.
 func (a *API) libraryAction(c *gin.Context) (models.Library, bool) {
 	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 		return models.Library{}, false
 	}
 	id, ok := a.idParam(c)
@@ -121,21 +156,22 @@ func (a *API) libraryAction(c *gin.Context) (models.Library, bool) {
 	return lib, true
 }
 
-// The per-artist actions.
+// The per-artist actions: the same four verbs, narrowed to one artist. They exist
+// because the whole library is the wrong unit for a fix — noticing one artist is
+// wrong should not cost a seven-hour cold run. Cheapest first:
 //
-// All three are narrowed versions of work the app already does to a whole library,
-// and they exist because the whole library is the wrong unit for a fix: noticing one
-// artist is wrong should not cost a seven-hour cold scan. They differ in what they
-// re-read, cheapest first:
-//
+//	scan    — re-derive this artist's albums from the files already indexed. No disk
+//	          walk, no network, no file writes.
 //	retag   — rewrite tags from correlations already stored. No disk walk, no network.
-//	refresh — re-read the artist's catalogue and editions from MusicBrainz, re-tag
-//	          what changed upstream. No disk walk.
-//	scan    — walk the artist's folders through the full pipeline. Finds new,
-//	          changed and never-correlated files.
+//	refresh — re-read the artist's catalogue and editions from MusicBrainz. No disk
+//	          walk, no file writes.
+//	process — walk the artist's folders through the full pipeline. Finds new, changed
+//	          and never-correlated files.
 //
-// Each reports its progress through the same scan status and Activity feed as a full
-// run, because each *is* a full run with a narrower scope.
+// The three queued ones report through the same status and Activity feed as a full
+// run, because each *is* a full run with a narrower scope. Scan answers inline: it is
+// a database pass measured in milliseconds, so a queued job and an event would be
+// more machinery than the work.
 
 // artistAction resolves the artist and the shared preconditions of all three
 // actions, then starts work in the background. It returns the artist so callers can
@@ -143,7 +179,7 @@ func (a *API) libraryAction(c *gin.Context) (models.Library, bool) {
 func (a *API) artistAction(c *gin.Context) (models.CollectionArtist, bool) {
 	var artist models.CollectionArtist
 	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 		return artist, false
 	}
 	if err := a.DB.Where("mb_id = ?", c.Param("mbid")).First(&artist).Error; err != nil {
@@ -155,26 +191,48 @@ func (a *API) artistAction(c *gin.Context) (models.CollectionArtist, bool) {
 	return artist, true
 }
 
-// scanArtist walks just this artist's folders. The scope is resolved before
-// responding so "this artist has no files yet" is an answer, not a scan that reports
+// processArtist walks just this artist's folders. The scope is resolved before
+// responding so "this artist has no files yet" is an answer, not a run that reports
 // zero files a minute later.
-func (a *API) scanArtist(c *gin.Context) {
+func (a *API) processArtist(c *gin.Context) {
 	artist, ok := a.artistAction(c)
 	if !ok {
 		return
 	}
 	scope, err := a.Scan.ArtistScope(artist.MBID)
 	if err != nil {
-		if errors.Is(err, scan.ErrNothingToScan) {
+		if errors.Is(err, scan.ErrNothingToProcess) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
-		logger.Log.Error("failed to resolve artist scan scope. error: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to scan"})
+		logger.Log.Error("failed to resolve artist process scope. error: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to process"})
 		return
 	}
 	a.Scan.Run(scope)
-	c.JSON(http.StatusAccepted, gin.H{"status": "scan queued", "artist": artist.Name, "folders": scope.Detail["folders"]})
+	c.JSON(http.StatusAccepted, gin.H{"status": "processing queued", "artist": artist.Name, "folders": scope.Detail["folders"]})
+}
+
+// scanArtist re-derives one artist's albums from the files already indexed — the
+// *Scan* verb at artist scope. It writes nothing to disk and asks MusicBrainz
+// nothing, so it answers inline with what it found.
+func (a *API) scanArtist(c *gin.Context) {
+	artist, ok := a.artistAction(c)
+	if !ok {
+		return
+	}
+	stats, err := collection.RebuildArtist(a.DB, artist.MBID)
+	if err != nil {
+		logger.Log.Error("failed to scan artist. error: " + err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan this artist"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"artist":               artist.Name,
+		"artists":              stats.Artists,
+		"owned_release_groups": stats.Owned,
+		"credit_changes":       stats.CreditChanges,
+	})
 }
 
 // refreshArtist re-reads this artist's catalogue and editions from MusicBrainz,
@@ -201,7 +259,7 @@ func (a *API) retagArtist(c *gin.Context) {
 		return
 	}
 	if len(items) == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files for this artist — run a scan first"})
+		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files for this artist — process them first"})
 		return
 	}
 	a.Scan.RetagArtist(artist.MBID)
@@ -219,7 +277,7 @@ func (a *API) recorrelateReleaseGroup(c *gin.Context) {
 	rgMBID := c.Param("mbid")
 	if err := a.Scan.ForceRecorrelateReleaseGroup(rgMBID); err != nil {
 		switch {
-		case errors.Is(err, scan.ErrNothingToScan):
+		case errors.Is(err, scan.ErrNothingToProcess):
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "release group not found"})
@@ -260,7 +318,7 @@ func (a *API) recorrelateArtist(c *gin.Context) {
 		return
 	}
 	if err := a.Scan.ForceRecorrelateArtist(artist.MBID); err != nil {
-		if errors.Is(err, scan.ErrNothingToScan) {
+		if errors.Is(err, scan.ErrNothingToProcess) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
@@ -271,10 +329,11 @@ func (a *API) recorrelateArtist(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"status": "re-correlate queued", "artist": artist.Name})
 }
 
-// scanStatus reports the current or most recent scan summary.
-func (a *API) scanStatus(c *gin.Context) {
+// processStatus reports the job queue and the current or most recent run. It covers
+// every queued verb, not only processing — the queue is one, so its status is one.
+func (a *API) processStatus(c *gin.Context) {
 	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "scanner unavailable"})
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 		return
 	}
 	c.JSON(http.StatusOK, a.Scan.Status())

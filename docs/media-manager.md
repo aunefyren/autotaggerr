@@ -100,7 +100,7 @@ bare DSN — `journal_mode(WAL)`, `busy_timeout(10000)`, `synchronous(NORMAL)` �
 `sqliteMaxConns`. This is not tuning; it is a fix. In the default rollback-journal mode a *committing*
 writer takes an EXCLUSIVE lock and readers wait it out, and this app's write pattern is a Lidarr sync
 committing per album and ending in one large `collection.Rebuild` transaction. Against that, the UI
-polling `/scan/status` and `/events` — plus the users-table read every authenticated request does —
+polling `/process/status` and `/events` — plus the users-table read every authenticated request does —
 met a near-continuous run of commit windows, until one exceeded the driver's own 5s busy timeout
 (`glebarez/go-sqlite` runs `pragma BUSY_TIMEOUT(5000)` on every connection) and the request failed.
 Under WAL a reader never waits for a writer at all. The pool cap follows from SQLite serialising

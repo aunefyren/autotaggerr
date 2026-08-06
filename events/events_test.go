@@ -30,7 +30,7 @@ func testDB(t *testing.T) *gorm.DB {
 func TestBeginFinish(t *testing.T) {
 	db := testDB(t)
 
-	ev := Begin(db, models.EventTypeScan, "Library scan")
+	ev := Begin(db, models.EventTypeProcess, "Library scan")
 	if ev.ID == uuid.Nil {
 		t.Fatal("Begin did not assign an id")
 	}
@@ -61,7 +61,7 @@ func TestBeginFinish(t *testing.T) {
 // erase it (Finish Saves the struct, which writeProgress keeps in sync).
 func TestStartProgressPersistsFinalSnapshot(t *testing.T) {
 	db := testDB(t)
-	ev := Begin(db, models.EventTypeScan, "Library scan")
+	ev := Begin(db, models.EventTypeProcess, "Library scan")
 
 	var done int
 	stop := StartProgress(db, ev, func() Progress {
@@ -91,7 +91,7 @@ func TestStartProgressPersistsFinalSnapshot(t *testing.T) {
 // A nil db (the flag-driven single-file path builds events without one) must yield a
 // no-op stop rather than panicking.
 func TestStartProgressNilDB(t *testing.T) {
-	ev := Begin(nil, models.EventTypeScan, "scan")
+	ev := Begin(nil, models.EventTypeProcess, "scan")
 	stop := StartProgress(nil, ev, func() Progress { return Progress{} })
 	stop() // must not panic
 }
@@ -100,8 +100,8 @@ func TestStartProgressNilDB(t *testing.T) {
 // failed, while already-finished events are left untouched.
 func TestReconcileRunning(t *testing.T) {
 	db := testDB(t)
-	running := Begin(db, models.EventTypeScan, "interrupted scan")
-	done := Begin(db, models.EventTypeScan, "finished scan")
+	running := Begin(db, models.EventTypeProcess, "interrupted scan")
+	done := Begin(db, models.EventTypeProcess, "finished scan")
 	Finish(db, done, models.EventStatusOK, "done", nil)
 
 	ReconcileRunning(db)
@@ -130,7 +130,7 @@ func TestReconcileRunning(t *testing.T) {
 func TestPruneKeepsNewest(t *testing.T) {
 	db := testDB(t)
 	for i := 0; i < 5; i++ {
-		Finish(db, Begin(db, models.EventTypeScan, "scan"), models.EventStatusOK, "", nil)
+		Finish(db, Begin(db, models.EventTypeProcess, "scan"), models.EventStatusOK, "", nil)
 	}
 	Prune(db, 2)
 
@@ -148,8 +148,8 @@ func TestPruneKeepsNewest(t *testing.T) {
 // back for that event only.
 func TestAddItemsAndFetch(t *testing.T) {
 	db := testDB(t)
-	ev := Begin(db, models.EventTypeScan, "scan")
-	other := Begin(db, models.EventTypeScan, "another scan")
+	ev := Begin(db, models.EventTypeProcess, "scan")
+	other := Begin(db, models.EventTypeProcess, "another scan")
 
 	AddItems(db, ev, []models.EventItem{
 		{
@@ -231,7 +231,7 @@ func TestPruneDeletesDetailRows(t *testing.T) {
 
 	var kept, dropped uuid.UUID
 	for i := 0; i < 4; i++ {
-		ev := Begin(db, models.EventTypeScan, "scan")
+		ev := Begin(db, models.EventTypeProcess, "scan")
 		Finish(db, ev, models.EventStatusOK, "", nil)
 		AddItems(db, ev, []models.EventItem{{Path: "/f.flac", Status: models.EventItemStatusChanged}})
 		if i == 0 {
@@ -265,5 +265,41 @@ func TestPruneDeletesDetailRows(t *testing.T) {
 	}
 	if len(survivors) != 1 {
 		t.Errorf("kept event has %d detail rows, want 1", len(survivors))
+	}
+}
+
+// TestMigrateLegacyTypes: runs recorded before the verbs were named apart carry the
+// old type, and the feed would otherwise show them under a verb that now means
+// something else entirely. Other types are left alone, and a second call is a no-op.
+func TestMigrateLegacyTypes(t *testing.T) {
+	db := testDB(t)
+
+	old := Begin(db, models.EventTypeLegacyScan, "an old run")
+	other := Begin(db, models.EventTypeMirror, "a refresh")
+
+	MigrateLegacyTypes(db)
+
+	var migrated models.Event
+	if err := db.First(&migrated, "id = ?", old.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if migrated.Type != models.EventTypeProcess {
+		t.Errorf("type = %q, want %q", migrated.Type, models.EventTypeProcess)
+	}
+
+	var untouched models.Event
+	if err := db.First(&untouched, "id = ?", other.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if untouched.Type != models.EventTypeMirror {
+		t.Errorf("an unrelated event type was rewritten: %q", untouched.Type)
+	}
+
+	// Idempotent: nothing left to rename on the next boot.
+	MigrateLegacyTypes(db)
+	var legacy int64
+	db.Model(&models.Event{}).Where("type = ?", models.EventTypeLegacyScan).Count(&legacy)
+	if legacy != 0 {
+		t.Errorf("%d legacy rows remain", legacy)
 	}
 }

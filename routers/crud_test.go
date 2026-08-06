@@ -191,18 +191,18 @@ func TestScanEndpoints(t *testing.T) {
 	tok := loginToken(t, r)
 
 	// status starts idle
-	w := do(r, "GET", "/api/v1/scan/status", tok, nil)
+	w := do(r, "GET", "/api/v1/process/status", tok, nil)
 	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"running":false`)) {
 		t.Errorf("status = %d: %s", w.Code, w.Body.String())
 	}
 
 	// trigger returns 202 (no libraries -> a quick no-op run)
-	if w := do(r, "POST", "/api/v1/scan", tok, nil); w.Code != http.StatusAccepted {
+	if w := do(r, "POST", "/api/v1/process", tok, nil); w.Code != http.StatusAccepted {
 		t.Errorf("trigger scan = %d, want 202", w.Code)
 	}
 
 	// scanning a nonexistent library -> 404
-	if w := do(r, "POST", "/api/v1/libraries/"+uuid.New().String()+"/scan", tok, nil); w.Code != http.StatusNotFound {
+	if w := do(r, "POST", "/api/v1/libraries/"+uuid.New().String()+"/process", tok, nil); w.Code != http.StatusNotFound {
 		t.Errorf("scan missing library = %d, want 404", w.Code)
 	}
 }
@@ -295,7 +295,7 @@ func TestEventDetailItems(t *testing.T) {
 	r, api := setupAPI(t)
 	tok := loginToken(t, r)
 
-	ev := events.Begin(api.DB, models.EventTypeScan, "Library scan")
+	ev := events.Begin(api.DB, models.EventTypeProcess, "Library scan")
 	events.Finish(api.DB, ev, models.EventStatusOK, "1 changed", map[string]any{"changed": 1})
 	events.AddItems(api.DB, ev, []models.EventItem{{
 		Path:        "/music/A/Album (2020)/01 One.flac",

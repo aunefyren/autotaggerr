@@ -17,7 +17,7 @@ import { useToast } from "../toast";
  * the trigger is secondary, because the nightly schedule is what normally does it.
  *
  * The no-writes contract is stated on the page rather than left to documentation.
- * It is the difference between this and a scan, and a user deciding whether to
+ * It is the difference between this and processing, and a user deciding whether to
  * press a button during dinner needs to know it without reading `docs/`.
  *
  * `fetched` vs `fresh` is the number that actually tells you something: a healthy
@@ -30,7 +30,7 @@ const PHASE_LABELS: Record<string, string> = {
   discographies: "Discographies",
   editions: "Editions",
   releases: "Releases",
-  paused: "Paused — waiting for the scan to finish",
+  paused: "Paused — waiting for the running job to finish",
 };
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -173,7 +173,7 @@ export default function Mirror() {
         browsing reads the database instead of an API limited to about one request per second. The
         copy is refreshed on a schedule, which moves that cost off the pages you are looking at.
         This <strong>never writes to your files</strong> — when a release has changed upstream it is
-        reported here and in Activity, and the next scan re-tags the files that use it. To apply a
+        reported here and in Activity, and the next processing run re-tags the files that use it. To apply a
         change immediately, use <em>Tag files</em> on the artist.
       </p>
 
@@ -218,7 +218,7 @@ export default function Mirror() {
             <Stat
               n={s.changed_releases}
               l="changed upstream"
-              hint="Releases whose metadata differs from the cached copy. The next scan re-tags the files that use them."
+              hint="Releases whose metadata differs from the cached copy. The next processing run re-tags the files that use them."
             />
           </div>
 

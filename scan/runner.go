@@ -299,17 +299,17 @@ type Scope struct {
 	Force bool
 }
 
-// ErrNothingToScan reports a scope that resolved to no folders on disk. It is a
+// ErrNothingToProcess reports a scope that resolved to no folders on disk. It is a
 // refusal, not a failure: running it would report "0 files processed" and look like
 // the scan silently did nothing.
-var ErrNothingToScan = errors.New("nothing to scan: no indexed files found — run a library scan first")
+var ErrNothingToProcess = errors.New("nothing to process: no indexed files found — process a library first")
 
 // LibraryScope covers whole libraries, which is what the scheduled job, the startup
 // run, and a per-library scan all want.
 func LibraryScope(libraries []models.Library) Scope {
-	title := "Library scan"
+	title := "Processing all libraries"
 	if len(libraries) == 1 {
-		title = "Scan of " + libraries[0].Name
+		title = "Processing " + libraries[0].Name
 	}
 	targets := make([]Target, 0, len(libraries))
 	for _, library := range libraries {
@@ -319,7 +319,7 @@ func LibraryScope(libraries []models.Library) Scope {
 }
 
 // ArtistScope covers just one artist's folders, derived from where their indexed
-// files actually sit (see collection.ArtistTargets). It returns ErrNothingToScan when
+// files actually sit (see collection.ArtistTargets). It returns ErrNothingToProcess when
 // the artist has no files yet — there is no folder to walk, and the artist's own name
 // is not a reliable guess at what the folder is called.
 func (r *Runner) ArtistScope(artistMBID string) (Scope, error) {
@@ -333,15 +333,15 @@ func (r *Runner) ArtistScope(artistMBID string) (Scope, error) {
 		return Scope{}, err
 	}
 	if len(found) == 0 {
-		return Scope{}, ErrNothingToScan
+		return Scope{}, ErrNothingToProcess
 	}
 
-	return buildScope("Scan of "+artist.Name,
+	return buildScope("Processing "+artist.Name,
 		map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID}, found), nil
 }
 
 // ReleaseGroupScope covers the album folders of one release-group, for the narrowest
-// force re-correlate. It returns ErrNothingToScan when nothing is owned of the group,
+// force re-correlate. It returns ErrNothingToProcess when nothing is owned of the group,
 // and the DB error when the release-group is unknown.
 func (r *Runner) ReleaseGroupScope(rgMBID string) (Scope, error) {
 	var rg models.CollectionReleaseGroup
@@ -353,13 +353,13 @@ func (r *Runner) ReleaseGroupScope(rgMBID string) (Scope, error) {
 		return Scope{}, err
 	}
 	if len(found) == 0 {
-		return Scope{}, ErrNothingToScan
+		return Scope{}, ErrNothingToProcess
 	}
 	title := rg.Title
 	if title == "" {
 		title = rgMBID
 	}
-	return buildScope("Scan of "+title,
+	return buildScope("Processing "+title,
 		map[string]any{"release_group": title, "release_group_mb_id": rgMBID}, found), nil
 }
 
@@ -390,7 +390,7 @@ func buildScope(title string, detail map[string]any, found []collection.ArtistTa
 // RunAll queues a scan of every enabled library. Deduped against an identical scan
 // already queued or running.
 func (r *Runner) RunAll() {
-	r.enqueue(job{jobScanAll, "scan_all", "Scan all libraries", r.runAllNow})
+	r.enqueue(job{jobProcessAll, "process_all", "Process all libraries", r.runAllNow})
 }
 
 // runAllNow is the executor: it loads the libraries at run time (not enqueue time, so a
@@ -415,7 +415,7 @@ func (r *Runner) RunLibrary(id uuid.UUID) error {
 	if err := r.db.First(&library, "id = ?", id).Error; err != nil {
 		return err
 	}
-	r.enqueue(job{jobScanLibrary, "scan_library:" + id.String(), "Scan of " + library.Name, func() {
+	r.enqueue(job{jobProcessLibrary, "process_library:" + id.String(), "Processing " + library.Name, func() {
 		r.runScope(LibraryScope([]models.Library{library}))
 	}})
 	return nil
@@ -436,11 +436,11 @@ func (r *Runner) RunArtist(artistMBID string) error {
 // has no files" is answered immediately) and hands the result here; the dedup key comes
 // from the scope title, so a second identical request collapses onto the first.
 func (r *Runner) Run(scope Scope) {
-	key := "scan_artist:" + scope.Title
+	key := "process_artist:" + scope.Title
 	if mbid, ok := scope.Detail["artist_mb_id"].(string); ok && mbid != "" {
-		key = "scan_artist:" + mbid
+		key = "process_artist:" + mbid
 	}
-	r.enqueue(job{jobScanArtist, key, scope.Title, func() { r.runScope(scope) }})
+	r.enqueue(job{jobProcessArtist, key, scope.Title, func() { r.runScope(scope) }})
 }
 
 // ForceRecorrelateArtist repairs an artist whose files diverged from what their
@@ -573,6 +573,137 @@ func pathInScope(path string, roots []string) bool {
 	return false
 }
 
+// scopeFilter answers whether an indexed file falls inside a run's scope.
+//
+// A scan is defined by the folders it walks, but two of its stages do not walk
+// anything: the refresh stage picks releases off the metadata cache by TTL, and the
+// drift stage re-tags every indexed file of a release that changed. Neither has a
+// folder in hand, so neither consulted the scope at all — which is how pressing
+// *Scan* on one artist could spend the whole MusicBrainz budget on the collection
+// and then rewrite files belonging to artists nobody asked about.
+type scopeFilter struct {
+	// roots maps a library to the folders in scope within it. Nil means the run was
+	// not narrowed and everything is in scope; a library present with no roots means
+	// the whole of it is.
+	roots map[uuid.UUID][]string
+}
+
+// newScopeFilter builds the filter for a scope. A scope where no target names any
+// roots — a full scan, or a whole-library one — admits everything, which leaves the
+// scheduled run behaving exactly as before: it is the pass that is *supposed* to
+// carry the collection's drift, and narrowing it would leave releases nothing ever
+// refreshed.
+func newScopeFilter(scope Scope) scopeFilter {
+	narrowed := false
+	for _, target := range scope.Targets {
+		if !target.full() {
+			narrowed = true
+			break
+		}
+	}
+	if !narrowed {
+		return scopeFilter{}
+	}
+
+	roots := make(map[uuid.UUID][]string, len(scope.Targets))
+	for _, target := range scope.Targets {
+		roots[target.Library.ID] = append(roots[target.Library.ID], target.Roots...)
+	}
+	return scopeFilter{roots: roots}
+}
+
+// all reports whether the filter admits every file, which lets callers skip the
+// index queries entirely.
+func (f scopeFilter) all() bool { return f.roots == nil }
+
+// admits reports whether one indexed file is inside the scope. A file in a library
+// this run does not touch is out; within a library pathInScope decides, and a
+// library recorded with no roots is in scope in its entirety.
+func (f scopeFilter) admits(item models.LibraryItem) bool {
+	if f.all() {
+		return true
+	}
+	roots, ok := f.roots[item.LibraryID]
+	if !ok {
+		return false
+	}
+	return pathInScope(item.Path, roots)
+}
+
+// keep returns the items inside the scope. The unnarrowed case returns the slice
+// untouched, so a full scan pays nothing for this.
+func (f scopeFilter) keep(items []models.LibraryItem) []models.LibraryItem {
+	if f.all() {
+		return items
+	}
+	kept := make([]models.LibraryItem, 0, len(items))
+	for _, item := range items {
+		if f.admits(item) {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
+// releasesInScope is the set of MusicBrainz release IDs the scope's own files point
+// at — what the refresh stage is allowed to re-read on a narrowed run. Derived from
+// the index rather than from the collection tables, because a scope is a set of
+// folders and only library_items knows which release a folder's files resolved to.
+func (r *Runner) releasesInScope(filter scopeFilter) (map[string]bool, error) {
+	if filter.all() {
+		return nil, nil
+	}
+
+	inScope := map[string]bool{}
+	for libraryID := range filter.roots {
+		var items []models.LibraryItem
+		if err := r.db.Select("path", "library_id", "mb_release_id").
+			Where("library_id = ? AND mb_release_id <> ''", libraryID).
+			Find(&items).Error; err != nil {
+			return nil, err
+		}
+		for _, item := range items {
+			if filter.admits(item) {
+				inScope[item.MBReleaseID] = true
+			}
+		}
+	}
+	return inScope, nil
+}
+
+// narrowDue drops releases outside the scope from the due-for-refresh list, so a
+// per-artist scan re-reads that artist's expired releases and leaves the rest for a
+// run that covers them. The list comes from the whole release cache, and on a cold
+// cache every entry on it costs a second of the global rate limit — which made the
+// cheapest-looking button in the app quietly the most expensive.
+//
+// A failure to resolve the scope falls back to the full list rather than to nothing:
+// refreshing too much wastes rate limit, refreshing nothing silently stops the drift
+// detection this stage exists for. The files that refresh leads to are gated
+// separately, by the same filter, so the fallback cannot widen what gets written.
+func (r *Runner) narrowDue(due []string, filter scopeFilter) []string {
+	if filter.all() {
+		return due
+	}
+	inScope, err := r.releasesInScope(filter)
+	if err != nil {
+		logger.Log.Warnf("failed to resolve the releases in scope, refreshing everything due: %s", err.Error())
+		return due
+	}
+
+	kept := make([]string, 0, len(due))
+	for _, mbID := range due {
+		if inScope[mbID] {
+			kept = append(kept, mbID)
+		}
+	}
+	if dropped := len(due) - len(kept); dropped > 0 {
+		logger.Log.Infof("metadata refresh narrowed to this run's scope: %d of %d due release(s) re-read, %d left to a wider run",
+			len(kept), len(due), dropped)
+	}
+	return kept
+}
+
 // scopeIsFull reports whether a run covered at least one library in its entirety,
 // which is what earns the end-of-run manager mirror (see syncManagers). It reuses
 // Target.full, the same predicate that decides whether a library may claim it was
@@ -602,7 +733,7 @@ func (r *Runner) runScope(scope Scope) {
 	})
 	logger.Log.Info("library process task starting...")
 
-	event := events.Begin(r.db, models.EventTypeScan, scope.Title)
+	event := events.Begin(r.db, models.EventTypeProcess, scope.Title)
 
 	// Reset the live progress atomics and start the flusher that writes them onto the
 	// running event, so the Activity feed can draw a bar. Stopped before Finish, whose
@@ -638,14 +769,21 @@ func (r *Runner) runScope(scope Scope) {
 	}
 	r.progTotal.Store(int64(totalFiles))
 
+	// What this run is allowed to touch through the index rather than through the
+	// walk. Unnarrowed for a full or whole-library scan; see scopeFilter.
+	filter := newScopeFilter(scope)
+
 	// Refresh stage. A scan reads files through the *cache*, so without this it
 	// would tag from a week-old copy and never notice a release that changed
 	// upstream. Only expired entries are re-read, which is what keeps a nightly
-	// scan from re-fetching the whole collection.
+	// scan from re-fetching the whole collection — and on a narrowed run, only the
+	// expired entries this scope's own files point at, so a one-artist button costs
+	// one artist's worth of rate limit.
 	//
 	// Run inline: this holds the file-writing guard already, and a scan waiting on
 	// a scheduled refresh it is perfectly able to run alongside would be absurd.
-	refreshResult := r.refresh.RunInline(context.Background(), mirror.DueScope(modules.MusicbrainzDueForRefresh()))
+	due := r.narrowDue(modules.MusicbrainzDueForRefresh(), filter)
+	refreshResult := r.refresh.RunInline(context.Background(), mirror.DueScope(due))
 
 	fullScan := scopeIsFull(scope)
 
@@ -703,11 +841,15 @@ func (r *Runner) runScope(scope Scope) {
 	// above cannot have caught them. This is where the refresh stage's findings are
 	// acted on, and it is here rather than in the refresh verb because writing files
 	// is the scan's job, not the refresh's.
+	//
+	// It writes only inside the scope. A release is not confined to one folder — the
+	// same edition can be held twice, in two libraries — so the filter is applied per
+	// file, not per release.
 	drift := releaseRefresh{}
 	if len(refreshResult.ChangedReleases) > 0 {
 		r.setPhase(PhaseDrift)
 		logger.Log.Infof("%d release(s) changed upstream; re-tagging their files", len(refreshResult.ChangedReleases))
-		drift = r.retagReleases(refreshResult.ChangedReleases, refreshSet, detail)
+		drift = r.retagReleases(refreshResult.ChangedReleases, refreshSet, detail, filter)
 		tagsWritten += drift.retagged
 		errorFiles = append(errorFiles, drift.errorFiles...)
 	}
@@ -1046,6 +1188,59 @@ func (r *Runner) refreshLibraryNow(libraryID uuid.UUID) {
 	}
 }
 
+// RetagAll queues a re-tag of every indexed file in every enabled library — *Tag
+// files* at collection scope, the widest of the three.
+//
+// It is one job rather than one per library, so it dedups as a unit and the queue
+// shows a single entry for what the user asked for once. Libraries are loaded when
+// the job runs, not when it is queued, matching runAllNow: a library added while it
+// waited is included.
+func (r *Runner) RetagAll() {
+	r.enqueue(job{jobRetagAll, "retag_all", "Tag files", r.retagAllNow})
+}
+
+func (r *Runner) retagAllNow() {
+	var libraries []models.Library
+	if err := r.db.Where("enabled = ?", true).Order("name").Find(&libraries).Error; err != nil {
+		logger.Log.Error("failed to load libraries from database. error: " + err.Error())
+		return
+	}
+	if len(libraries) == 0 {
+		logger.Log.Info("no enabled libraries configured; nothing to tag")
+		return
+	}
+
+	ids := make([]uuid.UUID, 0, len(libraries))
+	names := make([]string, 0, len(libraries))
+	for _, library := range libraries {
+		ids = append(ids, library.ID)
+		names = append(names, library.Name)
+	}
+
+	var items []models.LibraryItem
+	if err := r.db.Where("library_id IN ? AND status = ?", ids, models.LibraryItemStatusOK).
+		Order("path").Find(&items).Error; err != nil {
+		logger.Log.Warnf("failed to load items for a collection-wide re-tag: %s", err.Error())
+		return
+	}
+
+	logger.Log.Infof("re-tagging %d files across %d library(ies)", len(items), len(libraries))
+	event := events.Begin(r.db, models.EventTypeDriftSync, "Tag files in every library")
+	refreshSet := modules.NewAlbumRefreshSet(nil)
+	detail := components.NewDetailCollector(maxDetailItemsRecorded)
+
+	result := releaseRefresh{}
+	result.retagItems(r, items, map[uuid.UUID]models.Library{}, refreshSet, detail)
+
+	r.flushPlex(refreshSet)
+	summary := fmt.Sprintf("%d of %d files re-tagged · %d errors", result.retagged, len(items), len(result.errorFiles))
+	logger.Log.Infof("re-tag finished. %s", summary)
+	r.finishRefresh(event, summary, result, detail, map[string]any{
+		"libraries":      names,
+		"files_in_scope": len(items),
+	})
+}
+
 // RetagLibrary queues a re-tag of every indexed file in one library from its stored
 // correlation, without walking the disk or re-fetching anything. The library-scoped
 // twin of RetagArtist.
@@ -1167,7 +1362,14 @@ func (res releaseRefresh) summary() string {
 // now decides *which* releases changed and this decides what to do about it. The
 // split is what lets "Refresh metadata" be a button that only reads, while the scan
 // remains the thing that touches files.
-func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshSet, detail *components.DetailCollector) releaseRefresh {
+//
+// filter confines the writes to the run's scope. Without it this stage was a
+// collection-wide re-tag hiding inside every scan, however narrow: a file was
+// rewritten because its release had expired, not because the run had anything to do
+// with it. A release still out of scope is counted as checked and changed — that is
+// true of the metadata regardless of whose folders were walked — with no files
+// against it.
+func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshSet, detail *components.DetailCollector, filter scopeFilter) releaseRefresh {
 	res := releaseRefresh{}
 	libraries := map[uuid.UUID]models.Library{} // small per-run cache
 
@@ -1183,6 +1385,7 @@ func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshS
 			res.refreshItems = append(res.refreshItems, refreshDetailItem(mbID, 0))
 			continue
 		}
+		items = filter.keep(items)
 		before := res.retagged
 		res.retagItems(r, items, libraries, refreshSet, detail)
 		res.refreshItems = append(res.refreshItems, refreshDetailItem(mbID, res.retagged-before))

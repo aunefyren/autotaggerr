@@ -23,9 +23,12 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 - **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
   collection already knows about. Artists reached only by browsing still fall back to the
   on-demand path.
-- **Tag files has no collection-wide scope.** Artist and library have it; "re-tag everything" does
-  not, because it is what a scan already does — worth a button only if re-tagging without a disk
-  walk turns out to be wanted at that size.
+- **The `scan` Go package owns the *Process* verb.** The buttons, routes and event types were
+  renamed (Process / Scan / Refresh metadata / Tag files — see
+  [scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)) but the package was not,
+  so `scan.Runner` is the processing runner and `collection.Rebuild` is the Scan verb. Renaming the
+  package is mechanical and touches `main.go`, `routers/` and every file under `scan/`; it was left
+  out of the rename to keep that diff reviewable.
 - **Event retention is fixed** at the newest 200 events (detail rows cascade with them), and the
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
@@ -123,6 +126,12 @@ The manager-authority boundary is now honoured end to end (see
   Lidarr uses Title casing on genres. Is this wise? Should we?
   Lidarr has multiple genres on 'GENRE' separated by '; '. Should we?
   Lidarr tags MP3s with 'ORIGINALYEAR', we remove this. Shold we?
+- *Rebuilding/scanning the library is not an activity?*
+- *Cascading/grouped actions should maybe just create multiple activities*
+  It is not very clear what order things happen in, and what does what
+- *Some activities have more info in the summary than in the pop up modal*
+- *It seems a 503 on MB refresh causes Autotaggerr to drop the file*
+  The file is dropped, and albums become mismatched with Lidarr
   
 - **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
   `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID

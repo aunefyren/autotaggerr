@@ -20,13 +20,14 @@ Three paths do:
 
 | Path | How |
 | --- | --- |
-| a scan | `collection.Rebuild` at the end of the run |
+| a processing run | `collection.Rebuild` at the end of the run |
 | applying a migration | `collection.Rebuild` after the remap |
 | manual attach | `collection.Rebuilder.Request()`, from `saveCorrelation` |
 
 Attach was missing for a long time, so attaching files by hand left the collection stale until
-the next scan — which is the only reason *Rebuild from library* had to be a button a user was
-expected to understand. It is now a repair affordance, not a step in a workflow.
+the next processing run — which is the only reason the *Scan* button (once called *Rebuild from
+library*) had to be something a user was expected to understand. It is now a repair affordance,
+not a step in a workflow.
 
 The trigger sits in `saveCorrelation` rather than in the handlers because that is the single
 place both the single and bulk attach paths write a correlation. A writer that has to remember to
@@ -40,12 +41,46 @@ re-derivation to see their file marked matched is the wrong trade — and its fa
 rather than surfaced, because the correlation is already committed and a stale derived view is a
 display problem.
 
-`Rebuild` itself runs in a transaction. Its first act is to clear the disk view wholesale before
+`Rebuild` itself runs in a transaction. Its first act is to clear the disk view before
 re-establishing it, so without one a failure partway — or two overlapping passes — would leave
 the collection claiming to own less than it does. Silent and wrong is the worst combination, so
 the write helpers propagate their errors here and the whole pass rolls back. The Lidarr and
 discography syncs keep the older log-and-continue behaviour: one unwritable album must not
 abandon a whole sync.
+
+### Scoping a rebuild
+
+`Rebuild` is the **Scan** verb (see [scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)),
+and `RebuildScoped` narrows it. The zero scope is the whole collection — what a processing run and
+the collection-wide button ask for; `RebuildArtist` is the artist page's button.
+
+Narrowing is about *writes*, not reads. A scoped pass reads the whole index exactly as a full one
+does, because that is the only way to answer the question the button is actually pressed for: an
+album whose files were processed since the last rebuild has no collection row yet, so a scope
+resolved from existing rows alone could never find it. `bounds.inScope` therefore admits a file
+two ways — an edition already filed under the artist, **or** a cached release that credits them.
+
+What the bounds confine is every write that would otherwise be collection-wide:
+
+| Step | Unbounded | Bounded to the scope |
+| --- | --- | --- |
+| clear the disk view | every `owned` release-group | only the scope's release-groups |
+| prune owned editions | `mb_id NOT IN (keep)` | that, `AND mb_id IN (scope)` |
+| reconcile auto wants | every desire row | only desires for the scope's release-groups |
+
+Both prunes are the reason the scope exists at all: to a pass that only read one artist's files,
+every other album in the collection looks like it owns nothing, and an unbounded clear or
+`NOT IN` would take the lot.
+
+Anything the pass *discovers* is admitted late (`bounds.extend`), after the clear and before the
+prune — so it can only ever widen what gets written, never what got wiped. `pruneOrphanArtists`
+stays unscoped deliberately: it asks whether anything anywhere still credits an artist, which is a
+global fact and true regardless of which pass noticed.
+
+**There is no library scope**, and the schema is why: `owned` is a flag on the release-group, not
+a fact per library. An album with files in two libraries is one row, so a per-library pass would
+have to read the other libraries' files to avoid clearing a shared album — at which point it is
+the collection-wide pass with extra steps.
 
 
 ## Entities
@@ -173,7 +208,7 @@ queued for review, and the album is simply under a different artist next time yo
 identity change with no trace anywhere, which is exactly why it took a production report to find.
 
 `RebuildStats.CreditChanges` is that trace: release-groups whose primary credit moved between two
-*named* artists, plus links dropped because MusicBrainz no longer names the artist. It rides the scan
+*named* artists, plus links dropped because MusicBrainz no longer names the artist. It rides the processing run's
 event as `credit_changes` with a `· N credit change(s)` clause on the summary line (see
 [scanning.md](scanning.md#the-collection-stage)), and it is reported **per run rather than stored** —
 the state it describes is already correct by the time anyone reads it; what was missing is that it
@@ -199,7 +234,7 @@ nobody reads:
   Written *only* by `SyncLidarr` and native discography discovery.
 
 This split exists because both authorities originally wrote the *same* columns, so whichever ran
-last decided what the UI showed — and since `Rebuild` runs automatically after every scan, a scan
+last decided what the UI showed — and since `Rebuild` runs automatically after every processing run, a run
 silently wiped the Lidarr mirror. Now neither can clobber the other and the order they run in does
 not matter.
 
@@ -272,7 +307,7 @@ can never disturb authored intent.
 ## The desire model
 
 Desire is **authored** user intent: sparse, typed by a human, and it must never be recomputed.
-Ownership is **derived**, rebuilt from disk on every scan. They live in separate tables so the
+Ownership is **derived**, re-read from disk on every processing run. They live in separate tables so the
 class of bug the disk/catalog split fixed is structurally impossible here — with the user's own
 intent as the thing that would otherwise be at risk.
 
@@ -372,12 +407,12 @@ per album, not by rule, so there is no rule to recover; any follow-types guess w
 intent that was never expressed.
 
 **`ManagerDetached` is stored, not derived.** `managed_by` is re-derived from the library's manager
-by `rebuildTx` on every scan, so a detach that only wrote `managed_by` would appear to work and then
+by `rebuildTx` on every run, so a detach that only wrote `managed_by` would appear to work and then
 silently undo itself. `upsertArtist` honours the flag, and `TestRebuildDoesNotRevertADetach` holds
 that line.
 
 `ReattachArtist` (`DELETE /artists/:mbid/detach`) clears the override and re-derives provenance
-immediately via `deriveArtistManager`, rather than leaving the page wrong until the next scan. It is
+immediately via `deriveArtistManager`, rather than leaving the page wrong until the next run. It is
 **not a perfect inverse**, and that is the safe direction: wants that detach made manual stay manual.
 Handing them back would give rows the user may since have edited to a pass that can re-point or
 prune them, and `reconcileManagerDesires` already treats a hand-authored want as a veto — so the
@@ -477,7 +512,7 @@ The boundary is enforced by a single predicate and four mechanisms:
 - **No tag fallback under Lidarr.** `ResolveCorrelation` (`modules/files.go`) normally falls back to a
   file's embedded MB tags when Lidarr returns nothing; under a Lidarr manager *with a client* that
   fallback would preserve a stale identity, so the file becomes `unmatched` (`modules.ErrUnmatched` →
-  `LibraryItemStatusUnmatched`) instead — not an error, not tagged, re-attempted next scan. A
+  `LibraryItemStatusUnmatched`) instead — not an error, not tagged, re-attempted on the next run. A
   credential-less Lidarr row keeps the tag fallback so an outage cannot orphan a library; the native
   manager keeps it always (tags are its only source).
 - **Force re-correlate** (per artist / release-group / library). Changing the selection in Lidarr is
@@ -489,7 +524,7 @@ The boundary is enforced by a single predicate and four mechanisms:
   and `POST /libraries/:id/recorrelate` (see [scanning.md](scanning.md#per-artist-actions)).
 - **Track-not-found is surfaced, not silent.** When Lidarr's release ID and track ID disagree
   (common mid-migration), tagging returns `modules.ErrTrackNotInRelease` wrapped with an actionable
-  message pointing at force re-correlate, and the file lands as a visible `error` item the next scan
+  message pointing at force re-correlate, and the file lands as a visible `error` item on the next run
   re-attempts — rather than silently keeping its old tags.
 
 ### The UI under a manager
@@ -573,9 +608,10 @@ repeated here because they are about *this* data model.
 | `POST\|DELETE /artists/:mbid/desires` | author or clear intent |
 | `POST /artists/:mbid/detach` | [take authority back](#detaching-a-manager) from the manager, keeping its decisions as manual wants. **409** when no manager governs the artist — the request is well-formed and was true of an earlier state, so the page is out of date rather than wrong. Idempotent. |
 | `DELETE /artists/:mbid/detach` | hand the artist back; provenance is re-derived at once. Kept wants stay manual. |
-| `POST /collection/rebuild` · `POST /collection/sync-lidarr` | re-derive the disk view / mirror Lidarr |
+| `POST /scan` · `POST /artists/:mbid/scan` | re-derive the disk view, collection-wide or for one artist |
+| `POST /collection/sync-lidarr` | mirror Lidarr |
 
-`Rebuild` also runs automatically after every scan and drift sync.
+`Rebuild` also runs automatically at the end of every processing run and drift sync.
 
 ## UI
 

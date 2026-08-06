@@ -122,7 +122,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/libraries/:id", a.getLibrary)
 		protected.PUT("/libraries/:id", a.updateLibrary)
 		protected.DELETE("/libraries/:id", a.deleteLibrary)
-		protected.POST("/libraries/:id/scan", a.scanLibrary)
+		protected.POST("/libraries/:id/process", a.processLibrary)
 		protected.POST("/libraries/:id/refresh", a.refreshLibrary)
 		protected.POST("/libraries/:id/retag", a.retagLibrary)
 		protected.POST("/libraries/:id/recorrelate", a.recorrelateLibrary)
@@ -146,10 +146,15 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/identify", a.identifyAvailability)
 		protected.POST("/library-items/:id/identify", a.identifyItem)
 
-		// Scans + metadata sync
-		protected.POST("/scan", a.triggerScan)
-		protected.POST("/sync", a.triggerSync)
-		protected.GET("/scan/status", a.scanStatus)
+		// The four verbs at collection scope. Process walks the disk, Scan re-derives
+		// the collection from the index, Refresh re-reads MusicBrainz, Retag rewrites
+		// tags from what is already known. The same four are offered per library and
+		// per artist below, minus the scopes that make no sense (see scan_items.go).
+		protected.POST("/process", a.processAll)
+		protected.POST("/scan", a.scanCollection)
+		protected.POST("/refresh", a.refreshAll)
+		protected.POST("/retag", a.retagAll)
+		protected.GET("/process/status", a.processStatus)
 
 		// MusicBrainz mirror: the scheduled refresh of the local entity cache.
 		protected.GET("/mirror/status", a.mirrorStatus)
@@ -171,8 +176,9 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artists", a.listArtists)
 		protected.GET("/artists/:mbid", a.getArtist)
 		protected.POST("/artists/:mbid/monitor", a.setArtistMonitored)
-		// Per-artist actions: the same scan/refresh/tag work as the library-wide
-		// buttons, narrowed to one artist (see routers/scan_items.go).
+		// Per-artist actions: the same four verbs as the collection-wide buttons,
+		// narrowed to one artist (see routers/scan_items.go).
+		protected.POST("/artists/:mbid/process", a.processArtist)
 		protected.POST("/artists/:mbid/scan", a.scanArtist)
 		protected.POST("/artists/:mbid/refresh", a.refreshArtist)
 		protected.POST("/artists/:mbid/retag", a.retagArtist)
@@ -192,7 +198,6 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// the user's own. DELETE is the undo, not a deletion of anything.
 		protected.POST("/artists/:mbid/detach", a.detachArtist)
 		protected.DELETE("/artists/:mbid/detach", a.reattachArtist)
-		protected.POST("/collection/rebuild", a.rebuildCollection)
 		protected.POST("/collection/sync-lidarr", a.syncLidarr)
 
 		// Settings are admin-only: they carry the port, the schedules and the SMTP

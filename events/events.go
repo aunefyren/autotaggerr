@@ -180,6 +180,31 @@ func ReconcileRunning(db *gorm.DB) {
 	}
 }
 
+// MigrateLegacyTypes rewrites event rows recorded under a type name that has since
+// been renamed. Today that is one: the full pipeline was recorded as "scan" before
+// Scan came to mean the collection re-derivation, so old rows would otherwise sit in
+// the feed under a verb that no longer describes what they did — and the feed's type
+// filter would offer two entries for the same thing.
+//
+// It runs at startup beside ReconcileRunning, and is a no-op once the rows are
+// rewritten: events are capped at a few hundred, so the pass costs one indexed update
+// against an empty set on every boot after the first.
+func MigrateLegacyTypes(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+	res := db.Model(&models.Event{}).
+		Where("type = ?", models.EventTypeLegacyScan).
+		Update("type", models.EventTypeProcess)
+	if res.Error != nil {
+		logger.Log.Warnf("failed to migrate legacy event types: %s", res.Error.Error())
+		return
+	}
+	if res.RowsAffected > 0 {
+		logger.Log.Infof("renamed %d legacy scan event(s) to the process verb", res.RowsAffected)
+	}
+}
+
 // Prune keeps only the newest `keep` events, deleting the rest along with their
 // detail rows. Retention runs after each recorded action so the tables stay bounded.
 //

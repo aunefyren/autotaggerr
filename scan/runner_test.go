@@ -77,7 +77,7 @@ func TestRunnerRunAll(t *testing.T) {
 
 	// The scan should have been recorded as an Activity event.
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeScan).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeProcess).First(&ev).Error; err != nil {
 		t.Fatalf("scan event not recorded: %v", err)
 	}
 	if ev.Status != models.EventStatusError || ev.FinishedAt == nil {
@@ -170,8 +170,8 @@ func TestArtistScopeRefusesArtistWithoutFiles(t *testing.T) {
 	}
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 
-	if _, err := r.ArtistScope("artist-1"); !errors.Is(err, ErrNothingToScan) {
-		t.Errorf("err = %v, want ErrNothingToScan", err)
+	if _, err := r.ArtistScope("artist-1"); !errors.Is(err, ErrNothingToProcess) {
+		t.Errorf("err = %v, want ErrNothingToProcess", err)
 	}
 	if _, err := r.ArtistScope("no-such-artist"); err == nil {
 		t.Error("unknown artist should error")
@@ -239,10 +239,10 @@ func TestRunArtistScansOnlyTheArtistFolder(t *testing.T) {
 	}
 
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeScan).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeProcess).First(&ev).Error; err != nil {
 		t.Fatalf("scan event not recorded: %v", err)
 	}
-	if ev.Title != "Scan of Artist" {
+	if ev.Title != "Processing Artist" {
 		t.Errorf("title = %q, want the artist's name", ev.Title)
 	}
 	if ev.Details["artist"] != "Artist" {
@@ -351,8 +351,8 @@ func TestReleaseGroupScopeNothingToScan(t *testing.T) {
 		t.Fatalf("create rg: %v", err)
 	}
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
-	if _, err := r.ReleaseGroupScope("rg-1"); !errors.Is(err, ErrNothingToScan) {
-		t.Errorf("ReleaseGroupScope with no files = %v, want ErrNothingToScan", err)
+	if _, err := r.ReleaseGroupScope("rg-1"); !errors.Is(err, ErrNothingToProcess) {
+		t.Errorf("ReleaseGroupScope with no files = %v, want ErrNothingToProcess", err)
 	}
 }
 

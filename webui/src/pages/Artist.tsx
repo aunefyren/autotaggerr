@@ -152,10 +152,10 @@ export default function Artist() {
 
   const refresh = () => { detail.reload(); disco.reload(); };
 
-  // The per-artist actions run on the same single-run guard as a full scan, so the
-  // global scan status is what says whether they can be started — and polling it is
-  // what turns a fire-and-forget POST into visible progress.
-  const status = useFetch<ScanStatus>(() => api.get("/scan/status"));
+  // The queued per-artist actions run on the same single-run guard as a full run, so
+  // the global job status is what says whether they can be started — and polling it
+  // is what turns a fire-and-forget POST into visible progress.
+  const status = useFetch<ScanStatus>(() => api.get("/process/status"));
   const running = status.data?.running ?? false;
 
   useEffect(() => {
@@ -164,8 +164,8 @@ export default function Artist() {
     return () => clearInterval(t);
   }, [running, status.reload]);
 
-  // Reload once a run finishes rather than on every poll: a scan or re-tag changes
-  // the coverage and ownership this whole page is built from.
+  // Reload once a run finishes rather than on every poll: processing or re-tagging
+  // changes the coverage and ownership this whole page is built from.
   const wasRunning = useRef(false);
   useEffect(() => {
     if (wasRunning.current && !running) refresh();
@@ -178,6 +178,19 @@ export default function Artist() {
       await api.post(`/artists/${mbid}/${path}`);
       toast("info", started);
       setTimeout(() => status.reload(), 300);
+    } catch (e) {
+      toast("err", errMsg(e));
+    }
+  };
+
+  // Scan is the odd one of the four: it is a database pass, so it answers with what
+  // it found instead of queueing. Reporting the counts is what makes pressing it
+  // feel like it did something, since nothing appears in the Activity feed.
+  const scan = async () => {
+    try {
+      const r = await api.post<{ owned_release_groups: number }>(`/artists/${mbid}/scan`);
+      toast("ok", `Scanned — ${r.owned_release_groups} album(s) on disk`);
+      refresh();
     } catch (e) {
       toast("err", errMsg(e));
     }
@@ -349,31 +362,23 @@ export default function Artist() {
               {settingsOpen ? "Hide settings" : "Settings"}
             </button>
 
-            {/* Commands, not state — and scoped to this artist, so none of them
-                costs a full-library pass. Ordered by what they touch: the disk,
-                then MusicBrainz, then only the files.
+            {/* The four verbs, scoped to this artist so none of them costs a
+                collection-wide pass. Ordered cheapest first by what they touch: the
+                database, then the files, then MusicBrainz, then the disk.
 
-                None of them cascades into another. Each does exactly what its
-                label says and stops, because two of the three rewrite the user's
-                audio files and a button that quietly does more than it claims is
-                the wrong place to be clever. Refresh metadata reports what changed
-                upstream; acting on it is Tag files, or the next scan. */}
+                None of them cascades into another. Each does exactly what its label
+                says and stops, because two of the four rewrite the user's audio
+                files and a button that quietly does more than it claims is the wrong
+                place to be clever. Refresh metadata reports what changed upstream;
+                acting on it is Tag files, or the next Process. */}
             <span className="sep">·</span>
             <button
               className="btn btn-ghost btn-sm"
               disabled={running}
-              title="Walk this artist's folders and process new or changed files, as a library scan would. Writes tags."
-              onClick={action("scan", "Scan started")}
+              title="Re-derive this artist's albums from the files already indexed. No disk walk, no MusicBrainz, no file writes — press this when the albums shown here look out of date."
+              onClick={scan}
             >
               Scan
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={running}
-              title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release — ignoring the cache. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next scan) applies it."
-              onClick={action("refresh", "Metadata refresh started")}
-            >
-              Refresh metadata
             </button>
             <button
               className="btn btn-ghost btn-sm"
@@ -383,9 +388,25 @@ export default function Artist() {
             >
               Tag files
             </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={running}
+              title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release — ignoring the cache. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
+              onClick={action("refresh", "Metadata refresh started")}
+            >
+              Refresh metadata
+            </button>
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={running}
+              title="Walk this artist's folders, resolve their metadata and write tags — the full pipeline, narrowed to this artist. Finds files that were added, moved or changed on disk. Writes tags."
+              onClick={action("process", "Processing started")}
+            >
+              Process
+            </button>
             {running && (
               <span className="row" style={{ gap: 8, alignItems: "center" }}>
-                <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A scan or sync is running">
+                <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A job is running">
                   Working…
                 </Link>
                 {(status.data?.total ?? 0) > 0 && (
@@ -403,7 +424,7 @@ export default function Artist() {
           {/* Authority sits under the follow settings because it is the question
               those settings depend on: they are frozen above until this is answered
               natively. Inside the disclosure, not the header — it is a decision you
-              make once, and a permanently visible "Detach" beside Scan and Tag files
+              make once, and a permanently visible "Detach" beside Process and Tag files
               would read as an everyday command. */}
           <ManagerAuthority
             artist={artist}

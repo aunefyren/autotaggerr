@@ -18,6 +18,7 @@ package collection
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,19 +48,167 @@ import (
 // one unwritable row must not abandon a whole re-derivation. So the guarantee here is
 // that the clear-and-re-establish is atomic, not that every row succeeded.
 func Rebuild(db *gorm.DB) (RebuildStats, error) {
+	return RebuildScoped(db, RebuildScope{})
+}
+
+// RebuildScope narrows a rebuild to part of the collection. The zero value is the
+// whole collection, which is what a process run and the collection-wide button ask
+// for.
+//
+// **There is no library scope.** `owned` is a flag on the release-group, not a fact
+// per library: an album with files in two libraries is one row. A pass narrowed to
+// one library would have to read the other libraries' files anyway to avoid clearing
+// a shared album's disk view — at which point it is the whole-collection pass with
+// extra steps. An artist, by contrast, owns their release-groups outright.
+type RebuildScope struct {
+	// ArtistMBID limits the pass to one artist's albums: the release-groups already
+	// credited to them, plus any their files turn out to belong to.
+	ArtistMBID string
+}
+
+func (s RebuildScope) all() bool { return s.ArtistMBID == "" }
+
+// RebuildScoped is Rebuild narrowed by a scope. A scoped pass reads the whole index
+// exactly as a full one does — it is the *writes* that are confined, which is the
+// point: re-deriving one artist must not clear the disk view of everything else.
+//
+// RebuildStats then describes what the pass covered rather than the collection: a
+// scoped run reporting "1 artist, 4 albums" is answering about that artist.
+func RebuildScoped(db *gorm.DB, scope RebuildScope) (RebuildStats, error) {
 	if db == nil {
 		return RebuildStats{}, nil
 	}
 	var stats RebuildStats
 	err := db.Transaction(func(tx *gorm.DB) error {
-		var txErr error
-		stats, txErr = rebuildTx(tx)
-		return txErr
+		bounds, err := resolveBounds(tx, scope)
+		if err != nil {
+			return err
+		}
+		stats, err = rebuildTx(tx, bounds)
+		return err
 	})
 	if err != nil {
 		return RebuildStats{}, err
 	}
 	return stats, nil
+}
+
+// RebuildArtist re-derives one artist's disk view. It is the *Scan* verb at artist
+// scope — what the artist page offers beside Process, Refresh metadata and Tag files.
+func RebuildArtist(db *gorm.DB, artistMBID string) (RebuildStats, error) {
+	return RebuildScoped(db, RebuildScope{ArtistMBID: artistMBID})
+}
+
+// bounds is a resolved RebuildScope: the rows one pass is allowed to write, held as
+// sets so every narrowing step asks the same question.
+//
+// Two sets rather than one, because the pass clears before it re-establishes:
+// `groups` bounds the release-group rows whose `owned` block this pass owns, and
+// `releases` bounds the owned-edition rows it may prune. Both are resolved from the
+// *current* state at the start of the pass; anything the pass then discovers is
+// written and lands in `keep`, so it needs no place here.
+type bounds struct {
+	all      bool
+	artist   string
+	groups   map[string]bool
+	releases map[string]bool
+}
+
+// covers reports whether a release-group's rows are this pass's to rewrite.
+func (b bounds) covers(rgMBID string) bool { return b.all || b.groups[rgMBID] }
+
+// extend admits what the pass discovered from files into its own bounds. Called
+// after the clear, so it can only ever widen what gets written — never what got
+// wiped. Cheap and safe on a full pass, where everything is already in scope.
+func (b bounds) extend(editions []models.CollectionRelease) {
+	if b.all {
+		return
+	}
+	for _, rel := range editions {
+		b.groups[rel.ReleaseGroupMBID] = true
+		b.releases[rel.MBID] = true
+	}
+}
+
+// keys is the sorted set as a slice, for the IN clauses. Sorted so a query plan and
+// a test assertion both see a stable order; empty stays empty, which GORM renders as
+// a condition that matches nothing — the right answer for a scope holding no rows.
+func keys(set map[string]bool) []string {
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// resolveBounds turns a scope into the sets above. A full scope resolves to "all",
+// which every narrowing step short-circuits on, so the whole-collection pass runs
+// exactly the queries it always did.
+func resolveBounds(db *gorm.DB, scope RebuildScope) (bounds, error) {
+	if scope.all() {
+		return bounds{all: true}, nil
+	}
+
+	b := bounds{
+		artist:   scope.ArtistMBID,
+		groups:   map[string]bool{},
+		releases: map[string]bool{},
+	}
+
+	groups, err := ReleaseGroupMBIDsForArtist(db, scope.ArtistMBID)
+	if err != nil {
+		return b, err
+	}
+	for _, id := range groups {
+		b.groups[id] = true
+	}
+	// The primary-credit column is a claim in its own right — a row written before
+	// the link table existed has one without a link — so it is unioned in, exactly as
+	// ReleaseGroupsForArtist does.
+	var owned []string
+	if err := db.Model(&models.CollectionReleaseGroup{}).
+		Where("artist_mb_id = ?", scope.ArtistMBID).Pluck("mb_id", &owned).Error; err != nil {
+		return b, err
+	}
+	for _, id := range owned {
+		b.groups[id] = true
+	}
+
+	releases, err := ArtistReleaseMBIDs(db, scope.ArtistMBID)
+	if err != nil {
+		return b, err
+	}
+	for _, id := range releases {
+		b.releases[id] = true
+	}
+	return b, nil
+}
+
+// inScope reports whether one indexed file belongs to this pass.
+//
+// Two ways in, and the second is what keeps a scoped pass useful: an edition the
+// collection already files under the artist, **or** a cached release that credits
+// them. Without the second, an album whose files were only just processed — not yet
+// in collection_releases — could never be discovered by the artist's own Scan, and
+// the button would be unable to do the one thing it is pressed for.
+func (b bounds) inScope(row itemRow) bool {
+	if b.all {
+		return true
+	}
+	if b.releases[row.MBReleaseID] {
+		return true
+	}
+	release, ok := modules.CachedRelease(row.MBReleaseID)
+	if !ok {
+		return false
+	}
+	for _, credit := range albumArtistCredit(release) {
+		if credit.Artist.ID == b.artist {
+			return true
+		}
+	}
+	return false
 }
 
 // RebuildStats is what one pass found and what it changed.
@@ -82,25 +231,38 @@ type RebuildStats struct {
 // rebuildTx is the body of Rebuild, run inside the caller's transaction. Every write
 // below goes through the handle passed in, so a failure at any point rolls the whole
 // re-derivation back rather than leaving the disk view half-cleared.
-func rebuildTx(db *gorm.DB) (RebuildStats, error) {
+func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 	// library -> manager type (for the per-artist "managed by" provenance)
 	libraryManager, err := libraryManagerTypes(db)
 	if err != nil {
 		return RebuildStats{}, err
 	}
 
-	// Clear the disk view wholesale; it is re-established below. Track counts must
-	// be cleared too, or a row that stops being owned keeps stale counts and renders
-	// as "missing, 10/12". The catalog columns are untouched — they belong to the
+	// Clear the disk view; it is re-established below. Track counts must be cleared
+	// too, or a row that stops being owned keeps stale counts and renders as
+	// "missing, 10/12". The catalog columns are untouched — they belong to the
 	// manager mirror, which is the whole point of keeping them separate.
-	if err := db.Model(&models.CollectionReleaseGroup{}).Where("owned = ?", true).
-		Updates(map[string]any{"owned": false, "owned_tracks": 0, "total_tracks": 0}).Error; err != nil {
+	//
+	// A scoped pass clears only the release-groups it covers. This is the line the
+	// whole scope exists for: clearing wholesale and re-establishing from one
+	// artist's files would report the rest of the collection as owning nothing.
+	clear := db.Model(&models.CollectionReleaseGroup{}).Where("owned = ?", true)
+	if !scope.all {
+		clear = clear.Where("mb_id IN ?", keys(scope.groups))
+	}
+	if err := clear.Updates(map[string]any{"owned": false, "owned_tracks": 0, "total_tracks": 0}).Error; err != nil {
 		return RebuildStats{}, err
 	}
 
-	rows, err := ownedItemRows(db)
+	all, err := ownedItemRows(db)
 	if err != nil {
 		return RebuildStats{}, err
+	}
+	rows := make([]itemRow, 0, len(all))
+	for _, r := range all {
+		if scope.inScope(r) {
+			rows = append(rows, r)
+		}
 	}
 
 	// Pass 1: count owned files per release, and gather artist + manager provenance.
@@ -198,7 +360,14 @@ func rebuildTx(db *gorm.DB) (RebuildStats, error) {
 			}
 		}
 	}
-	if err := syncOwnedReleases(db, ownedEditions); err != nil {
+	// An album the pass just discovered — files processed since the last rebuild, so
+	// no collection row named it yet — becomes this pass's to write from here on. The
+	// clear above is already done, so admitting it late affects only what follows:
+	// its editions survive the prune (they are owned) and its wants are reconciled
+	// rather than skipped as out of bounds.
+	scope.extend(ownedEditions)
+
+	if err := syncOwnedReleases(db, ownedEditions, scope); err != nil {
 		return RebuildStats{}, err
 	}
 
@@ -232,7 +401,7 @@ func rebuildTx(db *gorm.DB) (RebuildStats, error) {
 
 	// Runs last: it reads the artists' managed_by (upserted just above) and the owned
 	// editions to keep auto-selected edition wants tracking the files.
-	if err := reconcileAutoDesires(db, ownedEditions); err != nil {
+	if err := reconcileAutoDesires(db, ownedEditions, scope); err != nil {
 		return RebuildStats{}, err
 	}
 
@@ -274,7 +443,7 @@ func albumArtistCredit(release models.MusicBrainzReleaseResponse) []models.Artis
 // (source = manual) is never removed or re-pointed here; the provenance is what tells
 // them apart. Manager-derived rows belong to reconcileManagerDesires and are likewise
 // left alone — they only exist for artists this pass already skips.
-func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease) error {
+func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease, scope bounds) error {
 	ownedByRG := map[string]map[string]bool{}
 	for _, rel := range ownedEditions {
 		if ownedByRG[rel.ReleaseGroupMBID] == nil {
@@ -283,9 +452,19 @@ func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease)
 		ownedByRG[rel.ReleaseGroupMBID][rel.MBID] = true
 	}
 
-	var desires []models.CollectionDesire
-	if err := db.Find(&desires).Error; err != nil {
+	var stored []models.CollectionDesire
+	if err := db.Find(&stored).Error; err != nil {
 		return err
+	}
+	// A scoped pass only knows which editions are owned inside its own bounds, so a
+	// want outside them would be read as "nothing owns this" and pruned. Filtering
+	// here rather than in the query keeps one code path: the full pass sees every row,
+	// as before.
+	desires := make([]models.CollectionDesire, 0, len(stored))
+	for _, d := range stored {
+		if scope.covers(d.ReleaseGroupMBID) {
+			desires = append(desires, d)
+		}
 	}
 	if len(desires) == 0 {
 		return nil
@@ -379,7 +558,7 @@ func reconcileAutoDesires(db *gorm.DB, ownedEditions []models.CollectionRelease)
 // claiming to own less than it does, and a silently wrong view is worse than an
 // error the user can retry. Per-row failures are still logged individually, because
 // which row failed is the useful diagnostic.
-func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease) error {
+func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease, scope bounds) error {
 	var failed error
 	keep := make([]string, 0, len(owned))
 	for _, rel := range owned {
@@ -411,7 +590,14 @@ func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease) error {
 
 	// Owning nothing is a real state, and it must still clear the table — a
 	// "NOT IN ()" with no values would delete nothing at all.
+	//
+	// A scoped pass may only delete inside its bounds, and for the same reason the
+	// clear is bounded: every edition of every other artist is "not owned" as far as
+	// this pass can see, and an unbounded NOT IN would take the lot.
 	prune := db.Session(&gorm.Session{AllowGlobalUpdate: true})
+	if !scope.all {
+		prune = prune.Where("mb_id IN ?", keys(scope.releases))
+	}
 	if len(keep) > 0 {
 		prune = prune.Where("mb_id NOT IN ?", keep)
 	}

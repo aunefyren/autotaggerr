@@ -82,7 +82,7 @@ export default function Libraries() {
                 <th>Path</th>
                 <th>Manager</th>
                 <th>State</th>
-                <th>Last scan</th>
+                <th>Last processed</th>
                 <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
@@ -100,15 +100,15 @@ export default function Libraries() {
                     <div className="row" style={{ justifyContent: "flex-end" }}>
                       <button
                         className="btn btn-secondary btn-sm"
-                        onClick={action(l, "scan", "Scan started")}
-                        title="Walk this library and process new or changed files. Writes tags."
+                        onClick={action(l, "process", "Processing started")}
+                        title="Walk this library, resolve metadata and write tags — the full pipeline. This is what finds files added, moved or changed on disk."
                       >
-                        Scan
+                        Process
                       </button>
                       <button
                         className="btn btn-ghost btn-sm"
                         onClick={action(l, "refresh", "Metadata refresh started")}
-                        title="Re-read MusicBrainz for everything this library's files point at, ignoring the cache. Reads only: no files are written. Anything that changed is reported, and Tag files (or the next scan) applies it."
+                        title="Re-read MusicBrainz for everything this library's files point at, ignoring the cache. Reads only: no files are written. Anything that changed is reported, and Tag files (or the next Process) applies it."
                       >
                         Refresh metadata
                       </button>
@@ -243,7 +243,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
 
         {editing && (
           <div className="field">
-            <label className="flabel">Scan schedule (cron)</label>
+            <label className="flabel">Processing schedule (cron)</label>
             <input className="input mono" value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 0 18 * * 7" />
           </div>
         )}

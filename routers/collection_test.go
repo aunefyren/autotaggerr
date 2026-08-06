@@ -413,19 +413,19 @@ func TestClearDesire(t *testing.T) {
 // TestRebuildCollectionIsNetworkFree: rebuild re-derives the disk view from the
 // index and cached releases only. An empty index rebuilds to an empty collection
 // rather than failing.
-func TestRebuildCollectionIsNetworkFree(t *testing.T) {
+func TestScanCollectionIsNetworkFree(t *testing.T) {
 	r, _ := setupAPI(t)
 	token := loginToken(t, r)
 
-	out := decodeJSON[map[string]any](t, r, "POST", "/api/v1/collection/rebuild", token, nil)
+	out := decodeJSON[map[string]any](t, r, "POST", "/api/v1/scan", token, nil)
 	if out["artists"] != float64(0) || out["owned_release_groups"] != float64(0) {
-		t.Errorf("rebuild of an empty index = %v, want zeroes", out)
+		t.Errorf("scan of an empty index = %v, want zeroes", out)
 	}
 }
 
 // TestRebuildKeepsDesires: the property that matters most about rebuild — it owns
 // the disk view and must never touch authored intent.
-func TestRebuildKeepsDesires(t *testing.T) {
+func TestScanKeepsDesires(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 	artist := artistFixture(t, api.DB, "artist-1", "Low", models.ManagedByAutotaggerr, false)
@@ -435,8 +435,8 @@ func TestRebuildKeepsDesires(t *testing.T) {
 		t.Fatalf("create desire: %v", err)
 	}
 
-	if w := do(r, "POST", "/api/v1/collection/rebuild", token, nil); w.Code != http.StatusOK {
-		t.Fatalf("rebuild = %d: %s", w.Code, w.Body.String())
+	if w := do(r, "POST", "/api/v1/scan", token, nil); w.Code != http.StatusOK {
+		t.Fatalf("scan = %d: %s", w.Code, w.Body.String())
 	}
 
 	var desires []models.CollectionDesire

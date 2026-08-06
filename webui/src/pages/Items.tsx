@@ -94,7 +94,7 @@ export default function Items() {
 
       {page.err && <ErrorNote message={page.err} />}
       {!page.err && !page.loading && items.length === 0 && (
-        <EmptyState icon="≣" message="No items match. Run a scan to populate the index." />
+        <EmptyState icon="≣" message="No items match. Process a library to populate the index." />
       )}
 
       {items.length > 0 && (

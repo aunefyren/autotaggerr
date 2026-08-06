@@ -19,7 +19,7 @@ func TestGetEventUnknownAndFound(t *testing.T) {
 		t.Fatalf("unknown event status = %d, want 404", w.Code)
 	}
 
-	ev := events.Begin(api.DB, models.EventTypeScan, "test scan")
+	ev := events.Begin(api.DB, models.EventTypeProcess, "test scan")
 	events.Finish(api.DB, ev, models.EventStatusOK, "done", nil)
 	if w := do(r, "GET", "/api/v1/events/"+ev.ID.String(), token, nil); w.Code != http.StatusOK {
 		t.Fatalf("existing event status = %d, want 200: %s", w.Code, w.Body.String())
@@ -30,7 +30,7 @@ func TestGetEventUnknownAndFound(t *testing.T) {
 func TestListEvents(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
-	events.Finish(api.DB, events.Begin(api.DB, models.EventTypeScan, "s"), models.EventStatusOK, "done", nil)
+	events.Finish(api.DB, events.Begin(api.DB, models.EventTypeProcess, "s"), models.EventStatusOK, "done", nil)
 
 	if w := do(r, "GET", "/api/v1/events", token, nil); w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())

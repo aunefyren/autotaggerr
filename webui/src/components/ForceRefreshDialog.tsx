@@ -68,7 +68,7 @@ export function ForceRefreshDialog({
           </p>
           <p>
             <strong>Reads only: no files are written.</strong> Anything that changed upstream is
-            reported on the Metadata and Activity pages, and the next scan re-tags the files that
+            reported on the Metadata and Activity pages, and the next processing run re-tags the files that
             use it.
           </p>
           <p className="dim">

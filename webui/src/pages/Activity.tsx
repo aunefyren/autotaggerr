@@ -7,10 +7,13 @@ import { ProgressBar } from "../components/ProgressBar";
 import { useToast } from "../toast";
 
 const TYPE_LABELS: Record<string, string> = {
-  scan: "Scan",
+  process: "Processing",
+  // Runs recorded before the verbs were named apart. Startup rewrites them to
+  // "process", so this only covers a feed read before that migration lands.
+  scan: "Processing",
   mb_mirror: "Metadata refresh",
   // drift_sync survives for events recorded before the refresh verb was split out
-  // of the scan runner. The rows are still in the table, and an old event
+  // of the processing runner. The rows are still in the table, and an old event
   // rendering as a raw type string would look like a bug.
   drift_sync: "Metadata sync",
   lidarr_sync: "Lidarr sync",
@@ -19,9 +22,9 @@ const TYPE_LABELS: Record<string, string> = {
   health_check: "Health check",
 };
 
-// Human labels for the stage a running job reports, across scans and metadata passes.
+// Human labels for the stage a running job reports, across runs and metadata passes.
 const PHASE_LABELS: Record<string, string> = {
-  // scan phases
+  // processing phases
   refresh: "Refreshing metadata",
   scanning: "Scanning files",
   drift: "Re-tagging changed releases",
@@ -44,9 +47,10 @@ const PHASE_LABELS: Record<string, string> = {
 // cache is the only one that reads differently, because it is the only one that
 // did something different.
 const JOB_KIND_LABELS: Record<string, string> = {
-  scan_all: "Scan",
-  scan_library: "Scan",
-  scan_artist: "Scan",
+  process_all: "Processing",
+  process_library: "Processing",
+  process_artist: "Processing",
+  retag_all: "Tag files",
   retag_library: "Tag files",
   retag_artist: "Tag files",
   refresh_all: "Metadata refresh",
@@ -55,10 +59,10 @@ const JOB_KIND_LABELS: Record<string, string> = {
   refresh_library: "Metadata refresh",
 };
 
-// isScanJob distinguishes a file-walking scan (which reports file counters and a
-// per-file progress bar) from a metadata refresh (which does not).
-function isScanJob(job?: JobView): boolean {
-  return job?.kind?.startsWith("scan") ?? false;
+// isProcessJob distinguishes a file-walking processing run (which reports file
+// counters and a per-file progress bar) from a metadata refresh (which does not).
+function isProcessJob(job?: JobView): boolean {
+  return job?.kind?.startsWith("process") ?? false;
 }
 
 // A coarse duration string ("3m 20s", "1h 4m"). One formatter for both the live
@@ -113,11 +117,12 @@ function EventStatus({ status }: { status: string }) {
 export default function Activity() {
   const toast = useToast();
   const events = useFetch<EventsPage>(() => api.get("/events?limit=50"));
-  const status = useFetch<ScanStatus>(() => api.get("/scan/status"));
+  const status = useFetch<ScanStatus>(() => api.get("/process/status"));
   const [selected, setSelected] = useState<Event | null>(null);
 
-  // Poll while anything is running — a scan (via its status) or any other job that
-  // left a running event in the feed, such as a metadata sweep with no scan in flight.
+  // Poll while anything is running — a processing run (via its status) or any other
+  // job that left a running event in the feed, such as a metadata sweep with no run
+  // in flight.
   const anyEventRunning = (events.data?.events ?? []).some((e) => e.status === "running");
   const shouldPoll = (status.data?.running ?? false) || anyEventRunning;
   useEffect(() => {
@@ -129,7 +134,7 @@ export default function Activity() {
     return () => clearInterval(t);
   }, [shouldPoll, status.reload, events.reload]);
 
-  // Refresh the feed whenever a scan starts or finishes.
+  // Refresh the feed whenever a job starts or finishes.
   useEffect(() => {
     events.reload();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -155,13 +160,12 @@ export default function Activity() {
       <div className="page-head">
         <h1>Activity</h1>
         <div className="row">
-          {/* The same call the Metadata page's button makes. It says the same words
-              for that reason: one verb, named once, wherever it is offered. */}
-          <button className="btn btn-secondary btn-sm" onClick={start("/sync", "Metadata refresh started")} disabled={status.data?.running}>
-            Refresh metadata
-          </button>
-          <button className="btn btn-primary btn-sm" onClick={start("/scan", "Scan started")} disabled={status.data?.running}>
-            {status.data?.running ? "Working…" : "Scan all libraries"}
+          {/* Activity reports work; it is not where work is chosen. The verbs live
+              where their scope does — per artist, per library, or collection-wide on
+              the Collection page — and only the widest one is repeated here, because
+              "nothing has happened yet" is a state this page has to answer for. */}
+          <button className="btn btn-primary btn-sm" onClick={start("/process", "Processing started")} disabled={status.data?.running}>
+            {status.data?.running ? "Working…" : "Process all libraries"}
           </button>
         </div>
       </div>
@@ -170,7 +174,7 @@ export default function Activity() {
         <div className="card stack" style={{ borderColor: "var(--border-strong)", gap: 8 }}>
           <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
             <div className="row" style={{ gap: 10, alignItems: "center" }}>
-              <Pill kind="scan">{isScanJob(status.data.current_job) ? "Scanning" : "Working"}</Pill>
+              <Pill kind="scan">{isProcessJob(status.data.current_job) ? "Processing" : "Working"}</Pill>
               <span className="muted">
                 {status.data.current_job?.title ?? "Working…"}
               </span>
@@ -195,9 +199,9 @@ export default function Activity() {
             </div>
           )}
 
-          {/* The file counters describe a scan; a metadata refresh has none, so they are
-              shown only for a scan job. */}
-          {isScanJob(status.data.current_job) && (
+          {/* The file counters describe a processing run; a metadata refresh has
+              none, so they are shown only for that kind of job. */}
+          {isProcessJob(status.data.current_job) && (
             <span className="muted" style={{ fontSize: 12 }}>
               {status.data.processed} processed · {status.data.changed} changed · {status.data.errors} errors
             </span>
@@ -220,7 +224,7 @@ export default function Activity() {
 
       {events.err && <ErrorNote message={events.err} />}
       {!events.err && !events.loading && rows.length === 0 && (
-        <EmptyState icon="⟳" message="No activity yet. Run a scan to get started." />
+        <EmptyState icon="⟳" message="No activity yet. Process a library to get started." />
       )}
 
       {rows.length > 0 && (
@@ -308,7 +312,7 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
               did. */}
           <div className="dim" style={{ fontSize: 12 }}>
             A metadata refresh writes no files. Releases that changed upstream are re-tagged by the
-            next scan, or immediately with <em>Tag files</em>.
+            next processing run, or immediately with <em>Tag files</em>.
           </div>
         </div>
       ) : event.type === "drift_sync" && d ? (
@@ -321,7 +325,7 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
           </div>
           <FileDetail items={items} details={d} loading={full.loading} fallbackErrors={errorFiles} />
         </div>
-      ) : event.type === "scan" && d ? (
+      ) : (event.type === "process" || event.type === "scan") && d ? (
         <div className="stack">
           <div className="row" style={{ gap: 26, flexWrap: "wrap" }}>
             <Stat label="Processed" value={num(d, "processed")} />

@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { CollectionArtist, Manager } from "../types";
+import { CollectionArtist, Manager, ScanStatus } from "../types";
 import { EmptyState, ErrorNote, Pill } from "../components/ui";
 import { useToast } from "../toast";
 import { MBLink } from "../components/MBLink";
@@ -64,7 +64,7 @@ const SORT: Record<string, (ar: CollectionArtist) => string | number> = {
 export default function Collection() {
   const toast = useToast();
   const { data, err, loading, reload } = useFetch<CollectionArtist[]>(() => api.get("/artists"));
-  const [rebuilding, setRebuilding] = useState(false);
+  const [scanning, setScanning] = useState(false);
   // Sync from Lidarr is only offered when there is a Lidarr to sync from. The
   // endpoint already rejects the call with 400, but a button whose only outcome is
   // an error message is a button that should not be there.
@@ -73,16 +73,35 @@ export default function Collection() {
   const [adding, setAdding] = useState(false);
   const browse = useBrowse("name");
 
-  const rebuild = async () => {
-    setRebuilding(true);
+  // The queued verbs share one job runner, so the status says whether any of them
+  // can be started — and keeps the three buttons honest about it.
+  const status = useFetch<ScanStatus>(() => api.get("/process/status"));
+  const running = status.data?.running ?? false;
+
+  // Scan answers inline (it only reads the index), so it reports its own result
+  // rather than sending the user to the Activity feed for it.
+  const scan = async () => {
+    setScanning(true);
     try {
-      const r = await api.post<{ artists: number; owned_release_groups: number }>("/collection/rebuild");
-      toast("ok", `Collection rebuilt — ${r.artists} artists, ${r.owned_release_groups} albums`);
+      const r = await api.post<{ artists: number; owned_release_groups: number }>("/scan");
+      toast("ok", `Scanned — ${r.artists} artists, ${r.owned_release_groups} albums`);
       reload();
     } catch (e) {
       toast("err", errMsg(e));
     } finally {
-      setRebuilding(false);
+      setScanning(false);
+    }
+  };
+
+  // The other three are queued: they report through Activity, so the toast says the
+  // work started rather than what it found.
+  const start = (path: string, msg: string) => async () => {
+    try {
+      await api.post(path);
+      toast("info", msg);
+      setTimeout(() => status.reload(), 300);
+    } catch (e) {
+      toast("err", errMsg(e));
     }
   };
 
@@ -125,13 +144,40 @@ export default function Collection() {
               Sync from Lidarr
             </button>
           )}
+          {/* The four verbs at collection scope, the same four the artist page
+              offers for one artist, in the same cheapest-first order. */}
+          <span className="sep">·</span>
           <button
             className="btn btn-secondary btn-sm"
-            onClick={rebuild}
-            disabled={rebuilding}
-            title="Recompute what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — a scan does this at the end of every run, so this is only for when the view looks stale."
+            onClick={scan}
+            disabled={scanning}
+            title="Re-derive what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
           >
-            {rebuilding ? "Rebuilding…" : "Rebuild from library"}
+            {scanning ? "Scanning…" : "Scan"}
+          </button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={start("/retag", "Tagging started — see Activity")}
+            disabled={running}
+            title="Rewrite the tags of every indexed file from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
+          >
+            Tag files
+          </button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={start("/refresh", "Metadata refresh started — see Activity")}
+            disabled={running}
+            title="Re-read MusicBrainz for everything that is due a check. Reads only: no files are written. What changed upstream is reported, and Tag files (or the next Process) applies it."
+          >
+            Refresh metadata
+          </button>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={start("/process", "Processing started — see Activity")}
+            disabled={running}
+            title="Walk every enabled library, resolve metadata and write tags — the full pipeline. This is what finds files added, moved or changed on disk."
+          >
+            {running ? "Working…" : "Process"}
           </button>
         </div>
       </div>
@@ -146,8 +192,12 @@ export default function Collection() {
       {!err && !loading && artists.length === 0 && (
         <EmptyState
           icon="♫"
-          message="No artists yet. Run a scan, then rebuild the collection from your library."
-          action={<button className="btn btn-primary btn-sm" onClick={rebuild} disabled={rebuilding}>Rebuild from library</button>}
+          message="No artists yet. Process your libraries to read the files on disk — the collection is derived from what that finds."
+          action={
+            <button className="btn btn-primary btn-sm" onClick={start("/process", "Processing started — see Activity")} disabled={running}>
+              Process
+            </button>
+          }
         />
       )}
 

@@ -108,7 +108,7 @@ func TestRetagReleasesRecordsRefreshRows(t *testing.T) {
 	detail := components.NewDetailCollector(maxDetailItemsRecorded)
 
 	changed := []string{"rel-1", "rel-2"}
-	res := r.retagReleases(changed, refreshSet, detail)
+	res := r.retagReleases(changed, refreshSet, detail, scopeFilter{})
 
 	if res.checked != 2 || res.changedReleases != 2 {
 		t.Errorf("checked/changedReleases = %d/%d, want 2/2", res.checked, res.changedReleases)

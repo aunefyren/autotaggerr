@@ -98,16 +98,16 @@ func TestQueuePrioritisesFileJobs(t *testing.T) {
 	r.enqueue(job{jobRefreshAll, "blocker", "blocker", func() { close(started); <-release }})
 	<-started
 
-	r.enqueue(job{jobRefreshArtist, "meta", "meta", rec("meta")}) // metadata: lower priority
-	r.enqueue(job{jobScanAll, "scan", "scan", rec("scan")})       // file-writing: jumps ahead
+	r.enqueue(job{jobRefreshArtist, "meta", "meta", rec("meta")})       // metadata: lower priority
+	r.enqueue(job{jobProcessAll, "process", "process", rec("process")}) // file-writing: jumps ahead
 
 	close(release)
 	r.waitIdle(t)
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(order) != 2 || order[0] != "scan" || order[1] != "meta" {
-		t.Errorf("run order = %v, want [scan meta] — a file job should precede a pending refresh", order)
+	if len(order) != 2 || order[0] != "process" || order[1] != "meta" {
+		t.Errorf("run order = %v, want [process meta] — a file job should precede a pending refresh", order)
 	}
 }
 
@@ -145,7 +145,7 @@ func TestScanJobReportsItsOwnProgress(t *testing.T) {
 	r := newQueueRunner()
 
 	var during Summary
-	r.enqueue(job{jobScanAll, "scan", "Scan all libraries", func() {
+	r.enqueue(job{jobProcessAll, "process", "Process all libraries", func() {
 		r.progTotal.Store(200)
 		r.progDone.Store(75)
 		r.setPhase(PhaseScanning)

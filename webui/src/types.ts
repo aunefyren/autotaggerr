@@ -193,7 +193,7 @@ export interface JobView {
 
 export interface ScanStatus {
   running: boolean;
-  /** The job executing right now (a scan, re-tag, or metadata refresh); absent when idle. */
+  /** The job executing right now (a processing run, re-tag, or metadata refresh); absent when idle. */
   current_job?: JobView;
   /** Jobs waiting behind the current one, in the order they will run. */
   queue?: JobView[];
@@ -206,7 +206,7 @@ export interface ScanStatus {
   errors: number;
   last_error?: string;
   /** Live progress while running: files to visit, files done, current stage, and the
-   *  artist folder being worked on. Absent/zero when no scan is in flight. */
+   *  artist folder being worked on. Absent/zero when no run is in flight. */
   total?: number;
   done?: number;
   phase?: string;

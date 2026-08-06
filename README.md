@@ -164,7 +164,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 Every setting can be defined in `config.json`. A subset can also be overridden at runtime with a startup flag or an environment variable (the container `entrypoint.sh` maps env vars onto the flags). Precedence is: **startup flag → environment variable → config file value**. A flag/env only overrides the config when it is explicitly provided.
 
 **You do not have to edit this file by hand.** Signed in as an admin, the **Settings** page edits the
-same keys from the web UI: schedules, log level, scan concurrency and the mirror switch take effect
+same keys from the web UI: schedules, log level, processing concurrency and the mirror switch take effect
 immediately, and the rest are saved and picked up at the next start (the page says which is which).
 The keys marked *managed elsewhere* below are the exception — they seeded the database on first start
 and are edited on the Managers, Tagger profiles and Libraries pages now. See
@@ -183,10 +183,10 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `autotaggerr_environment` | — | — | string | `prod` or `test`. `test` disables Gin release mode. Default `prod`. |
 | `autotaggerr_test_email` | — | — | string | Address used for SMTP test mail. Default empty. |
 | `autotaggerr_log_level` | — | — | string | Logrus level (`trace`, `debug`, `info`, `warn`, `error`, …). Default `info`. |
-| `autotaggerr_libraries` | — | — | string[] | Absolute paths of music libraries to scan recursively. Default `[]`. |
-| `autotaggerr_process_on_start_up` | — | — | bool | Run a full library scan immediately on startup. Default `false`. |
-| `autotaggerr_process_cron_schedule` | — | — | string | 6-field cron for the recurring scan. Default `0 0 18 * * 7` (Sundays 18:00). |
-| `autotaggerr_process_concurrency` | `-concurrency` | `concurrency` | int | Number of files processed in parallel per library scan. `1` = serial. Default `4`. |
+| `autotaggerr_libraries` | — | — | string[] | Absolute paths of music libraries to process recursively. Default `[]`. |
+| `autotaggerr_process_on_start_up` | — | — | bool | Run a full processing pass over every library immediately on startup. Default `false`. |
+| `autotaggerr_process_cron_schedule` | — | — | string | 6-field cron for the recurring processing run. Default `0 0 18 * * 7` (Sundays 18:00). |
+| `autotaggerr_process_concurrency` | `-concurrency` | `concurrency` | int | Number of files processed in parallel per library. `1` = serial. Default `4`. |
 | `autotaggerr_use_current_artist_name` | — | — | bool | Prefer the artist's current name over the credited name. Default `true`. |
 | `autotaggerr_ignore_redundant_contributing_artists` | — | — | bool | Drop contributing artists already covered by the album artist. Default `true`. |
 | `autotaggerr_use_custom_artist_delimiter` | — | — | bool | Join multiple artists with a custom delimiter. Default `true`. |

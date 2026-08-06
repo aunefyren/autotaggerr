@@ -20,9 +20,10 @@ import (
 type jobKind string
 
 const (
-	jobScanAll          jobKind = "scan_all"
-	jobScanLibrary      jobKind = "scan_library"
-	jobScanArtist       jobKind = "scan_artist"
+	jobProcessAll       jobKind = "process_all"
+	jobProcessLibrary   jobKind = "process_library"
+	jobProcessArtist    jobKind = "process_artist"
+	jobRetagAll         jobKind = "retag_all"
 	jobRetagLibrary     jobKind = "retag_library"
 	jobRetagArtist      jobKind = "retag_artist"
 	jobForceRecorrelate jobKind = "force_recorrelate"
@@ -37,7 +38,7 @@ const (
 // behind a hours-long refresh — but a job already running is never preempted.
 func (k jobKind) fileWriting() bool {
 	switch k {
-	case jobScanAll, jobScanLibrary, jobScanArtist, jobRetagLibrary, jobRetagArtist, jobForceRecorrelate:
+	case jobProcessAll, jobProcessLibrary, jobProcessArtist, jobRetagAll, jobRetagLibrary, jobRetagArtist, jobForceRecorrelate:
 		return true
 	}
 	return false

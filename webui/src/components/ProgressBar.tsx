@@ -1,5 +1,5 @@
 /**
- * A task-progress meter: how far through a long job (a scan, a metadata pass) we are.
+ * A task-progress meter: how far through a long job (a processing run, a metadata pass) we are.
  *
  * Deliberately separate from CoverageBar even though they share the fill visuals:
  * coverage answers "how much is on disk", progress answers "how far along". Reusing

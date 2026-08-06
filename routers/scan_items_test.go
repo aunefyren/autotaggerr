@@ -19,7 +19,7 @@ func TestScanStatusShape(t *testing.T) {
 	r, _ := setupAPI(t)
 	token := loginToken(t, r)
 
-	status := decodeJSON[map[string]any](t, r, "GET", "/api/v1/scan/status", token, nil)
+	status := decodeJSON[map[string]any](t, r, "GET", "/api/v1/process/status", token, nil)
 	// Before anything has run, the status is a real zeroed summary rather than an
 	// error — the dashboard renders it on first load.
 	if status["running"] != false {
@@ -38,7 +38,7 @@ func TestTriggerSyncStarts(t *testing.T) {
 
 	// Accepted, not OK: the drift sync runs in the background and the caller watches
 	// Activity for the outcome.
-	if w := do(r, "POST", "/api/v1/sync", token, nil); w.Code != http.StatusAccepted {
+	if w := do(r, "POST", "/api/v1/refresh", token, nil); w.Code != http.StatusAccepted {
 		t.Errorf("status = %d, want 202: %s", w.Code, w.Body.String())
 	}
 }
@@ -47,10 +47,10 @@ func TestScanLibraryValidation(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 
-	if w := do(r, "POST", "/api/v1/libraries/not-a-uuid/scan", token, nil); w.Code != http.StatusBadRequest {
+	if w := do(r, "POST", "/api/v1/libraries/not-a-uuid/process", token, nil); w.Code != http.StatusBadRequest {
 		t.Errorf("bad id = %d, want 400", w.Code)
 	}
-	if w := do(r, "POST", "/api/v1/libraries/"+uuid.New().String()+"/scan", token, nil); w.Code != http.StatusNotFound {
+	if w := do(r, "POST", "/api/v1/libraries/"+uuid.New().String()+"/process", token, nil); w.Code != http.StatusNotFound {
 		t.Errorf("absent library = %d, want 404", w.Code)
 	}
 
@@ -62,7 +62,7 @@ func TestScanLibraryValidation(t *testing.T) {
 	if err := api.DB.Create(&lib).Error; err != nil {
 		t.Fatalf("create library: %v", err)
 	}
-	if w := do(r, "POST", "/api/v1/libraries/"+lib.ID.String()+"/scan", token, nil); w.Code != http.StatusAccepted {
+	if w := do(r, "POST", "/api/v1/libraries/"+lib.ID.String()+"/process", token, nil); w.Code != http.StatusAccepted {
 		t.Errorf("explicit scan of a disabled library = %d, want 202: %s", w.Code, w.Body.String())
 	}
 }
@@ -162,12 +162,12 @@ func TestItemTagsReportsUnreadableFiles(t *testing.T) {
 
 func TestScanEndpointsRequireAuth(t *testing.T) {
 	r, _ := setupAPI(t)
-	for _, path := range []string{"/api/v1/scan/status", "/api/v1/library-items"} {
+	for _, path := range []string{"/api/v1/process/status", "/api/v1/library-items"} {
 		if w := do(r, "GET", path, "", nil); w.Code != http.StatusUnauthorized {
 			t.Errorf("GET %s = %d, want 401", path, w.Code)
 		}
 	}
-	for _, path := range []string{"/api/v1/scan", "/api/v1/sync"} {
+	for _, path := range []string{"/api/v1/process", "/api/v1/refresh"} {
 		if w := do(r, "POST", path, "", nil); w.Code != http.StatusUnauthorized {
 			t.Errorf("POST %s = %d, want 401", path, w.Code)
 		}
@@ -205,11 +205,62 @@ func seedArtistWithFile(t *testing.T, api *API, root string) string {
 	return "artist-1"
 }
 
+// TestArtistScanAnswersInline: the fourth verb at artist scope. Unlike the other
+// three it is not queued — it re-derives from the index and reports what it found in
+// the response, so the page can update without waiting on the Activity feed.
+func TestArtistScanAnswersInline(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	mbid := seedArtistWithFile(t, api, t.TempDir())
+
+	out := decodeJSON[map[string]any](t, r, "POST", "/api/v1/artists/"+mbid+"/scan", token, nil)
+	if out["artist"] != "Artist" {
+		t.Errorf("response does not name the artist it scanned: %v", out)
+	}
+	if _, ok := out["owned_release_groups"]; !ok {
+		t.Errorf("response should carry what the scan found: %v", out)
+	}
+}
+
+// An artist with no files is a valid scan: nothing to derive is an answer, and unlike
+// process/retag there is no folder or file the refusal would be protecting.
+func TestArtistScanWithoutFilesIsFine(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Nobody"}).Error; err != nil {
+		t.Fatalf("create artist: %v", err)
+	}
+	if w := do(r, "POST", "/api/v1/artists/artist-1/scan", token, nil); w.Code != http.StatusOK {
+		t.Errorf("scan of a fileless artist = %d, want 200: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestRetagAllRefusesEmptyIndex: Tag files at collection scope refuses when nothing
+// is indexed, exactly as its per-library and per-artist twins do — a queued job that
+// tags nothing reads as a silent failure.
+func TestRetagAllRefusesEmptyIndex(t *testing.T) {
+	r, _ := setupAPI(t)
+	token := loginToken(t, r)
+	if w := do(r, "POST", "/api/v1/retag", token, nil); w.Code != http.StatusConflict {
+		t.Errorf("retag with an empty index = %d, want 409: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestRetagAllQueues(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	seedArtistWithFile(t, api, t.TempDir())
+
+	if w := do(r, "POST", "/api/v1/retag", token, nil); w.Code != http.StatusAccepted {
+		t.Errorf("retag = %d, want 202: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestArtistActionsRejectUnknownArtist(t *testing.T) {
 	r, _ := setupAPI(t)
 	token := loginToken(t, r)
 
-	for _, action := range []string{"scan", "refresh", "retag"} {
+	for _, action := range []string{"process", "scan", "refresh", "retag"} {
 		if w := do(r, "POST", "/api/v1/artists/nope/"+action, token, nil); w.Code != http.StatusNotFound {
 			t.Errorf("%s of an unknown artist = %d, want 404: %s", action, w.Code, w.Body.String())
 		}
@@ -219,14 +270,14 @@ func TestArtistActionsRejectUnknownArtist(t *testing.T) {
 // Scanning and re-tagging an artist with no indexed files is refused rather than
 // started: there is no folder to walk and nothing to write, so a 202 would report
 // work that never happens.
-func TestArtistScanRefusesWithoutFiles(t *testing.T) {
+func TestArtistProcessRefusesWithoutFiles(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Nobody"}).Error; err != nil {
 		t.Fatalf("create artist: %v", err)
 	}
 
-	for _, action := range []string{"scan", "retag"} {
+	for _, action := range []string{"process", "retag"} {
 		w := do(r, "POST", "/api/v1/artists/artist-1/"+action, token, nil)
 		if w.Code != http.StatusConflict {
 			t.Errorf("%s without files = %d, want 409: %s", action, w.Code, w.Body.String())
@@ -241,12 +292,12 @@ func TestArtistScanRefusesWithoutFiles(t *testing.T) {
 	// live session.
 }
 
-func TestArtistScanStarts(t *testing.T) {
+func TestArtistProcessStarts(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 	mbid := seedArtistWithFile(t, api, t.TempDir())
 
-	w := do(r, "POST", "/api/v1/artists/"+mbid+"/scan", token, nil)
+	w := do(r, "POST", "/api/v1/artists/"+mbid+"/process", token, nil)
 	if w.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202: %s", w.Code, w.Body.String())
 	}
