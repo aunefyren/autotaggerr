@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { api, errMsg } from "../api";
-import { useFetch } from "../hooks";
-import { Event, EventItem, EventsPage, JobView, ScanStatus } from "../types";
-import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
+import { useDebounced, useFetch } from "../hooks";
+import { Event, EventItem, EventStat, EventsPage, JobView, ScanStatus } from "../types";
+import { EmptyState, ErrorNote, IdChip, Modal, Pill } from "../components/ui";
 import { ProgressBar } from "../components/ProgressBar";
+import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
+import { FilterChip, Pager, TableToolbar, useBrowse, usePaging } from "../components/browse";
 import { useToast } from "../toast";
 
 const TYPE_LABELS: Record<string, string> = {
@@ -19,26 +21,14 @@ const TYPE_LABELS: Record<string, string> = {
   // event rendering as a raw type string would look like a bug.
   drift_sync: "Metadata sync",
   lidarr_sync: "Lidarr sync",
-  mb_migration: "Identity check",
+  mb_migration: "Identity changes",
   plex_refresh: "Plex refresh",
   health_check: "Health check",
-};
-
-// Human labels for the stage a running job reports, across runs and metadata passes.
-const PHASE_LABELS: Record<string, string> = {
-  // processing phases
-  refresh: "Refreshing metadata",
-  scanning: "Scanning files",
-  drift: "Re-tagging changed releases",
-  plex: "Refreshing Plex",
-  migrations: "Applying identity changes",
-  collection: "Updating the collection",
-  // metadata-pass phases
-  artists: "Artists",
-  discographies: "Discographies",
-  editions: "Editions",
-  releases: "Releases",
-  paused: "Paused",
+  // The walk half of a processing run. Named for the verb it belongs to, not for
+  // "Tag files" — that is a verb a user presses, and putting it in the feed under a
+  // run nobody pressed it for would contradict "no verb triggers another".
+  process_files: "Processing files",
+  collection_scan: "Collection scan",
 };
 
 // Labels for the kinds of job the queue holds, so a pending row reads as words.
@@ -88,6 +78,13 @@ function elapsed(from?: string): string {
   return formatDuration(Date.now() - new Date(from).getTime());
 }
 
+// How long an event took, in milliseconds. Zero for one still running or one that
+// never finished — neither has a span to compare against its siblings.
+function durationMs(ev: Event): number {
+  if (!ev.finished_at) return 0;
+  return Math.max(0, new Date(ev.finished_at).getTime() - new Date(ev.started_at).getTime());
+}
+
 /**
  * How long an event took, derived from the row's own timestamps rather than read
  * out of its details payload. Every event carries started_at and finished_at, so
@@ -116,11 +113,42 @@ function EventStatus({ status }: { status: string }) {
   return <Pill kind="ok">Done</Pill>;
 }
 
+const PAGE_SIZE = 50;
+
 export default function Activity() {
   const toast = useToast();
-  const events = useFetch<EventsPage>(() => api.get("/events?limit=50"));
+  // Paging is URL state like every other browse flag, so a link to page three of the
+  // feed is a link to page three. The feed is server-paged — unlike the Collection, it
+  // never holds the whole table — so the offset goes into the query, not a slice.
+  const browse = useBrowse("started_at", "desc");
+  const offset = (Math.max(1, browse.page) - 1) * PAGE_SIZE;
+  const typeFilter = browse.flag("type") ?? "";
+  const statusFilter = browse.flag("status") ?? "";
+  const query = browse.query;
+
+  // The Collection filters in the browser, so its box costs nothing per keystroke.
+  // This one is a query, so typing "talk talk" unthrottled is nine round trips and a
+  // list that flickers through nine intermediate answers. The input stays immediate —
+  // it is the *fetch* that waits.
+  const search = useDebounced(query, 250);
+
+  const events = useFetch<EventsPage>(() => {
+    const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
+    if (typeFilter) params.set("type", typeFilter);
+    if (statusFilter) params.set("status", statusFilter);
+    if (search.trim()) params.set("q", search.trim());
+    return api.get(`/events?${params}`);
+  }, [offset, typeFilter, statusFilter, search]);
   const status = useFetch<ScanStatus>(() => api.get("/process/status"));
   const [selected, setSelected] = useState<Event | null>(null);
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  const toggleExpanded = (id: string) =>
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(id)) next.add(id);
+      return next;
+    });
 
   // Poll while anything is running — a processing run (via its status) or any other
   // job that left a running event in the feed, such as a metadata sweep with no run
@@ -156,6 +184,24 @@ export default function Activity() {
   };
 
   const rows = events.data?.events ?? [];
+  const paging = usePaging(browse, events.data?.total ?? 0, PAGE_SIZE);
+  const filtering = !!(typeFilter || statusFilter || query.trim());
+
+  const facet = (kind: "type" | "status", key: string) => events.data?.facets?.[kind]?.[key] ?? 0;
+  // Only the types that have happened, most frequent first — a menu of every type the
+  // app can emit would offer a dozen dead ends on a fresh install. The active one stays
+  // listed even at zero, so a filter that matches nothing can still be seen and undone.
+  const typeOptions = Object.entries(events.data?.facets?.type ?? {})
+    .filter(([type, n]) => n > 0 || type === typeFilter)
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+
+  // A running run opens itself, so the stage in flight is visible without a click —
+  // that is the one time "what is it doing right now" is the reason the page is open.
+  // Only on the way in: re-applying it every poll would fight a user who collapsed it.
+  const runningRun = rows.find((ev) => ev.status === "running" && (ev.child_count ?? 0) > 0)?.id;
+  useEffect(() => {
+    if (runningRun) setExpanded((prev) => (prev.has(runningRun) ? prev : new Set(prev).add(runningRun)));
+  }, [runningRun]);
 
   return (
     <div className="stack">
@@ -192,14 +238,29 @@ export default function Activity() {
             <span className="dim mono" style={{ fontSize: 11 }}>{elapsed(status.data.started_at)}</span>
           </div>
 
-          {(status.data.total ?? 0) > 0 && (
-            <div className="row" style={{ gap: 10, alignItems: "center" }}>
-              <ProgressBar done={status.data.done ?? 0} total={status.data.total ?? 0} width={260} />
-              <span className="mono dim" style={{ fontSize: 11 }}>
-                {status.data.done ?? 0} / {status.data.total}
-              </span>
-            </div>
-          )}
+          {/* The counters belong to one stage of the job. In any other stage they are
+              stale rather than wrong, so the bar goes indeterminate and the numbers go
+              away — a "0 / 12000" held for five minutes of rate-limited metadata work
+              is what reads as a hang. */}
+          {(() => {
+            const counted = phaseDrivesProgress(status.data.phase);
+            if (counted && (status.data.total ?? 0) <= 0) return null;
+            return (
+              <div className="row" style={{ gap: 10, alignItems: "center" }}>
+                <ProgressBar
+                  done={status.data.done ?? 0}
+                  total={status.data.total ?? 0}
+                  width={260}
+                  indeterminate={!counted}
+                />
+                {counted && (
+                  <span className="mono dim" style={{ fontSize: 11 }}>
+                    {status.data.done ?? 0} / {status.data.total}
+                  </span>
+                )}
+              </div>
+            );
+          })()}
 
           {/* The file counters describe a processing run; a metadata refresh has
               none, so they are shown only for that kind of job. */}
@@ -225,8 +286,59 @@ export default function Activity() {
       )}
 
       {events.err && <ErrorNote message={events.err} />}
+
+      {/* Shown whenever anything has ever happened, not only when the current filter
+          matched — hiding the controls when a filter empties the list is how a user gets
+          stranded with no way to widen it again. */}
+      {(rows.length > 0 || filtering) && (
+        <TableToolbar
+          browse={browse}
+          placeholder="Filter by title"
+          showing={paging.total > 0 ? `${paging.from}–${paging.to} of ${paging.total}` : undefined}
+        >
+          <FilterChip
+            on={statusFilter === "error"}
+            count={facet("status", "error")}
+            label="Failed"
+            tone="warn"
+            title="Only events that failed"
+            onClick={() => browse.setFlag("status", statusFilter === "error" ? null : "error")}
+          />
+          <FilterChip
+            on={statusFilter === "running"}
+            count={facet("status", "running")}
+            label="Running"
+            title="Only events still in flight"
+            onClick={() => browse.setFlag("status", statusFilter === "running" ? null : "running")}
+          />
+          {/* A select rather than ten more chips: the types are a list you pick one
+              from, and a row of ten would out-weigh the table it narrows. The counts
+              ride the option labels so the choice still states its own result. */}
+          <select
+            className="input"
+            style={{ width: "auto" }}
+            value={typeFilter}
+            aria-label="Event type"
+            onChange={(e) => browse.setFlag("type", e.target.value || null)}
+          >
+            <option value="">All types</option>
+            {typeOptions.map(([type, count]) => (
+              <option key={type} value={type}>
+                {(TYPE_LABELS[type] ?? type) + ` (${count})`}
+              </option>
+            ))}
+          </select>
+        </TableToolbar>
+      )}
+
       {!events.err && !events.loading && rows.length === 0 && (
-        <EmptyState icon="⟳" message="No activity yet. Process a library to get started." />
+        filtering ? (
+          <div className="card">
+            <div className="dim" style={{ fontSize: 12 }}>No event matches this filter.</div>
+          </div>
+        ) : (
+          <EmptyState icon="⟳" message="No activity yet. Process a library to get started." />
+        )
       )}
 
       {rows.length > 0 && (
@@ -243,37 +355,179 @@ export default function Activity() {
             </thead>
             <tbody>
               {rows.map((ev) => (
-                <tr key={ev.id} style={{ cursor: "pointer" }} onClick={() => setSelected(ev)}>
-                  <td className="mono dim" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
-                    {new Date(ev.started_at).toLocaleString()}
-                  </td>
-                  <td style={{ color: "var(--text)" }}>{ev.title || TYPE_LABELS[ev.type] || ev.type}</td>
-                  <td><EventStatus status={ev.status} /></td>
-                  <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(ev)}>
-                    {eventDuration(ev)}
-                  </td>
-                  <td className="muted">
-                    {ev.status === "running" && (ev.total ?? 0) > 0 ? (
-                      <div className="row" style={{ gap: 8, alignItems: "center" }}>
-                        <ProgressBar done={ev.done ?? 0} total={ev.total ?? 0} width={120} showPercent={false} />
-                        <span className="dim mono" style={{ fontSize: 11 }}>
-                          {ev.done ?? 0}/{ev.total}
-                          {ev.phase ? ` · ${PHASE_LABELS[ev.phase] ?? ev.phase}` : ""}
-                        </span>
-                      </div>
-                    ) : (
-                      ev.summary
-                    )}
-                  </td>
-                </tr>
+                <FeedRows
+                  key={ev.id}
+                  event={ev}
+                  expanded={expanded.has(ev.id)}
+                  onToggle={() => toggleExpanded(ev.id)}
+                  onSelect={setSelected}
+                />
               ))}
             </tbody>
           </table>
         </div>
       )}
 
-      {selected && <EventDetail event={selected} onClose={() => setSelected(null)} />}
+      <Pager paging={paging} unit="events" />
+
+      {/* Opening a stage replaces the run in the same modal rather than stacking a
+          second one — a dialog over a dialog is harder to get out of than it is to get
+          into, and the run is one click away in the feed behind it. */}
+      {selected && (
+        <EventDetail event={selected} onClose={() => setSelected(null)} onOpenStage={setSelected} />
+      )}
     </div>
+  );
+}
+
+/**
+ * The Summary cell of a feed row: a live bar while the event runs, its summary line
+ * once it has finished.
+ *
+ * The counters an event carries belong to one stage of it, so in any other stage the
+ * bar goes indeterminate and the numbers are dropped rather than shown stale — the
+ * phase label is the honest half and stays either way.
+ */
+function RunningCell({ event }: { event: Event }) {
+  if (event.status !== "running") return <>{event.summary}</>;
+
+  const counted = phaseDrivesProgress(event.phase);
+  const label = event.phase ? PHASE_LABELS[event.phase] ?? event.phase : "";
+  if (counted && (event.total ?? 0) <= 0) return <>{event.summary}</>;
+
+  return (
+    <div className="row" style={{ gap: 8, alignItems: "center" }}>
+      <ProgressBar
+        done={event.done ?? 0}
+        total={event.total ?? 0}
+        width={120}
+        showPercent={false}
+        indeterminate={!counted}
+      />
+      <span className="dim mono" style={{ fontSize: 11 }}>
+        {[counted ? `${event.done ?? 0}/${event.total}` : "", label].filter(Boolean).join(" · ")}
+      </span>
+    </div>
+  );
+}
+
+/**
+ * One feed row, plus its stages when expanded.
+ *
+ * The feed lists runs, so without this the relationship between a run and the seven
+ * things it did was only visible once the run was open — the page read as a list of
+ * unrelated rows. Stages are indented under their run rather than shown as siblings:
+ * they are not separate work, and a nightly run would otherwise be seven of the fifty
+ * rows on the page.
+ *
+ * They load on expand rather than with the feed. Fifty runs would drag several hundred
+ * stage rows behind them to draw a screen where most stay collapsed, and the count
+ * needed to *offer* the expansion is already on the row.
+ */
+function FeedRows({
+  event,
+  expanded,
+  onToggle,
+  onSelect,
+}: {
+  event: Event;
+  expanded: boolean;
+  onToggle: () => void;
+  onSelect: (ev: Event) => void;
+}) {
+  const [children, setChildren] = useState<Event[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const count = event.child_count ?? 0;
+
+  // Reloaded when the run changes phase as well as when it is expanded: a phase change
+  // is precisely when a new stage exists, so a run watched while it works fills in as
+  // it goes rather than showing whatever it had at the moment it was opened.
+  useEffect(() => {
+    if (!expanded) {
+      setChildren(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    api
+      .get<Event>(`/events/${event.id}`)
+      .then((full) => !cancelled && setChildren(full.children ?? []))
+      .catch(() => !cancelled && setChildren([]))
+      .finally(() => !cancelled && setLoading(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [event.id, expanded, event.status, event.phase]);
+
+  return (
+    <>
+      <tr style={{ cursor: "pointer" }} onClick={() => onSelect(event)}>
+        <td className="mono dim" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+          {new Date(event.started_at).toLocaleString()}
+        </td>
+        <td style={{ color: "var(--text)" }}>
+          <span className="row" style={{ gap: 6, alignItems: "center" }}>
+            {count > 0 ? (
+              <button
+                className="twisty"
+                aria-expanded={expanded}
+                aria-label={expanded ? "Hide stages" : `Show ${count} stages`}
+                title={expanded ? "Hide stages" : `Show ${count} stages`}
+                onClick={(e) => {
+                  // The row opens the detail; the twisty only expands. Two jobs, two
+                  // hit areas — expanding must not also open a modal over it.
+                  e.stopPropagation();
+                  onToggle();
+                }}
+              >
+                {expanded ? "▾" : "▸"}
+              </button>
+            ) : (
+              <span className="twisty-gap" aria-hidden="true" />
+            )}
+            {event.title || TYPE_LABELS[event.type] || event.type}
+            {count > 0 && <span className="dim mono" style={{ fontSize: 11 }}>{count}</span>}
+          </span>
+          {/* Only present when the feed is returning stage rows, which it does when a
+              filter is active. A stage row in a flat list is otherwise unmoored. */}
+          {event.parent_title && (
+            <div className="dim" style={{ fontSize: 11, marginLeft: 22 }}>
+              in {event.parent_title}
+            </div>
+          )}
+        </td>
+        <td><EventStatus status={event.status} /></td>
+        <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(event)}>
+          {eventDuration(event)}
+        </td>
+        <td className="muted">
+          <RunningCell event={event} />
+        </td>
+      </tr>
+
+      {expanded && loading && !children && (
+        <tr className="stagerow-feed">
+          <td />
+          <td colSpan={4} className="dim" style={{ fontSize: 12 }}>Loading stages…</td>
+        </tr>
+      )}
+
+      {(children ?? []).map((stage) => (
+        <tr key={stage.id} className="stagerow-feed" style={{ cursor: "pointer" }} onClick={() => onSelect(stage)}>
+          <td />
+          <td style={{ color: "var(--text-muted)" }}>
+            <span style={{ marginLeft: 22 }}>{TYPE_LABELS[stage.type] ?? stage.type}</span>
+          </td>
+          <td><EventStatus status={stage.status} /></td>
+          <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(stage)}>
+            {eventDuration(stage)}
+          </td>
+          <td className="muted" style={{ fontSize: 12 }}>
+            <RunningCell event={stage} />
+          </td>
+        </tr>
+      ))}
+    </>
   );
 }
 
@@ -282,12 +536,190 @@ function num(details: Record<string, unknown> | null, key: string): number {
   return typeof v === "number" ? v : 0;
 }
 
-function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) {
-  // The feed's copy of an event carries no per-file rows — they only come with the
-  // single-event fetch, so opening one loads it.
+/**
+ * The stages a run performed, in the order they happened, each opening its own detail.
+ *
+ * This is the answer to "what did this run actually do, and which part took the time".
+ * A run does six distinct things — refresh metadata, walk and tag, re-tag what drifted,
+ * tell Plex, apply identity changes, re-derive the collection — and while it reported
+ * as one row, five of them had nowhere to put their counters.
+ *
+ * Each row states its own summary rather than a shared set of columns, because the
+ * stages do not share a unit: one counts entities, one counts files, one counts albums.
+ */
+function StageList({ stages, onOpen }: { stages: Event[]; onOpen: (ev: Event) => void }) {
+  if (stages.length === 0) return null;
+
+  // Each stage's share of the time the run spent working. Share of the total rather
+  // than of the longest stage: the question is "where did the four hours go", and one
+  // stage at 95% *should* leave the others as slivers, because that is the answer.
+  const spans = stages.map(durationMs);
+  const total = spans.reduce((a, b) => a + b, 0);
+
+  return (
+    <div className="stack" style={{ gap: 6, marginBottom: 16 }}>
+      <div className="eyebrow">Stages ({stages.length})</div>
+      {stages.map((stage, i) => {
+        const share = total > 0 ? spans[i] / total : 0;
+        return (
+          <button
+            key={stage.id}
+            className="stagerow"
+            onClick={() => onOpen(stage)}
+            title={`Open ${TYPE_LABELS[stage.type] ?? stage.type}`}
+          >
+            <EventStatus status={stage.status} />
+            <span style={{ fontSize: 13, color: "var(--text)", whiteSpace: "nowrap" }}>
+              {TYPE_LABELS[stage.type] ?? stage.type}
+            </span>
+            <span className="muted" style={{ fontSize: 12, flex: 1, minWidth: 0 }}>
+              {stage.summary}
+            </span>
+            <span
+              className="stagebar"
+              aria-hidden="true"
+              title={`${Math.round(share * 100)}% of this run's time`}
+            >
+              <i style={{ width: `${Math.max(share * 100, share > 0 ? 2 : 0)}%` }} />
+            </span>
+            <span className="dim mono" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(stage)}>
+              {eventDuration(stage)}
+            </span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * What a metadata pass found, one row per entity: which releases changed upstream,
+ * which are gone, which moved release-group, and what it could not read.
+ *
+ * Separate from FileDetail because the rows are not files. FileDetail's non-error row
+ * reads "N tags written", which on a verb that writes nothing would be a false claim
+ * about the user's audio — and the identifier here is an MBID, which is a thing to copy
+ * and look up rather than a path to read.
+ */
+/**
+ * A metadata pass's per-phase split. `Fetched` is what cost a rate-limit slot, and the
+ * four entity kinds cost wildly different amounts — one total cannot say whether the
+ * hours went on discographies or on release payloads.
+ *
+ * Rendered whenever an event carries the key, rather than for a named event type: the
+ * detail view knows how to draw a phase breakdown, not which events have one.
+ */
+function PhaseBreakdown({ details }: { details: Record<string, unknown> | null }) {
+  const phases = details?.phases;
+  if (!Array.isArray(phases) || phases.length === 0) return null;
+
+  return (
+    <div className="stack" style={{ gap: 4 }}>
+      <div className="eyebrow">By entity</div>
+      {(phases as Record<string, unknown>[]).map((p, i) => (
+        <div key={i} className="row" style={{ gap: 10, alignItems: "baseline", fontSize: 12 }}>
+          <span style={{ minWidth: 110, color: "var(--text-muted)" }}>
+            {PHASE_LABELS[String(p.phase)] ?? String(p.phase)}
+          </span>
+          <span className="mono dim">
+            {num(p, "checked")} checked · {num(p, "fetched")} fetched · {num(p, "fresh")} cached
+            {num(p, "errors") > 0 ? ` · ${num(p, "errors")} failed` : ""}
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * The counters an event declared about itself.
+ *
+ * A stat that names an EventItem status becomes a **chip**: a count is almost always
+ * read as a prelude to "show me which ones", and the numbers used to sit above a list
+ * they had no relationship with. Ones with nothing behind them stay plain figures —
+ * making a dead number look pressable is worse than leaving it alone.
+ *
+ * Zero-valued stats are dropped entirely. An emitter declares the same set every time
+ * so its events are comparable, which means most events carry several counters that
+ * did not happen, and "0 gone upstream · 0 re-linked · 0 failed" is noise in front of
+ * the two numbers that did.
+ */
+function StatRow({
+  stats,
+  items,
+  active,
+  onFilter,
+}: {
+  stats: EventStat[];
+  items: EventItem[];
+  active: string | null;
+  onFilter: (status: string | null) => void;
+}) {
+  const shown = stats.filter((s) => s.value > 0 || (s.filter && s.filter === active));
+  if (shown.length === 0) return null;
+
+  return (
+    <div className="row" style={{ gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+      {shown.map((stat, i) => {
+        const selectable = !!stat.filter && items.some((it) => it.status === stat.filter);
+        if (!selectable) {
+          return (
+            <Stat
+              key={i}
+              label={stat.label}
+              value={stat.value}
+              muted={stat.kind === "muted"}
+              color={statColor(stat)}
+            />
+          );
+        }
+        const on = active === stat.filter;
+        return (
+          <FilterChip
+            key={i}
+            on={on}
+            count={stat.value}
+            label={stat.label}
+            tone={stat.kind === "bad" ? "warn" : undefined}
+            title={on ? "Showing only these — click to show everything" : `Show only ${stat.label.toLowerCase()}`}
+            onClick={() => onFilter(on ? null : stat.filter!)}
+          />
+        );
+      })}
+    </div>
+  );
+}
+
+// Semantic emphasis to the status colour language. `bad` only colours when it happened:
+// a red 0 claims a problem that is not there.
+function statColor(stat: EventStat): string | undefined {
+  if (stat.kind === "notable") return "var(--accent-text)";
+  if (stat.kind === "bad") return stat.value > 0 ? "var(--danger-text)" : undefined;
+  return undefined;
+}
+
+function EventDetail({
+  event,
+  onClose,
+  onOpenStage,
+}: {
+  event: Event;
+  onClose: () => void;
+  onOpenStage: (ev: Event) => void;
+}) {
+  // The feed's copy of an event carries no per-file rows or stages — they only come
+  // with the single-event fetch, so opening one loads it.
   const full = useFetch<Event>(() => api.get(`/events/${event.id}`), [event.id]);
-  const d = event.details;
+  const [filter, setFilter] = useState<string | null>(null);
+
+  // Reset the filter when the modal moves to another event: a chip left active from
+  // the run would silently hide most of the stage you just opened.
+  useEffect(() => setFilter(null), [event.id]);
+
+  const d = full.data?.details ?? event.details;
   const items = full.data?.items ?? [];
+  const stages = full.data?.children ?? [];
+  const stats = full.data?.stats ?? event.stats ?? [];
   const errorFiles = Array.isArray(d?.error_files) ? (d!.error_files as string[]) : [];
   const libraries = Array.isArray(d?.libraries) ? (d!.libraries as string[]) : [];
 
@@ -300,86 +732,92 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
         </span>
       </div>
 
-      {event.type === "mb_mirror" && d ? (
-        <div className="stack">
-          <div className="row" style={{ gap: 26, flexWrap: "wrap" }}>
-            <Stat label="Entities checked" value={num(d, "done")} />
-            <Stat label="Fetched" value={num(d, "fetched")} />
-            <Stat label="Already cached" value={num(d, "fresh")} muted />
-            <Stat label="Changed upstream" value={num(d, "changed_releases")} color="var(--accent-text)" />
-            <Stat label="Errors" value={num(d, "errors")} color={num(d, "errors") > 0 ? "var(--danger-text)" : undefined} />
-          </div>
-          {/* Stated here as well as on the Metadata page: an event listing releases
-              that changed reads like something happened to the files, and nothing
-              did. */}
+      <div className="stack">
+        {/* What this run did, in order, and where its time went. */}
+        <StageList stages={stages} onOpen={onOpenStage} />
+
+        <StatRow stats={stats} items={items} active={filter} onFilter={setFilter} />
+
+        <PhaseBreakdown details={d} />
+
+        {/* Stated wherever a metadata refresh is read, not only on the Metadata page:
+            an event listing releases that changed reads like something happened to the
+            files, and nothing did. */}
+        {event.type === "mb_mirror" && (
           <div className="dim" style={{ fontSize: 12 }}>
             A metadata refresh writes no files. Releases that changed upstream are re-tagged by the
             next processing run, or immediately with <em>Tag files</em>.
           </div>
-        </div>
-      ) : (event.type === "tag_files" || event.type === "drift_sync") && d ? (
-        <div className="stack">
-          <div className="row" style={{ gap: 26, flexWrap: "wrap" }}>
-            <Stat label="Releases checked" value={num(d, "releases_checked")} />
-            <Stat label="Changed upstream" value={num(d, "releases_changed")} color="var(--accent-text)" />
-            <Stat label="Files re-tagged" value={num(d, "files_retagged")} />
-            <Stat label="Errors" value={num(d, "errors")} color={num(d, "errors") > 0 ? "var(--danger-text)" : undefined} />
+        )}
+
+        {libraries.length > 0 && (
+          <div className="dim" style={{ fontSize: 12 }}>
+            Libraries: <span className="mono">{libraries.join(", ")}</span>
           </div>
-          <FileDetail items={items} details={d} loading={full.loading} fallbackErrors={errorFiles} />
-        </div>
-      ) : (event.type === "process" || event.type === "scan") && d ? (
-        <div className="stack">
-          <div className="row" style={{ gap: 26, flexWrap: "wrap" }}>
-            <Stat label="Processed" value={num(d, "processed")} />
-            <Stat label="Unchanged" value={num(d, "unchanged")} muted />
-            <Stat label="Changed" value={num(d, "changed")} color="var(--accent-text)" />
-            <Stat label="Tags written" value={num(d, "tags_written")} />
-            <Stat label="Errors" value={num(d, "errors")} color={num(d, "errors") > 0 ? "var(--danger-text)" : undefined} />
-          </div>
-          {libraries.length > 0 && (
-            <div className="dim" style={{ fontSize: 12 }}>
-              Libraries: <span className="mono">{libraries.join(", ")}</span>
-            </div>
-          )}
-          <FileDetail items={items} details={d} loading={full.loading} fallbackErrors={errorFiles} />
-        </div>
-      ) : (
-        <pre className="mono scroll" style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "pre-wrap", wordBreak: "break-all" }}>
-          {JSON.stringify(d ?? {}, null, 2)}
-        </pre>
-      )}
+        )}
+
+        <ItemList
+          items={items}
+          details={d}
+          loading={full.loading}
+          filter={filter}
+          fallbackErrors={errorFiles}
+        />
+
+        {/* The escape hatch, closed by default. Everything above is what an emitter
+            chose to surface; this is everything it recorded, for the times those differ
+            and the difference is the bug. */}
+        {d && Object.keys(d).length > 0 && (
+          <details>
+            <summary className="dim" style={{ fontSize: 11, cursor: "pointer" }}>Raw details</summary>
+            <pre className="mono scroll" style={{ fontSize: 11, color: "var(--text-muted)", whiteSpace: "pre-wrap", wordBreak: "break-all", marginTop: 8 }}>
+              {JSON.stringify(d, null, 2)}
+            </pre>
+          </details>
+        )}
+      </div>
     </Modal>
   );
 }
 
+// What each per-entity outcome is called, and the status colour it carries. "Changed
+// upstream" rather than "Changed": nothing here changed the entity, MusicBrainz did.
+const ENTITY_OUTCOMES: Record<string, { label: string; kind: string }> = {
+  refreshed: { label: "Changed upstream", kind: "scan" },
+  gone: { label: "Gone upstream", kind: "warn" },
+  relinked: { label: "Re-linked", kind: "off" },
+  error: { label: "Failed", kind: "err" },
+};
+
 /**
- * The per-file half of an event: which files changed, the exact fields that changed
- * on each, and which failed. Counters say twelve files changed; this says which
- * twelve and what happened to them.
+ * The rows an event recorded: which files changed and exactly what changed on each,
+ * which releases moved upstream, and what failed.
  *
- * The list is capped server-side, so when rows were dropped it says so rather than
- * letting the first N read as the whole story. `fallbackErrors` renders events
- * recorded before detail rows existed, which still carry an error_files array.
+ * One list for both, because they answer the same question — *which ones?* — and were
+ * two components only because a file row and an entity row draw differently. That
+ * difference is now a field on the row (`kind`) rather than a component boundary, which
+ * is what lets an event carrying both kinds render at all.
+ *
+ * Grouped by phase when the rows come from more than one, so a run's walk output is not
+ * interleaved with the releases its drift stage found.
  */
-function FileDetail({
+function ItemList({
   items,
   details,
   loading,
+  filter,
   fallbackErrors,
 }: {
   items: EventItem[];
   details: Record<string, unknown> | null;
   loading: boolean;
+  filter: string | null;
   fallbackErrors: string[];
 }) {
-  const summary = (details?.detail ?? null) as Record<string, unknown> | null;
-  const totalChanged = typeof summary?.changed_files === "number" ? summary.changed_files : 0;
-  const totalFailed = typeof summary?.failed_files === "number" ? summary.failed_files : 0;
-  const truncated = items.length > 0 && items.length < totalChanged + totalFailed;
+  if (loading) return <div className="muted" style={{ fontSize: 12 }}>Loading detail…</div>;
 
-  if (loading) return <div className="muted" style={{ fontSize: 12 }}>Loading file detail…</div>;
-
-  // Nothing recorded: either an older event, or a run where no file changed.
+  // Nothing recorded: either an older event, or one where nothing interesting happened.
+  // The error list is the pre-detail-rows fallback and still worth showing.
   if (items.length === 0) {
     if (fallbackErrors.length === 0) return null;
     return (
@@ -392,56 +830,118 @@ function FileDetail({
     );
   }
 
+  const shown = filter ? items.filter((it) => it.status === filter) : items;
+
+  // "Showing 500 of 3120" — the cap bounds what was stored, and without the pair a
+  // reader takes the stored count for the whole truth.
+  const summary = (details?.detail ?? null) as Record<string, unknown> | null;
+  const recorded = typeof summary?.recorded === "number" ? summary.recorded : items.length;
+  const total =
+    typeof summary?.total === "number"
+      ? summary.total
+      : num(summary, "changed_files") + num(summary, "failed_files");
+  const truncated = total > recorded && recorded > 0;
+
+  // Group only when there is something to group: one phase is a list, not a structure.
+  const phases = Array.from(new Set(shown.map((it) => it.phase ?? "")));
+  const grouped = phases.length > 1;
+
   return (
     <div>
       <div className="row" style={{ marginBottom: 6, gap: 10, alignItems: "baseline" }}>
-        <div className="eyebrow">Files</div>
-        {truncated && (
+        <div className="eyebrow">Detail</div>
+        <span className="dim" style={{ fontSize: 11 }}>
+          {filter ? `${shown.length} of ${items.length} shown` : truncated ? `showing ${recorded} of ${total}` : ""}
+        </span>
+      </div>
+      <div className="scroll stack" style={{ gap: grouped ? 14 : 10 }}>
+        {phases.map((phase) => {
+          const rows = shown.filter((it) => (it.phase ?? "") === phase);
+          if (rows.length === 0) return null;
+          return (
+            <div key={phase} className="stack" style={{ gap: 8 }}>
+              {grouped && (
+                <div className="eyebrow">{phase ? PHASE_LABELS[phase] ?? phase : "Files"}</div>
+              )}
+              {rows.map((item) => <ItemRow key={item.id} item={item} />)}
+            </div>
+          );
+        })}
+        {shown.length === 0 && (
+          <div className="muted" style={{ fontSize: 12 }}>Nothing matches that filter.</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One recorded row. An entity row leads with a copyable MBID and an outcome pill; a file
+ * row leads with its path and the diff of what was written to it.
+ *
+ * The split is not cosmetic: a file row reports how many tags were written, and a
+ * metadata refresh writes none — "0 tags written" beside a release MBID would be a
+ * claim about the user's audio from the one verb that promises not to touch it.
+ */
+function ItemRow({ item }: { item: EventItem }) {
+  if (item.kind === "entity") {
+    const outcome = ENTITY_OUTCOMES[item.status] ?? { label: item.status, kind: "off" };
+    return (
+      <div className="stack" style={{ gap: 4 }}>
+        <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+          <IdChip value={item.path} />
+          <Pill kind={outcome.kind}>{outcome.label}</Pill>
+          {item.tags_written > 0 && (
+            <span className="dim" style={{ fontSize: 11 }}>
+              {item.tags_written} file{item.tags_written === 1 ? "" : "s"} re-tagged
+            </span>
+          )}
+        </div>
+        {item.error && (
+          <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>
+            {item.error}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="stack" style={{ gap: 5 }}>
+      <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <span
+          className="mono"
+          style={{ fontSize: 11, wordBreak: "break-all", color: item.status === "error" ? "var(--danger-text)" : "var(--text)" }}
+        >
+          {item.path}
+        </span>
+        {item.status === "error" ? (
+          <Pill kind="err">Failed</Pill>
+        ) : (
           <span className="dim" style={{ fontSize: 11 }}>
-            showing {items.length} of {totalChanged + totalFailed}
+            {item.tags_written} tag{item.tags_written === 1 ? "" : "s"} written
           </span>
         )}
       </div>
-      <div className="scroll stack" style={{ gap: 12 }}>
-        {items.map((item) => (
-          <div key={item.id} className="stack" style={{ gap: 5 }}>
-            <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-              <span
-                className="mono"
-                style={{ fontSize: 11, wordBreak: "break-all", color: item.status === "error" ? "var(--danger-text)" : "var(--text)" }}
-              >
-                {item.path}
-              </span>
-              {item.status === "error" ? (
-                <Pill kind="err">Failed</Pill>
-              ) : (
-                <span className="dim" style={{ fontSize: 11 }}>
-                  {item.tags_written} tag{item.tags_written === 1 ? "" : "s"} written
-                </span>
-              )}
-            </div>
 
-            {item.error && (
-              <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>{item.error}</div>
-            )}
+      {item.error && (
+        <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>{item.error}</div>
+      )}
 
-            {/* Same old → new language as the file-tags view, so it is learned once. */}
-            {item.changes && item.changes.length > 0 && (
-              <div className="diff">
-                {item.changes.map((c) => (
-                  <div className="diffrow" key={c.field}>
-                    <span className="diffkey">{c.field}</span>
-                    <div className="diffvals">
-                      {c.old ? <span className="diffv rem">{c.old}</span> : <span className="diffv empty">(empty)</span>}
-                      {c.new ? <span className="diffv add">{c.new}</span> : <span className="diffv empty">(removed)</span>}
-                    </div>
-                  </div>
-                ))}
+      {/* Same old → new language as the file-tags view, so it is learned once. */}
+      {item.changes && item.changes.length > 0 && (
+        <div className="diff">
+          {item.changes.map((c) => (
+            <div className="diffrow" key={c.field}>
+              <span className="diffkey">{c.field}</span>
+              <div className="diffvals">
+                {c.old ? <span className="diffv rem">{c.old}</span> : <span className="diffv empty">(empty)</span>}
+                {c.new ? <span className="diffv add">{c.new}</span> : <span className="diffv empty">(removed)</span>}
               </div>
-            )}
-          </div>
-        ))}
-      </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

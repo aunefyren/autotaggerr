@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
@@ -97,6 +98,57 @@ func RebuildScoped(db *gorm.DB, scope RebuildScope) (RebuildStats, error) {
 // scope — what the artist page offers beside Process, Refresh metadata and Tag files.
 func RebuildArtist(db *gorm.DB, artistMBID string) (RebuildStats, error) {
 	return RebuildScoped(db, RebuildScope{ArtistMBID: artistMBID})
+}
+
+// RecordScan runs a Scan and records it as an Activity event.
+//
+// The Scan verb was the one of the four that reported nothing at all: it answers its
+// HTTP caller inline, so there was no background job to attach a row to, and pressing
+// it left no trace of a pass that can move albums between artists. Being fast is not
+// the same as being uninteresting.
+//
+// It lives here rather than in the routers so the artist and collection scopes record
+// identically — they are the same verb, and two call sites is how two summaries with
+// different words in them happen.
+func RecordScan(db *gorm.DB, title string, scope RebuildScope, detail map[string]any) (RebuildStats, error) {
+	ev := events.Begin(db, models.EventTypeCollectionScan, title)
+	stats, err := RebuildScoped(db, scope)
+
+	status := models.EventStatusOK
+	details := map[string]any{
+		"artists":              stats.Artists,
+		"owned_release_groups": stats.Owned,
+		"credit_changes":       stats.CreditChanges,
+	}
+	for k, v := range detail {
+		details[k] = v
+	}
+	summary := fmt.Sprintf("%d artists · %d albums on disk", stats.Artists, stats.Owned)
+	if stats.CreditChanges > 0 {
+		summary += fmt.Sprintf(" · %d credit change(s)", stats.CreditChanges)
+	}
+	if err != nil {
+		status = models.EventStatusError
+		details["error"] = err.Error()
+		summary = "failed — " + err.Error()
+	}
+	ev.Stats = ScanStats(stats)
+	events.Finish(db, ev, status, summary, details)
+	return stats, err
+}
+
+// ScanStats is the counter set a Scan puts on its event, shared by the standalone verb
+// and by the stage a run performs — the same pass, so it must not read as two.
+//
+// A credit change is the notable one: it is an album moving between artists, the only
+// identity change with no Migrations row to click through to, so the count is the only
+// way to notice one happened.
+func ScanStats(stats RebuildStats) []models.EventStat {
+	return []models.EventStat{
+		{Label: "Artists", Value: stats.Artists},
+		{Label: "Albums on disk", Value: stats.Owned},
+		{Label: "Credit changes", Value: stats.CreditChanges, Kind: models.EventStatNotable},
+	}
 }
 
 // bounds is a resolved RebuildScope: the rows one pass is allowed to write, held as

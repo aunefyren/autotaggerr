@@ -9,7 +9,7 @@ import { MBLink } from "../components/MBLink";
 import { AddArtistModal } from "../components/AddArtistModal";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
-import { FilterChip, SortHeader, TableToolbar, matches, useBrowse, useSorted } from "../components/browse";
+import { FilterChip, Pager, SortHeader, TableToolbar, matches, useBrowse, usePaging, useSorted } from "../components/browse";
 
 function ManagedBy({ managed_by }: { managed_by: string }) {
   if (managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
@@ -129,6 +129,13 @@ export default function Collection() {
   );
   const shown = useSorted(filtered, SORT[browse.sort] ?? SORT.name, browse.dir);
 
+  // Paged after sorting, so a page is a slice of the order the user chose rather than
+  // of whatever the API returned. A large collection was rendering every artist row at
+  // once, and the page a row is on has to survive opening that artist and coming back —
+  // hence the URL, like the rest of the browse state.
+  const paging = usePaging(browse, shown.length);
+  const page = shown.slice(paging.offset, paging.offset + paging.pageSize);
+
   return (
     <div className="stack">
       <div className="page-head">
@@ -206,7 +213,11 @@ export default function Collection() {
           <TableToolbar
             browse={browse}
             placeholder="Filter artists"
-            showing={`${shown.length} of ${artists.length}`}
+            showing={
+              paging.pageCount > 1
+                ? `${paging.from}–${paging.to} of ${shown.length}`
+                : `${shown.length} of ${artists.length}`
+            }
           >
             <FilterChip
               on={onlyMismatched}
@@ -239,7 +250,7 @@ export default function Collection() {
                   </tr>
                 </thead>
                 <tbody>
-                  {shown.map((ar) => {
+                  {page.map((ar) => {
                     const owned = ar.owned_count ?? 0;
                     const complete = ar.complete_count ?? 0;
                     const partial = ar.partial_count ?? 0;
@@ -292,6 +303,8 @@ export default function Collection() {
               </table>
             </div>
           )}
+
+          <Pager paging={paging} unit="artists" />
         </>
       )}
 

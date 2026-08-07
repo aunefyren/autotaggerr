@@ -13,9 +13,10 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 ## Open work
 
 - **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
-  manual attach. The last unbuilt piece of the native manager, and the last verb with no Activity
-  event — every other one emits (see [scanning.md](scanning.md)), so the event ships with the
-  feature rather than before it.
+  manual attach. The last unbuilt piece of the native manager. It has no Activity event, and the
+  event ships with the feature rather than before it — but it is not the only verb without one: the
+  collection rebuild and the migration stage are silent too, which
+  [Activity: one row per thing that happened](#activity-one-row-per-thing-that-happened) covers.
 - **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
   pulls the whole back catalogue of the chosen types. A global follow default could layer on later
   without a schema change.
@@ -28,9 +29,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   so `scan.Runner` is the processing runner and `collection.Rebuild` is the Scan verb. Renaming the
   package is mechanical and touches `main.go`, `routers/` and every file under `scan/`; it was left
   out of the rename to keep that diff reviewable.
-- **Event retention is fixed** at the newest 200 events (detail rows cascade with them), and the
-  per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
-  suit a feed better than a count.
 - **A running job cannot be cancelled.** Graceful shutdown has shipped (see
   [scanning.md](scanning.md#stopping-on-purpose)): schedules stop, HTTP drains, pending jobs are
   dropped and the job in flight is given 30 seconds. What is missing is the ability to *stop* that
@@ -38,6 +36,78 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   grace period and leaves its event to be reconciled on the next boot. A per-job context checked
   between files (where the walk already stops cleanly) would close that gap, and would give file
   work the counterpart to the metadata pass's `POST /mirror/cancel`.
+
+## Activity: one row per thing that happened
+
+In progress. A run used to do six things and report as one row — that row being the *walk's*
+counters, so it read as a tagging event while the other five stages went into `details.*` keys
+nothing rendered. Every stage is now its own event under the run, the progress bar no longer claims
+a position it does not have, and the detail view renders whatever an event declares about itself
+rather than a branch per type. What is left is how the relationship reads in the feed.
+
+**Shipped so far:**
+
+- *The bar no longer lies.* Indeterminate outside the phase that owns the counters, on all four
+  surfaces that draw them. See [scanning.md](scanning.md#the-bar-belongs-to-one-phase) and the
+  Progress component in [style-guide.md](style-guide.md#components).
+- *A metadata pass records what it found.* Per-phase tallies and one `EventItem` per changed / gone
+  / relinked / failed entity, instead of discarding `Result.ChangedReleases` to a `len()`. See
+  [mirror.md](mirror.md#what-a-pass-records-about-itself).
+- *Every stage is its own event, under the run.* `Event.ParentID`, seven stage types, the walk's
+  counters moved off the run onto `process_files`, the Scan verb emitting at last, and retention
+  counting runs rather than rows. See
+  [scanning.md](scanning.md#a-run-is-a-parent-its-stages-are-the-rows).
+- *The detail view renders what an event declares.* `Event.Stats` replaced the branch-per-type
+  chain, counters that name a row status became filter chips over one unified list, `EventItem.Kind`
+  separates a file row from an entity row, and each stage row carries its share of the run's time.
+  See [scanning.md](scanning.md#an-event-declares-its-own-counters) and the *Event counters* /
+  *Stage row* entries in [style-guide.md](style-guide.md#components).
+- *The feed shows the cascade.* Runs expand into their stages in place, a running run opens itself,
+  and a filtered feed returns stages with the run they belong to named on the row. See
+  [scanning.md](scanning.md#browsing-groups-filtering-flattens).
+- *Both long lists page.* One `usePaging` + `Pager` in `browse.tsx` serves Activity (server-paged,
+  `offset` in the query) and the Collection (client-paged, `offset` as an array index), with the
+  page in the URL and any narrowing resetting it. See *Paging* in
+  [style-guide.md](style-guide.md#components).
+- *The feed filters.* Status chips, a type select and title search, all server-side with facet
+  counts so every control states its own result. See
+  [scanning.md](scanning.md#browsing-groups-filtering-flattens).
+
+**What is left:**
+
+- **The Items page still cannot answer "what failed?"** for *files*. Activity answers it for events
+  now, but the rows on the Items page carry `error`, `last_error_at` and `last_error_transient` —
+  exactly the split needed to separate "MusicBrainz was down, this will retry" from "someone has to
+  fix this" — and nothing reads them. The transient flag is also what would keep an outage from
+  reading as hundreds of broken files. The faceted-filter shape the Activity feed now uses is the
+  obvious model.
+- **`EventItem` has no index on `status`.** The detail modal filters rows in the browser, which is
+  right for the ≤500 a single event holds, but any future "every failed file across every run" view
+  would want one.
+
+The **stage timeline** that used to be listed here is largely done as part of the modal work: each
+stage row carries a share-of-time bar (`.stagebar`), which answers "which stage ate the four hours"
+by scanning down the list. A separate segmented band would be a second way to read the same fact —
+worth doing only if the per-row bar turns out not to carry it.
+
+Smaller things this work exposed rather than solved:
+
+- **Retention is still hardcoded** — 200 runs, 500 detail rows per run, 500 entity rows per metadata
+  pass. Now that it counts runs the number means something stable, but it could be configurable, and
+  time-based retention would suit a feed better than a count.
+- **The `refresh` phase covers two operations.** It is set before `CountSupportedFiles` walks every
+  root to size the bar, so the phase spans the counting walk (with `Total` still 0) and then the
+  due-release refresh. Splitting the count into its own phase is nearly free and makes the first
+  minutes of a run legible.
+- **A credit change still has no affordance.** `collection_scan` now reports the count, but it is
+  still the only identity change with no Migrations row to click through to — the count is the only
+  way to notice one, and there is nothing to open.
+- **`RetagItems` (the interactive attach flow) opens no event**, so its Plex refresh is top-level
+  rather than parented. That is the correct reading of the data, but it means one file-writing path
+  is still invisible in the feed.
+- **Stage events are not reconciled by name.** `events.ReconcileRunning` marks orphaned `running`
+  rows failed at startup, which now includes stages; a crashed run leaves both the run and whatever
+  stage was in flight marked failed, which is right, but neither says which stage it died in.
 
 ## A failed lookup must not erase what a file is
 
@@ -90,27 +160,9 @@ The manager-authority boundary is now honoured end to end (see
   retry" from "someone has to fix this" — and nothing reads them. There is no way to ask *what
   failed?*, and Activity does not use the transient flag to keep an outage from reading as hundreds
   of broken files.
-- **Surface the scan's metadata-refresh stage in Activity.** A scan runs an inline metadata refresh
-  as its first phase (no separate event — see [scanning.md](scanning.md) / the runner's phases), and
-  the backend records it on the `scan` event in two unrendered places:
-  - `details.refresh` holds the counts (`checked`, `fetched`, `fresh`, `changed_releases`,
-    `gone_releases`, `relinked`, `files_retagged`) — render it as a small "Metadata" section on the
-    scan detail view.
-  - Detail rows now include **release rows** (`status: "refreshed"`, `phase: "refresh"`), whose
-    `path` is the release MBID and whose `tags_written` is how many of that release's files the drift
-    stage re-tagged. Render these distinctly from file rows (a release changed upstream, not a file),
-    ideally linking the MBID and grouping/omitting by `phase`. File rows keep `phase: ""`.
-    Not to be confused with the `ev.phase` already rendered in the feed row (`Activity.tsx`): that is
-    the *running job's* live stage, a different field on a different object. `FileDetail` reads
-    neither this `phase` nor any `details.*` key below.
-- **Surface the scan's collection stage in Activity.** Same shape as the refresh stage above: the
-  summary line already gains a `· N credit change(s)` clause verbatim, but `details.credit_changes`
-  (an album moved between artists upstream — see
-  [collection.md](collection.md#saying-that-it-happened)), `details.files_removed` (index rows for
-  files that are gone — [scanning.md](scanning.md#pruning-files-that-are-gone)) and `details.mirror`
-  (`artists`/`albums` mirrored from Lidarr, absent on a narrowed scan) are all unrendered. A credit
-  change is the one worth a real affordance: it is the only identity change with no Migrations row to
-  click through to, so the count is currently the *only* way to notice one.
+Surfacing the stages a run hides — the refresh stage, the collection stage, the unrendered
+`details.*` keys — is no longer a list of rendering gaps. It is one piece of work; see
+[Activity: one row per thing that happened](#activity-one-row-per-thing-that-happened).
 
 ## Roadmap / ideas
 
@@ -138,13 +190,6 @@ The manager-authority boundary is now honoured end to end (see
 - *I can add artists on a collection where Lidarr is the only manager*
   Or, at least the button is there.
   Does that make sense?
-- *Rebuilding/scanning the library is not an activity?*
-  Confirmed: `events.Begin` is called for Process, Tag files, Lidarr sync, Plex refresh, migrations,
-  mirror and health — never for `collection.Rebuild`. Deciding *which* rebuilds deserve an event is
-  the work: it runs inline as a scan's last phase and again asynchronously from the coalescing
-  `Rebuilder` after every attach.
-- *Cascading/grouped actions should maybe just create multiple activities*
-  It is not very clear what order things happen in, and what does what
 - **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
   `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID
   (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still

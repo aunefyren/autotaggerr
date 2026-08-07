@@ -9,6 +9,7 @@ import { useToast } from "../toast";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
 import { ProgressBar } from "../components/ProgressBar";
+import { phaseDrivesProgress } from "../components/phases";
 import {
   FilterChip,
   SortHeader,
@@ -409,8 +410,15 @@ export default function Artist() {
                 <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A job is running">
                   Working…
                 </Link>
-                {(status.data?.total ?? 0) > 0 && (
-                  <ProgressBar done={status.data?.done ?? 0} total={status.data?.total ?? 0} width={100} />
+                {/* Indeterminate outside the walk: these counters are files, and the
+                    stages either side of it count something else. */}
+                {(!phaseDrivesProgress(status.data?.phase) || (status.data?.total ?? 0) > 0) && (
+                  <ProgressBar
+                    done={status.data?.done ?? 0}
+                    total={status.data?.total ?? 0}
+                    width={100}
+                    indeterminate={!phaseDrivesProgress(status.data?.phase)}
+                  />
                 )}
               </span>
             )}

@@ -232,6 +232,17 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Table toolbar** (`.table-toolbar`, `TableToolbar`) — one free-text filter, the chips that narrow
   the same list, and a `first–last of total` count so "no matches" is distinguishable from "empty
   list". Sits above the table, outside its border.
+  **It stays on screen when the filter matches nothing.** Hiding the controls with the rows is how
+  someone gets stranded with no way to widen the filter that emptied the list; the empty state says
+  "no match" rather than "nothing here", which are different facts.
+  **A server-backed box debounces the fetch, not the input** (`useDebounced`, `hooks.ts`): the field
+  stays immediate, and only the query waits, so typing does not become a request per keystroke and a
+  list flickering through every intermediate answer. A client-side filter needs none of this.
+  **Chips for a few options, a `<select>` for many.** Chips are the default because a count is read
+  as a prelude to "show me which ones", but a dozen of them out-weigh the table they narrow — so a
+  long list of mutually exclusive options is a select, with the counts on the option labels so the
+  choice still states its own result. Only options that have happened are offered (plus the active
+  one, even at zero, so a filter matching nothing can still be seen and undone).
 - **Filter chip** (`.chip`, `FilterChip`) — a count that is also a control: label plus a mono number,
   `aria-pressed`, `--accent-subtle` fill when on (`--warning-bg` for drift-shaped filters). Disabled
   at zero unless already active. Counts on a browsing page should nearly always be chips — "3 partial"
@@ -241,10 +252,22 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   MusicBrainz primary type), never visual chunking. Sections that are numerous and rarely the reason
   you opened the page start closed. One sort and one filter apply across every section.
 - **Browse state lives in the URL** (`useBrowse`) — query, sort key, direction, active filter, open
-  sections, selected detail row. Written with `replace`, not `push`, so sorting a table is not a
-  history entry. The reason is concrete: opening an album and coming back must not reset the list.
-  A flag whose empty value is meaningful needs a sentinel (`closed=-` for "every section closed"),
-  because an empty string reads as unset and springs the defaults back.
+  sections, selected detail row, **page**. Written with `replace`, not `push`, so sorting a table is
+  not a history entry. The reason is concrete: opening an album and coming back must not reset the
+  list. A flag whose empty value is meaningful needs a sentinel (`closed=-` for "every section
+  closed"), because an empty string reads as unset and springs the defaults back.
+- **Paging** (`usePaging` + `Pager`, `browse.tsx`) — the page sits under the table, states
+  `from–to of total`, and **renders nothing when everything fits on one page**: a control that
+  cannot go anywhere is furniture, and the toolbar already says the count. Page one stays out of the
+  URL, so a shared link never carries state meaning "nothing was changed".
+  **Any narrowing resets to page one.** `useBrowse` drops `page` on every update except `setPage`,
+  because filtering a list to twelve rows while on page four shows an empty table with no
+  indication why — the rows are not missing, you are past the end of them.
+  **The hook is shared; the fetching deliberately is not.** A client-paged list (Collection: it
+  holds every artist and sorts them in the browser) slices what it already has, because server
+  paging would sort one page instead of the list. A server-paged one (Activity: it never holds the
+  whole table) puts the same `offset` in the query. What is shared is the *position*, and `offset`
+  is equally an array index and a query parameter.
 - **Derived summary line** — where direct manipulation replaced a mode switch, one sentence states
   what the ticked boxes add up to, in the same vocabulary as the boxes ("Wanted: any edition, whole
   album" / "Wanted: 2 editions, 5 tracks"). The empty case says what the thing *is*, not what it is
@@ -337,8 +360,45 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   a section boundary — currently password login vs. external identity providers.
 - **Toast / inline alert** — `*-bg` tint + `*-text`, left accent bar in the status color, icon +
   message + optional action. Errors state what happened and how to fix it (see Voice).
-- **Progress** — thin (4px) track `--surface-2`, fill `--accent` (or `--info` while scanning);
-  paired with `n/total` in `--font-mono`. Used for scan progress.
+- **Progress** (`ProgressBar.tsx`) — thin (4px) track `--surface-2`, fill `--accent` (or `--info`
+  while scanning); paired with `n/total` in `--font-mono`. Used for run progress.
+  **Indeterminate variant** (`.coverage-track.indeterminate`) — for a stage doing real work that
+  the counters do not describe. A run counts *files*, and only its walk moves that number; its
+  refresh, migration and collection stages count entities, so a proportional bar there sits frozen
+  at 0% or 100% for minutes and is read as a hang. The indeterminate bar drops the numbers, drops
+  `aria-valuenow` (which is what marks a progressbar indeterminate) and shows moving 45° stripes in
+  `--border`. **Stripes, not a travelling sliver**, because `prefers-reduced-motion` suppresses the
+  animation globally — a frozen sliver reads as a bar stalled at 15%, while static stripes still
+  read as "working, unquantified". Which phases drive the bar is one shared rule
+  (`phaseDrivesProgress`, `components/phases.ts`), because the Activity banner, the Activity feed
+  rows, the Dashboard widget and the Artist page all draw the same counters.
+- **Stage row** (`.stagerow`, `StageList` in `Activity.tsx`) — one stage of a run inside its detail
+  modal: status pill, stage name, the stage's *own* summary line, a share-of-time bar, duration. A
+  `<button>`, not a div, because the stages are the way into what a run actually did and must be
+  reachable without a mouse. Quiet chrome (`--surface-2` on the modal's `--surface-3`) so the numbers
+  stay the loud thing. **Each row states its own summary rather than sharing columns** — the stages
+  do not share a unit (one counts entities, one files, one albums), and a shared grid would force
+  three of them to report zero in a column that means nothing to them.
+  **Share-of-time bar** (`.stagebar`) — each stage's fraction of the run's working time, so "which
+  stage ate the four hours" is answered by scanning down rather than by comparing durations. Share
+  of the *total*, not of the longest stage: one stage at 95% should leave the others as slivers,
+  because that is the answer. Deliberately neither the coverage meter nor the progress bar — this is
+  neither "how much is on disk" nor "how far along", and reusing either language would make a claim
+  about the library.
+- **Feed disclosure** (`.twisty`, `FeedRows` in `Activity.tsx`) — expands a grouped row into what it
+  contains. **Two jobs, two hit areas**, the same rule as the master/detail split: the row opens the
+  detail modal, the twisty only expands, and `stopPropagation` keeps expanding from also opening a
+  modal over what you just revealed. A row with nothing to expand renders `.twisty-gap` instead, so
+  titles stay in a column. Children are **indented, not tinted** (`.stagerow-feed`, recessed to
+  `--bg`): they are the same feed one level down, not a different kind of thing.
+- **Event counters** (`StatRow` in `Activity.tsx`) — an event declares its own counters
+  (`models.EventStat`), and the UI renders what it finds rather than knowing each type's keys.
+  A counter naming an `EventItem` status becomes a **`FilterChip`** over the detail list below it,
+  by the same rule as everywhere else: a count is read as a prelude to "show me which ones". One
+  with no rows behind it stays a plain figure — making a dead number look pressable is worse than
+  leaving it alone. **Zero-valued counters are dropped**, because an emitter declares the same set
+  every time so its events stay comparable, which means most events carry several that did not
+  happen; "0 gone upstream · 0 re-linked · 0 failed" is noise in front of the two that did.
 - **Empty state** — centered, muted icon, one-line explanation, and a primary action. An empty
   screen is an invitation to act ("No libraries yet — add your first music folder").
 - **Modal** — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop `rgba(13,11,20,.7)`; focus-trapped.

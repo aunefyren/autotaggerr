@@ -5,6 +5,7 @@ import { useFetch } from "../hooks";
 import { Health, ScanStatus } from "../types";
 import { ErrorNote } from "../components/ui";
 import { ProgressBar } from "../components/ProgressBar";
+import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
 
 const LABELS: Record<string, string> = {
   libraries: "Libraries",
@@ -84,15 +85,28 @@ export default function Dashboard() {
                 )}
               </div>
             </div>
-            {scan.data.running && (scan.data.total ?? 0) > 0 && (
-              <div className="row" style={{ gap: 10, alignItems: "center" }}>
-                <ProgressBar done={scan.data.done ?? 0} total={scan.data.total ?? 0} width={260} />
-                <span className="mono dim" style={{ fontSize: 11 }}>
-                  {scan.data.done ?? 0} / {scan.data.total}
-                  {scan.data.current ? ` · ${scan.data.current}` : ""}
-                </span>
-              </div>
-            )}
+            {/* The counters describe the walk. In the stages either side of it they are
+                stale, so the bar says "working" without claiming a position — see
+                phaseDrivesProgress. */}
+            {scan.data.running &&
+              (() => {
+                const counted = phaseDrivesProgress(scan.data!.phase);
+                if (counted && (scan.data!.total ?? 0) <= 0) return null;
+                return (
+                  <div className="row" style={{ gap: 10, alignItems: "center" }}>
+                    <ProgressBar
+                      done={scan.data!.done ?? 0}
+                      total={scan.data!.total ?? 0}
+                      width={260}
+                      indeterminate={!counted}
+                    />
+                    <span className="mono dim" style={{ fontSize: 11 }}>
+                      {counted ? `${scan.data!.done ?? 0} / ${scan.data!.total}` : PHASE_LABELS[scan.data!.phase ?? ""] ?? "Working"}
+                      {scan.data!.current ? ` · ${scan.data!.current}` : ""}
+                    </span>
+                  </div>
+                );
+              })()}
           </div>
         ) : (
           <div className="muted">Nothing processed yet. Start a run from the Collection page.</div>

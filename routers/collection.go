@@ -442,7 +442,7 @@ func (a *API) setArtistMonitored(c *gin.Context) {
 // It is the cheapest of the four verbs and the one that makes the collection view
 // agree with what the index already knows. Discovering files on disk is Process.
 func (a *API) scanCollection(c *gin.Context) {
-	stats, err := collection.Rebuild(a.DB)
+	stats, err := collection.RecordScan(a.DB, "Collection scan", collection.RebuildScope{}, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan the library"})
 		return
@@ -475,6 +475,10 @@ func (a *API) syncLidarr(c *gin.Context) {
 		details := map[string]any{"artists": artists, "albums": groups}
 		if err != nil {
 			details["error"] = err.Error()
+		}
+		ev.Stats = []models.EventStat{
+			{Label: "Artists synced", Value: artists},
+			{Label: "Albums", Value: groups},
 		}
 		events.Finish(a.DB, ev, status, summary, details)
 	}()

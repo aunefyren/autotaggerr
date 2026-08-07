@@ -54,11 +54,30 @@ const (
 
 	// EventTypeProcess is the full pipeline (walk, metadata, tag). It was recorded
 	// as "scan" until the verbs were named apart: Scan is now the cheap re-derivation
-	// of the collection from the index, which records no event of its own. Rows
-	// written under the old value are rewritten once at startup by
-	// events.MigrateLegacyTypes.
+	// of the collection from the index. Rows written under the old value are
+	// rewritten once at startup by events.MigrateLegacyTypes.
+	//
+	// It is now a **parent**: the run's own row carries the scope and the outcome,
+	// and each stage records its own event under it (see Event.ParentID). The file
+	// counters that used to sit here belong to EventTypeProcessFiles.
 	EventTypeProcess    = "process"
 	EventTypeLegacyScan = "scan"
+	// EventTypeProcessFiles is the walk half of a processing run: the folders read,
+	// the files resolved, the tags written.
+	//
+	// Distinct from EventTypeTagFiles even though the two carry the same counters and
+	// the same per-file detail, because they belong to different verbs — Tag files
+	// walks no folders and is something a user presses on its own, while this only
+	// ever exists inside a Process run. Filing the walk under "Tag files" would put a
+	// verb in the feed that nobody invoked, and "no verb triggers another" is the
+	// property the feed exists to make visible.
+	EventTypeProcessFiles = "process_files"
+	// EventTypeCollectionScan is the Scan verb: re-deriving what the collection holds
+	// from the files already indexed. It records an event whether it was pressed on
+	// its own or run as a stage of something larger — a rebuild that moved an album
+	// between artists is news either way, and it was the one verb of the four that
+	// reported nothing at all.
+	EventTypeCollectionScan = "collection_scan"
 	// EventTypeTagFiles is the Tag files verb: rewrite indexed files from what is
 	// already known, walking nothing and fetching nothing.
 	//
@@ -515,6 +534,21 @@ type Event struct {
 	RefType    string         `json:"ref_type,omitempty"`
 	RefID      *uuid.UUID     `gorm:"type:uuid" json:"ref_id,omitempty"`
 
+	// ParentID groups a stage under the run that ran it. A processing run does six
+	// distinct things — refresh metadata, walk and tag, re-tag what drifted, tell
+	// Plex, apply identity changes, re-derive the collection — and reporting them as
+	// one row meant five of them had nowhere to put their counters, so they went into
+	// Details keys nothing rendered.
+	//
+	// Each stage is therefore its own event, and the run is the parent: it carries
+	// what only it knows (the scope, what narrowed it, the overall outcome) while the
+	// counters live on the stage that earned them. Not the same as RefType/RefID,
+	// which point at the artist or library a run was *about*.
+	//
+	// Nil means top-level — a run, or a verb invoked on its own. Every row that
+	// existed before this column is top-level, which is the correct reading of them.
+	ParentID *uuid.UUID `gorm:"type:uuid;index" json:"parent_id,omitempty"`
+
 	// Live progress for a running event, so the Activity feed can draw a bar rather
 	// than an indefinite "running". Total/Done are the bar; Phase names the current
 	// stage; Current is the thing being worked on right now (a library, an artist).
@@ -527,11 +561,63 @@ type Event struct {
 	Phase   string `json:"phase,omitempty"`
 	Current string `gorm:"column:current_item" json:"current,omitempty"`
 
+	// Stats are the counters this event wants shown, declared by the emitter rather
+	// than looked up per type by the UI.
+	//
+	// The detail view used to be one hardcoded branch per event type, reading the
+	// `Details` keys it happened to know about and dumping raw JSON for anything else
+	// — so a new event type rendered as a blob until someone wrote it a branch, and
+	// facts the emitter recorded but nobody wired up (which releases changed, how many
+	// credits moved) stayed invisible. An emitter knows which of its numbers matter;
+	// this is where it says so.
+	//
+	// Details keeps everything, including what is not worth a counter. These are the
+	// few that are.
+	Stats []EventStat `gorm:"serializer:json" json:"stats,omitempty"`
+
 	// Items is the per-file detail (EventItem rows), attached by the single-event
 	// endpoint only — never stored on this row and never loaded for the feed, where
 	// 50 events would drag thousands of rows behind them.
 	Items []EventItem `gorm:"-" json:"items,omitempty"`
+
+	// Children are the stage events this run owns, oldest first so they read as the
+	// order things happened in. Attached by the single-event endpoint, like Items.
+	Children []Event `gorm:"-" json:"children,omitempty"`
+
+	// ChildCount is how many stages this run performed, filled in by the feed so a row
+	// can offer to expand without first fetching what it would expand into.
+	ChildCount int `gorm:"-" json:"child_count,omitempty"`
+
+	// ParentTitle names the run a stage belongs to, filled in by the feed only when it
+	// is returning stage rows. A stage row in a flat list is otherwise unmoored — "Tag
+	// files changed upstream" says nothing about which run found them.
+	ParentTitle string `gorm:"-" json:"parent_title,omitempty"`
 }
+
+// EventStat is one counter on an event's detail view.
+//
+// Kind is *semantic emphasis*, not a colour: the emitter says whether a number is
+// incidental, worth noticing, or bad, and the UI decides how that looks. An emitter
+// naming a CSS variable would put the design system in the Go package that can least
+// afford to know about it.
+//
+// Filter is what turns a number into a control. A count is almost always read as a
+// prelude to "show me which ones", so a stat that names an EventItem.Status becomes a
+// chip over the detail list rather than a figure sitting above an unrelated table.
+// Empty means the number has no rows behind it and stays a plain figure.
+type EventStat struct {
+	Label  string `json:"label"`
+	Value  int    `json:"value"`
+	Kind   string `json:"kind,omitempty"`
+	Filter string `json:"filter,omitempty"`
+}
+
+// Emphasis for an EventStat. The default (empty) is an ordinary figure.
+const (
+	EventStatMuted   = "muted"   // incidental — the unchanged majority, the already-cached
+	EventStatNotable = "notable" // the thing that actually happened
+	EventStatBad     = "bad"     // failures; rendered as danger only when non-zero
+)
 
 // TagChange is one field's before/after from a tag write. Old is the file's previous
 // value (empty when the field was absent), New the value written. Stored as JSON on
@@ -557,8 +643,19 @@ type TagChange struct {
 type EventItem struct {
 	Base
 	EventID uuid.UUID `gorm:"type:uuid;index;not null" json:"event_id"`
-	Path    string    `json:"path"`
-	// Status is EventItemStatus*: what happened to this one file.
+	// Path is a file path, or — when Kind is EventItemKindEntity — the MBID of the
+	// thing the row is about.
+	Path string `json:"path"`
+	// Kind says what this row describes, so the reader does not have to infer it from
+	// the shape of the other fields. Empty means a file, which is what every row
+	// written before metadata passes recorded any was.
+	//
+	// It matters because the two render as different things and one of them would
+	// otherwise lie: a file row reports how many tags were written to it, and a
+	// metadata refresh writes none — "0 tags written" beside a release MBID reads as a
+	// claim about the user's audio, from the one verb that promises not to touch it.
+	Kind string `json:"kind,omitempty"`
+	// Status is EventItemStatus*: what happened to this one file or entity.
 	Status string `json:"status"`
 	// Phase attributes the row to a stage of the run (EventItemPhase*), so the feed
 	// can group, say, releases refreshed upstream apart from files changed by the
@@ -584,9 +681,29 @@ const (
 	// carries no tag diff — its TagsWritten is the count of the release's files the
 	// drift stage re-tagged in response.
 	EventItemStatusRefreshed = "refreshed"
+	// EventItemStatusGone is an entity MusicBrainz no longer has. It is an answer
+	// rather than a failure — the migration row was recorded at the point of the 404 —
+	// so it is kept apart from EventItemStatusError, which means "we could not look".
+	EventItemStatusGone = "gone"
+	// EventItemStatusRelinked is a release that moved to a different release-group
+	// upstream. Its own content may be unchanged; what moved is where it belongs.
+	EventItemStatusRelinked = "relinked"
+)
+
+// What an EventItem describes. Empty (EventItemKindFile) is the default and covers
+// every row written before metadata passes recorded any.
+const (
+	EventItemKindFile   = ""
+	EventItemKindEntity = "entity"
 )
 
 // Stage of a run a detail row belongs to. Empty means the ordinary scan-walk file row.
+//
+// A metadata pass attributes its rows with its own phase names (artists,
+// discographies, editions, releases — the mirror.Phase* constants) rather than these,
+// because those name the four kinds of entity a pass reads and this names a stage of a
+// processing run. Both are free-form strings on the row; the reader groups by whatever
+// it finds.
 const (
 	EventItemPhaseRefresh = "refresh"
 )

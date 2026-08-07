@@ -127,7 +127,21 @@ func (c *Checker) Run() {
 	if !allHealthy {
 		status = models.EventStatusError
 	}
+	// One counter per connection, so the detail view answers "which one" rather than
+	// leaving it to the summary line. A connection is healthy or it is not, so the
+	// value is the honest 1/0 and the emphasis carries the meaning.
+	stats := make([]models.EventStat, 0, len(names))
+	for _, name := range names {
+		stat := models.EventStat{Label: name, Value: 1}
+		if !results[name].healthy {
+			stat.Value = 0
+			stat.Kind = models.EventStatBad
+		}
+		stats = append(stats, stat)
+	}
+
 	event := events.Begin(c.db, models.EventTypeHealth, "Health check")
+	event.Stats = stats
 	events.Finish(c.db, event, status, strings.Join(parts, " · "), map[string]any{"services": states})
 	events.Prune(c.db, eventRetention)
 }

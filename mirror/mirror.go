@@ -117,6 +117,21 @@ type Summary struct {
 	Cached map[string]int `json:"cached,omitempty"`
 }
 
+// maxDetailItemsRecorded caps how many per-entity detail rows one pass stores. It
+// matches the scan runner's figure — they write the same table, and a forced
+// collection pass has as many entities as a scan has files.
+const maxDetailItemsRecorded = 500
+
+// PhaseStat is one phase's share of a pass. A pass reads four kinds of entity at very
+// different costs, and a single "1204 fetched" cannot say whether the four hours went
+// on discographies or on release payloads.
+type PhaseStat struct {
+	Checked int `json:"checked"`
+	Fetched int `json:"fetched"`
+	Fresh   int `json:"fresh"`
+	Errors  int `json:"errors"`
+}
+
 // Result is what a pass learned, handed to whoever is allowed to act on it.
 type Result struct {
 	Checked int
@@ -130,6 +145,41 @@ type Result struct {
 	ChangedReleases []string
 	GoneReleases    int
 	Relinked        int
+
+	// Phases is the per-phase breakdown, keyed by the Phase* constants.
+	Phases map[string]PhaseStat
+
+	// LastError is the most recent per-entity failure, for the event's summary. The
+	// full list is in Items; this is what a reader sees without opening them.
+	LastError string
+
+	// Items is the per-entity detail: which release changed, which entity is gone,
+	// which one failed and why. The counters say twelve releases changed upstream;
+	// these say which twelve, which is the whole handover to the verbs that write
+	// files. Bounded at maxDetailItemsRecorded; ItemsTotal is how many there would
+	// have been, so the UI can say "showing 500 of 3120".
+	Items      []models.EventItem
+	ItemsTotal int
+}
+
+// note records one entity's outcome as a detail row, keeping the count honest once the
+// cap is reached so the reader is told it is seeing a subset rather than everything.
+func (r *Result) note(item models.EventItem) {
+	r.ItemsTotal++
+	if len(r.Items) >= maxDetailItemsRecorded {
+		return
+	}
+	r.Items = append(r.Items, item)
+}
+
+// tally adds one entity's outcome to its phase's running total.
+func (r *Result) tally(phase string, mutate func(*PhaseStat)) {
+	if r.Phases == nil {
+		r.Phases = map[string]PhaseStat{}
+	}
+	stat := r.Phases[phase]
+	mutate(&stat)
+	r.Phases[phase] = stat
 }
 
 // Scope is what one pass covers. Every entry is a list of MBIDs, so narrowing to a
@@ -428,6 +478,25 @@ func (r *Runner) RunInline(ctx context.Context, scope Scope) Result {
 	return res
 }
 
+// RunStage is RunInline that records its own Activity event, owned by parent.
+//
+// A run's refresh stage used to report nothing: its counters went onto the run's event
+// as an unrendered `details.refresh` blob, and the releases it found had changed
+// upstream were reduced to a number. It is minutes of rate-limited work — often the
+// first minutes of a run — so it gets a row of its own, with the same counters, phase
+// breakdown and per-entity detail a pass the user started by hand records.
+//
+// Like RunInline it neither takes the pass guard nor publishes into the shared
+// Summary: the run already holds the file-writing guard and is reporting its own
+// progress.
+func (r *Runner) RunStage(ctx context.Context, scope Scope, parent *models.Event) Result {
+	started := time.Now()
+	ev := events.BeginChild(r.db, parent, models.EventTypeMirror, scope.Title)
+	res, cancelled := r.execute(ctx, scope, false)
+	r.record(ev, started, time.Now(), scope, res, cancelled, scope.size(), res.Checked)
+	return res
+}
+
 func (r *Runner) run(ctx context.Context, scope Scope) (Result, error) {
 	r.jobMu.Lock()
 	defer r.jobMu.Unlock()
@@ -510,7 +579,7 @@ func (r *Runner) execute(ctx context.Context, scope Scope, track bool) (Result, 
 		if track {
 			r.setStatus(func(s *Summary) { s.Phase = u.phase })
 		}
-		r.refreshOne(u.entity, u.mbid, scope.Force, scope.Cold[u.mbid], &res, track)
+		r.refreshOne(u.entity, u.phase, u.mbid, scope.Force, scope.Cold[u.mbid], &res, track)
 		if track {
 			r.setStatus(func(s *Summary) { s.Done++ })
 		}
@@ -527,11 +596,13 @@ func (r *Runner) execute(ctx context.Context, scope Scope, track bool) (Result, 
 // treats it as a fourth kind.
 const entityRelease = "release"
 
-func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, track bool) {
+func (r *Runner) refreshOne(entity, phase, mbid string, force, cold bool, res *Result, track bool) {
 	res.Checked++
+	res.tally(phase, func(p *PhaseStat) { p.Checked++ })
 
 	if !force && r.fresh(entity, mbid) {
 		res.Fresh++
+		res.tally(phase, func(p *PhaseStat) { p.Fresh++ })
 		if track {
 			r.setStatus(func(s *Summary) { s.Fresh++ })
 		}
@@ -550,6 +621,7 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 	}
 
 	var err error
+	var outcome releaseOutcome
 	switch entity {
 	case models.MBEntityArtist:
 		_, err = r.meta.GetArtist(mbid)
@@ -558,7 +630,7 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 	case models.MBEntityEditions:
 		_, err = r.meta.GetReleaseGroupReleases(mbid)
 	case entityRelease:
-		err = r.refreshRelease(mbid, res, track)
+		outcome, err = r.refreshRelease(mbid, res, track)
 		if err == nil && cold {
 			modules.MusicbrainzExtendExpiry(mbid, coldReleaseTTL)
 		}
@@ -569,6 +641,8 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 		// report. The migration row was recorded at the point of the 404.
 		logger.Log.Infof("%s no longer exists upstream, queued as a migration: %s", entity, mbid)
 		res.Fetched++
+		res.tally(phase, func(p *PhaseStat) { p.Fetched++ })
+		res.note(models.EventItem{Path: mbid, Kind: models.EventItemKindEntity, Status: models.EventItemStatusGone, Phase: phase})
 		if track {
 			r.setStatus(func(s *Summary) { s.Fetched++ })
 		}
@@ -578,6 +652,9 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 		message := fmt.Sprintf("%s %s: %s", entity, mbid, err.Error())
 		logger.Log.Warnf("metadata refresh failed for %s", message)
 		res.Errors++
+		res.LastError = message
+		res.tally(phase, func(p *PhaseStat) { p.Errors++ })
+		res.note(models.EventItem{Path: mbid, Kind: models.EventItemKindEntity, Status: models.EventItemStatusError, Phase: phase, Error: err.Error()})
 		if track {
 			r.setStatus(func(s *Summary) {
 				s.Errors++
@@ -588,9 +665,32 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 	}
 
 	res.Fetched++
+	res.tally(phase, func(p *PhaseStat) { p.Fetched++ })
+
+	// One row per entity, not one per thing that happened to it: a release can both
+	// change and move release-group, and two rows for one MBID would be read as two
+	// releases. The more consequential outcome wins — a changed payload is what the
+	// file-writing verbs act on, a re-link rewrites a row here and nothing else.
+	switch {
+	case outcome.gone:
+		res.note(models.EventItem{Path: mbid, Kind: models.EventItemKindEntity, Status: models.EventItemStatusGone, Phase: phase})
+	case outcome.changed:
+		res.note(models.EventItem{Path: mbid, Kind: models.EventItemKindEntity, Status: models.EventItemStatusRefreshed, Phase: phase})
+	case outcome.relinked:
+		res.note(models.EventItem{Path: mbid, Kind: models.EventItemKindEntity, Status: models.EventItemStatusRelinked, Phase: phase})
+	}
+
 	if track {
 		r.setStatus(func(s *Summary) { s.Fetched++ })
 	}
+}
+
+// releaseOutcome is what happened to one release, so the caller can record a single
+// detail row for it rather than one per counter it bumped.
+type releaseOutcome struct {
+	gone     bool
+	changed  bool
+	relinked bool
 }
 
 // refreshRelease force-fetches one release and records what changed about it.
@@ -599,7 +699,9 @@ func (r *Runner) refreshOne(entity, mbid string, force, cold bool, res *Result, 
 // because a content hash cannot be compared against a copy that was never re-read.
 // The *result* of that comparison is reported, not acted on — re-tagging the files
 // of a changed release is the scan's job.
-func (r *Runner) refreshRelease(mbID string, res *Result, track bool) error {
+func (r *Runner) refreshRelease(mbID string, res *Result, track bool) (releaseOutcome, error) {
+	var outcome releaseOutcome
+
 	fresh, changed, err := modules.RefreshMusicBrainzRelease(mbID)
 	if err != nil {
 		// A release that is *gone* is an answer, not a failure, and must not be
@@ -607,13 +709,14 @@ func (r *Runner) refreshRelease(mbID string, res *Result, track bool) error {
 		// point of the 404.
 		if _, _, gone := modules.GoneEntity(err); gone {
 			res.GoneReleases++
+			outcome.gone = true
 			if track {
 				r.setStatus(func(s *Summary) { s.GoneReleases++ })
 			}
 			logger.Log.Infof("release no longer exists upstream, queued as a migration: %s", mbID)
-			return nil
+			return outcome, nil
 		}
-		return err
+		return outcome, err
 	}
 
 	// A release can move between release-groups without any of its own content
@@ -624,6 +727,7 @@ func (r *Runner) refreshRelease(mbID string, res *Result, track bool) error {
 			logger.Log.Warnf("failed to re-link release %s: %s", mbID, relinkErr.Error())
 		} else if relinked {
 			res.Relinked++
+			outcome.relinked = true
 			if track {
 				r.setStatus(func(s *Summary) { s.Relinked++ })
 			}
@@ -632,12 +736,13 @@ func (r *Runner) refreshRelease(mbID string, res *Result, track bool) error {
 
 	if changed {
 		res.ChangedReleases = append(res.ChangedReleases, mbID)
+		outcome.changed = true
 		if track {
 			r.setStatus(func(s *Summary) { s.ChangedReleases++ })
 		}
 		logger.Log.Infof("release changed upstream: %s", mbID)
 	}
-	return nil
+	return outcome, nil
 }
 
 func (r *Runner) fresh(entity, mbid string) bool {
@@ -695,7 +800,8 @@ func (r *Runner) setStatus(mutate func(*Summary)) {
 	mutate(&r.summary)
 }
 
-// finish closes out a pass, recording the Activity event and the final summary.
+// finish closes out a standalone pass: the shared Summary goes idle, and the event is
+// written.
 func (r *Runner) finish(ev *models.Event, started time.Time, scope Scope, res Result, cancelled bool) {
 	finished := time.Now()
 
@@ -706,14 +812,24 @@ func (r *Runner) finish(ev *models.Event, started time.Time, scope Scope, res Re
 	summary := r.summary
 	r.statusMu.Unlock()
 
+	r.record(ev, started, finished, scope, res, cancelled, summary.Total, summary.Done)
+}
+
+// record writes a pass's outcome onto its event.
+//
+// Split from finish because a pass running as a **stage of a larger run** has no
+// shared Summary to read its totals from, and must not touch the one there is: the
+// run is publishing its own progress, and a stage that reset the metadata runner's
+// status would make /mirror/status describe a pass nobody started.
+func (r *Runner) record(ev *models.Event, started, finished time.Time, scope Scope, res Result, cancelled bool, total, done int) {
 	line := summaryLine(res, finished.Sub(started))
 	if cancelled {
 		line = "stopped early — " + line
 	}
 
 	details := map[string]any{
-		"total":            summary.Total,
-		"done":             summary.Done,
+		"total":            total,
+		"done":             done,
 		"fetched":          res.Fetched,
 		"fresh":            res.Fresh,
 		"errors":           res.Errors,
@@ -721,18 +837,70 @@ func (r *Runner) finish(ev *models.Event, started time.Time, scope Scope, res Re
 		"gone_releases":    res.GoneReleases,
 		"relinked":         res.Relinked,
 		"cancelled":        cancelled,
+		// Which phase the time went on. A pass reads four kinds of entity at very
+		// different costs, and one total cannot say whether the hours were
+		// discographies or release payloads.
+		"phases": phaseDetails(res),
+		// The pair the reader needs to tell "500 rows" from "500 of 3120".
+		"detail": map[string]any{
+			"recorded": len(res.Items),
+			"total":    res.ItemsTotal,
+			"limit":    maxDetailItemsRecorded,
+		},
 	}
-	if summary.LastError != "" {
-		details["last_error"] = summary.LastError
+	if res.LastError != "" {
+		details["last_error"] = res.LastError
 	}
 	for k, v := range scope.Detail {
 		details[k] = v
 	}
 
+	// Fetched and Fresh are the pair worth reading, so they lead. Changed upstream is
+	// the one the file-writing verbs act on, which is what makes it notable rather
+	// than just another figure.
+	ev.Stats = []models.EventStat{
+		{Label: "Entities checked", Value: res.Checked},
+		{Label: "Fetched", Value: res.Fetched},
+		{Label: "Already cached", Value: res.Fresh, Kind: models.EventStatMuted},
+		{Label: "Changed upstream", Value: len(res.ChangedReleases), Kind: models.EventStatNotable, Filter: models.EventItemStatusRefreshed},
+		{Label: "Gone upstream", Value: res.GoneReleases, Filter: models.EventItemStatusGone},
+		{Label: "Re-linked", Value: res.Relinked, Filter: models.EventItemStatusRelinked},
+		{Label: "Failed", Value: res.Errors, Kind: models.EventStatBad, Filter: models.EventItemStatusError},
+	}
+
+	// The per-entity rows, written in one batch after the pass rather than as each
+	// entity is read — a pass would otherwise interleave single inserts with the
+	// rate-limited fetches it is pacing. Before Finish, so a reader that sees the
+	// event closed finds its detail already there.
+	events.AddItems(r.db, ev, res.Items)
+
 	// Errors are per-entity and the pass carried on regardless, so a pass that hit
 	// some is still an "ok" outcome with a count — not a failed job.
 	events.Finish(r.db, ev, models.EventStatusOK, line, details)
 	events.Prune(r.db, eventRetention)
+}
+
+// phaseDetails renders the per-phase breakdown for the event payload, in the order a
+// pass walks them rather than a map's arbitrary one — the order is itself information
+// (identity before catalogs before payloads), and a reader should not have to know it
+// to lay the section out.
+func phaseDetails(res Result) []map[string]any {
+	order := []string{PhaseArtists, PhaseDiscographies, PhaseEditions, PhaseReleases}
+	out := make([]map[string]any, 0, len(order))
+	for _, phase := range order {
+		stat, ok := res.Phases[phase]
+		if !ok || stat.Checked == 0 {
+			continue
+		}
+		out = append(out, map[string]any{
+			"phase":   phase,
+			"checked": stat.Checked,
+			"fetched": stat.Fetched,
+			"fresh":   stat.Fresh,
+			"errors":  stat.Errors,
+		})
+	}
+	return out
 }
 
 func summaryLine(res Result, took time.Duration) string {

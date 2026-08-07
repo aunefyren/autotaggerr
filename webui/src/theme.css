@@ -174,6 +174,67 @@ table.data td .path { font-family: var(--font-mono); color: var(--text); font-si
 .coverage-fill.full { background: var(--diff-add-text); }
 .coverage-fill.half { background: var(--warning); }
 
+/* Indeterminate progress — a stage whose work is real but counted in a different unit
+   than the bar (a run's metadata, migration and collection stages count entities, the
+   bar counts files). Stripes rather than a travelling sliver so that with animation
+   suppressed it still reads as "working, unquantified" instead of as a bar stalled at
+   15%. The keyframe distance is the stripes' horizontal period (10px / sin 45°), which
+   is what makes the loop seamless. */
+.coverage-track.indeterminate {
+  background-image: repeating-linear-gradient(
+    45deg,
+    var(--border) 0, var(--border) 5px,
+    transparent 5px, transparent 10px
+  );
+  animation: progress-stripes 700ms linear infinite;
+}
+@keyframes progress-stripes {
+  from { background-position: 0 0; }
+  to { background-position: 14.142px 0; }
+}
+
+/* Stage row — one stage of a run inside its detail modal. A button, not a div: the
+   stages are the way into what a run actually did, so they must be reachable without
+   a mouse. Quiet chrome (surface-2 on the modal's surface-3) so the run's own numbers
+   stay the loud thing. */
+.stagerow {
+  display: flex; align-items: center; gap: var(--space-5); width: 100%;
+  padding: var(--space-3) var(--space-5); text-align: left;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--text); font: inherit; cursor: pointer;
+  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+}
+.stagerow:hover { border-color: var(--border-strong); background: var(--surface-3); }
+/* A stage's share of the run's working time. Deliberately not the coverage meter or the
+   progress bar: this is neither "how much is on disk" nor "how far along", it is where
+   the time went, and reusing either language would make a claim about the library. */
+.stagebar {
+  display: block; flex: none; width: 56px; height: 3px; border-radius: var(--radius-pill);
+  background: var(--surface-1); overflow: hidden;
+}
+.stagebar i { display: block; height: 100%; background: var(--border-strong); }
+
+/* Feed disclosure — expands a run to the stages it performed. Its own hit area, because
+   the row it sits in opens the detail modal and expanding must not also do that. */
+.twisty {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 16px; height: 28px; flex: none; padding: 0;
+  background: none; border: none; border-radius: var(--radius-sm);
+  color: var(--text-dim); font-size: 10px; line-height: 1; cursor: pointer;
+}
+.twisty:hover { color: var(--text); background: var(--surface-2); }
+.twisty:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+/* Keeps titles in a column when a row has no stages to expand. */
+.twisty-gap { display: inline-block; width: 16px; flex: none; }
+
+/* A stage inside the feed, indented under its run. Recessed rather than tinted: it is
+   the same feed, one level down, not a different kind of thing. */
+.stagerow-feed > td { background: var(--bg); }
+.stagerow-feed:hover > td { background: var(--surface-2); }
+.stagerow:focus-visible {
+  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
 /* Disk marker — the glyph that keeps colour from being the only signal. */
 .disk-marker { font-size: 12px; line-height: 1; flex: none; }
 .disk-marker.full { color: var(--diff-add-text); }
@@ -326,6 +387,14 @@ table.data tbody tr.group-row:hover td { background: var(--surface-2); }
 .diffv.rem { background: var(--diff-remove-bg); color: var(--diff-remove-text); text-decoration: line-through; text-decoration-color: rgba(240, 119, 111, 0.6); }
 .diffv.add { background: var(--diff-add-bg); color: var(--diff-add-text); }
 .diffv.empty { color: var(--text-dim); font-style: italic; }
+
+/* Pager — sits under the table it pages. Quiet: it is navigation, not the data, and
+   it is not rendered at all when everything fits on one page. */
+.pager {
+  display: flex; align-items: center; gap: var(--space-5);
+  padding: var(--space-3) 0;
+}
+.pager > :last-child { margin-left: auto; }
 
 /* Empty state */
 .empty { text-align: center; padding: 48px 16px; color: var(--text-muted); display: flex; flex-direction: column; gap: 10px; align-items: center; }

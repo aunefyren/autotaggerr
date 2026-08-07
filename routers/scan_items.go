@@ -221,7 +221,9 @@ func (a *API) scanArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	stats, err := collection.RebuildArtist(a.DB, artist.MBID)
+	stats, err := collection.RecordScan(a.DB, "Collection scan for "+artist.Name,
+		collection.RebuildScope{ArtistMBID: artist.MBID},
+		map[string]any{"artist": artist.Name, "artist_mb_id": artist.MBID})
 	if err != nil {
 		logger.Log.Error("failed to scan artist. error: " + err.Error())
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan this artist"})

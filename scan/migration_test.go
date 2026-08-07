@@ -42,7 +42,7 @@ func TestApplyMigrationsDrainsTheQueue(t *testing.T) {
 	t.Cleanup(func() { files.ConfigFile = original })
 
 	runner := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
-	res := runner.applyMigrations()
+	res := runner.applyMigrations(nil)
 
 	if res.Applied != 1 || res.Files != 1 {
 		t.Errorf("result = %+v, want 1 applied / 1 file remapped", res)
@@ -66,7 +66,7 @@ func TestApplyMigrationsQuietWhenNothingPending(t *testing.T) {
 	}
 
 	runner := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
-	res := runner.applyMigrations()
+	res := runner.applyMigrations(nil)
 	if res.Applied != 0 || res.Pending != 0 || res.Failed != 0 {
 		t.Errorf("result = %+v, want an empty result", res)
 	}

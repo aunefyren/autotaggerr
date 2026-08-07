@@ -26,14 +26,23 @@ export interface Browse {
   /** Arbitrary named flags kept in the URL alongside the rest (filters, open sections). */
   flag: (name: string) => string | null;
   setFlag: (name: string, value: string | null) => void;
+  /** Which page of the result is being shown, 1-based. See {@link usePaging}. */
+  page: number;
+  /** The one update that does *not* reset paging, because it is the paging. */
+  setPage: (page: number) => void;
 }
 
 export function useBrowse(defaultSort: string, defaultDir: SortDir = "asc"): Browse {
   const [params, setParams] = useSearchParams();
 
-  const update = (mutate: (next: URLSearchParams) => void) => {
+  const update = (mutate: (next: URLSearchParams) => void, keepPage = false) => {
     const next = new URLSearchParams(params);
     mutate(next);
+    // Any change to *what* or *how* you are looking resets to the first page.
+    // Filtering a list down to twelve rows while sitting on page four shows an empty
+    // table and no indication why — the rows are not missing, you are past the end of
+    // them. Only setPage itself opts out.
+    if (!keepPage) next.delete("page");
     // Replace rather than push: sorting a table is not a place in history to go
     // back to, and it would take a dozen Back presses to leave the page.
     setParams(next, { replace: true });
@@ -71,7 +80,94 @@ export function useBrowse(defaultSort: string, defaultDir: SortDir = "asc"): Bro
         if (value === null) next.delete(name);
         else next.set(name, value);
       }),
+    page: Math.max(1, parseInt(params.get("page") ?? "1", 10) || 1),
+    setPage: (page) =>
+      update((next) => {
+        // Page one is the default, so it stays out of the URL — a shared link should
+        // not carry state that means "nothing was changed".
+        if (page <= 1) next.delete("page");
+        else next.set("page", String(page));
+      }, true),
   };
+}
+
+/**
+ * Which slice of a list is on screen, and the arithmetic for saying so.
+ *
+ * Paging is shared, but **fetching is not, deliberately**. The Collection holds every
+ * artist and sorts and filters them in the browser, so its pages are slices of what is
+ * already there — server paging would sort one page rather than the list. Activity is
+ * the other way round: it never holds the whole table, so its pages are `offset`/`limit`
+ * on the API. One hook covers both because what they share is the *position*, not where
+ * the rows come from: `offset` is equally an array index and a query parameter.
+ *
+ * The page number is clamped rather than corrected in place. A poll that shrinks the
+ * total while you sit on the last page should show you the new last page, not rewrite
+ * the URL underneath you mid-render.
+ */
+export interface Paging {
+  page: number;
+  pageSize: number;
+  /** 0-based: an array index for a client-paged list, an API offset for a server-paged one. */
+  offset: number;
+  pageCount: number;
+  total: number;
+  /** 1-based bounds of what is on screen, for a "31–60 of 312" count. */
+  from: number;
+  to: number;
+  setPage: (page: number) => void;
+}
+
+export function usePaging(browse: Browse, total: number, pageSize = 50): Paging {
+  const pageCount = Math.max(1, Math.ceil(total / pageSize));
+  const page = Math.min(Math.max(1, browse.page), pageCount);
+  const offset = (page - 1) * pageSize;
+  return {
+    page,
+    pageSize,
+    offset,
+    pageCount,
+    total,
+    from: total === 0 ? 0 : offset + 1,
+    to: Math.min(offset + pageSize, total),
+    setPage: browse.setPage,
+  };
+}
+
+/**
+ * The control for moving between pages, sitting under the table it pages.
+ *
+ * It renders nothing at all when everything fits on one page. A pager that cannot go
+ * anywhere is furniture, and the range it would state ("1–12 of 12") is already the
+ * toolbar's job.
+ */
+export function Pager({ paging, unit = "rows" }: { paging: Paging; unit?: string }) {
+  if (paging.pageCount <= 1) return null;
+
+  return (
+    <nav className="pager" aria-label={`${unit} pages`}>
+      <button
+        className="btn btn-secondary btn-sm"
+        onClick={() => paging.setPage(paging.page - 1)}
+        disabled={paging.page <= 1}
+      >
+        Previous
+      </button>
+      <span className="dim mono" style={{ fontSize: 11 }}>
+        {paging.from}–{paging.to} of {paging.total}
+      </span>
+      <button
+        className="btn btn-secondary btn-sm"
+        onClick={() => paging.setPage(paging.page + 1)}
+        disabled={paging.page >= paging.pageCount}
+      >
+        Next
+      </button>
+      <span className="dim" style={{ fontSize: 11 }}>
+        Page {paging.page} of {paging.pageCount}
+      </span>
+    </nav>
+  );
 }
 
 /**

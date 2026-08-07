@@ -267,12 +267,33 @@ export interface TagChange {
 }
 
 /** One file's outcome inside an event: what happened, and exactly what changed. */
+/**
+ * One counter an event declares about itself. The emitter says which of its numbers
+ * matter and what each selects; the UI decides how that looks.
+ *
+ * `kind` is semantic emphasis, never a colour — an emitter naming a CSS variable would
+ * put the design system in the Go package least able to know about it.
+ * `filter` names the EventItem.status this counter selects, which is what turns the
+ * number into a control over the list below it.
+ */
+export interface EventStat {
+  label: string;
+  value: number;
+  kind?: "muted" | "notable" | "bad";
+  filter?: string;
+}
+
 export interface EventItem {
   id: string;
   event_id: string;
+  /** A file path, or — when kind is "entity" — the MBID of the thing this row is about. */
   path: string;
-  /** "changed" | "error" */
+  /** "" (a file) | "entity". Says which shape the row renders as. */
+  kind?: string;
+  /** "changed" | "error" | "refreshed" | "gone" | "relinked" */
   status: string;
+  /** Which stage of the event produced this row; groups release rows apart from files. */
+  phase?: string;
   tags_written: number;
   error?: string;
   changes?: TagChange[];
@@ -294,8 +315,24 @@ export interface Event {
   done?: number;
   phase?: string;
   current?: string;
+  /** The counters this event wants shown, declared by whatever emitted it. */
+  stats?: EventStat[];
   /** Per-file detail. Only the single-event endpoint returns it, never the feed. */
   items?: EventItem[];
+  /**
+   * Set on a stage event: the run that performed it. The feed lists runs only, so a
+   * row with this set is reached by opening its parent.
+   */
+  parent_id?: string;
+  /**
+   * The stages this run performed, oldest first — the order things happened in.
+   * Only the single-event endpoint returns them.
+   */
+  children?: Event[];
+  /** How many stages this run has, so a feed row can offer to expand without fetching. */
+  child_count?: number;
+  /** The run a stage belongs to. Only set on stage rows returned by a filtered feed. */
+  parent_title?: string;
 }
 
 export interface EventsPage {
@@ -303,6 +340,15 @@ export interface EventsPage {
   limit: number;
   offset: number;
   events: Event[];
+  /**
+   * How many events each filter option would return. Each facet is computed with the
+   * *other* filters applied but not its own, so the type list stays a list of what you
+   * could switch to rather than collapsing to the one already chosen.
+   */
+  facets?: {
+    type?: Record<string, number>;
+    status?: Record<string, number>;
+  };
 }
 
 export interface CollectionArtist {

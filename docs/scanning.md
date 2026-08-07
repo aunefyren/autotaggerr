@@ -337,8 +337,93 @@ to also write a `details.duration` string; that was the only reason those two ha
 other five did not, and it has been removed rather than copied into the rest. A running event counts
 up in the same format as the banner's elapsed counter; an event with no finish stamp reads `—`.
 
-Emitted today: `process`, `tag_files`, `lidarr_sync`, `mb_mirror`, `mb_migration`, `plex_refresh`,
-`health_check`.
+Emitted today: `process`, `process_files`, `tag_files`, `collection_scan`, `lidarr_sync`,
+`mb_mirror`, `mb_migration`, `plex_refresh`, `health_check`.
+
+### A run is a parent, its stages are the rows
+
+A processing run does six distinct things, and for a long time reported as one row. That row was
+the *walk's* counters — processed / changed / tags written — so a run read as a tagging event with
+the other five stages missing, and each of them had nowhere to put what it found: they went into
+`details.*` keys nothing rendered.
+
+Each stage now records **its own event**, linked to the run by `Event.ParentID`:
+
+| Stage | Event type | Recorded |
+| --- | --- | --- |
+| refresh (`mirror.RunStage`) | `mb_mirror` | always |
+| the walk | `process_files` | always |
+| drift re-tag | `tag_files` | when a release changed upstream |
+| Plex | `plex_refresh` | when an album was touched and Plex is configured |
+| identity changes | `mb_migration` | **only when something was found** |
+| collection scan | `collection_scan` | always |
+| manager mirror | `lidarr_sync` | full-library runs only |
+
+The run's own row keeps what only it knows — the scope, what narrowed it, the roll-up summary and
+the overall outcome — and **carries no detail rows at all**. Every row belongs to the stage that
+produced it, so opening a run does not show the same file twice.
+
+Three things are load-bearing here:
+
+- **The walk is `process_files`, not `tag_files`.** The two carry identical counters and identical
+  per-file detail, but they belong to different verbs: Tag files walks no folders and is something a
+  user presses on its own. Filing the walk under it would put a verb in the feed that nobody
+  invoked, which is exactly what [no verb triggers another](#the-four-verbs-and-why-none-of-them-cascades)
+  exists to prevent.
+- **An empty migration queue records nothing.** Draining it is one indexed query; a row per run
+  saying "0 applied" would bury the runs that actually re-pointed a record.
+- **`plex_refresh` was always its own event** — the only stage that was — but it was not linked to
+  the run that produced it, so it appeared in the feed beside a run with nothing saying they were
+  the same work.
+
+The **Scan verb** (`collection.Rebuild`) records `collection_scan` whether it was pressed on its own
+or ran as a stage. It answers its HTTP caller inline, which is why it recorded nothing for so long —
+but being fast is not the same as being uninteresting, and a pass that can move an album between
+artists left no trace. `collection.RecordScan` is the shared emitter, so the artist and
+collection-wide scopes cannot drift into two different summaries.
+
+**Retention counts runs, not rows.** `events.Prune` keeps the newest 200 **parentless** events and
+cascades their stages and every detail row belonging to either. Counting rows would cut history by
+however many stages the runs happened to have — and worse, several stages call `Prune` as they
+finish, so a long run would have deleted its own earlier stages out from under itself.
+
+### Browsing groups; filtering flattens
+
+`GET /events` lists **runs** by default, and each row carries `child_count` so it can offer to
+expand into its stages without first fetching them. `GET /events/:id` attaches the stages as
+`children`, oldest first.
+
+A **filter is a different question**. Asking for every metadata refresh means every one, including
+those that ran inside a run, so any `type`, `status` or `q` filter includes stages — a filter that
+silently skipped them would answer something narrower than it was asked. Stage rows returned that
+way carry `parent_title`, because "Metadata refresh" in a flat list says nothing about which run
+found it. `nested=1` / `nested=0` overrides the inference in either direction, so an API caller is
+never stuck with it.
+
+`q` matches the event **title**, which is where the useful nouns are — an artist, a library, the
+scope that narrowed a run. It compares `LOWER(title)` against a lowercased needle rather than
+relying on `LIKE`'s collation, because SQLite folds ASCII case and Postgres does not, and the same
+search finding different things per database is the kind of bug nobody reports.
+
+**Facets** ride the response (`facets.type`, `facets.status`): how many events each filter option
+would return, so a control can state its own result before it is pressed and disable itself when
+there is nothing behind it. Two rules make the numbers mean something:
+
+- **Each facet excludes its own filter**, so the type list stays a list of what you could switch to
+  rather than collapsing to the one already chosen the moment you pick it.
+- **Counts are over the flattened set**, stages included, because clicking any of them flattens. A
+  chip has one job — predict its own result — and a count taken over runs only would promise 2 and
+  deliver 15. It does mean the chips can sum to more than the unfiltered feed shows, which is the
+  honest reading: the feed is grouped until you ask it something.
+
+Both annotations are filled by two grouped queries per page (`annotateFeed`), not a lookup per row:
+the alternative is fifty queries to draw one screen, for counts that exist only to avoid a fetch.
+
+In the UI, stages are **indented under their run and load on expand**. Fifty runs would otherwise
+drag several hundred stage rows behind them to draw a screen where most stay collapsed. A *running*
+run auto-expands, since "what is it doing right now" is the one time that is the reason the page is
+open — and its stage list reloads when the run changes phase, which is precisely when a new stage
+exists.
 
 **`drift_sync` is a read-only legacy type.** The Tag files verb recorded its events under that name
 until the verbs were named apart, which made a Tag files run read as "Metadata sync" — the name of
@@ -385,6 +470,54 @@ called before `Finish` so its `Save` keeps the values rather than racing them.
   phase + current + elapsed in the banner and inline on running rows; the **Dashboard** and **Artist**
   run widgets show the bar too.
 
+#### The bar belongs to one phase
+
+`Total`/`Done` on a processing run count **files**, and only the `scanning` phase moves them. The
+other five stages do real work in a different unit — `refresh` counts releases against the
+MusicBrainz rate limit, `collection` re-derives the collection and mirrors the manager — while the
+file counters sit wherever the walk left them. So the bar read `0 / 12000` for the minutes before
+the walk and `12000 / 12000` for the minutes after it, and both were reported as a hang.
+
+The counters are not wrong, they are *someone else's*. The UI therefore draws an
+[indeterminate bar](style-guide.md#components) and drops the numbers whenever the running phase is
+not the one the counters belong to; the phase label is the honest half and stays either way. One
+shared predicate (`phaseDrivesProgress`, `webui/src/components/phases.ts`) decides, because four
+surfaces draw these same counters. A metadata pass is unaffected — it counts entities and every one
+of its phases advances them.
+
+Worth knowing when reading a run's first minutes: the `refresh` phase is set *before*
+`CountSupportedFiles` walks every root to size the bar, so that phase covers two invisible
+operations — the counting walk (during which `Total` is still 0) and then the due-release refresh.
+Splitting them apart is [wip](wip.md).
+
+### An event declares its own counters
+
+`Event.Stats` is a list of `models.EventStat` — `label`, `value`, a semantic `kind`, and an
+optional `filter`. The emitter writes it; the UI renders whatever it finds.
+
+This replaced a detail view that was one hardcoded branch per event type, reading the `Details`
+keys it happened to know about and dumping raw JSON for anything else. That shape had two costs: a
+new event type rendered as a blob until someone wrote it a branch (which is exactly what happened
+to all seven stage types), and facts an emitter recorded but nobody wired up — which releases
+changed, how many credits moved — stayed invisible indefinitely.
+
+Three rules keep it honest:
+
+- **`kind` is emphasis, not colour** (`muted` / `notable` / `bad`). An emitter naming a CSS variable
+  would put the design system in the Go package least able to know about it. `bad` only renders as
+  danger when the value is non-zero: a red `0` claims a problem that is not there.
+- **`filter` names an `EventItem.Status`**, which is what turns the number into a chip over the
+  detail list. A count is almost always read as a prelude to *show me which ones*, and these numbers
+  used to sit above a list they had no relationship with. A stat with no rows behind it stays a
+  plain figure — making a dead number look pressable is worse than leaving it alone.
+- **A roll-up carries no filter.** The run's own counters span stages that do not share a unit, so
+  there is no single list they select from; the run holds no detail rows at all. The stages are
+  where a number becomes a control.
+
+`Details` still holds everything, including what is not worth a counter, and the detail view keeps a
+collapsed *Raw details* block over it — the stats are what an emitter chose to surface, and the
+times those two differ is exactly when the difference is the bug.
+
 ### Per-file detail
 
 Counters say twelve files changed; they never say *which* twelve. `models.EventItem` is one row per
@@ -411,6 +544,13 @@ interesting file within an event — path, outcome, tags written, error, and the
   per-field success to report. That is also why an MP3's `tags_written` can exceed its change count —
   a changed `DISCNUMBER` rewrites its paired `DISCTOTAL`.
 - `GET /events/:id` attaches the rows as `items`; the feed never loads them.
+
+**A row says what it describes.** `EventItem.Kind` is `""` (a file) or `entity` (an MBID), because
+the two render as different things and one of them would otherwise lie: a file row reports how many
+tags were written to it, and a metadata refresh writes none — "0 tags written" beside a release MBID
+reads as a claim about the user's audio, from the one verb that promises not to touch it. Making it
+a field on the row rather than a component boundary is what lets one list render an event that
+carries both kinds, grouped by `Phase`.
 
 Both processing runs and drift syncs record detail. The UI renders it with the same old → new diff language as
 the file-tags view (`.diff` / `.diffrow`), so it is learned once.

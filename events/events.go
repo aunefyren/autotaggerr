@@ -20,13 +20,32 @@ import (
 // polls the job's own counters on this tick.
 const progressFlushInterval = 2 * time.Second
 
-// Begin creates a running event and returns it. The caller finishes it with Finish.
+// Begin creates a running top-level event and returns it. The caller finishes it
+// with Finish.
 func Begin(db *gorm.DB, evType, title string) *models.Event {
+	return begin(db, nil, evType, title)
+}
+
+// BeginChild creates a running event owned by parent — one stage of a run.
+//
+// A nil parent, or one that was never persisted, yields a top-level event rather
+// than an error: every emitter here is best-effort by contract, and a stage that
+// silently vanished because its parent could not be written would be worse than one
+// that reports itself on its own.
+func BeginChild(db *gorm.DB, parent *models.Event, evType, title string) *models.Event {
+	return begin(db, parent, evType, title)
+}
+
+func begin(db *gorm.DB, parent *models.Event, evType, title string) *models.Event {
 	ev := &models.Event{
 		Type:      evType,
 		Status:    models.EventStatusRunning,
 		StartedAt: time.Now(),
 		Title:     title,
+	}
+	if parent != nil && parent.ID != uuid.Nil {
+		id := parent.ID
+		ev.ParentID = &id
 	}
 	if db == nil {
 		return ev
@@ -35,6 +54,19 @@ func Begin(db *gorm.DB, evType, title string) *models.Event {
 		logger.Log.Warnf("failed to record event: %s", err.Error())
 	}
 	return ev
+}
+
+// Children loads the stage events belonging to one run, oldest first so they read as
+// the order things happened in.
+func Children(db *gorm.DB, parentID uuid.UUID) ([]models.Event, error) {
+	if db == nil || parentID == uuid.Nil {
+		return nil, nil
+	}
+	var rows []models.Event
+	if err := db.Where("parent_id = ?", parentID).Order("started_at asc").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // Progress is one live snapshot of a running job. Total/Done drive the feed's
@@ -205,8 +237,14 @@ func MigrateLegacyTypes(db *gorm.DB) {
 	}
 }
 
-// Prune keeps only the newest `keep` events, deleting the rest along with their
-// detail rows. Retention runs after each recorded action so the tables stay bounded.
+// Prune keeps only the newest `keep` **runs**, deleting the rest along with their
+// stage events and every detail row belonging to either. Retention runs after each
+// recorded action so the tables stay bounded.
+//
+// It counts top-level events, not rows. A run emits one row per stage it performed,
+// so counting rows would silently cut history by however many stages the runs
+// happened to have — and worse, would let a long run prune its own earlier stages
+// out from under itself, since several stages call this as they finish.
 //
 // The child rows are deleted explicitly: nothing in the schema cascades, so without
 // this the events table would stay capped while event_items grew without limit —
@@ -216,13 +254,23 @@ func Prune(db *gorm.DB, keep int) {
 		return
 	}
 	var ids []uuid.UUID
-	if err := db.Model(&models.Event{}).Order("started_at desc").Offset(keep).Pluck("id", &ids).Error; err != nil {
+	if err := db.Model(&models.Event{}).Where("parent_id IS NULL").
+		Order("started_at desc").Offset(keep).Pluck("id", &ids).Error; err != nil {
 		logger.Log.Warnf("failed to enumerate events for pruning: %s", err.Error())
 		return
 	}
 	if len(ids) == 0 {
 		return
 	}
+
+	// A dropped run takes its stages with it. Collected before the delete, because
+	// afterwards there is nothing left to find them by.
+	var childIDs []uuid.UUID
+	if err := db.Model(&models.Event{}).Where("parent_id IN ?", ids).Pluck("id", &childIDs).Error; err != nil {
+		logger.Log.Warnf("failed to enumerate stage events for pruning: %s", err.Error())
+	}
+	ids = append(ids, childIDs...)
+
 	if err := db.Where("event_id IN ?", ids).Delete(&models.EventItem{}).Error; err != nil {
 		logger.Log.Warnf("failed to prune event detail rows: %s", err.Error())
 	}

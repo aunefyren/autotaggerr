@@ -296,6 +296,38 @@ A pass records an Activity event (`mb_mirror`) and reports live status through
 actually cost a rate-limit slot. **A healthy steady state is almost all `Fresh`; a pass that is
 mostly `Fetched` means the TTLs are shorter than the schedule.**
 
+### What a pass records about itself
+
+Counters say twelve releases changed upstream; they never say *which* twelve. Since that list is
+the entire handover to the verbs that write files, a pass records two things beyond its totals:
+
+- **`details.phases`** — the same counters split per phase (`checked` / `fetched` / `fresh` /
+  `errors`), in the order a pass walks them. The four entity kinds cost wildly different amounts,
+  and one total cannot say whether four hours went on discographies or on release payloads. A phase
+  with nothing in scope is omitted rather than written as a zero, which would read as "we looked and
+  found none".
+- **`models.EventItem` rows**, one per entity worth naming: a release whose payload `changed`
+  upstream, one that is `gone`, one that was `relinked` to a different release-group, and any entity
+  the pass could not read (`error`, with the message). `Path` is the MBID and `Phase` is the
+  mirror's own phase name, so a reader can group release payloads apart from discographies.
+
+**One row per entity, not one per counter it bumped.** A release can both change and move
+release-group; two rows for one MBID would be read as two releases, so the more consequential
+outcome wins — a changed payload is what the file-writing verbs act on, a re-link rewrites a row
+here and nothing else.
+
+Rows are bounded at 500 (`maxDetailItemsRecorded`, matching the scan runner — they write the same
+table), and `details.detail` carries `recorded` / `total` / `limit` so the UI can say "showing 500
+of 3120" rather than implying 500 was all of it. They are written in one batch by `events.AddItems`
+after the pass: a pass would otherwise interleave single inserts with the rate-limited fetches it is
+pacing.
+
+`RunStage` is `RunInline` plus an event of its own, owned by the run that called it — that is how a
+processing run's refresh stage reports. It neither takes the pass guard nor publishes into the
+shared `Summary`, because the run already holds the file-writing guard and is reporting its own
+progress; a stage that reset the metadata runner's status would make `/mirror/status` describe a
+pass nobody started. See [scanning.md](scanning.md#a-run-is-a-parent-its-stages-are-the-rows).
+
 ## Configuration
 
 | Key | Default | Meaning |
