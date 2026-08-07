@@ -139,6 +139,12 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrMaxGenres < 1 {
+		// set new value (how many genres are written to GENRE)
+		ConfigFile.AutotaggerrMaxGenres = models.DefaultMaxGenres
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrLibraries == nil {
 		// Set new value
 		ConfigFile.AutotaggerrLibraries = []string{}
@@ -194,6 +200,7 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrCustomArtistDelimiterCommas = true
 	ConfigFile.AutotaggerrIgnoreRedundantContributingArtists = true
 	ConfigFile.AutotaggerrRemoveValues = false
+	ConfigFile.AutotaggerrMaxGenres = models.DefaultMaxGenres
 
 	// The MusicBrainz mirror runs nightly by default but not on startup: a first
 	// pass over a large collection is hours of rate-limited fetching, and tying that

@@ -170,5 +170,7 @@ func (t *Tagger) Config() models.ConfigStruct {
 		AutotaggerrCustomArtistDelimiter:              t.profile.CustomArtistDelimiter,
 		AutotaggerrCustomArtistDelimiterCommas:        t.profile.CustomArtistDelimiterCommas,
 		AutotaggerrRemoveValues:                       t.profile.RemoveValues,
+		AutotaggerrMaxGenres:                          t.profile.MaxGenres,
+		AutotaggerrMP3MultiValueTags:                  t.profile.MP3MultiValueTags,
 	}
 }

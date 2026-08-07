@@ -20,7 +20,9 @@ WORKDIR /app
 # chromaprint provides fpcalc, used only by the optional AcoustID identification.
 # Bundling it means the feature works out of the box once a data source is added;
 # without it Autotaggerr logs the absence once and behaves exactly as before.
-RUN apk add --no-cache ffmpeg flac chromaprint ca-certificates tzdata su-exec
+# ffmpeg was dropped once ID3 moved in-process: `flac` (metaflac) is the only tag
+# binary left. chromaprint still pulls the ffmpeg *libraries* it needs.
+RUN apk add --no-cache flac chromaprint ca-certificates tzdata su-exec
 COPY --from=builder /app/autotaggerr /app/autotaggerr
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /app/web/ /app/web/

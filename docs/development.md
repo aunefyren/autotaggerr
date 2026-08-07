@@ -7,8 +7,9 @@ still open) before making changes.
 ## Local setup
 
 - Go 1.25 (the `go.mod` toolchain target). Older toolchains cannot build the module.
-- Runtime binaries must be on `PATH`: `metaflac` (FLAC) and `ffmpeg`/`ffprobe` (MP3). Without
-  them, tag reads/writes fail at runtime even though the build succeeds.
+- Runtime binaries must be on `PATH`: `metaflac` (FLAC). Without it, FLAC tag reads/writes fail at
+  runtime even though the build succeeds. MP3 needs nothing — ID3 is read and written in-process.
+  `ffmpeg` is still needed to *run the tests*, which synthesize their audio fixtures with it.
 - `./config` must be writable; `files.LoadConfig` creates `config/config.json` on first run.
 
 ```bash

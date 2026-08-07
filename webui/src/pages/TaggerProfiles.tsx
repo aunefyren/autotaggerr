@@ -86,6 +86,8 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
         use_current_artist_name: p.use_current_artist_name,
         use_custom_artist_delimiter: p.use_custom_artist_delimiter,
         custom_artist_delimiter: p.custom_artist_delimiter,
+        max_genres: p.max_genres,
+        mp3_multi_value_tags: p.mp3_multi_value_tags,
       });
       onSaved();
     } catch (e) {
@@ -111,6 +113,33 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
             <input className="input mono" value={p.custom_artist_delimiter} onChange={(e) => set({ custom_artist_delimiter: e.target.value })} placeholder=" & " />
           </div>
         )}
+        <div className="field">
+          <label className="flabel">Maximum genres</label>
+          <input
+            className="input"
+            type="number"
+            min={1}
+            max={50}
+            value={p.max_genres || ""}
+            onChange={(e) => set({ max_genres: Number(e.target.value) })}
+            placeholder="5"
+          />
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            MusicBrainz returns every genre that cleared its vote threshold, ranked here by vote count. Blank uses the default of 5.
+          </p>
+        </div>
+        <div className="field">
+          <Check
+            label="Write true multi-value tags in MP3s"
+            checked={p.mp3_multi_value_tags}
+            onChange={(v) => set({ mp3_multi_value_tags: v })}
+          />
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            Uses ID3v2.4's own multi-value form, which Picard, MusicBee, foobar2000 and Navidrome read
+            natively. Plex reads tags through ffmpeg, which only sees the first value — so leave this
+            off if Plex is your player. FLAC always uses the multi-value form; it costs nothing there.
+          </p>
+        </div>
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>
           <button className="btn btn-primary btn-sm" disabled={busy || !p.name}>{busy ? "Saving…" : "Save changes"}</button>

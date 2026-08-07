@@ -206,57 +206,116 @@ func NormalizeTagValue(s string) string {
 	return norm.NFC.String(strings.TrimSpace(s))
 }
 
-// DiffFlacTags compares existing Vorbis tags (multi-valued) with desired (single-valued per key).
-// It returns only the keys that need to change.
-func DiffFlacTags(existing map[string][]string, desired map[string]string, configFile models.ConfigStruct) (map[string]string, bool) {
-	changes := make(map[string]string)
+// MultiValueSeparator joins the several values one tag field can carry (genres,
+// ISRCs, artist MBIDs, ...). One spelling for every such field on both engines,
+// because two spellings drift apart and the writers cannot agree on a diff they
+// render differently.
+//
+// A semicolon is the only separator that works across the players that matter:
+// Plex reads tags through ffmpeg, which never gained multi-value support for
+// MP4/AAC and so needs a delimited single value there; Navidrome splits genres on
+// ";", "/" and "," by default. "/" and "," are unusable as separators regardless —
+// "AC/DC" and "Crosby, Stills & Nash" are single names containing them.
+const MultiValueSeparator = "; "
+
+// NormalizeTagValues normalizes each value and drops the blanks. A blank would
+// otherwise occupy a position in a multi-value field, or produce a dangling
+// separator once joined — and a value that never matches on read-back re-tags the
+// file on every scan.
+//
+// Values are deliberately *not* deduplicated here: whether a release that credits
+// the same catalogue number under two labels should say it once or twice is a
+// question about the data, not about rendering. The diff dedups both sides when it
+// compares, which is where it matters.
+func NormalizeTagValues(values []string) []string {
+	kept := make([]string, 0, len(values))
+	for _, value := range values {
+		if v := NormalizeTagValue(value); v != "" {
+			kept = append(kept, v)
+		}
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
+}
+
+// JoinTagValues renders several values as the one string a tag field holds.
+func JoinTagValues(values []string) string {
+	return strings.Join(NormalizeTagValues(values), MultiValueSeparator)
+}
+
+// DiffFlacTags compares the Vorbis comments on disk with the ones Autotaggerr wants
+// and returns only the keys that need to change. Both sides are multi-valued: a
+// Vorbis key may legitimately repeat, and so may the desired value once the engine
+// writes the spec-correct form.
+//
+// The desired values must already be in the representation the writer will produce
+// (see renderFLACValues) — comparing an unrendered value against what comes back off
+// disk is how a file ends up re-tagged on every scan forever.
+func DiffFlacTags(existing map[string][]string, desired map[string][]string, configFile models.ConfigStruct) (map[string][]string, bool) {
+	changes := make(map[string][]string)
 	hasChanges := false
 
 	for k, want := range desired {
-		// this decides if Autotaggerr should remove values
-		if strings.TrimSpace(want) == "" && !configFile.AutotaggerrRemoveValues {
+		key := strings.ToUpper(k)
+		wantValues := cleanTagValues(want)
+
+		// An empty desired value means "Autotaggerr has nothing to say about this
+		// tag", not "clear it" — unless the tagger profile says otherwise.
+		if len(wantValues) == 0 && !configFile.AutotaggerrRemoveValues {
 			continue
 		}
-		key := strings.ToUpper(k)
 
-		wantNorm := NormalizeTagValue(want)
-		haveNorm := canonicalizeValues(existing[key]) // handles []string
-
-		// Compare canonicalized strings
-		if wantNorm != haveNorm {
-			changes[key] = want
+		if !sameTagValues(existing[key], wantValues) {
+			changes[key] = wantValues
 			hasChanges = true
 		}
 	}
 	return changes, hasChanges
 }
 
-// canonicalizeValues normalizes, dedups, sorts, and then joins values so comparison is stable.
-// This also makes comparison order-insensitive for multi-valued tags (e.g., multiple ARTIST entries).
-func canonicalizeValues(vals []string) string {
-	if len(vals) == 0 {
-		return ""
+// cleanTagValues is NormalizeTagValues plus a case-insensitive dedup that keeps the
+// first spelling. It is applied to both sides of a comparison, so a file another
+// tagger wrote the same genre into twice does not read back as a difference that can
+// never be resolved.
+func cleanTagValues(values []string) []string {
+	normalized := NormalizeTagValues(values)
+	if len(normalized) == 0 {
+		return nil
 	}
-	tmp := make([]string, 0, len(vals))
-	seen := make(map[string]struct{})
-	for _, v := range vals {
-		n := NormalizeTagValue(v)
-		if n == "" {
+	kept := make([]string, 0, len(normalized))
+	seen := make(map[string]struct{}, len(normalized))
+	for _, value := range normalized {
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		// case-insensitive dedup
-		key := strings.ToLower(n)
-		if _, ok := seen[key]; !ok {
-			seen[key] = struct{}{}
-			tmp = append(tmp, n)
+		seen[key] = struct{}{}
+		kept = append(kept, value)
+	}
+	return kept
+}
+
+// sameTagValues reports whether what is on disk already says what we want, in the
+// order we want it. want must already be cleaned.
+//
+// Order is part of the comparison, which it did not used to be — the values were
+// sorted before being compared as one string. That was harmless while every field was
+// a single joined value, but order carries meaning now: genres are ranked by community
+// vote and an artist credit reads in its credited order, so a re-ordering that the
+// diff could not see would never be written and the ranking would be decorative.
+func sameTagValues(have, want []string) bool {
+	haveValues := cleanTagValues(have)
+	if len(haveValues) != len(want) {
+		return false
+	}
+	for i := range want {
+		if haveValues[i] != want[i] {
+			return false
 		}
 	}
-	if len(tmp) == 0 {
-		return ""
-	}
-	sort.Strings(tmp)
-	// Use a separator that won't appear in tags; only for comparison
-	return strings.Join(tmp, "\x1f")
+	return true
 }
 
 // DiffID3Tags is DiffFlacTags for ID3: same comparison, same rule about empty
@@ -269,17 +328,17 @@ func canonicalizeValues(vals []string) string {
 // when given an empty value): its reported diff is derived from this change set, so a
 // key that is reported but not written would never converge and the file would be
 // rewritten on every scan.
-func DiffID3Tags(existing map[string][]string, desired map[string]string, configFile models.ConfigStruct) (map[string]string, bool) {
-	changes := make(map[string]string)
+func DiffID3Tags(existing map[string][]string, desired map[string][]string, configFile models.ConfigStruct) (map[string][]string, bool) {
+	changes := make(map[string][]string)
 	has := false
 	for k, want := range desired {
-		if strings.TrimSpace(want) == "" && !configFile.AutotaggerrRemoveValues {
+		key := strings.ToUpper(k)
+		wantValues := cleanTagValues(want)
+		if len(wantValues) == 0 && !configFile.AutotaggerrRemoveValues {
 			continue
 		}
-		wantN := NormalizeTagValue(want)
-		haveN := canonicalizeValues(existing[strings.ToUpper(k)])
-		if wantN != haveN {
-			changes[strings.ToUpper(k)] = want
+		if !sameTagValues(existing[key], wantValues) {
+			changes[key] = wantValues
 			has = true
 		}
 	}

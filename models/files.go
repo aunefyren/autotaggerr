@@ -21,10 +21,27 @@ type TagDiffEntry struct {
 	Changed bool   `json:"changed"`
 }
 
+// FileTags is what Autotaggerr wants a file to say, one field per concept rather
+// than one per tag key — the engines decide which keys carry it.
+//
+// A field that can genuinely hold several values holds them as several values. They
+// used to arrive here pre-joined, which meant the only representation a writer could
+// produce was the joined one and the split between "a field with two values" and "a
+// field whose value contains a separator" had already been lost by the time anything
+// could act on it.
 type FileTags struct {
-	Artist                string   `json:"artist"`
-	ArtistSemicolon       string   `json:"artist_semicolon"`
+	// Artist is the whole credit rendered with MusicBrainz's own join phrases
+	// ("A feat. B"), which is a single name, not a list. Artists is the same credit
+	// as its separate parts.
+	Artist  string   `json:"artist"`
+	Artists []string `json:"artists"`
+	// AlbumArtist is the first credited album artist only, because Plex has no
+	// concept of several and renders a joined string as one artist named "A; B".
+	// AlbumArtists carries the whole credit for players that can read it — without
+	// it the names disagreed with MBAlbumArtistIDs, which has always listed every
+	// credited artist.
 	AlbumArtist           string   `json:"album_artist"`
+	AlbumArtists          []string `json:"album_artists"`
 	Genres                []string `json:"genres"`
 	OriginalDate          string   `json:"original_date"`
 	OriginalYear          string   `json:"original_year"`
@@ -32,7 +49,7 @@ type FileTags struct {
 	ReleaseYear           string   `json:"release_year"`
 	Album                 string   `json:"album"`
 	Title                 string   `json:"title"`
-	ISRC                  string   `json:"isrc"`
+	ISRCs                 []string `json:"isrcs"`
 	Track                 string   `json:"track"`
 	TrackTotal            string   `json:"track_total"`
 	DiscNumber            string   `json:"disc_number"`
@@ -41,17 +58,17 @@ type FileTags struct {
 	MBAlbumType           string   `json:"mm_album_type"`
 	MBAlbumReleaseCountry string   `json:"mm_album_release_country"`
 	MBAlbumID             string   `json:"mm_album_id"`
-	MBArtistID            string   `json:"mm_artist_id"`
-	MBAlbumArtistID       string   `json:"mm_album_artist_id"`
+	MBArtistIDs           []string `json:"mm_artist_ids"`
+	MBAlbumArtistIDs      []string `json:"mm_album_artist_ids"`
 	MBReleaseGroupID      string   `json:"mm_release_group_id"`
 	MBReleaseTrackID      string   `json:"mm_release_track_id"`
 	MBRecordingID         string   `json:"mm_recording_id"`
 	Script                string   `json:"script"`
-	RecordLabel           string   `json:"record_label"`
+	RecordLabels          []string `json:"record_labels"`
 	Media                 string   `json:"media"`
 	Barcode               string   `json:"barcode"`
 	ASIN                  string   `json:"asin"`
-	CatalogNumber         string   `json:"catalog_number"`
+	CatalogNumbers        []string `json:"catalog_numbers"`
 	Composer              string   `json:"composer"`
 	Author                string   `json:"author"`
 }
@@ -88,10 +105,4 @@ type CachedLidarrTrackFilesRelease struct {
 type PlexAlbumKeyCache struct {
 	AlbumKey  string    `json:"album_key"`
 	Timestamp time.Time `json:"timestamp"`
-}
-
-type FfprobeFormat struct {
-	Format struct {
-		Tags map[string]string `json:"tags"`
-	} `json:"format"`
 }

@@ -449,33 +449,34 @@ func BuildFileTags(
 	}
 	logger.Log.Trace("track artists: " + trackArtist)
 
-	trackArtistSemiColon := ""
-	for index, artistCredit := range track.ArtistCredit {
-		if index != 0 {
-			trackArtistSemiColon += "; "
+	// creditedNames lists the names behind an artist credit, honouring the profile's
+	// choice between the artist's current name and the name as credited on this
+	// particular release. Credited order is preserved: it is the order the release
+	// itself states, and the diff compares it.
+	creditedNames := func(credits []models.ArtistCredit) []string {
+		names := make([]string, 0, len(credits))
+		for _, artistCredit := range credits {
+			if configFile.AutotaggerrUseCurrentArtistName {
+				names = append(names, artistCredit.Artist.Name)
+			} else {
+				names = append(names, artistCredit.Name)
+			}
 		}
-		if configFile.AutotaggerrUseCurrentArtistName {
-			trackArtistSemiColon += artistCredit.Artist.Name
-		} else {
-			trackArtistSemiColon += artistCredit.Name
-		}
+		return utilities.NormalizeTagValues(names)
 	}
 
-	releaseArtistID := ""
-	for index, artist := range track.ArtistCredit {
-		if index != 0 {
-			releaseArtistID += "; "
+	creditedIDs := func(credits []models.ArtistCredit) []string {
+		ids := make([]string, 0, len(credits))
+		for _, artistCredit := range credits {
+			ids = append(ids, artistCredit.Artist.ID)
 		}
-		releaseArtistID += artist.Artist.ID
+		return utilities.NormalizeTagValues(ids)
 	}
 
-	releaseGroupArtistID := ""
-	for index, artist := range response.ArtistCredit {
-		if index != 0 {
-			releaseGroupArtistID += "; "
-		}
-		releaseGroupArtistID += artist.Artist.ID
-	}
+	trackArtists := creditedNames(track.ArtistCredit)
+	releaseArtists := creditedNames(response.ArtistCredit)
+	trackArtistIDs := creditedIDs(track.ArtistCredit)
+	releaseArtistIDs := creditedIDs(response.ArtistCredit)
 
 	releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
 	releaseYear := ""
@@ -493,40 +494,31 @@ func BuildFileTags(
 		releaseGroupDate = releaseGroupTime.Format("2006-01-02")
 	}
 
-	isrcString := ""
-	for index, isrc := range track.Recording.ISRCs {
-		if index != 0 {
-			isrcString += "; "
-		}
-		isrcString += isrc
-	}
-
-	recordLabelString := ""
-	catalogString := ""
-	if len(response.LabelInfo) > 0 {
-		for index, recordLabel := range response.LabelInfo {
-			if index != 0 && recordLabel.Label.Name != "" {
-				recordLabelString += "; "
-			}
-			if index != 0 && recordLabel.CatalogNumber != "" {
-				catalogString += "; "
-			}
-			recordLabelString += recordLabel.Label.Name
-			catalogString += recordLabel.CatalogNumber
-		}
+	// A release's labels and catalogue numbers are two lists off one LabelInfo, and
+	// either half can be blank on any given entry. Collecting them separately and
+	// letting NormalizeTagValues drop the blanks is what keeps a label with no catalogue
+	// number (or the reverse) from shifting the other list — the previous index-based
+	// join emitted a leading "; " whenever the first entry was the empty one, which
+	// then never matched on read-back.
+	labelNames := make([]string, 0, len(response.LabelInfo))
+	catalogNumbers := make([]string, 0, len(response.LabelInfo))
+	for _, recordLabel := range response.LabelInfo {
+		labelNames = append(labelNames, recordLabel.Label.Name)
+		catalogNumbers = append(catalogNumbers, recordLabel.CatalogNumber)
 	}
 
 	metadata := models.FileTags{
 		Artist:                trackArtist,
-		ArtistSemicolon:       trackArtistSemiColon,
+		Artists:               trackArtists,
 		AlbumArtist:           releaseArtist,
+		AlbumArtists:          releaseArtists,
 		OriginalDate:          releaseGroupDate,
 		OriginalYear:          releaseGroupYear,
 		ReleaseDate:           releaseDate,
 		ReleaseYear:           releaseYear,
 		Album:                 response.Title,
 		Title:                 track.Title,
-		ISRC:                  isrcString,
+		ISRCs:                 utilities.NormalizeTagValues(track.Recording.ISRCs),
 		Track:                 strconv.Itoa(track.Position),
 		TrackTotal:            strconv.Itoa(len(media.Tracks)),
 		DiscNumber:            strconv.Itoa(media.Position),
@@ -535,26 +527,70 @@ func BuildFileTags(
 		MBAlbumType:           ReleaseToAlbumType(response),
 		MBAlbumReleaseCountry: response.Country,
 		MBAlbumID:             response.ID,
-		MBArtistID:            releaseArtistID,
-		MBAlbumArtistID:       releaseGroupArtistID,
+		MBArtistIDs:           trackArtistIDs,
+		MBAlbumArtistIDs:      releaseArtistIDs,
 		MBReleaseGroupID:      response.ReleaseGroup.ID,
 		MBReleaseTrackID:      track.ID,
 		MBRecordingID:         track.Recording.ID,
 		Script:                response.TextRepresentation.Script,
-		RecordLabel:           recordLabelString,
+		RecordLabels:          utilities.NormalizeTagValues(labelNames),
 		Media:                 media.Format,
 		Barcode:               response.Barcode,
 		ASIN:                  "",
-		CatalogNumber:         catalogString,
+		CatalogNumbers:        utilities.NormalizeTagValues(catalogNumbers),
 		Author:                "",
 		Composer:              "",
 	}
 
+	genres := make([]models.MusicBrainzNamedCount, 0, len(response.ReleaseGroup.Genres))
 	for _, genre := range response.ReleaseGroup.Genres {
-		metadata.Genres = append(metadata.Genres, genre.Name)
+		genres = append(genres, models.MusicBrainzNamedCount{Name: genre.Name, Count: genre.Count})
 	}
+	metadata.Genres = selectGenres(genres, configFile.AutotaggerrMaxGenres)
 
 	return metadata, nil
+}
+
+// selectGenres ranks a release group's genres by community vote and returns at
+// most limit names.
+//
+// The sort is what makes the cap meaningful: MusicBrainz returns genres
+// unordered, so without it "the top genres" would be whichever ones the API
+// happened to serialize first — and the truncation would discard the popular
+// genre as readily as the obscure one. Name is the tie-break purely so a release
+// group with several equally-voted genres tags identically on every fetch; an
+// unstable order here would re-tag the file on every scan.
+//
+// Genres are written exactly as MusicBrainz spells them, which is lower case
+// ("acid jazz", "afro-cuban jazz"). Title-casing them is a transformation away
+// from the source that also mangles the names it cannot know about — "UK garage"
+// becomes "Uk Garage", "R&B" becomes "R&b" — so it is deliberately not done.
+func selectGenres(genres []models.MusicBrainzNamedCount, limit int) []string {
+	if limit < 1 {
+		limit = models.DefaultMaxGenres
+	}
+
+	ranked := make([]models.MusicBrainzNamedCount, len(genres))
+	copy(ranked, genres)
+	sort.SliceStable(ranked, func(i, j int) bool {
+		if ranked[i].Count != ranked[j].Count {
+			return ranked[i].Count > ranked[j].Count
+		}
+		return ranked[i].Name < ranked[j].Name
+	})
+
+	names := make([]string, 0, limit)
+	for _, genre := range ranked {
+		name := utilities.NormalizeTagValue(genre.Name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+		if len(names) == limit {
+			break
+		}
+	}
+	return names
 }
 
 // DiffFileTags reports, per tag, the file's current value versus what Autotaggerr
@@ -563,13 +599,15 @@ func BuildFileTags(
 func DiffFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) ([]models.TagDiffEntry, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
-	var desired map[string]string
+	var desired map[string][]string
 	var existing map[string][]string
-	var changed map[string]string
+	var changed map[string][]string
 
 	switch ext {
 	case ".flac":
-		desired = buildFLACDesiredTags(metadata)
+		// Rendered, not raw: the preview has to be the bytes a scan would write, or
+		// the UI shows a change the writer would not make (or hides one it would).
+		desired = renderFLACTags(buildFLACDesiredTags(metadata))
 		m, err := getFlacTagsMap(filePath)
 		if err != nil {
 			return nil, err
@@ -577,7 +615,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, configFile models.C
 		existing = m
 		changed, _ = utilities.DiffFlacTags(existing, desired, configFile)
 	case ".mp3":
-		desired = buildMP3DesiredTags(metadata)
+		desired = renderMP3Tags(buildMP3DesiredTags(metadata), configFile)
 		m, err := GetMP3Tags(filePath)
 		if err != nil {
 			return nil, err
@@ -597,8 +635,8 @@ func DiffFileTags(filePath string, metadata models.FileTags, configFile models.C
 	entries := make([]models.TagDiffEntry, 0, len(keys))
 	for _, k := range keys {
 		up := strings.ToUpper(k)
-		current := strings.Join(existing[up], "; ")
-		want := desired[k]
+		current := utilities.JoinTagValues(existing[up])
+		want := utilities.JoinTagValues(desired[k])
 		if current == "" && want == "" {
 			continue // nothing to show for an empty-on-both tag
 		}

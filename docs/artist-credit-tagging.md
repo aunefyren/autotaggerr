@@ -57,8 +57,11 @@ credited solely to a guest on someone else's release, lost its `ARTIST` even tho
 never names that artist. The comparison keeps those.
 
 Two things are unaffected by this setting and always carry the full track credit: `ARTISTS` (every
-credited artist, `; `-joined) and `MUSICBRAINZ_ARTISTID` (the track credit's MBIDs — note the
-`releaseArtistID` variable name in `BuildFileTags` is a misnomer).
+credited artist) and `MUSICBRAINZ_ARTISTID` (the track credit's MBIDs). Both are genuinely
+multi-valued — `FileTags.Artists` and `FileTags.MBArtistIDs` — and how that reaches the file is the
+format's business, not this setting's: see
+[tagging.md](tagging.md#several-values-in-one-field). Credited order is preserved, because the
+release states it and the diff compares it.
 
 Whether an emptied `ARTIST` is actually *removed* from the file is a separate decision: both
 `DiffFlacTags` and `DiffID3Tags` only turn an empty desired value into a change when the tagger

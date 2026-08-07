@@ -313,6 +313,8 @@ type taggerProfileInput struct {
 	CustomArtistDelimiter              *string `json:"custom_artist_delimiter"`
 	CustomArtistDelimiterCommas        *bool   `json:"custom_artist_delimiter_commas"`
 	IgnoreRedundantContributingArtists *bool   `json:"ignore_redundant_contributing_artists"`
+	MaxGenres                          *int    `json:"max_genres"`
+	MP3MultiValueTags                  *bool   `json:"mp3_multi_value_tags"`
 }
 
 func (in taggerProfileInput) apply(p *models.TaggerProfile) {
@@ -339,6 +341,12 @@ func (in taggerProfileInput) apply(p *models.TaggerProfile) {
 	}
 	if in.IgnoreRedundantContributingArtists != nil {
 		p.IgnoreRedundantContributingArtists = *in.IgnoreRedundantContributingArtists
+	}
+	if in.MaxGenres != nil {
+		p.MaxGenres = *in.MaxGenres
+	}
+	if in.MP3MultiValueTags != nil {
+		p.MP3MultiValueTags = *in.MP3MultiValueTags
 	}
 }
 

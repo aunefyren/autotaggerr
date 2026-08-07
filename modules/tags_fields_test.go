@@ -12,8 +12,9 @@ import (
 func fullFileTags() models.FileTags {
 	return models.FileTags{
 		Artist:                "Test Artist",
-		ArtistSemicolon:       "Test Artist; Feature",
+		Artists:               []string{"Test Artist", "Feature"},
 		AlbumArtist:           "Test Artist",
+		AlbumArtists:          []string{"Test Artist", "Co-Headliner"},
 		Genres:                []string{"Hip Hop", "Rap"},
 		OriginalDate:          "2001-01-01",
 		OriginalYear:          "2001",
@@ -21,7 +22,7 @@ func fullFileTags() models.FileTags {
 		ReleaseYear:           "2002",
 		Album:                 "Test Album",
 		Title:                 "Test Title",
-		ISRC:                  "USABC1234567",
+		ISRCs:                 []string{"USABC1234567"},
 		Track:                 "3",
 		TrackTotal:            "12",
 		DiscNumber:            "1",
@@ -30,24 +31,23 @@ func fullFileTags() models.FileTags {
 		MBAlbumType:           "album",
 		MBAlbumReleaseCountry: "US",
 		MBAlbumID:             "album-id",
-		MBArtistID:            "artist-id",
-		MBAlbumArtistID:       "album-artist-id",
+		MBArtistIDs:           []string{"artist-id"},
+		MBAlbumArtistIDs:      []string{"album-artist-id"},
 		MBReleaseGroupID:      "rg-id",
 		MBReleaseTrackID:      "track-id",
 		MBRecordingID:         "recording-id",
 		Script:                "Latn",
-		RecordLabel:           "Test Label",
+		RecordLabels:          []string{"Test Label"},
 		Media:                 "CD",
 		Barcode:               "0123456789",
 		ASIN:                  "B000TEST",
-		CatalogNumber:         "CAT-1",
+		CatalogNumbers:        []string{"CAT-1"},
 		Composer:              "Test Composer",
 		Author:                "Test Author",
 	}
 }
 
 func TestMP3FullFieldRoundTrip(t *testing.T) {
-	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 
 	unchanged, written, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{})
@@ -67,18 +67,24 @@ func TestMP3FullFieldRoundTrip(t *testing.T) {
 		"ARTIST":               "Test Artist",
 		"ALBUM":                "Test Album",
 		"TITLE":                "Test Title",
-		"GENRE":                "Hip Hop;Rap", // MP3 joins genres
+		"GENRE":                "Hip Hop; Rap", // every genre, one shared separator
 		"DATE":                 "2002-02-02",
 		"TRACKNUMBER":          "3",
 		"TRACKTOTAL":           "12", // parsed from the composite TRCK "3/12"
 		"DISCNUMBER":           "1",
 		"DISCTOTAL":            "2", // parsed from the composite TPOS "1/2"
 		"ARTISTS":              "Test Artist; Feature",
-		"ISRC":                 "USABC1234567", // TXXX:ISRC frame
+		"ALBUMARTIST":          "Test Artist",               // single-valued for Plex
+		"ALBUMARTISTS":         "Test Artist; Co-Headliner", // the whole credit
+		"ISRC":                 "USABC1234567",              // TXXX:ISRC frame
 		"PUBLISHER":            "Test Label",
 		"TMED":                 "CD",
 		"SCRIPT":               "Latn",
 		"MUSICBRAINZ ALBUM ID": "album-id",
+		// Parity with FLAC — absent from MP3 files written before this.
+		"MUSICBRAINZ RECORDING ID": "recording-id",
+		"BARCODE":                  "0123456789",
+		"CATALOGNUMBER":            "CAT-1",
 	}
 	for key, want := range checks {
 		if got := firstTag(tags, key); got != want {
@@ -107,7 +113,6 @@ func TestMP3FullFieldRoundTrip(t *testing.T) {
 // ARTISTS, the original-date trio, the paired track/disc frames and the ISRC TXXX
 // frame, plus a plain 1:1 field (ARTIST — the redundant-artist case).
 func TestMP3RemoveValuesClearsAndConverges(t *testing.T) {
-	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 
 	removeValues := models.ConfigStruct{AutotaggerrRemoveValues: true}
@@ -117,10 +122,10 @@ func TestMP3RemoveValuesClearsAndConverges(t *testing.T) {
 
 	cleared := fullFileTags()
 	cleared.Artist = ""
-	cleared.ArtistSemicolon = ""
+	cleared.Artists = nil
 	cleared.OriginalDate = ""
 	cleared.OriginalYear = ""
-	cleared.ISRC = ""
+	cleared.ISRCs = nil
 	cleared.TrackTotal = ""
 	cleared.DiscNumber = ""
 	cleared.DiscTotal = ""
@@ -161,10 +166,9 @@ func TestMP3RemoveValuesClearsAndConverges(t *testing.T) {
 // case (the reader used to force-uppercase it, which would flag a spurious change
 // on the next scan for any lower/mixed-case value).
 func TestMP3ISRCPreservesCase(t *testing.T) {
-	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 
-	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", ISRC: "gb-abc-99-12345"}
+	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", ISRCs: []string{"gb-abc-99-12345"}}
 	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -188,7 +192,6 @@ func TestMP3ISRCPreservesCase(t *testing.T) {
 }
 
 func TestExtractFromID3v2(t *testing.T) {
-	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 	if _, _, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
@@ -199,6 +202,11 @@ func TestExtractFromID3v2(t *testing.T) {
 		"release_group": "rg-id",
 		"track":         "track-id",
 		"title":         "Test Title",
+		// "recording" was a dead lookup for as long as it existed: this reader has
+		// always known the key, but nothing wrote it until MP3 reached parity with
+		// FLAC's MUSICBRAINZ_TRACKID. It is the identity that survives a release
+		// merge, so it is what re-identifies an MP3 with no manager to ask.
+		"recording": "recording-id",
 	}
 	for metaType, want := range cases {
 		got, err := extractFromID3v2(path, metaType)

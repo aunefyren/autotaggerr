@@ -57,6 +57,8 @@ export interface TaggerProfile {
   use_current_artist_name: boolean;
   use_custom_artist_delimiter: boolean;
   custom_artist_delimiter: string;
+  max_genres: number;
+  mp3_multi_value_tags: boolean;
 }
 
 export interface Library {

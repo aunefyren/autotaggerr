@@ -187,6 +187,14 @@ type TaggerProfile struct {
 	CustomArtistDelimiter              string `json:"custom_artist_delimiter"`
 	CustomArtistDelimiterCommas        bool   `json:"custom_artist_delimiter_commas"`
 	IgnoreRedundantContributingArtists bool   `json:"ignore_redundant_contributing_artists"`
+	// MaxGenres caps how many genres are written to GENRE. Zero or less means
+	// DefaultMaxGenres, so a profile row predating the column behaves like a new one.
+	MaxGenres int `json:"max_genres"`
+	// MP3MultiValueTags writes several values into one ID3 frame the way the format
+	// means it — null-separated, ID3v2.4 — instead of joining them with "; ".
+	// Off by default; see ConfigStruct.AutotaggerrMP3MultiValueTags for why it is a
+	// choice at all rather than simply correct.
+	MP3MultiValueTags bool `json:"mp3_multi_value_tags"`
 }
 
 // Library is a configured folder plus the components that govern it.

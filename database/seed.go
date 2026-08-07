@@ -129,6 +129,8 @@ func seedDefaultTaggerProfile(db *gorm.DB, cfg models.ConfigStruct) (*uuid.UUID,
 		CustomArtistDelimiter:              cfg.AutotaggerrCustomArtistDelimiter,
 		CustomArtistDelimiterCommas:        cfg.AutotaggerrCustomArtistDelimiterCommas,
 		IgnoreRedundantContributingArtists: cfg.AutotaggerrIgnoreRedundantContributingArtists,
+		MaxGenres:                          cfg.AutotaggerrMaxGenres,
+		MP3MultiValueTags:                  cfg.AutotaggerrMP3MultiValueTags,
 	}
 	if err := db.Create(&profile).Error; err != nil {
 		return nil, err

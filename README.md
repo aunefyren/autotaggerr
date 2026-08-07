@@ -5,7 +5,8 @@
 
 **Autotaggerr** is an automated music tagging utility that enriches your Lidarr managed audio library with detailed metadata from [MusicBrainz](https://musicbrainz.org/). It identifies tracks based on their MusicBrainz Release ID (used by tools like [Lidarr](https://lidarr.audio/)), or by talking to Lidarr through API. it then fills in missing metadata, including: track artists, release date, genre, track numbers, and more. It can automatically refresh the metadata in Plex afterward.
 
-> Built for automation of large libraries!
+> [!WARNING]
+> There is currently no official release of this software, it is in beta and has not been advertised. Get in contact with me if you are interested in it.
 
 ---
 
@@ -32,7 +33,7 @@ There are other solutions that try to fix this, like a Beets plugin that can run
 - 🏷️ **FLAC + MP3 Tagging**  
   Updates:
   - FLAC via [`metaflac`](https://xiph.org/flac/)
-  - MP3 via [`ffmpeg`](https://ffmpeg.org/)
+  - MP3 natively, no external tool required
 
 - 🖼️ **Album & Artist Artwork**  
   Covers come from the [Cover Art Archive](https://coverartarchive.org) with no setup at all. For
@@ -45,7 +46,7 @@ There are other solutions that try to fix this, like a Beets plugin that can run
   Avoid API abuse and repeated lookups with built-in caching and configurable request throttling.
 
 - 🐳 **Containerized (Docker-ready)**  
-  Small, clean and minimal Docker image with `ffmpeg` and `metaflac` included.
+  Small, clean and minimal Docker image with `metaflac` included.
 
 ---
 
@@ -56,7 +57,7 @@ There are other solutions that try to fix this, like a Beets plugin that can run
 3. Queries MusicBrainz to retrieve release data.
 4. Writes metadata tags to files:
    - FLAC → via `metaflac`
-   - MP3 → via `ffmpeg`
+   - MP3 → natively
 5. Optionally logs and caches results to avoid re-fetching metadata.
 6. Optionally informs Plex to refresh the metadata
 
@@ -64,7 +65,7 @@ There are other solutions that try to fix this, like a Beets plugin that can run
 
 ## 🛠️ Caveats
 
-1. Plex does not support multi-artist albums. So even if the metadata should have multiple artist as the album artist, Autotaggerr just tags the primary one
+1. Plex does not support multi-artist albums, and renders a joined string as one artist literally named `A; B`. So `ALBUMARTIST` gets the primary artist only; the full credit is written alongside it as `ALBUMARTISTS`, which players that understand it (Navidrome, Picard) read instead. The same applies to genres on MP3: Plex reads tags through ffmpeg, which sees only the first value of a proper multi-value tag, so MP3s join them with `; ` unless the tagger profile's `mp3_multi_value_tags` is on. FLAC always uses the multi-value form — ffmpeg joins those back together on its own, so nothing is lost either way.
 2. Autotaggerr can at times utilize the path of the file to determine what metadata is correct. Therefore, you must use this structure `/music-library-root/[ARTIST]/[ALBUM] ([YEAR])/[OPTIONAL MEDIA FOLDER]/[TRACKS])`
 3. Autotaggerr will first look for the Musicbrainz release/track ID within the file tags. If none are found, a Lidarr client must be configured for fallback. This is necessary for MP3 files as Lidarr does not tag these IDs on MP3s
 4.  Lidarr tends to overwrite tags for some reason. Go to Lidarr -> Settings -> Metadata:
@@ -79,7 +80,7 @@ There are other solutions that try to fix this, like a Beets plugin that can run
 
 ## 📦 Dependencies
 
-Make sure these are installed **if you're not using Docker**:
+One binary, and only **if you're not using Docker**:
 
 ### 🔧 [FLAC / Metaflac](https://xiph.org/flac/download.html)
 
@@ -90,16 +91,8 @@ Used to read/write Vorbis comments in `.flac` files.
 - **Ubuntu/Debian**  
   `sudo apt install flac`
 
----
-
-### 🎞 [FFmpeg](https://ffmpeg.org/)
-
-Used for updating metadata in `.mp3` files.
-
-- **Windows (choco)**  
-  `choco install ffmpeg`
-- **Ubuntu/Debian**  
-  `sudo apt install ffmpeg`
+MP3 tagging needs nothing installed — ID3 frames are read and written in-process.
+[`fpcalc`](https://acoustid.org/chromaprint) is optional, for AcoustID fingerprinting.
 
 ---
 
@@ -193,6 +186,8 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `autotaggerr_custom_artist_delimiter` | — | — | string | Delimiter used when joining artists. Default `" & "`. |
 | `autotaggerr_custom_artist_delimiter_commas` | — | — | bool | Use commas between artists, with the custom delimiter before the last. Default `true`. |
 | `autotaggerr_remove_values` | — | — | bool | Remove existing tag values not present in the new metadata. Default `false`. |
+| `autotaggerr_max_genres` | — | — | int | How many of a release group's genres are written to `GENRE`, most-voted first. Default `5`. |
+| `autotaggerr_mp3_multi_value_tags` | — | — | bool | Write ID3v2.4's own multi-value form in MP3s instead of joining values with `; `. Default `false` — Plex reads tags through ffmpeg, which sees only the first value. FLAC always uses the multi-value form. |
 | `autotaggerr_mirror_disabled` | — | — | bool | Turn the scheduled MusicBrainz mirror refresh off entirely. Default `false` (the mirror runs). |
 | `autotaggerr_mirror_cron_schedule` | — | — | string | 6-field cron for the mirror refresh. Default `0 0 3 * * *` (nightly 03:00). |
 | `autotaggerr_mirror_on_start_up` | — | — | bool | Also run a mirror pass on startup. Default `false` — a first pass over a large collection is hours of rate-limited fetching. |

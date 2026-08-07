@@ -33,14 +33,18 @@ go run . --file "/music/Artist/Album (2020)/01 Track.flac" --fileRoot "/music"  
 
 The repo has a growing test suite (`modules/`, `utilities/`). CI (`.github/workflows/go.yml`)
 runs `gofmt` → `go build` → `go vet` → `go test -race` with coverage; it installs `flac`/`ffmpeg`
-so the audio fixture tests run there too. Go 1.25 is the module target.
+so the audio fixture tests run there too (`ffmpeg` synthesizes the fixtures; only `metaflac` is a
+runtime dependency). Go 1.25 is the module target.
 
 **Git is owned by the human.** Do not stage, commit, push, branch, or otherwise touch git state
 — the maintainer handles all version control. Make and verify changes in the working tree only.
 
 **External binaries are required at runtime** (bundled in the Docker image, must be on PATH otherwise):
 - `metaflac` (from FLAC) — reads/writes Vorbis comments on `.flac` files
-- `ffmpeg` / `ffprobe` — reads/writes ID3 metadata on `.mp3` files
+
+MP3 needs nothing external: ID3 is read and written in-process with
+`github.com/bogem/id3v2`. `ffmpeg` is still a *test* dependency (the fixtures are synthesized
+with it) and `fpcalc` (chromaprint) is optional, for AcoustID.
 
 ## Configuration
 
@@ -73,7 +77,7 @@ index), *Refresh metadata*, *Tag files* — are named in
 2. `GetMusicBrainzRelease` fetches the full release (cached; see below), and the code finds the
    matching track within `response.Media[].Tracks[]`.
 3. `ProcessTrackFileAfterMatch` builds a `models.FileTags` and writes it via `SetFileTags`,
-   which dispatches to `SetFlacTags` (metaflac) or `SetMP3Tags` (ffmpeg) by extension.
+   which dispatches to `SetFlacTags` (metaflac) or `SetMP3Tags` (bogem/id3v2) by extension.
    Tag writes are diffed first — unchanged files are skipped and reported separately.
 4. Changed albums are collected into an `albumsWhoNeedMetadataRefresh` map (album name → Plex
    key) and, after the run, `plexClient.RefreshAlbum` is called for each.

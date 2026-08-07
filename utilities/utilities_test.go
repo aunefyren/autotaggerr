@@ -209,7 +209,7 @@ func TestNormalizeTagValueAndPadding(t *testing.T) {
 func TestDiffFlacTags(t *testing.T) {
 	t.Run("unchanged ignores key case and trailing space", func(t *testing.T) {
 		existing := map[string][]string{"TITLE": {"Song "}}
-		desired := map[string]string{"title": "Song"}
+		desired := map[string][]string{"title": {"Song"}}
 		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{})
 		if has || len(changes) != 0 {
 			t.Errorf("expected no changes, got %v (has=%v)", changes, has)
@@ -218,16 +218,16 @@ func TestDiffFlacTags(t *testing.T) {
 
 	t.Run("detects a changed value", func(t *testing.T) {
 		existing := map[string][]string{"ARTIST": {"Old"}}
-		desired := map[string]string{"artist": "New"}
+		desired := map[string][]string{"artist": {"New"}}
 		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{})
-		if !has || !reflect.DeepEqual(changes, map[string]string{"ARTIST": "New"}) {
+		if !has || !reflect.DeepEqual(changes, map[string][]string{"ARTIST": {"New"}}) {
 			t.Errorf("changes = %v (has=%v), want {ARTIST:New}", changes, has)
 		}
 	})
 
 	t.Run("empty desired is skipped when RemoveValues is off", func(t *testing.T) {
 		existing := map[string][]string{"COMMENT": {"present"}}
-		desired := map[string]string{"comment": ""}
+		desired := map[string][]string{"comment": nil}
 		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{AutotaggerrRemoveValues: false})
 		if has || len(changes) != 0 {
 			t.Errorf("expected empty value to be skipped, got %v", changes)
@@ -236,9 +236,9 @@ func TestDiffFlacTags(t *testing.T) {
 
 	t.Run("empty desired removes value when RemoveValues is on", func(t *testing.T) {
 		existing := map[string][]string{"COMMENT": {"present"}}
-		desired := map[string]string{"comment": ""}
+		desired := map[string][]string{"comment": nil}
 		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{AutotaggerrRemoveValues: true})
-		if !has || !reflect.DeepEqual(changes, map[string]string{"COMMENT": ""}) {
+		if !has || !reflect.DeepEqual(changes, map[string][]string{"COMMENT": nil}) {
 			t.Errorf("changes = %v (has=%v), want {COMMENT:\"\"}", changes, has)
 		}
 	})
@@ -249,7 +249,7 @@ func TestDiffFlacTags(t *testing.T) {
 // on the file's format.
 func TestDiffID3Tags(t *testing.T) {
 	t.Run("empty desired is skipped when RemoveValues is off", func(t *testing.T) {
-		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string]string{"tit2": ""},
+		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string][]string{"tit2": nil},
 			models.ConfigStruct{AutotaggerrRemoveValues: false})
 		if has || len(changes) != 0 {
 			t.Errorf("expected empty desired to be skipped, got %v", changes)
@@ -257,15 +257,15 @@ func TestDiffID3Tags(t *testing.T) {
 	})
 
 	t.Run("empty desired removes value when RemoveValues is on", func(t *testing.T) {
-		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string]string{"tit2": ""},
+		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string][]string{"tit2": nil},
 			models.ConfigStruct{AutotaggerrRemoveValues: true})
-		if !has || !reflect.DeepEqual(changes, map[string]string{"TIT2": ""}) {
+		if !has || !reflect.DeepEqual(changes, map[string][]string{"TIT2": nil}) {
 			t.Errorf("changes = %v (has=%v), want {TIT2:\"\"}", changes, has)
 		}
 	})
 
 	t.Run("an already absent tag is not a change", func(t *testing.T) {
-		changes, has := DiffID3Tags(map[string][]string{}, map[string]string{"tit2": ""},
+		changes, has := DiffID3Tags(map[string][]string{}, map[string][]string{"tit2": nil},
 			models.ConfigStruct{AutotaggerrRemoveValues: true})
 		if has || len(changes) != 0 {
 			t.Errorf("removing a tag that is not there is not a change, got %v", changes)
@@ -273,9 +273,9 @@ func TestDiffID3Tags(t *testing.T) {
 	})
 
 	t.Run("detects a changed value", func(t *testing.T) {
-		changes, has := DiffID3Tags(map[string][]string{"TPE1": {"Old"}}, map[string]string{"tpe1": "New"},
+		changes, has := DiffID3Tags(map[string][]string{"TPE1": {"Old"}}, map[string][]string{"tpe1": {"New"}},
 			models.ConfigStruct{})
-		if !has || !reflect.DeepEqual(changes, map[string]string{"TPE1": "New"}) {
+		if !has || !reflect.DeepEqual(changes, map[string][]string{"TPE1": {"New"}}) {
 			t.Errorf("changes = %v (has=%v), want {TPE1:New}", changes, has)
 		}
 	})
@@ -296,4 +296,95 @@ func TestSortTagChanges(t *testing.T) {
 	// Empty and single-element slices must not panic.
 	SortTagChanges(nil)
 	SortTagChanges([]models.TagChange{{Field: "solo"}})
+}
+
+// TestJoinTagValues covers the one spelling every multi-value tag field uses. The
+// blank-dropping matters more than it looks: a dangling separator never matches on
+// read-back, so it would re-tag the file on every scan forever.
+func TestJoinTagValues(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"empty", nil, ""},
+		{"single", []string{"hip hop"}, "hip hop"},
+		{"several", []string{"hip hop", "rap"}, "hip hop; rap"},
+		{"drops blanks", []string{"hip hop", "", "  ", "rap"}, "hip hop; rap"},
+		{"all blank", []string{"", "  "}, ""},
+		{"trims", []string{" hip hop ", "rap "}, "hip hop; rap"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := JoinTagValues(tc.in); got != tc.want {
+				t.Errorf("JoinTagValues(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestJoinTagValuesRoundTripsThroughTheDiff is the property the separator has to
+// have: a joined value read back as one string must compare equal to itself, or
+// the writers never converge.
+func TestJoinTagValuesRoundTripsThroughTheDiff(t *testing.T) {
+	joined := JoinTagValues([]string{"USUM72108711", "USUM72108712"})
+	existing := map[string][]string{"ISRC": {joined}}
+	desired := map[string][]string{"ISRC": {joined}}
+
+	if _, has := DiffFlacTags(existing, desired, models.ConfigStruct{}); has {
+		t.Error("a joined value must not read back as a change on FLAC")
+	}
+	if _, has := DiffID3Tags(existing, desired, models.ConfigStruct{}); has {
+		t.Error("a joined value must not read back as a change on MP3")
+	}
+}
+
+// TestDiffIsOrderSensitive pins the comparison change that came with multi-value
+// support. Values used to be sorted before being compared, which was harmless while
+// every field was one joined string — but genres are ranked by community vote and an
+// artist credit reads in its credited order, so a re-ordering the diff cannot see is
+// a re-ordering that never gets written.
+func TestDiffIsOrderSensitive(t *testing.T) {
+	existing := map[string][]string{"GENRE": {"rap", "hip hop"}}
+	desired := map[string][]string{"GENRE": {"hip hop", "rap"}}
+
+	changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{})
+	if !has {
+		t.Fatal("the same genres in a different order must register as a change")
+	}
+	if !reflect.DeepEqual(changes["GENRE"], []string{"hip hop", "rap"}) {
+		t.Errorf("changes[GENRE] = %v, want the desired order", changes["GENRE"])
+	}
+
+	// Same order, no change — the other half of the property.
+	if _, has := DiffFlacTags(desired, desired, models.ConfigStruct{}); has {
+		t.Error("identical values in identical order must not be a change")
+	}
+}
+
+// TestDiffDedupsBothSides covers the file another tagger wrote the same value into
+// twice: without a dedup on the have side it can never match, and the file is
+// rewritten on every scan forever.
+func TestDiffDedupsBothSides(t *testing.T) {
+	existing := map[string][]string{"GENRE": {"rock", "Rock"}}
+	desired := map[string][]string{"GENRE": {"rock"}}
+
+	if _, has := DiffFlacTags(existing, desired, models.ConfigStruct{}); has {
+		t.Error("a duplicated existing value must not read back as a difference")
+	}
+}
+
+// TestNormalizeTagValuesDoesNotDedup is the counterpart: whether a release that
+// credits one catalogue number under two labels should say it once or twice is a
+// question about the data, so the build-time helper leaves it alone and only the
+// comparison dedups.
+func TestNormalizeTagValuesDoesNotDedup(t *testing.T) {
+	got := NormalizeTagValues([]string{"CAT-1", " CAT-1 ", "", "CAT-2"})
+	want := []string{"CAT-1", "CAT-1", "CAT-2"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("NormalizeTagValues = %v, want %v", got, want)
+	}
+	if got := NormalizeTagValues([]string{"", "  "}); got != nil {
+		t.Errorf("all-blank input = %v, want nil", got)
+	}
 }

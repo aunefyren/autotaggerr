@@ -392,7 +392,7 @@ interesting file within an event — path, outcome, tags written, error, and the
 - **The diff comes from the writers.** `SetFlacTags` / `SetMP3Tags` already computed it to decide
   what to write and discarded it; they now return it, and it rides up through `SetFileTags` →
   `TagResolvedFile` → `ProcessFile`. FLAC records per key as each `metaflac` call succeeds; MP3
-  derives it from the change set, because ffmpeg rewrites the file in one pass and there is no
+  derives it from the change set, because the ID3 tag is saved in one pass and there is no
   per-field success to report. That is also why an MP3's `tags_written` can exceed its change count —
   a changed `DISCNUMBER` rewrites its paired `DISCTOTAL`.
 - `GET /events/:id` attaches the rows as `items`; the feed never loads them.

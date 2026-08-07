@@ -1,7 +1,7 @@
 package modules
 
 import (
-	"strings"
+	"slices"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -84,8 +84,8 @@ func TestBuildFileTags(t *testing.T) {
 	if tags.ReleaseYear != "1997" || tags.OriginalYear != "1997" {
 		t.Errorf("years = release %q original %q", tags.ReleaseYear, tags.OriginalYear)
 	}
-	if !strings.Contains(tags.ISRC, "GBAYE9700340") || !strings.Contains(tags.ISRC, ";") {
-		t.Errorf("ISRC = %q, want both codes joined", tags.ISRC)
+	if len(tags.ISRCs) != 2 || tags.ISRCs[0] != "GBAYE9700340" {
+		t.Errorf("ISRCs = %v, want both codes as separate values", tags.ISRCs)
 	}
 	if tags.MBAlbumType != "album" || tags.MBAlbumStatus != "official" {
 		t.Errorf("album type/status = %q/%q", tags.MBAlbumType, tags.MBAlbumStatus)
@@ -101,8 +101,8 @@ func TestBuildFileTags(t *testing.T) {
 	if current.AlbumArtist != "Radiohead (current)" {
 		t.Errorf("album artist = %q, want the current name", current.AlbumArtist)
 	}
-	if !strings.Contains(current.ArtistSemicolon, "Radiohead (current)") {
-		t.Errorf("artist semicolon = %q, want current names", current.ArtistSemicolon)
+	if !slices.Contains(current.Artists, "Radiohead (current)") {
+		t.Errorf("artists = %v, want the current names", current.Artists)
 	}
 
 	// A blank date leaves the year fields empty rather than erroring.
@@ -176,8 +176,8 @@ func TestBuildFileTagsRedundantArtist(t *testing.T) {
 				t.Errorf("artist = %q, want %q", tags.Artist, c.want)
 			}
 			// Whatever ARTIST does, the full credit list stays on the file.
-			if tags.ArtistSemicolon != c.trackArtist {
-				t.Errorf("artist semicolon = %q, want %q", tags.ArtistSemicolon, c.trackArtist)
+			if len(tags.Artists) != 1 || tags.Artists[0] != c.trackArtist {
+				t.Errorf("artists = %v, want [%s]", tags.Artists, c.trackArtist)
 			}
 		})
 	}

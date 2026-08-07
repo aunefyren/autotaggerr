@@ -341,7 +341,8 @@ func Managed() []ManagedElsewhere {
 		{
 			Keys: []string{"autotaggerr_use_current_artist_name", "autotaggerr_ignore_redundant_contributing_artists",
 				"autotaggerr_use_custom_artist_delimiter", "autotaggerr_custom_artist_delimiter",
-				"autotaggerr_custom_artist_delimiter_commas", "autotaggerr_remove_values"},
+				"autotaggerr_custom_artist_delimiter_commas", "autotaggerr_remove_values",
+				"autotaggerr_max_genres", "autotaggerr_mp3_multi_value_tags"},
 			Label: "Tagger profiles",
 			Path:  "/tagger-profiles",
 			Note:  "Tag-writing settings are per profile now, so one library can differ from another.",

@@ -3,9 +3,11 @@ package modules
 import (
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/utilities"
 )
 
 // These tests exercise the real metaflac/ffmpeg/ffprobe read+write paths against
@@ -50,7 +52,7 @@ func TestFlacSetReadRoundTrip(t *testing.T) {
 		Album:         "Music to Driveby",
 		Title:         "Intro",
 		Track:         "1",
-		Genres:        []string{"Hip Hop", "Rap"}, // FLAC writes only the first
+		Genres:        []string{"Hip Hop", "Rap"},
 		MBAlbumID:     "album-id-123",
 		MBRecordingID: "rec-id-456",
 	}
@@ -67,17 +69,19 @@ func TestFlacSetReadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("getFlacTagsMap: %v", err)
 	}
-	checks := map[string]string{
-		"ARTIST":              "Compton’s Most Wanted",
-		"ALBUM":               "Music to Driveby",
-		"TITLE":               "Intro",
-		"GENRE":               "Hip Hop", // first genre only
-		"MUSICBRAINZ_ALBUMID": "album-id-123",
-		"MUSICBRAINZ_TRACKID": "rec-id-456", // recording id -> TRACKID
+	checks := map[string][]string{
+		"ARTIST": {"Compton’s Most Wanted"},
+		"ALBUM":  {"Music to Driveby"},
+		"TITLE":  {"Intro"},
+		// One comment per genre — the spec-correct multi-value form. ffmpeg joins
+		// them back into "Hip Hop;Rap" on read, so Plex is unaffected.
+		"GENRE":               {"Hip Hop", "Rap"},
+		"MUSICBRAINZ_ALBUMID": {"album-id-123"},
+		"MUSICBRAINZ_TRACKID": {"rec-id-456"}, // recording id -> TRACKID
 	}
 	for key, want := range checks {
-		if got := firstTag(tags, key); got != want {
-			t.Errorf("FLAC tag %s = %q, want %q", key, got, want)
+		if got := tags[key]; !slices.Equal(got, want) {
+			t.Errorf("FLAC tag %s = %v, want %v", key, got, want)
 		}
 	}
 }
@@ -120,7 +124,6 @@ func TestExtractFLACTag(t *testing.T) {
 // --- MP3 --------------------------------------------------------------------
 
 func TestMP3SetReadRoundTrip(t *testing.T) {
-	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 
 	meta := models.FileTags{
@@ -155,7 +158,6 @@ func TestMP3SetReadRoundTrip(t *testing.T) {
 }
 
 func TestMP3IdempotentWrite(t *testing.T) {
-	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 	meta := models.FileTags{Artist: "Artist", Album: "Album", Title: "Title"}
 
@@ -211,13 +213,12 @@ func TestDiffFileTags(t *testing.T) {
 }
 
 func TestMP3MultiISRCIdempotent(t *testing.T) {
-	requireTool(t, "ffprobe")
 	path := synthAudio(t, ".mp3")
 	meta := models.FileTags{
 		Artist: "Kendrick Lamar",
 		Album:  "The Heart Pt. 3 (Will You Let It Die?)",
 		Title:  "The Heart Pt. 3 (Will You Let It Die?)",
-		ISRC:   "USUM72108711; USUM72108712",
+		ISRCs:  []string{"USUM72108711", "USUM72108712"},
 	}
 
 	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
@@ -228,8 +229,8 @@ func TestMP3MultiISRCIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetMP3Tags: %v", err)
 	}
-	if got := firstTag(tags, "ISRC"); got != meta.ISRC {
-		t.Errorf("ISRC did not round-trip: got %q, want %q", got, meta.ISRC)
+	if want := utilities.JoinTagValues(meta.ISRCs); firstTag(tags, "ISRC") != want {
+		t.Errorf("ISRC did not round-trip: got %q, want %q", firstTag(tags, "ISRC"), want)
 	}
 
 	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})

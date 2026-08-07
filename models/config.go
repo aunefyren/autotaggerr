@@ -12,6 +12,11 @@ type DatabaseConfig struct {
 	DSN string `json:"dsn"`
 }
 
+// DefaultMaxGenres is the fallback cap on how many genres reach a file's GENRE
+// tag. Five matches MusicBrainz Picard's own default and is the ceiling below
+// which a genre list still reads as a description rather than a dump.
+const DefaultMaxGenres = 5
+
 type ConfigStruct struct {
 	Timezone                                      string         `json:"timezone"`
 	Database                                      DatabaseConfig `json:"database"`
@@ -33,6 +38,28 @@ type ConfigStruct struct {
 	AutotaggerrCustomArtistDelimiter              string         `json:"autotaggerr_custom_artist_delimiter"`
 	AutotaggerrCustomArtistDelimiterCommas        bool           `json:"autotaggerr_custom_artist_delimiter_commas"`
 	AutotaggerrRemoveValues                       bool           `json:"autotaggerr_remove_values"`
+	// AutotaggerrMaxGenres caps how many of a release group's genres are written.
+	// MusicBrainz returns every folksonomy genre that cleared the vote threshold,
+	// which on a popular release group is dozens — so the cap is what keeps GENRE
+	// readable rather than a wall of near-synonyms. Zero or less means the default.
+	AutotaggerrMaxGenres int `json:"autotaggerr_max_genres"`
+	// AutotaggerrMP3MultiValueTags picks how an MP3 says that a field has several
+	// values. Off (the default) joins them into one string with "; "; on writes the
+	// spec-correct ID3v2.4 form, one frame whose values are separated by a null byte.
+	//
+	// It is a setting rather than a fix because the two forms serve different readers
+	// and there is no representation that serves both. Picard, MusicBee, foobar2000
+	// and Navidrome read the null-separated form natively and treat the joined string
+	// as one long genre. ffmpeg reads only the *first* value out of a null-separated
+	// frame, so anything built on it — Plex above all — sees one genre where the
+	// joined string shows several.
+	//
+	// Off is the default because Autotaggerr ships a Plex client and refreshes Plex
+	// after a write: turning this on by surprise would take genres away from the
+	// setup the tool is most often pointed at. FLAC needs no such choice — ffmpeg
+	// joins repeated Vorbis comments on read, so the spec-correct form costs nothing
+	// there and is unconditional (see docs/tagging.md).
+	AutotaggerrMP3MultiValueTags bool `json:"autotaggerr_mp3_multi_value_tags"`
 
 	// MusicBrainz mirror. The mirror refreshes the local copy of every MusicBrainz
 	// entity the collection refers to on a schedule, so browsing reads the database

@@ -6,14 +6,132 @@ What Autotaggerr writes into a file once it knows which MusicBrainz release and 
 
 Dispatched by extension in `SetFileTags`:
 
-- **FLAC** — Vorbis comments via `metaflac`.
-- **MP3** — ID3 via `ffmpeg` / `ffprobe`.
+- **FLAC** — Vorbis comments via `metaflac`, read back with `github.com/mewkiz/flac`.
+- **MP3** — ID3v2.4 via `github.com/bogem/id3v2`, in-process.
 
-Both binaries are required at runtime (bundled in the Docker image, otherwise on `PATH`). Other
-formats are not supported yet — see [wip.md](wip.md).
+`metaflac` is the only binary required at runtime (bundled in the Docker image, otherwise on
+`PATH`). Other formats are not supported yet — see [wip.md](wip.md).
+
+MP3 used to go through `ffmpeg` / `ffprobe`, which cost more than it looked. Writing one tag
+demuxed and remuxed the whole file; frames could only be addressed through ffmpeg's metadata-key
+translation, so `UFID` was unreachable and the ISRC ended up in a frame *described* `TXXX`; and the
+`ffprobe` read flattened a multi-value frame to its first value, which is what made the
+spec-correct representation unreachable rather than merely unwritten. The frame layout was kept
+byte-for-byte across that change, so no existing file was re-tagged
+(`TestLegacyFfmpegFilesNeedNoRewrite`, `TestNewWriterReproducesTheLegacyFrames`).
 
 Settings come from the library's **tagger profile** (`models.TaggerProfile`), the DB-backed
 successor to the old `autotaggerr_*` config flags.
+
+## Several values in one field
+
+A tag field can hold several values — genres, ISRCs, the artist MBIDs behind a credit, a
+release's labels and catalogue numbers. `models.FileTags` carries them as the several values they
+are, and each engine decides how they reach the file:
+
+| | how several values are written | why |
+|---|---|---|
+| FLAC | one Vorbis comment per value | the spec-correct form, and it costs the ffmpeg readers nothing |
+| MP3 | one frame, values joined with `"; "` | the spec-correct form would hide all but the first value from them |
+| MP3, `mp3_multi_value_tags` on | one frame, values separated by a null byte | ID3v2.4's own form, for libraries that are not read through ffmpeg |
+
+That asymmetry is measured, not assumed, and `TestFFmpegJoinsRepeatedVorbisComments` /
+`TestEnginesRenderTheSameValuesDifferently` pin both halves.
+
+**On FLAC there is no trade-off.** ffmpeg's FLAC demuxer joins repeated comments itself, so two
+`GENRE` comments reach anything ffmpeg-backed — Plex included — as `hip hop;rap`. Picard,
+foobar2000, MusicBee, Kodi and Navidrome read the discrete values natively. Both sides win, so
+this is not configurable.
+
+**On MP3 there is**, so it is the tagger profile's `mp3_multi_value_tags`. The only spec-correct
+form is a null-separated ID3v2.4 text frame (repeated text frames are forbidden by the spec, and
+`bogem/id3v2` collapses them anyway), and ffmpeg reads back only its *first* value. A spec-correct
+MP3 therefore shows one genre to Plex where the joined string shows several. That is a genuine
+either/or between two families of consumer, not a limitation to engineer around, which is exactly
+what a setting is for.
+
+**It is off by default**, and the reason is not that the joined form is better. Autotaggerr ships a
+Plex client and refreshes Plex after a write, so Plex is the setup it is most often pointed at, and
+turning this on by surprise would take genres away from those libraries. Users whose players read
+ID3 properly should turn it on.
+
+**Only the writer knows which form is in use.** `GetMP3Tags` splits on the null byte
+unconditionally, so a half-converted library reads correctly either way and flipping the setting
+re-tags each file exactly once before converging. Tests: `TestMP3MultiValueSetting`,
+`TestMP3MultiValueSettingConvergesAfterAFlip`.
+
+**A semicolon is the only separator that works** where one is needed. Navidrome splits genres on
+`;`, `/` and `,` by default; `/` and `,` are unusable regardless, since `AC/DC` and `Crosby,
+Stills & Nash` are single names containing them.
+
+Blank entries are dropped rather than written, which is not cosmetic: a blank value or a dangling
+separator never matches on read-back, and so would re-tag the file forever.
+
+**Order is meaningful and the diff compares it.** Genres are ranked by community vote and an
+artist credit reads in its credited order. Values used to be sorted before being compared, which
+was harmless while every field was one joined string — with real multi-value it would hide a
+re-ordering, so a re-ordering would never be written. Both sides are still deduplicated
+case-insensitively, so a file another tagger wrote the same genre into twice still converges.
+
+## The two engines write the same fields
+
+They did not always. FLAC used to keep only the first genre while MP3 joined them all, and MP3
+never received the recording MBID, barcode or catalogue number — so the same album carried less
+information in one format than the other. Parity is about content: the engines carry the same
+values in the same order, and how many values that becomes on disk is the format's business (see
+above). The differences that remain are ones the formats force:
+
+| | FLAC (Vorbis) | MP3 (ID3) |
+|---|---|---|
+| Genres | `GENRE` | `GENRE` → `TCON` |
+| Recording MBID | `MUSICBRAINZ_TRACKID` | `TXXX:MusicBrainz Recording Id` |
+| Release date | `DATE` + `RELEASEDATE` | `TDRC` |
+| Disc total | `DISCTOTAL` + `TOTALDISCS` | half of the paired `TPOS` |
+
+Vorbis has no single spelling everyone agrees on, hence the duplicated keys; ID3 does. The `TXXX`
+spelling for the recording MBID is the one `extractFromID3v2` already read back for the `recording`
+type, so writing it repaired a lookup that had never had a source. Picard additionally puts it in a
+`UFID` frame, which ffmpeg could not write at all; that is now reachable and merely not done yet
+(see [wip.md](wip.md#tagging--what-is-left)).
+
+The ISRC is the one field whose frame does not read as a deliberate choice: it lives in a `TXXX`
+frame *described* `TXXX`, whose value carries its own `ISRC:<value>` packing. That is an artefact of
+`-metadata TXXX=ISRC:…`, the only way the ffmpeg writer could reach a user-defined frame. The
+spelling is preserved because changing it would re-tag every MP3 in every library; moving it to the
+standard `TSRC` frame is a deliberate change, not a cleanup.
+
+`ASIN`, `COMPOSER` and `AUTHOR` are written by neither. `BuildFileTags` has never populated them,
+so listing them only ever cleared another tagger's value once `remove_values` was on.
+
+## Genres
+
+`selectGenres` (`modules/files.go`) ranks a release group's genres by community vote and keeps the
+top `max_genres` (tagger profile; default 5, matching Picard).
+
+- **The sort is what makes the cap meaningful.** MusicBrainz returns genres unordered, so
+  truncating the raw list would discard the popular genre as readily as the obscure one.
+- **The tie-break is by name, and it is about idempotency, not taste.** Equally-voted genres
+  returning in a different order on a later fetch would produce a different `GENRE` string and
+  re-tag the whole release group for nothing.
+- **Casing is MusicBrainz's.** Genres are canonically lower case there (`acid jazz`,
+  `afro-cuban jazz`). Title-casing them — which is what Lidarr does — is a transformation away
+  from the source that also mangles the names a naive implementation cannot know about: `UK garage`
+  becomes `Uk Garage`, `R&B` becomes `R&b`. Deliberately not done, and not configurable.
+
+## Album artists
+
+`ALBUMARTIST` holds the **first** credited artist only, because Plex has no concept of several and
+renders a joined string as one artist literally named `A; B`. `ALBUMARTISTS` carries the whole
+credit beside it, exactly as `ARTISTS` sits beside `ARTIST` — players that understand it (Navidrome
+reads `albumartists` natively and prefers it) get the full credit, and the rest ignore it.
+
+**Multi-value is per field, and this is the field it stops at.** Writing several `ALBUMARTIST`
+comments on a FLAC would not help: ffmpeg joins them back with `;` on read, which is exactly how
+Plex ends up with one artist named `A;B`. So `ALBUMARTIST` stays single-valued on both engines
+even though the format could carry more.
+
+Before `ALBUMARTISTS` existed the names disagreed with `MUSICBRAINZ_ALBUMARTISTID`, which has
+always listed every credited artist's MBID.
 
 ## Diff before write
 
@@ -29,15 +147,16 @@ detail view (current → desired, per tag) described in [style-guide.md](style-g
 A desired value that is empty means "Autotaggerr has nothing to say about this tag", not "clear it".
 Both `DiffFlacTags` and `DiffID3Tags` therefore skip empty values unless the tagger profile's
 `remove_values` is on; with it on, the empty value becomes a change and the tag is removed
-(`metaflac --remove-tag`, or ffmpeg's `-metadata key=`). The two engines are deliberately kept in
+(`metaflac --remove-tag`, or deleting the ID3 frame). The two engines are deliberately kept in
 step — the profile is one promise, and it used to hold on FLAC while ID3 quietly ignored it.
 
 **Every key in the change set must be written.** The MP3 writer's reported diff is derived from the
-change set rather than from its per-field write blocks, so a key that is reported but skipped —
-which is what a `desired[x] != ""` guard does once empties are allowed through — is reported as
-written while nothing happens, and is re-reported on every scan forever. The paired frames (`track`,
-`disc`) share one ID3 frame and are cleared together; the ISRC `TXXX` frame is cleared as `TXXX=`
-rather than `TXXX=ISRC:`, which would leave an empty payload behind. Regression test:
+change set rather than from what it did, so a key that is reported but skipped is reported as
+written while nothing happens, and is re-reported on every scan forever. The paired frames (`TRCK`,
+`TPOS`) each hold a number and a total in one frame and are cleared together; the ISRC's `TXXX`
+frame is deleted outright rather than left holding an empty `ISRC:` payload. Deleting one `TXXX`
+means reading the others out and putting them back, since a frame ID can only be deleted whole —
+`deleteUserDefinedFrame` exists for that and not by preference. Regression test:
 `TestMP3RemoveValuesClearsAndConverges`.
 
 ## Idempotency is the property that matters
@@ -45,7 +164,7 @@ rather than `TXXX=ISRC:`, which would leave an empty payload behind. Regression 
 If the desired tags never equal what is read back, the file is rewritten on **every** scan forever.
 That has happened once, and the shape of the bug is worth remembering:
 
-> **Multi-value ISRC on MP3.** ISRC is packed into a single `TXXX=ISRC:<value>` frame, but the
+> **Multi-value ISRC on MP3.** ISRC is packed into a single `TXXX` frame as `ISRC:<value>`, but the
 > decoder split the frame value on `;` *before* the `KEY:value` split — so a `"; "`-joined
 > multi-ISRC string (common on singles and featured tracks) read back as only its first value. The
 > diff never converged. Fixed by splitting on the **first colon only** (`SplitN(val, ":", 2)`); the

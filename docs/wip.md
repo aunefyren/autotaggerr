@@ -120,7 +120,7 @@ The manager-authority boundary is now honoured end to end (see
 ## Roadmap / ideas
 
 - **Additional audio formats** (OGG, M4A/AAC, …). Tagging covers FLAC (`metaflac`) and MP3
-  (`ffmpeg`) only.
+  (`bogem/id3v2`) only.
 - **More MusicBrainz fields** written per track.
 - **Write/normalize NFO sidecars** (`album.nfo` / `artist.nfo`). Autotaggerr already holds the full
   MusicBrainz release + artist data while tagging, so it could emit consistent sidecars (single
@@ -136,13 +136,6 @@ The manager-authority boundary is now honoured end to end (see
   Mapping to current content, creating folders, renaming and keeping up to date.
   Configurable structure? 
   Link to file importing feature?
-- **Tagger profile toggles for Lidarr parity.** Four flags on one settings surface, currently
-  hardcoded, each a question about matching what Lidarr writes:
-  - **Multiple artists on album** — not tagged today because Plex does not allow it. Configurable,
-    default off.
-  - **Genre casing** — Lidarr Title-cases genres. Should we?
-  - **Multiple genres** — Lidarr puts them all on `GENRE` separated by `; `. Should we?
-  - **`ORIGINALYEAR` on MP3s** — Lidarr writes it, we remove it. Should we?
 - *Does the collection page work with several libraries?*
   The page seems very one dimensional, with dynamic buttons.
   What happens if I have multiple libraries, perhaps either Lidarr or Autotaggerr managed?
@@ -162,6 +155,35 @@ The manager-authority boundary is now honoured end to end (see
   (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still
   unexported-base-URL seams stubbable only inside `modules/`; the same port pattern would make their
   callers testable too.
+
+## Tagging — what is left
+
+Multi-value tags and the four "match what Lidarr writes" flags are both done; the reference lives
+in [tagging.md](tagging.md#several-values-in-one-field). FLAC writes one Vorbis comment per value
+unconditionally, MP3 writes ID3v2.4's null-separated form when the profile's `mp3_multi_value_tags`
+says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. What is still open:
+
+- **`UFID` is reachable but not written.** Picard's canonical home for the recording MBID, and
+  `tag.AddUFIDFrame` is right there now that the writer addresses frames directly. Additive, so the
+  cost is one extra frame and a one-time write per file.
+- **The ISRC frame is an artefact.** It lives in a `TXXX` frame *described* `TXXX`, whose value
+  carries its own `ISRC:<value>` packing — the only way the old ffmpeg writer could reach a
+  user-defined frame. `TSRC` is the standard frame for it. Both this and `UFID` are one-time
+  rewrites of every MP3, so they belong in the same pass.
+- **ID3v1 is no longer refreshed.** ffmpeg was passed `-write_id3v1 1` and rewrote the 128-byte
+  trailer on every write; bogem does not manage ID3v1, so an existing trailer is preserved verbatim
+  and goes stale. Nothing that matters here reads it (it cannot hold an MBID, and every consumer in
+  [tagging.md](tagging.md) reads ID3v2), but a file tagged before and after the change disagrees
+  with itself for a v1-only reader. Stripping it outright may be better than leaving it.
+- **`ASIN`, `COMPOSER` and `AUTHOR` are populated by nothing.** They were dropped from the FLAC map
+  because `BuildFileTags` has always hardcoded them to `""`, which meant they only ever cleared
+  another tagger's value under `remove_values`. MusicBrainz can supply composer (via work relations)
+  and ASIN (on the release) if they are wanted for real — that is a fetch and a mapping, not a tag
+  wiring.
+- **AAC/M4A is where the separator choice starts to matter.** ffmpeg never gained multi-value
+  support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
+  setting's reasoning applies, and the format work should reuse it rather than re-litigate the
+  separator.
 
 ## Known issues / limitations
 
