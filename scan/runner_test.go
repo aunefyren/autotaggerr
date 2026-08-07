@@ -291,7 +291,7 @@ func TestRetagArtistEmitsEvent(t *testing.T) {
 	r.waitIdle(t)
 
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeDriftSync).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeTagFiles).First(&ev).Error; err != nil {
 		t.Fatalf("re-tag event not recorded: %v", err)
 	}
 	if ev.Status != models.EventStatusOK || ev.FinishedAt == nil {

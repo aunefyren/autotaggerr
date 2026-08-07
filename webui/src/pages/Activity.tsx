@@ -12,9 +12,11 @@ const TYPE_LABELS: Record<string, string> = {
   // "process", so this only covers a feed read before that migration lands.
   scan: "Processing",
   mb_mirror: "Metadata refresh",
-  // drift_sync survives for events recorded before the refresh verb was split out
-  // of the processing runner. The rows are still in the table, and an old event
-  // rendering as a raw type string would look like a bug.
+  tag_files: "Tag files",
+  // drift_sync is only ever an event recorded before the refresh verb was split out
+  // of the processing runner — those runs refreshed metadata and re-tagged in one
+  // pass, so they keep their own name. The rows are still in the table, and an old
+  // event rendering as a raw type string would look like a bug.
   drift_sync: "Metadata sync",
   lidarr_sync: "Lidarr sync",
   mb_migration: "Identity check",
@@ -315,7 +317,7 @@ function EventDetail({ event, onClose }: { event: Event; onClose: () => void }) 
             next processing run, or immediately with <em>Tag files</em>.
           </div>
         </div>
-      ) : event.type === "drift_sync" && d ? (
+      ) : (event.type === "tag_files" || event.type === "drift_sync") && d ? (
         <div className="stack">
           <div className="row" style={{ gap: 26, flexWrap: "wrap" }}>
             <Stat label="Releases checked" value={num(d, "releases_checked")} />

@@ -164,7 +164,7 @@ wrong should not cost a cold run. They differ in what they re-read, cheapest fir
 | **Process** (`process`) | yes | as needed | files were added, moved or changed on disk |
 
 The three queued ones go through the same [job queue](#the-job-queue) as a collection-wide run,
-report through the same `GET /process/status`, and record the same `process` / `drift_sync` events
+report through the same `GET /process/status`, and record the same `process` / `tag_files` events
 with the artist named in the payload. `scan` is not queued: it re-derives from the index and
 answers with what it found (see [the scoped rebuild](collection.md#scoping-a-rebuild)).
 
@@ -308,8 +308,17 @@ Catches upstream MusicBrainz changes and re-tags the files a processing run woul
 - Inside a processing run, the same re-tag is confined to that run's scope; see
   [the stages that never see a folder](#the-stages-that-never-see-a-folder).
 
-Surfaced as "Check for updates" on the Activity page, with a `drift_sync` event carrying releases
+Surfaced as "Check for updates" on the Activity page, with a `tag_files` event carrying releases
 checked/changed, files re-tagged and errors.
+
+**A re-tag records its outcome, like any other attempt on a file.** `retagItem` writes the same
+three facts `components.recordItem` does: a successful write sets `status = ok` and clears `error`,
+`last_error_at` and `last_error_transient`; a failed one records them. It has to, because the
+re-tag is frequently *the thing that repairs* a file that failed a scan — a path that updated only
+the timestamps left the row reporting a failure that no longer existed, and said nothing at all
+when the re-tag itself failed. Two details follow the pipeline exactly: `processed_version` is not
+stamped on a failure, so the next run re-attempts the file for free, and a file with no correlation
+(an unmatched one) is left alone rather than relabelled as an error.
 
 ## Activity events
 
@@ -328,8 +337,14 @@ to also write a `details.duration` string; that was the only reason those two ha
 other five did not, and it has been removed rather than copied into the rest. A running event counts
 up in the same format as the banner's elapsed counter; an event with no finish stamp reads `—`.
 
-Emitted today: `process`, `drift_sync`, `lidarr_sync`, `mb_mirror`, `mb_migration`, `plex_refresh`,
+Emitted today: `process`, `tag_files`, `lidarr_sync`, `mb_mirror`, `mb_migration`, `plex_refresh`,
 `health_check`.
+
+**`drift_sync` is a read-only legacy type.** The Tag files verb recorded its events under that name
+until the verbs were named apart, which made a Tag files run read as "Metadata sync" — the name of
+the verb that was *split out* of it. New runs record `tag_files`; the old rows keep `drift_sync`
+rather than being migrated, because a pre-split drift sync genuinely did both jobs and relabelling
+it would misreport history. The Activity page renders both with the same stat grid.
 
 - **`plex_refresh`** — one event per run wrapping `flushPlex`, summarising albums refreshed and
   failed (`albums_refreshed` / `albums_failed` / `failed_albums`). One per album would flood the feed
@@ -477,6 +492,29 @@ Within a single run, files are still processed by a bounded worker pool
 (`autotaggerr_process_concurrency`); the queue serialises *jobs*, the pool parallelises *files inside
 a job*.
 
+## Stopping on purpose
+
+`main.shutdown` waits on `SIGINT`/`SIGTERM` and then stops the process in an order chosen so that
+stopping means something:
+
+1. **`settings.Runtime.Stop`** cancels every cron task, so nothing new fires into a process that is
+   leaving.
+2. **`http.Server.Shutdown`** stops accepting requests and waits for the ones in flight — which
+   includes the synchronous re-tags (`RetagItems`), the only file writes that happen outside the
+   queue.
+3. **`scan.Runner.Shutdown`** stops the queue and waits for the job already executing.
+
+The third step is deliberately *not* `Wait`. Draining the whole queue would hold the process open
+for however long a full scan queued behind the current job takes; the pending jobs have started
+nothing, hold no event, and every verb here is re-runnable, so they are dropped and logged. Only the
+running job is given time — it has written files and opened an event. From `stopping` onward the
+queue refuses new work rather than accepting it to drop it seconds later.
+
+Nothing is cancelled mid-job. There is no cancellation to thread through a tag write, and
+interrupting one is how a file ends up half-written, so a job that outlasts `shutdownGrace`
+(30 seconds) is left to the process exiting under it. That is the crash case, which the next boot
+already repairs — see below.
+
 ## Restart reconciliation
 
 `events.ReconcileRunning` runs once at startup, before any schedule or auto-start fires, and marks
@@ -484,6 +522,9 @@ every event still in the `running` state as failed ("interrupted — the service
 event whose process is gone can never finish itself, so without this an interrupted run or sweep
 shows as running in the feed forever. It is startup-only by contract: run later, it could not tell a
 previous process's orphan from a job this process just began.
+
+It remains the safety net for a kill or a crash. A graceful stop no longer needs it: the running job
+finishes and closes its own event, and only a job that outran the grace period leaves an orphan.
 
 ## Plex refresh
 

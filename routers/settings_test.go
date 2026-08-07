@@ -177,3 +177,78 @@ func TestSettingsRevealSecret(t *testing.T) {
 		t.Errorf("reveal private_key = %d, want 400", w.Code)
 	}
 }
+
+// TestSendTestEmailRequiresAdmin: the endpoint sends mail from the instance's own
+// address, so it sits behind the same gate as the rest of the settings surface.
+func TestSendTestEmailRequiresAdmin(t *testing.T) {
+	settingsFixture(t)
+	r, api := setupAPI(t)
+	viewer := userToken(t, r, api.DB)
+
+	if w := do(r, "POST", "/api/v1/settings/email/test", viewer, nil); w.Code != http.StatusForbidden {
+		t.Errorf("as a non-admin = %d, want 403", w.Code)
+	}
+	if w := do(r, "POST", "/api/v1/settings/email/test", "", nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("anonymous = %d, want 401", w.Code)
+	}
+}
+
+// TestSendTestEmailReportsWhy is the feature's whole point: an admin pressing the
+// button on a half-configured instance must be told what is missing, in words, not
+// handed a generic failure.
+func TestSendTestEmailReportsWhy(t *testing.T) {
+	settingsFixture(t)
+	r, _ := setupAPI(t)
+	tok := loginToken(t, r)
+
+	// Nothing configured: the missing recipient is the first thing in the way.
+	w := do(r, "POST", "/api/v1/settings/email/test", tok, nil)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unconfigured = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "test recipient") {
+		t.Errorf("error did not name the missing recipient: %s", w.Body.String())
+	}
+
+	// With a recipient but no server, the next thing in the way is the host — and
+	// the body's address is used when one is given.
+	w = do(r, "POST", "/api/v1/settings/email/test", tok, map[string]string{"to": "admin@example.com"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("no host = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "disabled") && !strings.Contains(w.Body.String(), "host") {
+		t.Errorf("error did not name what is missing: %s", w.Body.String())
+	}
+}
+
+// TestSendTestEmailRefusesOnATestInstanceWithNoSink pins the endpoint's half of the
+// test-environment rule: a test instance with nowhere safe to send refuses, rather
+// than honouring the address in the request.
+//
+// The redirect *itself* is asserted in mail (which has a server to deliver to);
+// what belongs here is that the API cannot be talked past it — the request names a
+// real address and still gets the refusal.
+func TestSendTestEmailRefusesOnATestInstanceWithNoSink(t *testing.T) {
+	settingsFixture(t)
+	files.ConfigFile.AutotaggerrEnvironment = "test"
+	files.ConfigFile.AutotaggerrTestEmail = ""
+	// Otherwise the send is refused for being unconfigured, and this proves nothing.
+	files.ConfigFile.SMTPEnabled = true
+	files.ConfigFile.SMTPHost = "127.0.0.1"
+	files.ConfigFile.SMTPPort = 1
+	files.ConfigFile.SMTPFrom = "autotaggerr@example.com"
+
+	r, _ := setupAPI(t)
+	tok := loginToken(t, r)
+
+	w := do(r, "POST", "/api/v1/settings/email/test", tok, map[string]string{"to": "real@example.com"})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("= %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "test environment") {
+		t.Errorf("error = %s, want a refusal naming the test environment", w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "could not reach") {
+		t.Error("the send was attempted on a test instance with no test recipient")
+	}
+}

@@ -208,6 +208,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 			admin.GET("/settings", a.getSettings)
 			admin.PUT("/settings", a.updateSettings)
 			admin.GET("/settings/secrets/:key", a.revealSecret)
+			admin.POST("/settings/email/test", a.sendTestEmail)
 		}
 	}
 }

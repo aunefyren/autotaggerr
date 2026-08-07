@@ -113,6 +113,41 @@ are edited on their own page now — Lidarr/Plex credentials (**Managers**), the
 with a link to their owner, rather than omitted, because the keys are still in the file and a page
 that silently drops them invites someone to edit the file and wonder why nothing changed.
 
+## Email, and the one action on this page
+
+The **Email** section configures an SMTP server (`mail`, stdlib `net/smtp`). PLAIN auth is used
+only when a username is set — a local relay on 25 that wants no credentials is a normal deployment.
+
+**Encryption is `smtp_tls`**, and its default `auto` reads the answer off the port: 465 is implicit
+TLS (wrapped before the greeting), anything else is upgraded with STARTTLS when the server
+advertises it and sent in clear when it does not. That is right for every hosted provider, and the
+explicit modes exist for the self-hosted relay it is wrong for — `starttls` **refuses to send** to a
+server that does not offer the upgrade, rather than silently falling back to plaintext; `none` never
+upgrades, for a relay on localhost whose certificate nobody issued; `implicit` forces SMTPS on a
+non-standard port. An empty or unrecognised value resolves to `auto`, so a `config.json` written
+before the setting existed keeps behaving exactly as it did.
+
+**A test instance never mails anyone but the test recipient.** When `autotaggerr_environment` is
+`test`, `mail.Send` rewrites the recipients of *every* message to `autotaggerr_test_email` — the
+envelope and the `To:` header both — and logs that it did. There is no exception and no override:
+`SendTest`'s explicit address is ignored too, and the address it reports back is the one actually
+delivered to, so the page cannot claim a delivery that did not happen. With no test recipient set
+there is nowhere safe to send, so the send is refused rather than falling back to the real address.
+The rule lives in `Send` rather than in its callers precisely because a caller is a place to forget
+it, and a test instance is usually pointed at a copy of the real database — the same users, the same
+addresses.
+
+`POST /settings/email/test` (admin, like everything else here) sends one message to
+`autotaggerr_test_email`, or to an address in the request body. It is the section's only action and
+the only caller of `mail.Send` today: nothing in Autotaggerr sends mail on its own yet, so these
+settings exist to be ready for something that does — password reset being the obvious candidate.
+
+Two properties are deliberate. The test sends through the **stored** configuration, not the page's
+pending edits, and the button says so, because a success against the host you just replaced is
+worse than no test at all. And the SMTP server's own refusal is returned verbatim — `535
+authentication failed` is the answer the admin came for, and summarising it away leaves them with
+nothing to act on.
+
 ## Tests
 
 - `settings/schema_test.go` — the surface (no secret values, no read-only field claiming to be
@@ -120,8 +155,16 @@ that silently drops them invites someone to edit the file and wonder why nothing
   `autotaggerr_mirror_disabled` inversion.
 - `settings/apply_test.go` — scheduling, rescheduling, cancelling a disabled job, the live effects,
   and the full save path against a temp `config.json` (`files.SetConfigPaths` is the seam).
-- `routers/settings_test.go` — the admin gate from both sides, 401 vs 403, and that the response
-  never contains a secret.
+- `routers/settings_test.go` — the admin gate from both sides, 401 vs 403, that the response never
+  contains a secret, and that a test email on a half-configured instance names what is missing.
+- `mail/mail_test.go` — the config checks, the message format (CRLF, a Date header, no header
+  injection through the subject), the test-environment redirect (including that the override is
+  ignored and that a missing sink refuses the send) and how `smtp_tls` resolves against the port,
+  with the transport stubbed.
+- `mail/transport_test.go` — the transport itself against a scripted in-process SMTP server: with
+  and without auth, each place the server can say no, and each TLS mode. The fake advertises
+  STARTTLS but speaks plaintext, so whether the client attempted the upgrade is legible from
+  whether the send succeeded — no certificate needed.
 
 ## Related
 

@@ -219,7 +219,7 @@ func TestRetagLibraryEmpty(t *testing.T) {
 	r.waitIdle(t)
 
 	var ev models.Event
-	if err := db.Where("type = ?", models.EventTypeDriftSync).First(&ev).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeTagFiles).First(&ev).Error; err != nil {
 		t.Fatalf("re-tag event not recorded: %v", err)
 	}
 	if ev.Status != models.EventStatusOK || ev.FinishedAt == nil {
@@ -250,7 +250,7 @@ func TestRetagAllCoversEveryEnabledLibrary(t *testing.T) {
 	r.waitIdle(t)
 
 	var events []models.Event
-	if err := db.Where("type = ?", models.EventTypeDriftSync).Find(&events).Error; err != nil {
+	if err := db.Where("type = ?", models.EventTypeTagFiles).Find(&events).Error; err != nil {
 		t.Fatalf("read events: %v", err)
 	}
 	if len(events) != 1 {
@@ -271,7 +271,7 @@ func TestRetagLibraryUnknown(t *testing.T) {
 	r.waitIdle(t)
 
 	var count int64
-	db.Model(&models.Event{}).Where("type = ?", models.EventTypeDriftSync).Count(&count)
+	db.Model(&models.Event{}).Where("type = ?", models.EventTypeTagFiles).Count(&count)
 	if count != 0 {
 		t.Errorf("unknown library recorded %d re-tag events, want 0", count)
 	}

@@ -1,9 +1,12 @@
 package scan
 
 import (
+	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // newQueueRunner builds a runner with only the queue wired — no database — for
@@ -157,5 +160,101 @@ func TestScanJobReportsItsOwnProgress(t *testing.T) {
 	if during.Total != 200 || during.Done != 75 || during.Phase != PhaseScanning || during.Current != "Some Artist" {
 		t.Errorf("progress during a scan = %d/%d phase=%q current=%q, want 75/200 phase=%q current=%q",
 			during.Done, during.Total, during.Phase, during.Current, PhaseScanning, "Some Artist")
+	}
+}
+
+// TestShutdownDropsPendingAndWaitsForRunning is the shape of a deliberate stop: the
+// job already executing is allowed to finish (it has written files and opened an
+// event), and the ones behind it — which have started nothing — are dropped rather
+// than holding the process open for hours.
+func TestShutdownDropsPendingAndWaitsForRunning(t *testing.T) {
+	r := newQueueRunner()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var runningFinished, pendingRan int32
+
+	r.enqueue(job{jobRefreshAll, "running", "the running job", func() {
+		close(started)
+		<-release
+		atomic.AddInt32(&runningFinished, 1)
+	}})
+	<-started
+
+	r.enqueue(job{jobRefreshArtist, "pending", "the pending job", func() {
+		atomic.AddInt32(&pendingRan, 1)
+	}})
+
+	done := make(chan error, 1)
+	go func() { done <- r.Shutdown(context.Background()) }()
+
+	// Shutdown must still be waiting: the first job has not finished.
+	select {
+	case err := <-done:
+		t.Fatalf("Shutdown returned %v while a job was still running", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Shutdown did not return after the running job finished")
+	}
+
+	if atomic.LoadInt32(&runningFinished) != 1 {
+		t.Error("the in-flight job was not allowed to finish")
+	}
+	if got := atomic.LoadInt32(&pendingRan); got != 0 {
+		t.Errorf("a pending job ran %d time(s) during shutdown, want 0", got)
+	}
+}
+
+// TestShutdownRefusesNewWork: a cron that fires mid-shutdown, or a request that got
+// in just before the server closed, must not queue work the process is about to drop.
+func TestShutdownRefusesNewWork(t *testing.T) {
+	r := newQueueRunner()
+
+	if err := r.Shutdown(context.Background()); err != nil {
+		t.Fatalf("Shutdown on an idle runner: %v", err)
+	}
+
+	var ran int32
+	r.enqueue(job{jobRefreshAll, "late", "a late job", func() { atomic.AddInt32(&ran, 1) }})
+
+	r.queueMu.Lock()
+	queued := len(r.queue)
+	r.queueMu.Unlock()
+	if queued != 0 {
+		t.Errorf("%d job(s) queued after shutdown, want 0", queued)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if atomic.LoadInt32(&ran) != 0 {
+		t.Error("a job enqueued after shutdown ran anyway")
+	}
+}
+
+// TestShutdownGivesUpOnADeadline: a job that outlasts the grace period must not hold
+// the process forever. The caller logs it and exits; the orphaned event is closed on
+// the next boot by events.ReconcileRunning.
+func TestShutdownGivesUpOnADeadline(t *testing.T) {
+	r := newQueueRunner()
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	r.enqueue(job{jobRefreshAll, "slow", "a slow job", func() {
+		close(started)
+		<-release
+	}})
+	<-started
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	if err := r.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("Shutdown = %v, want a deadline error", err)
 	}
 }

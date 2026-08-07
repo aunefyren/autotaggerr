@@ -5,7 +5,9 @@ import (
 	"net/http"
 
 	"github.com/aunefyren/autotaggerr/auth"
+	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/mail"
 	"github.com/aunefyren/autotaggerr/settings"
 	"github.com/gin-gonic/gin"
 )
@@ -62,4 +64,34 @@ func (a *API) revealSecret(c *gin.Context) {
 		logger.Log.Infof("%s revealed the stored value of %s", user.Username, key)
 	}
 	c.JSON(http.StatusOK, gin.H{"key": key, "value": value})
+}
+
+// sendTestEmail sends one message through the configured SMTP server so an admin can
+// find out whether the settings work.
+//
+// It reads the *stored* config, not the page's pending edits: a send is not a
+// validation of what is typed, it is a check that what is saved can reach a server.
+// The page says so next to the button rather than the endpoint guessing.
+//
+// A failure is a 400 carrying the SMTP error verbatim — "the SMTP server rejected the
+// credentials: 535 authentication failed" is the whole point of the feature, and
+// flattening it to "could not send" would throw away the only useful part.
+func (a *API) sendTestEmail(c *gin.Context) {
+	var body struct {
+		To string `json:"to"`
+	}
+	// The body is optional: with no address the configured test recipient is used.
+	_ = c.ShouldBindJSON(&body)
+
+	recipient, err := mail.SendTest(files.ConfigFile, body.To)
+	if err != nil {
+		logger.Log.Warnf("test email failed: %s", err.Error())
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	if user, ok := auth.CurrentUser(c); ok {
+		logger.Log.Infof("%s sent a test email to %s", user.Username, recipient)
+	}
+	c.JSON(http.StatusOK, gin.H{"sent_to": recipient})
 }

@@ -76,6 +76,13 @@ func (j job) view() JobView { return JobView{Kind: string(j.kind), Title: j.titl
 // duplicates collapse onto the existing one, so a restart storm or a double-click
 // cannot stack redundant runs. File-writing jobs slot ahead of pending metadata jobs.
 func (r *Runner) enqueue(j job) {
+	// A job accepted during shutdown would be dropped seconds later by Shutdown, and
+	// in the meantime would show up as pending. Refuse it where the refusal can be
+	// logged with the job's name.
+	if r.stopping.Load() {
+		logger.Log.Infof("shutting down; not queuing job: %s", j.title)
+		return
+	}
 	r.queueMu.Lock()
 	if r.current != nil && r.current.key == j.key {
 		r.queueMu.Unlock()
@@ -126,6 +133,12 @@ func (r *Runner) queueViewsLocked() []JobView {
 // an interactive re-tag can never write the same file at once.
 func (r *Runner) worker() {
 	for {
+		// Checked before a job is pulled rather than after: a job started here would
+		// hold shutdown open for its whole duration, and nothing has been promised
+		// about it yet.
+		if r.stopping.Load() {
+			return
+		}
 		r.queueMu.Lock()
 		if len(r.queue) == 0 {
 			r.queueMu.Unlock()

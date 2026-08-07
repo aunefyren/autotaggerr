@@ -83,6 +83,13 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.SMTPTLS == "" {
+		// Auto reproduces what the mailer did before the setting existed: implicit TLS
+		// on 465, opportunistic STARTTLS elsewhere.
+		ConfigFile.SMTPTLS = models.SMTPTLSAuto
+		anythingChanged = true
+	}
+
 	if ConfigFile.Timezone == "" {
 		// Set new value
 		ConfigFile.Timezone = "Europe/Paris"
@@ -190,6 +197,7 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrEnvironment = "prod"
 	ConfigFile.Database = models.DatabaseConfig{Type: "sqlite", DSN: "config/autotaggerr.db"}
 	ConfigFile.SMTPEnabled = true
+	ConfigFile.SMTPTLS = models.SMTPTLSAuto
 	ConfigFile.AutotaggerrVersion = autotaggerrVersionParameter
 	ConfigFile.AutotaggerrLibraries = []string{}
 	ConfigFile.AutotaggerrProcessCronSchedule = "0 0 18 * * 7"

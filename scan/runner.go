@@ -106,7 +106,10 @@ type Runner struct {
 	refresh *mirror.Runner
 
 	running atomic.Bool // a job is currently executing
-	jobMu   sync.Mutex  // held for the duration of each job; TryLock'd by interactive re-tags
+	// stopping is set by Shutdown. From then on the queue accepts nothing and the
+	// worker starts no further job — what is already running is left to finish.
+	stopping atomic.Bool
+	jobMu    sync.Mutex // held for the duration of each job; TryLock'd by interactive re-tags
 
 	// The job queue: a single worker (started in NewRunner) drains `queue` one at a
 	// time, so every background verb is serial and visible. `current` is the executing
@@ -267,6 +270,53 @@ func (r *Runner) Wait() {
 			return
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// Shutdown stops the queue and waits for the job in flight, returning ctx's error if
+// that job outlasts the deadline.
+//
+// It is not Wait. Wait drains the whole queue, which at shutdown is the wrong
+// promise: a full scan sitting behind the running job would hold the process open for
+// hours after someone asked it to stop. So the pending jobs are dropped — none of
+// them has started, none has an event, and every verb here is re-runnable by design —
+// and only the one already executing is given time to finish, because *that* one has
+// written files and opened an event.
+//
+// Nothing is cancelled mid-job: the runner has no cancellation to thread through a
+// tag write, and interrupting one is how a file ends up half-written. A job that
+// outlasts the deadline is left to the process exiting under it, which is the crash
+// case the caller already survives — events.ReconcileRunning closes its event on the
+// next boot.
+func (r *Runner) Shutdown(ctx context.Context) error {
+	r.stopping.Store(true)
+
+	r.queueMu.Lock()
+	dropped := len(r.queue)
+	r.queue = nil
+	views := r.queueViewsLocked()
+	r.queueMu.Unlock()
+	if dropped > 0 {
+		logger.Log.Infof("shutting down: dropped %d queued job(s) that had not started", dropped)
+		r.setStatus(func(s *Summary) { s.Queue = views })
+	}
+
+	// Wake the worker so it observes `stopping` and parks instead of sitting on an
+	// empty queue.
+	select {
+	case r.wake <- struct{}{}:
+	default:
+	}
+
+	for {
+		if !r.running.Load() {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }
 
@@ -1225,7 +1275,7 @@ func (r *Runner) retagAllNow() {
 	}
 
 	logger.Log.Infof("re-tagging %d files across %d library(ies)", len(items), len(libraries))
-	event := events.Begin(r.db, models.EventTypeDriftSync, "Tag files in every library")
+	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in every library")
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(maxDetailItemsRecorded)
 
@@ -1265,7 +1315,7 @@ func (r *Runner) retagLibraryNow(libraryID uuid.UUID) {
 	}
 
 	logger.Log.Infof("re-tagging %d files for library: %s", len(items), library.Name)
-	event := events.Begin(r.db, models.EventTypeDriftSync, "Tag files in "+library.Name)
+	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in "+library.Name)
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(maxDetailItemsRecorded)
 
@@ -1309,7 +1359,7 @@ func (r *Runner) retagArtistNow(artistMBID string) {
 	}
 
 	logger.Log.Infof("re-tagging %d files for artist: %s", len(items), artist.Name)
-	event := events.Begin(r.db, models.EventTypeDriftSync, "Tag files for "+artist.Name)
+	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files for "+artist.Name)
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(maxDetailItemsRecorded)
 
@@ -1485,6 +1535,13 @@ func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseR
 // retagItem rewrites one indexed file's tags from its stored correlation and its
 // library's tagger settings, then refreshes the item's on-disk identity so
 // skip-unchanged stays correct. Libraries are cached across the run.
+//
+// It records the outcome the same way the processing pipeline does
+// (components.recordItem): a write that succeeds clears whatever the last attempt
+// failed at, and a write that fails says so. Without that, a file that errored
+// during a scan and was then fixed by a re-tag kept reporting the old failure
+// forever — the re-tag is precisely the thing that repaired it — and a re-tag that
+// failed left the row claiming the file was fine.
 func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]models.Library, refreshSet *modules.AlbumRefreshSet) (int, []models.TagChange, error) {
 	library, ok := libraries[item.LibraryID]
 	if !ok {
@@ -1504,13 +1561,31 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 	if !tagger.WriteEnabled() {
 		return 0, nil, nil
 	}
+	// Nothing to rewrite from, and nothing to say about it: an unmatched file has no
+	// correlation, so attempting the write would only turn "the manager does not know
+	// this file" into an error status that misreports why.
+	if correlation.MBReleaseID == "" {
+		return 0, nil, nil
+	}
 	unchanged, written, changes, err := modules.TagResolvedFile(item.Path, correlation, r.plex, refreshSet, library.Path, tagger.Config())
 	if err != nil {
+		r.recordRetagFailure(item, err)
 		return 0, nil, err
 	}
 
 	now := time.Now()
-	updates := map[string]any{"last_scanned_at": now, "processed_version": r.version}
+	updates := map[string]any{
+		"last_scanned_at":   now,
+		"processed_version": r.version,
+		// The file is written and its identity holds, which is the whole of what a
+		// status says. Clearing the dated error with it is the same rule the manual
+		// attach applies (routers.saveCorrelation): a failure that has been repaired
+		// must stop reading as a live problem.
+		"status":               models.LibraryItemStatusOK,
+		"error":                "",
+		"last_error_at":        nil,
+		"last_error_transient": false,
+	}
 	if !unchanged {
 		updates["last_tagged_at"] = now
 	}
@@ -1523,6 +1598,28 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 		logger.Log.Warnf("failed to update item after re-tag: %s", err.Error())
 	}
 	return written, changes, nil
+}
+
+// recordRetagFailure stamps a failed re-tag onto the item, splitting the failure the
+// same three ways the pipeline does: what went wrong, when, and whether it is the
+// kind of thing that fixes itself.
+//
+// ProcessedVersion is deliberately not stamped here. Leaving it stale is what makes
+// the file re-attempted for free by the next processing run, exactly as a scan
+// failure is — stamping it on a failure path would turn a MusicBrainz outage into a
+// permanent skip.
+func (r *Runner) recordRetagFailure(item models.LibraryItem, cause error) {
+	now := time.Now()
+	updates := map[string]any{
+		"last_scanned_at":      now,
+		"status":               models.LibraryItemStatusError,
+		"error":                cause.Error(),
+		"last_error_at":        now,
+		"last_error_transient": errors.Is(cause, modules.ErrTransient),
+	}
+	if err := r.db.Model(&models.LibraryItem{}).Where("id = ?", item.ID).Updates(updates).Error; err != nil {
+		logger.Log.Warnf("failed to record a re-tag failure for %q: %s", item.Path, err.Error())
+	}
 }
 
 // RetagItem rewrites one indexed file from its stored correlation, using its

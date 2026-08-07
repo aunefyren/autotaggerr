@@ -74,6 +74,26 @@ func (r *Runtime) Schedule(cfg models.ConfigStruct) {
 	}
 }
 
+// Stop cancels every scheduled job. It is Schedule's shutdown counterpart: once the
+// process has decided to exit, a cron firing during the drain would queue work that
+// is about to be dropped, and the job it queued would be reported as pending in an
+// Activity feed nobody is going to see.
+//
+// Like the rest of Runtime, a nil receiver is a no-op.
+func (r *Runtime) Stop() {
+	if r == nil || r.scheduler == nil {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name, task := range r.tasks {
+		if task != nil {
+			task.Cancel()
+		}
+		delete(r.tasks, name)
+	}
+}
+
 // Apply pushes cfg onto the running process and reports what it did, in the caller's
 // words: one short sentence per thing changed. Settings that cannot be applied live
 // are not its business — Save decides that from the field tiers.

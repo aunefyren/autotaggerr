@@ -173,8 +173,8 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `autotaggerr_name` | — | — | string | Display name of the instance. Default `Autotaggerr`. |
 | `autotaggerr_external_url` | `-externalurl` | `externalurl` | string | URL others use to reach Autotaggerr. Default empty. |
 | `autotaggerr_version` | — | — | string | Build version. Injected at release time; do not set manually. |
-| `autotaggerr_environment` | — | — | string | `prod` or `test`. `test` disables Gin release mode. Default `prod`. |
-| `autotaggerr_test_email` | — | — | string | Address used for SMTP test mail. Default empty. |
+| `autotaggerr_environment` | — | — | string | `prod` or `test`. `test` disables Gin release mode and **redirects every outgoing email to `autotaggerr_test_email`**, with no exception. Default `prod`. |
+| `autotaggerr_test_email` | — | — | string | Default recipient for the *Send test message* button on **Settings → Email**, and the sole recipient of every message while `autotaggerr_environment` is `test`. Default empty. |
 | `autotaggerr_log_level` | — | — | string | Logrus level (`trace`, `debug`, `info`, `warn`, `error`, …). Default `info`. |
 | `autotaggerr_libraries` | — | — | string[] | Absolute paths of music libraries to process recursively. Default `[]`. |
 | `autotaggerr_process_on_start_up` | — | — | bool | Run a full processing pass over every library immediately on startup. Default `false`. |
@@ -195,10 +195,11 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |
 | `autotaggerr_migration_review_pinned` | — | — | bool | Hold any migration that would rewrite a **manually attached** file's MB ID, whatever its type. Default `false` (apply). |
 | `autotaggerr_migration_review_deletions` | — | — | bool | Hold **deleted** entities for manual approval. Applying one marks the affected files unmatched. Default `false` (apply). |
-| `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. |
+| `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. Used by the *Send test message* button on **Settings → Email**; nothing else sends mail yet. |
 | `smtp_host` | `-smtphost` | `smtphost` | string | SMTP server hostname. Default empty. |
 | `smtp_port` | `-smtpport` | `smtpport` | int | SMTP server port. Default `0`. |
-| `smtp_username` | `-smtpusername` | `smtpusername` | string | SMTP auth username. Default empty. |
+| `smtp_tls` | — | — | string | How the connection is encrypted: `auto` (default — implicit TLS on port 465, STARTTLS elsewhere when offered), `none`, `starttls` (refuse to send if not offered), `implicit`. |
+| `smtp_username` | `-smtpusername` | `smtpusername` | string | SMTP auth username. Empty means no authentication is attempted. Default empty. |
 | `smtp_password` | `-smtppassword` | `smtppassword` | string | SMTP auth password. Default empty. |
 | `smtp_from` | `-smtpfrom` | `smtpfrom` | string | Sender address for outgoing mail. Default empty. |
 | `lidarr_base_url` | — | — | string | Base URL of the Lidarr instance (fallback metadata source). Default empty. |

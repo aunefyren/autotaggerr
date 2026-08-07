@@ -13,13 +13,12 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 ## Open work
 
 - **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
-  manual attach. The last unbuilt piece of the native manager.
+  manual attach. The last unbuilt piece of the native manager, and the last verb with no Activity
+  event — every other one emits (see [scanning.md](scanning.md)), so the event ships with the
+  feature rather than before it.
 - **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
   pulls the whole back catalogue of the chosen types. A global follow default could layer on later
   without a schema change.
-- **File-import events.** Plex refresh and scheduled health checks now emit events, and long jobs
-  carry live progress (see [scanning.md](scanning.md)); the remaining gap is an event for file import,
-  which ships with that feature (M6 pass E) rather than before it.
 - **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
   collection already knows about. Artists reached only by browsing still fall back to the
   on-demand path.
@@ -32,6 +31,13 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 - **Event retention is fixed** at the newest 200 events (detail rows cascade with them), and the
   per-run detail cap is a hardcoded 500. Both could be configurable, and time-based retention would
   suit a feed better than a count.
+- **A running job cannot be cancelled.** Graceful shutdown has shipped (see
+  [scanning.md](scanning.md#stopping-on-purpose)): schedules stop, HTTP drains, pending jobs are
+  dropped and the job in flight is given 30 seconds. What is missing is the ability to *stop* that
+  job — there is no cancellation to thread through a tag write, so a long scan still outlasts the
+  grace period and leaves its event to be reconciled on the next boot. A per-job context checked
+  between files (where the walk already stops cleanly) would close that gap, and would give file
+  work the counterpart to the metadata pass's `POST /mirror/cancel`.
 
 ## A failed lookup must not erase what a file is
 
@@ -43,21 +49,13 @@ and the outcome of the last attempt are now three separate facts — see
 [mirror.md](mirror.md#an-expiry-is-not-an-expiry-date) for the stale-cache fallback that stops most
 outages reaching the index at all. What is left:
 
-- **Six other queries still filter on `status = OK`** to answer "which files belong to this
-  artist/album" (`collection/paths.go`, `scan/runner.go`, `routers/scan_items.go`). They feed retag
-  and the per-artist counts, and by the same logic should follow identity too — excluding an errored
-  file from a retag is precisely what blocks it from recovering once the cause is fixed. Wider diff
-  than the collection fix, so: own pass, own tests.
-- **A successful re-tag does not clear a stale `error` status.** `scan/runner.go`'s re-tag path
-  updates `processed_version` and the timestamps but never touches `status`/`error`, so a file that
-  failed and was then fixed by a re-tag keeps reporting the old failure. It also records nothing at
-  all when the re-tag itself fails. Belongs with the pass above — both are the re-tag path not
-  sharing `recordItem`'s understanding of what a status means.
-- **Nothing lets an admin ask "what failed?"**. The rows now carry `error`, `last_error_at` and
-  `last_error_transient`, which is exactly the split needed to separate "MusicBrainz was down, this
-  will retry" from "someone has to fix this" — but the Items page has no failure filter and Activity
-  does not use the transient flag to keep an outage from reading as hundreds of broken files. Belongs
-  with the Activity-rendering work under [Frontend follow-ups](#frontend-follow-ups).
+- **The membership queries still filter on `status = OK`.** Seven of them answer "which files belong
+  to this artist/album" that way (`collection/paths.go` ×2, `scan/runner.go` ×3,
+  `routers/scan_items.go` ×2), feeding retag and the per-artist counts. By the same logic as the
+  shipped fix they should follow identity instead: excluding an errored file from a retag is
+  precisely what stops it recovering once the cause is fixed. The re-tag path itself now records
+  outcomes like the pipeline does ([scanning.md](scanning.md#drift-sync)), so this is the last half
+  of that idea — wider diff than the collection fix, so: own pass, own tests.
 - **A retry with backoff** inside the fetch (one attempt spaced by the existing `RateLimit()`
   interval) would absorb most single 503s before any of this matters. Kept separate because it
   interacts with the in-flight coalescing and the limiter; the shipped work makes an outage
@@ -69,16 +67,11 @@ Shipped. Nothing durable is memory-only, nothing is a JSON file, and the batched
 see [mirror.md](mirror.md#what-is-cached-and-where) and
 [mirror.md](mirror.md#the-provider-cache). What is left from that audit:
 
-- **No graceful shutdown.** `main.go` has no `signal.Notify` and no `Shutdown`, so a container
-  restart kills the process mid-job. The caches no longer care (every write is write-through), but a
-  scan interrupted this way still leaves its event `running` until `events.ReconcileRunning` closes
-  it on the next boot. That is the right safety net and a poor substitute for stopping on purpose:
-  a handler that cancels the runner's context, waits for `scan.Runner.Wait`, and finishes the open
-  event as cancelled would make a restart a normal outcome rather than a crash to be repaired.
 - **The legacy JSON files are left on disk** after their one-time import. Harmless, and deliberate —
-  an import that had deleted its own source would be unrecoverable if it went wrong — but
-  `config/*.json` now contains six files nothing reads. Worth a cleanup pass once the import has
-  been in a release long enough to trust.
+  an import that had deleted its own source would be unrecoverable if it went wrong — but `config/`
+  now holds five files nothing reads (`lidarr_{albums,artists,tracks}.json`, `mb_releases.json`,
+  `plex_album_keys.json`). Worth a cleanup pass once the import has been in a release long enough to
+  trust.
 
 ## Frontend follow-ups
 
@@ -92,12 +85,14 @@ The manager-authority boundary is now honoured end to end (see
   (`POST /libraries/:id/recorrelate`). This is what a user does when Lidarr's answer and the files
   disagree — the remaining action-half endpoint with no UI. Use the shared `ConfirmDialog`
   (`ui.tsx`, `danger`: it discards pins) rather than a new one.
+- **A failure filter on the Items page.** The rows carry `error`, `last_error_at` and
+  `last_error_transient` — exactly the split needed to separate "MusicBrainz was down, this will
+  retry" from "someone has to fix this" — and nothing reads them. There is no way to ask *what
+  failed?*, and Activity does not use the transient flag to keep an outage from reading as hundreds
+  of broken files.
 - **Surface the scan's metadata-refresh stage in Activity.** A scan runs an inline metadata refresh
   as its first phase (no separate event — see [scanning.md](scanning.md) / the runner's phases), and
-  the backend now records it two ways on the `scan` event, both currently unrendered:
-  - The event **summary** gains a clause when the refresh did something, e.g.
-    `… · 4 releases refreshed, 2 changed upstream` (absent on a no-op scan). Already shown verbatim,
-    so this needs nothing — noted for awareness.
+  the backend records it on the `scan` event in two unrendered places:
   - `details.refresh` holds the counts (`checked`, `fetched`, `fresh`, `changed_releases`,
     `gone_releases`, `relinked`, `files_retagged`) — render it as a small "Metadata" section on the
     scan detail view.
@@ -155,6 +150,13 @@ The manager-authority boundary is now honoured end to end (see
   (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still
   unexported-base-URL seams stubbable only inside `modules/`; the same port pattern would make their
   callers testable too.
+- **Multi user support?**
+  Any need?
+- **Password reset over email.** The mailer now exists and is proven by the *Send test message*
+  button on Settings → Email (see [settings.md](settings.md#email-and-the-one-action-on-this-page)),
+  but nothing sends mail on its own. A reset flow is the obvious first real consumer: a signed,
+  single-use, expiring token mailed to the address on the account — which means `User.Email` has to
+  start being populated and verified, since today it is stored and never used.
 
 ## Tagging — what is left
 
@@ -175,11 +177,11 @@ says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. What is still o
   and goes stale. Nothing that matters here reads it (it cannot hold an MBID, and every consumer in
   [tagging.md](tagging.md) reads ID3v2), but a file tagged before and after the change disagrees
   with itself for a v1-only reader. Stripping it outright may be better than leaving it.
-- **`ASIN`, `COMPOSER` and `AUTHOR` are populated by nothing.** They were dropped from the FLAC map
-  because `BuildFileTags` has always hardcoded them to `""`, which meant they only ever cleared
-  another tagger's value under `remove_values`. MusicBrainz can supply composer (via work relations)
-  and ASIN (on the release) if they are wanted for real — that is a fetch and a mapping, not a tag
-  wiring.
+- **Composer and ASIN are not written at all.** The three dead `FileTags` fields are gone (they were
+  hardcoded to `""` and read by neither tag map), so this is now a feature rather than a cleanup:
+  MusicBrainz can supply composer via work relations and ASIN on the release. That is a fetch and a
+  mapping — a field on `models.FileTags`, a key in both tag maps, and the work-relation include on
+  the release fetch.
 - **AAC/M4A is where the separator choice starts to matter.** ffmpeg never gained multi-value
   support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
   setting's reasoning applies, and the format work should reuse it rather than re-litigate the

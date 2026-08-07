@@ -249,6 +249,14 @@ func Sections() []Section {
 					set: setInt(func(c *models.ConfigStruct, v int) { c.SMTPPort = v }, intRange(0, 65535)),
 				},
 				{
+					Key: "smtp_tls", Label: "Encryption", Type: TypeSelect, Tier: TierRestart,
+					Options: models.SMTPTLSModes,
+					Help:    "auto reads it from the port: 465 is implicit TLS, anything else upgrades with STARTTLS when the server offers it. starttls refuses to send if it is not offered; none never encrypts.",
+					get:     func(c models.ConfigStruct) any { return c.SMTPTLS },
+					set: setString(func(c *models.ConfigStruct, v string) { c.SMTPTLS = v },
+						oneOf(models.SMTPTLSModes...)),
+				},
+				{
 					Key: "smtp_username", Label: "Username", Type: TypeString, Tier: TierRestart,
 					get: func(c models.ConfigStruct) any { return c.SMTPUsername },
 					set: setString(func(c *models.ConfigStruct, v string) { c.SMTPUsername = v }, nil),

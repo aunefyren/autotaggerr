@@ -28,7 +28,7 @@ jobs:
         goversion: "1.25.0"
         binary_name: "autotaggerr"
         ldflags: "-s -w"
-        extra_files: README.md auth collection components database events files logger migration mirror models modules routers scan utilities web Dockerfile entrypoint.sh
+        extra_files: README.md auth collection components database events files health logger mail metadata migration mirror models modules routers scan settings utilities web Dockerfile entrypoint.sh
         retry: 10
         overwrite: true
         release_name: ${{ github.ref_name }}

@@ -40,10 +40,7 @@ func fullFileTags() models.FileTags {
 		RecordLabels:          []string{"Test Label"},
 		Media:                 "CD",
 		Barcode:               "0123456789",
-		ASIN:                  "B000TEST",
 		CatalogNumbers:        []string{"CAT-1"},
-		Composer:              "Test Composer",
-		Author:                "Test Author",
 	}
 }
 
@@ -225,18 +222,31 @@ func TestExtractFromID3v2(t *testing.T) {
 
 // TestSetFlacTagsRemoveValues exercises the AutotaggerrRemoveValues branch: an
 // empty desired value removes the existing tag only when removal is enabled.
+//
+// BARCODE is the field under test because it is one the writer actually maps. This
+// test used to seed COMPOSER, which buildFLACDesiredTags does not list at all — so
+// the seed wrote nothing, the "cleared" assertion read a tag that had never existed,
+// and the whole test passed without touching the branch it names.
 func TestSetFlacTagsRemoveValues(t *testing.T) {
 	requireTool(t, "metaflac")
 	path := filepath.Join(t.TempDir(), "track.flac")
 	synthInto(t, path)
 
-	// Seed a COMPOSER tag.
-	if _, _, _, err := SetFlacTags(path, models.FileTags{Artist: "A", Album: "B", Title: "C", Composer: "Someone"}, models.ConfigStruct{}); err != nil {
+	// Seed a BARCODE tag.
+	seeded := models.FileTags{Artist: "A", Album: "B", Title: "C", Barcode: "0123456789"}
+	if _, _, _, err := SetFlacTags(path, seeded, models.ConfigStruct{}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
+	tags, err := getFlacTagsMap(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v := firstTag(tags, "BARCODE"); v != "0123456789" {
+		t.Fatalf("seed did not write BARCODE, got %q — the rest of this test would be vacuous", v)
+	}
 
-	// Removal disabled: an empty Composer must NOT change anything.
-	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", Composer: ""}
+	// Removal disabled: an empty Barcode must NOT change anything.
+	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", Barcode: ""}
 	unchanged, _, _, err := SetFlacTags(path, meta, models.ConfigStruct{AutotaggerrRemoveValues: false})
 	if err != nil {
 		t.Fatalf("removal-off SetFlacTags: %v", err)
@@ -245,16 +255,16 @@ func TestSetFlacTagsRemoveValues(t *testing.T) {
 		t.Error("with removal disabled, empty values should not trigger a change")
 	}
 
-	// Removal enabled: the empty Composer should now clear the tag.
+	// Removal enabled: the empty Barcode should now clear the tag.
 	_, _, _, err = SetFlacTags(path, meta, models.ConfigStruct{AutotaggerrRemoveValues: true})
 	if err != nil {
 		t.Fatalf("removal-on SetFlacTags: %v", err)
 	}
-	tags, err := getFlacTagsMap(path)
+	tags, err = getFlacTagsMap(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if v := firstTag(tags, "COMPOSER"); v != "" {
-		t.Errorf("COMPOSER should be cleared, got %q", v)
+	if v := firstTag(tags, "BARCODE"); v != "" {
+		t.Errorf("BARCODE should be cleared, got %q", v)
 	}
 }

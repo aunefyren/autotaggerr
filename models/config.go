@@ -17,6 +17,31 @@ type DatabaseConfig struct {
 // which a genre list still reads as a description rather than a dump.
 const DefaultMaxGenres = 5
 
+// How the SMTP connection is encrypted. The default is Auto, which infers the answer
+// from the port and is right for every hosted provider; the explicit modes exist for
+// the self-hosted relay that gets it wrong — one that offers STARTTLS and fails the
+// upgrade, or one that offers nothing and should be *refused* rather than spoken to
+// in clear.
+const (
+	// SMTPTLSAuto infers from the port: 465 is implicit TLS, anything else is
+	// upgraded with STARTTLS when the server advertises it, and left in clear when
+	// it does not.
+	SMTPTLSAuto = "auto"
+	// SMTPTLSNone never encrypts, even if the server offers STARTTLS. For a relay on
+	// localhost, where the alternative is a handshake against a certificate nobody
+	// issued.
+	SMTPTLSNone = "none"
+	// SMTPTLSStartTLS requires the upgrade: a server that does not advertise STARTTLS
+	// is an error rather than a plaintext send.
+	SMTPTLSStartTLS = "starttls"
+	// SMTPTLSImplicit wraps the connection in TLS before the greeting (SMTPS, port
+	// 465), for a server that expects TLS on a non-standard port.
+	SMTPTLSImplicit = "implicit"
+)
+
+// SMTPTLSModes lists the modes in the order they escalate, for the settings page.
+var SMTPTLSModes = []string{SMTPTLSAuto, SMTPTLSNone, SMTPTLSStartTLS, SMTPTLSImplicit}
+
 type ConfigStruct struct {
 	Timezone                                      string         `json:"timezone"`
 	Database                                      DatabaseConfig `json:"database"`
@@ -90,9 +115,11 @@ type ConfigStruct struct {
 	// files rather than re-pointing them.
 	AutotaggerrMigrationReviewDeletions bool `json:"autotaggerr_migration_review_deletions"`
 
-	SMTPEnabled        bool   `json:"smtp_enabled"`
-	SMTPHost           string `json:"smtp_host"`
-	SMTPPort           int    `json:"smtp_port"`
+	SMTPEnabled bool   `json:"smtp_enabled"`
+	SMTPHost    string `json:"smtp_host"`
+	SMTPPort    int    `json:"smtp_port"`
+	// SMTPTLS is how the connection is encrypted; see the SMTPTLS* constants.
+	SMTPTLS            string `json:"smtp_tls"`
 	SMTPUsername       string `json:"smtp_username"`
 	SMTPPassword       string `json:"smtp_password"`
 	SMTPFrom           string `json:"smtp_from"`

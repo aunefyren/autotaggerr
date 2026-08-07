@@ -40,10 +40,7 @@ func sampleFileTags() models.FileTags {
 		RecordLabels:          []string{"v_recordlabel"},
 		Media:                 "v_media",
 		Barcode:               "v_barcode",
-		ASIN:                  "v_asin",
 		CatalogNumbers:        []string{"v_catalognumber"},
-		Composer:              "v_composer",
-		Author:                "v_author",
 	}
 }
 
@@ -83,8 +80,9 @@ func TestBuildFLACDesiredTags(t *testing.T) {
 	assertTag(t, m, "BARCODE", "v_barcode")
 	assertTag(t, m, "CATALOGNUMBER", "v_catalognumber")
 
-	// BuildFileTags never populates these, so listing them would only ever clear
-	// another tagger's value once remove_values is on.
+	// Nothing resolves a value for these — they are not even fields on FileTags any
+	// more — so listing them would only ever clear another tagger's value once
+	// remove_values is on.
 	for _, absent := range []string{"COMPOSER", "AUTHOR", "ASIN"} {
 		if _, ok := m[absent]; ok {
 			t.Errorf("FLAC desired tags unexpectedly contains %q", absent)

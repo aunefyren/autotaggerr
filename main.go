@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -8,9 +10,11 @@ import (
 	"mime"
 	"net/http"
 	"os"
+	"os/signal"
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"strconv"
 	"time"
@@ -268,7 +272,59 @@ func main() {
 
 	logger.Log.Info("router initialized. starting Autotaggerr at http://*:" + strconv.Itoa(files.ConfigFile.AutotaggerrPort))
 
-	log.Fatal(router.Run(":" + strconv.Itoa(files.ConfigFile.AutotaggerrPort)))
+	server := &http.Server{
+		Addr:    ":" + strconv.Itoa(files.ConfigFile.AutotaggerrPort),
+		Handler: router,
+	}
+	go func() {
+		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Fatal(err)
+		}
+	}()
+
+	shutdown(server, scanRunner, settingsRuntime)
+}
+
+// shutdownGrace bounds how long a job already in flight is given to finish. A scan of
+// a large library takes far longer than this; the point is not to wait it out but to
+// let the common case — a job seconds from done, or none at all — end cleanly instead
+// of being killed mid-write.
+const shutdownGrace = 30 * time.Second
+
+// shutdown blocks until the process is asked to stop, then stops it in the order that
+// makes the stop mean something.
+//
+// A container restart used to be indistinguishable from a crash: the process was
+// killed wherever it happened to be, and the only thing that noticed was
+// events.ReconcileRunning closing the orphaned event on the next boot. That is a
+// safety net, and a poor substitute for stopping on purpose.
+//
+// The order is the whole design. Schedules first, so no cron fires into a process
+// that is leaving. Then HTTP, which both stops new requests arriving and waits for the
+// ones in flight — including the synchronous re-tags that write files outside the
+// queue. Only then the job runner, because until the API is closed it can still be
+// handed work.
+func shutdown(server *http.Server, runner *scan.Runner, schedules *settings.Runtime) {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	logger.Log.Infof("received %s; shutting down", <-stop)
+
+	schedules.Stop()
+
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	if err := server.Shutdown(ctx); err != nil {
+		logger.Log.Warnf("HTTP server did not shut down cleanly: %s", err.Error())
+	}
+
+	if err := runner.Shutdown(ctx); err != nil {
+		// The job outlived the grace period. Its event stays `running` and is closed
+		// out on the next boot, exactly as after a crash — the difference is that this
+		// one is logged as the deliberate choice it is.
+		logger.Log.Warnf("a background job was still running after %s; exiting anyway", shutdownGrace)
+	}
+
+	logger.Log.Info("Autotaggerr stopped")
 }
 
 func initRouter(db *gorm.DB, scanRunner *scan.Runner, mirrorRunner *mirror.Runner, cfg models.ConfigStruct) *gin.Engine {

@@ -270,3 +270,30 @@ func TestReveal(t *testing.T) {
 		t.Error("an unknown key must not be revealable")
 	}
 }
+
+// TestRuntimeStopCancelsEverySchedule: once the process is shutting down, a cron that
+// fires would queue work that is about to be dropped. Stop is also idempotent and
+// nil-safe, because shutdown paths are exactly where a second call is likely.
+func TestRuntimeStopCancelsEverySchedule(t *testing.T) {
+	runtime, _ := newRuntimeForTest(t)
+	runtime.Schedule(baseConfig())
+
+	runtime.mu.Lock()
+	installed := len(runtime.tasks)
+	runtime.mu.Unlock()
+	if installed == 0 {
+		t.Fatal("nothing was scheduled, so cancelling proves nothing")
+	}
+
+	runtime.Stop()
+
+	runtime.mu.Lock()
+	remaining := len(runtime.tasks)
+	runtime.mu.Unlock()
+	if remaining != 0 {
+		t.Errorf("%d task(s) left after Stop, want 0", remaining)
+	}
+
+	runtime.Stop()         // idempotent
+	(*Runtime)(nil).Stop() // nil-safe, like the rest of Runtime
+}

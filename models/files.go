@@ -67,10 +67,13 @@ type FileTags struct {
 	RecordLabels          []string `json:"record_labels"`
 	Media                 string   `json:"media"`
 	Barcode               string   `json:"barcode"`
-	ASIN                  string   `json:"asin"`
 	CatalogNumbers        []string `json:"catalog_numbers"`
-	Composer              string   `json:"composer"`
-	Author                string   `json:"author"`
+	// ASIN, Composer and Author used to sit here. Nothing ever populated them —
+	// BuildFileTags hardcoded all three to "" — and neither tag map reads them, so
+	// they were three fields whose only possible effect was clearing another
+	// tagger's value under remove_values. MusicBrainz can supply composer (via work
+	// relations) and ASIN (on the release); adding either back is a fetch and a
+	// mapping, not a field on this struct.
 }
 
 type CachedMusicBrainzRelease struct {

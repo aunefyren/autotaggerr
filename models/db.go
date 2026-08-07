@@ -57,8 +57,17 @@ const (
 	// of the collection from the index, which records no event of its own. Rows
 	// written under the old value are rewritten once at startup by
 	// events.MigrateLegacyTypes.
-	EventTypeProcess     = "process"
-	EventTypeLegacyScan  = "scan"
+	EventTypeProcess    = "process"
+	EventTypeLegacyScan = "scan"
+	// EventTypeTagFiles is the Tag files verb: rewrite indexed files from what is
+	// already known, walking nothing and fetching nothing.
+	//
+	// It was recorded as "drift_sync" until the verbs were named apart, which made a
+	// Tag files run read as "Metadata sync" in the feed — the name of the verb that
+	// was split out of it. Old rows keep the old type rather than being migrated:
+	// a pre-split drift sync really did refresh metadata *and* re-tag, so calling
+	// those rows Tag files would misreport what they did.
+	EventTypeTagFiles    = "tag_files"
 	EventTypeDriftSync   = "drift_sync"
 	EventTypeLidarrSync  = "lidarr_sync"
 	EventTypePlexRefresh = "plex_refresh"

@@ -536,10 +536,7 @@ func BuildFileTags(
 		RecordLabels:          utilities.NormalizeTagValues(labelNames),
 		Media:                 media.Format,
 		Barcode:               response.Barcode,
-		ASIN:                  "",
 		CatalogNumbers:        utilities.NormalizeTagValues(catalogNumbers),
-		Author:                "",
-		Composer:              "",
 	}
 
 	genres := make([]models.MusicBrainzNamedCount, 0, len(response.ReleaseGroup.Genres))

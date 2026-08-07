@@ -149,11 +149,12 @@ func buildFLACDesiredTags(metadata models.FileTags) map[string][]string {
 		"MEDIA":                      single(metadata.Media),
 		"BARCODE":                    single(metadata.Barcode),
 		"CATALOGNUMBER":              metadata.CatalogNumbers,
-		// ASIN, COMPOSER and AUTHOR are deliberately absent: BuildFileTags has never
-		// populated them, so listing them here only ever cleared whatever another
+		// ASIN, COMPOSER and AUTHOR are deliberately absent: nothing ever resolved a
+		// value for them, so listing them here only ever cleared whatever another
 		// tagger had written once remove_values was on. Leaving them out means a
 		// foreign tagger's value survives. MusicBrainz can supply composer (via work
-		// relations) and ASIN (on the release) if they are ever wanted for real.
+		// relations) and ASIN (on the release) if they are ever wanted for real —
+		// that is a fetch and a mapping, and it starts with models.FileTags.
 	}
 }
 
