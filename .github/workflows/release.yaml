@@ -20,6 +20,28 @@ jobs:
             goarch: arm
     steps:
     - uses: actions/checkout@v4
+
+    # The binary embeds web/dist (package web, `//go:embed all:dist`), and that
+    # directory is committed only so `go build` works without a Node toolchain —
+    # nothing guarantees the commit's copy matches webui/. Building it here is what
+    # stops a release binary shipping a stale UI; the Docker images get the same
+    # guarantee from the Dockerfile's own web stage.
+    #
+    # A step rather than the action's `pre_command`: that runs inside the action's Go
+    # container, which has no Node in it.
+    - name: Setup Node
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        cache: 'npm'
+        cache-dependency-path: webui/package-lock.json
+
+    - name: Build web UI
+      run: |
+        cd webui
+        npm ci
+        npm run build
+
     - uses: wangyoucao577/go-release-action@v1.53
       with:
         github_token: ${{ secrets.GIT_HUB_TOKEN }}

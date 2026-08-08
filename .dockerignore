@@ -1,0 +1,25 @@
+# What the image build must not take from the working tree.
+#
+# The Dockerfile's `COPY . .` would otherwise pull in whatever a local checkout
+# happens to be carrying, which is a correctness problem and not only a size one.
+
+# Platform-specific by construction (esbuild ships a native binary per os/cpu), so a
+# tree installed on the host would be copied into a Linux image and used from there.
+# The web stage runs its own `npm ci`.
+webui/node_modules
+
+# Built by the web stage. Excluded so the committed copy — which exists only so
+# `go build` works without a Node toolchain — can never be what ships. If the stage
+# fails to supply it, go:embed fails the build instead of embedding a stale UI.
+web/dist
+
+# Build inputs, not source.
+.git
+.github
+autotaggerr
+autotaggerr.exe
+cover.out
+
+# The developer's own runtime state. config/ holds config.json, the database and the
+# artwork cache; copying it in would bake one machine's install into an image.
+config

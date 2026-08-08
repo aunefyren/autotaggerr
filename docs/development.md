@@ -22,8 +22,10 @@ go run . --file "<path>" --fileRoot "<library-root>"   # one-shot single-file pr
 ```
 
 **Building with the frontend.** The Go build embeds `web/dist` but does *not* rebuild it — the
-frontend is a separate Node build (see [Web UI](#web-ui-webui--webdist)). Rebuild the UI whenever
-`webui/` source changed, then build the binary:
+frontend is a separate Node build (see [Web UI](#web-ui-webui--webdist)). This is true of the
+*local* build only; the Docker and release workflows build the SPA themselves (see
+[who builds the SPA](#who-builds-the-spa-and-what-the-committed-copy-is-still-for)). Rebuild the UI
+whenever `webui/` source changed, then build the binary:
 
 ```bash
 cd webui && npm ci && npm run build && cd ..   # refresh web/dist (npm ci only needed once / on dep change)
@@ -153,6 +155,36 @@ rebuild and commit it when the UI changes. `webui/node_modules` is ignored. Afte
 run `npm run build` (or `make ui` / `make build`) before building/running the Go binary, or the
 embedded assets will be stale — a rebuilt binary serving an old bundle is the classic "my UI change
 didn't show up". `git status` will show `web/dist` as changed after every build; that is expected.
+
+### Who builds the SPA, and what the committed copy is still for
+
+**Nothing that ships depends on the committed bundle.** Every artifact-producing workflow builds the
+UI itself:
+
+| Producer | Builds the SPA | How |
+|---|---|---|
+| Docker images (`docker-image.yml`, `docker-image-beta.yml`) | yes | the `web` stage in [`Dockerfile`](../Dockerfile) |
+| Release binaries (`release.yaml`) | yes | a `setup-node` + `npm run build` step before the release action |
+| CI (`go.yml`) | yes | into its own workspace, then discarded |
+| CodeQL (`codeql-analysis.yml`) | **no** | autobuild compiles Go against the committed copy |
+
+This used to be untrue of the first two, and the failure was quiet: CI rebuilt the UI into a
+workspace it threw away, so a green run said nothing about the bundle in the commit, and the image —
+which had no Node in it — embedded whatever `web/dist` the commit carried. A stale committed bundle
+shipped a stale UI from a passing build.
+
+The committed copy therefore now serves exactly two purposes: `go build` / `go run .` without a Node
+toolchain, and CodeQL's autobuild. Both are development conveniences — but the first is the one that
+still bites, because **a stale `web/dist` will still make your local `go run .` serve an old UI**.
+That is what `make build` and `make run` exist to prevent.
+
+`web/dist` is in [`.dockerignore`](../.dockerignore) so the committed copy cannot reach an image even
+by accident: the `web` stage is the only thing that supplies it, and if that stage ever fails to,
+`//go:embed all:dist` fails the build rather than embedding something old.
+
+The `web` stage is pinned to `--platform=$BUILDPLATFORM`. The bundle is byte-identical for every
+architecture, so without it buildx would emulate a full `npm ci` once per target — four of them,
+including `arm/v7` and `386` — to produce four identical directories.
 
 ## Git ownership
 
