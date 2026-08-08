@@ -19,18 +19,21 @@ const (
 
 // listEvents returns the Activity feed, newest first, filterable by type/status.
 //
-// **Browsing groups; filtering flattens.** With no filter the feed lists runs, so a
-// run's seven stages do not push six other runs off the first page — the stages are
-// reached by expanding the run. But a filter is a different question: asking for every
-// metadata refresh means every one, including those that ran inside a run, and a filter
-// that silently skipped them would be answering something narrower than it was asked.
+// **The feed is flat.** Every activity is its own row at its own start time, whether it
+// was pressed or spawned by a run — one thing that happened, one row, ordered by when
+// it happened. It used to list runs and hide their stages behind an expander, which
+// made the same work render two different ways depending on what started it, and put
+// the interesting rows one disclosure and two modals away.
 //
-// `nested` overrides either way (`1` to include stages, `0` to force runs only), so an
-// API caller is never stuck with the inference.
+// Relation is annotated rather than structural: a stage row carries the title of the
+// run it belongs to, a run row carries how many activities it spawned, and `parent`
+// narrows the feed to one cascade. `nested=0` still returns runs only, for a caller
+// that wants the old shape.
 func (a *API) listEvents(c *gin.Context) {
 	evType := c.Query("type")
 	status := c.Query("status")
 	search := strings.ToLower(strings.TrimSpace(c.Query("q")))
+	parent := strings.TrimSpace(c.Query("parent"))
 
 	q := a.DB.Model(&models.Event{})
 	if evType != "" {
@@ -45,15 +48,19 @@ func (a *API) listEvents(c *gin.Context) {
 		// different things depending on which database is behind it.
 		q = q.Where("LOWER(title) LIKE ?", "%"+search+"%")
 	}
-
-	nested := evType != "" || status != "" || search != ""
-	switch c.Query("nested") {
-	case "1":
-		nested = true
-	case "0":
-		nested = false
+	// One cascade: the run itself and everything it spawned. The run is included
+	// because "show me this run" that omitted the run would be answering a narrower
+	// question than it was asked.
+	if parent != "" {
+		parentID, err := uuid.Parse(parent)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "parent must be an event id"})
+			return
+		}
+		q = q.Where("parent_id = ? OR id = ?", parentID, parentID)
 	}
-	if !nested {
+
+	if c.Query("nested") == "0" {
 		q = q.Where("parent_id IS NULL")
 	}
 
@@ -87,7 +94,7 @@ func (a *API) listEvents(c *gin.Context) {
 		"limit":  limit,
 		"offset": offset,
 		"events": rows,
-		"facets": a.eventFacets(evType, status, search),
+		"facets": a.eventFacets(evType, status, search, parent),
 	})
 }
 
@@ -99,16 +106,19 @@ func (a *API) listEvents(c *gin.Context) {
 //   - **Each facet excludes its own filter.** Type counts are computed with the status
 //     and search filters applied but not the type one, so the list of types stays a list
 //     of what you could switch to rather than collapsing to the one already chosen.
-//   - **Counts are over the flattened set**, stages included, because clicking any of
-//     them flattens. A chip has one job — predict its own result — and a count taken
-//     over runs only would promise 2 and deliver 15. It does mean the chips can sum to
-//     more than the unfiltered feed shows, which is the honest reading: the feed is
-//     grouped until you ask it something.
-func (a *API) eventFacets(evType, status, search string) map[string]map[string]int64 {
+//   - **Counts are over the same set the feed lists** — every activity, stages
+//     included. A chip has one job, which is to predict its own result; a count taken
+//     over runs only would promise 2 and deliver 15.
+func (a *API) eventFacets(evType, status, search, parent string) map[string]map[string]int64 {
 	base := func() *gorm.DB {
 		q := a.DB.Model(&models.Event{})
 		if search != "" {
 			q = q.Where("LOWER(title) LIKE ?", "%"+search+"%")
+		}
+		// The cascade is a scope, not a facet: narrowing to one run narrows what the
+		// chips are counting, the same way it narrows the feed.
+		if parentID, err := uuid.Parse(parent); err == nil {
+			q = q.Where("parent_id = ? OR id = ?", parentID, parentID)
 		}
 		return q
 	}
@@ -145,11 +155,14 @@ func (a *API) eventFacets(evType, status, search string) map[string]map[string]i
 }
 
 // annotateFeed fills in the two facts a feed row needs about its relatives: how many
-// stages a run has, and which run a stage belongs to.
+// activities a run spawned, and which run a stage belongs to.
+//
+// This is what carries the relationship in a flat feed. The rows are all the same kind
+// of thing and are ordered only by when they started, so a row says where it came from
+// in words rather than by its position in a tree.
 //
 // Two grouped queries for the whole page rather than a lookup per row — the alternative
-// is 50 queries to draw one screen, and the counts exist only so a row can offer to
-// expand without first fetching what it would expand into.
+// is 50 queries to draw one screen.
 func (a *API) annotateFeed(rows []models.Event) {
 	if len(rows) == 0 {
 		return

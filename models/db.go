@@ -59,27 +59,43 @@ const (
 	//
 	// It is now a **parent**: the run's own row carries the scope and the outcome,
 	// and each stage records its own event under it (see Event.ParentID). The file
-	// counters that used to sit here belong to EventTypeProcessFiles.
+	// counters that used to sit here belong to the tagging stage.
 	EventTypeProcess    = "process"
 	EventTypeLegacyScan = "scan"
-	// EventTypeProcessFiles is the walk half of a processing run: the folders read,
-	// the files resolved, the tags written.
+	// EventTypeProcessFiles is the walk half of a processing run, recorded under its
+	// own type until tagging became one event however it was reached. Rows written
+	// under it are rewritten to EventTypeTagFiles at startup by
+	// events.MigrateLegacyTypes.
 	//
-	// Distinct from EventTypeTagFiles even though the two carry the same counters and
-	// the same per-file detail, because they belong to different verbs — Tag files
-	// walks no folders and is something a user presses on its own, while this only
-	// ever exists inside a Process run. Filing the walk under "Tag files" would put a
-	// verb in the feed that nobody invoked, and "no verb triggers another" is the
-	// property the feed exists to make visible.
+	// It was kept apart from Tag files on the grounds that a stage nobody pressed
+	// should not appear in the feed under a verb's name. That held while a stage row
+	// had nothing on it saying where it came from; the feed now names every row's
+	// parent, so the same work under two type names was only ever two entries in the
+	// type filter for one thing.
 	EventTypeProcessFiles = "process_files"
+	// EventTypeCountFiles is the walk that sizes a run before it starts: every root
+	// read once to count the files the run will visit.
+	//
+	// It is a stage of its own because it is the first minutes of a cold run and used
+	// to be invisible — it ran inside the refresh phase, with the progress bar sitting
+	// at 0 of 0 throughout, which is exactly the shape a hang has.
+	EventTypeCountFiles = "count_files"
 	// EventTypeCollectionScan is the Scan verb: re-deriving what the collection holds
 	// from the files already indexed. It records an event whether it was pressed on
 	// its own or run as a stage of something larger — a rebuild that moved an album
 	// between artists is news either way, and it was the one verb of the four that
 	// reported nothing at all.
 	EventTypeCollectionScan = "collection_scan"
-	// EventTypeTagFiles is the Tag files verb: rewrite indexed files from what is
-	// already known, walking nothing and fetching nothing.
+	// EventTypeTagFiles is every pass that writes tags to files, whether a user
+	// pressed *Tag files* or a processing run reached its tagging stage. One type,
+	// one emitter, one rendering: a cascading activity and a hand-pressed one are the
+	// same work, and the feed shows the difference by naming the run a row belongs to
+	// rather than by filing it under a second name.
+	//
+	// Inside a run it covers both halves of the writing: the files found by the walk
+	// and the files re-tagged because their release changed upstream. The two used to
+	// be separate rows, which put the walk's counters next to a row whose only content
+	// was a list of release MBIDs the metadata stage had already listed.
 	//
 	// It was recorded as "drift_sync" until the verbs were named apart, which made a
 	// Tag files run read as "Metadata sync" in the feed — the name of the verb that
@@ -584,13 +600,14 @@ type Event struct {
 	// order things happened in. Attached by the single-event endpoint, like Items.
 	Children []Event `gorm:"-" json:"children,omitempty"`
 
-	// ChildCount is how many stages this run performed, filled in by the feed so a row
-	// can offer to expand without first fetching what it would expand into.
+	// ChildCount is how many activities this run spawned, filled in by the feed so a
+	// run can offer to narrow the feed to its own cascade without first fetching it.
 	ChildCount int `gorm:"-" json:"child_count,omitempty"`
 
-	// ParentTitle names the run a stage belongs to, filled in by the feed only when it
-	// is returning stage rows. A stage row in a flat list is otherwise unmoored — "Tag
-	// files changed upstream" says nothing about which run found them.
+	// ParentTitle names the run a stage belongs to. The feed is a flat chronological
+	// list — every activity is its own row, at its own start time — so this is what
+	// stops "Tagging" being unmoored, and it is filled in for every stage row rather
+	// than only for a filtered feed.
 	ParentTitle string `gorm:"-" json:"parent_title,omitempty"`
 }
 
@@ -706,6 +723,11 @@ const (
 // it finds.
 const (
 	EventItemPhaseRefresh = "refresh"
+	// EventItemPhaseDrift is a file rewritten because its release changed upstream,
+	// as opposed to one the walk found changed on disk. Both are written by the same
+	// tagging event, and the phase is what keeps the two halves of it apart in the
+	// detail list — they answer different questions about the same run.
+	EventItemPhaseDrift = "drift"
 )
 
 // CollectionArtist is a MusicBrainz artist present in (or monitored for) the

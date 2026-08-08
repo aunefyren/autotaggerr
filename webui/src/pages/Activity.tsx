@@ -13,8 +13,15 @@ const TYPE_LABELS: Record<string, string> = {
   // Runs recorded before the verbs were named apart. Startup rewrites them to
   // "process", so this only covers a feed read before that migration lands.
   scan: "Processing",
+  count_files: "Counting files",
   mb_mirror: "Metadata refresh",
-  tag_files: "Tag files",
+  // Every pass that writes tags, whether a user pressed Tag files or a run reached its
+  // tagging stage. One name, because it is one kind of work — the row says which run it
+  // came from, which is the part that actually differs.
+  tag_files: "Tagging",
+  // The run's walk, before tagging became one activity. Startup rewrites these to
+  // tag_files; this covers a feed read before that migration lands.
+  process_files: "Tagging",
   // drift_sync is only ever an event recorded before the refresh verb was split out
   // of the processing runner — those runs refreshed metadata and re-tagged in one
   // pass, so they keep their own name. The rows are still in the table, and an old
@@ -24,11 +31,20 @@ const TYPE_LABELS: Record<string, string> = {
   mb_migration: "Identity changes",
   plex_refresh: "Plex refresh",
   health_check: "Health check",
-  // The walk half of a processing run. Named for the verb it belongs to, not for
-  // "Tag files" — that is a verb a user presses, and putting it in the feed under a
-  // run nobody pressed it for would contradict "no verb triggers another".
-  process_files: "Processing files",
   collection_scan: "Collection scan",
+};
+
+// What a group of detail rows is, when an activity recorded more than one kind.
+//
+// These name the *rows*, not the stage that produced them, which is why they are not
+// the phase labels a running job reports: "Re-tagging changed releases" describes work
+// in progress, and this heading sits over the files it finished writing. A metadata
+// pass's phases (artists, editions, …) fall through to the shared labels, where naming
+// the phase and naming the rows happen to be the same thing.
+const ITEM_PHASE_LABELS: Record<string, string> = {
+  "": "Files found on disk",
+  drift: "Files re-tagged after an upstream change",
+  refresh: "Releases that changed upstream",
 };
 
 // Labels for the kinds of job the queue holds, so a pending row reads as words.
@@ -78,13 +94,6 @@ function elapsed(from?: string): string {
   return formatDuration(Date.now() - new Date(from).getTime());
 }
 
-// How long an event took, in milliseconds. Zero for one still running or one that
-// never finished — neither has a span to compare against its siblings.
-function durationMs(ev: Event): number {
-  if (!ev.finished_at) return 0;
-  return Math.max(0, new Date(ev.finished_at).getTime() - new Date(ev.started_at).getTime());
-}
-
 /**
  * How long an event took, derived from the row's own timestamps rather than read
  * out of its details payload. Every event carries started_at and finished_at, so
@@ -124,6 +133,10 @@ export default function Activity() {
   const offset = (Math.max(1, browse.page) - 1) * PAGE_SIZE;
   const typeFilter = browse.flag("type") ?? "";
   const statusFilter = browse.flag("status") ?? "";
+  // One cascade: a run and everything it spawned. The feed is flat and chronological,
+  // so this is how you read a single run's activities together — the counterpart to the
+  // rail, for when the rows are not adjacent because something else ran between them.
+  const parentFilter = browse.flag("parent") ?? "";
   const query = browse.query;
 
   // The Collection filters in the browser, so its box costs nothing per keystroke.
@@ -136,19 +149,16 @@ export default function Activity() {
     const params = new URLSearchParams({ limit: String(PAGE_SIZE), offset: String(offset) });
     if (typeFilter) params.set("type", typeFilter);
     if (statusFilter) params.set("status", statusFilter);
+    if (parentFilter) params.set("parent", parentFilter);
     if (search.trim()) params.set("q", search.trim());
     return api.get(`/events?${params}`);
-  }, [offset, typeFilter, statusFilter, search]);
+  }, [offset, typeFilter, statusFilter, parentFilter, search]);
   const status = useFetch<ScanStatus>(() => api.get("/process/status"));
   const [selected, setSelected] = useState<Event | null>(null);
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-
-  const toggleExpanded = (id: string) =>
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (!next.delete(id)) next.add(id);
-      return next;
-    });
+  // The cascade under the pointer, lit across every row that belongs to it. Hover state
+  // rather than a per-run colour: a feed of two hundred rows would otherwise need two
+  // hundred hues, and the style guide spends colour on status, not on identity.
+  const [lit, setLit] = useState<string | null>(null);
 
   // Poll while anything is running — a processing run (via its status) or any other
   // job that left a running event in the feed, such as a metadata sweep with no run
@@ -185,7 +195,11 @@ export default function Activity() {
 
   const rows = events.data?.events ?? [];
   const paging = usePaging(browse, events.data?.total ?? 0, PAGE_SIZE);
-  const filtering = !!(typeFilter || statusFilter || query.trim());
+  const filtering = !!(typeFilter || statusFilter || parentFilter || query.trim());
+
+  // The run a `parent` filter names. It is in the response — the cascade includes the
+  // run itself — so the chip can say which run without a second fetch.
+  const parentRun = parentFilter ? rows.find((ev) => ev.id === parentFilter) : undefined;
 
   const facet = (kind: "type" | "status", key: string) => events.data?.facets?.[kind]?.[key] ?? 0;
   // Only the types that have happened, most frequent first — a menu of every type the
@@ -194,14 +208,6 @@ export default function Activity() {
   const typeOptions = Object.entries(events.data?.facets?.type ?? {})
     .filter(([type, n]) => n > 0 || type === typeFilter)
     .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
-
-  // A running run opens itself, so the stage in flight is visible without a click —
-  // that is the one time "what is it doing right now" is the reason the page is open.
-  // Only on the way in: re-applying it every poll would fight a user who collapsed it.
-  const runningRun = rows.find((ev) => ev.status === "running" && (ev.child_count ?? 0) > 0)?.id;
-  useEffect(() => {
-    if (runningRun) setExpanded((prev) => (prev.has(runningRun) ? prev : new Set(prev).add(runningRun)));
-  }, [runningRun]);
 
   return (
     <div className="stack">
@@ -296,6 +302,17 @@ export default function Activity() {
           placeholder="Filter by title"
           showing={paging.total > 0 ? `${paging.from}–${paging.to} of ${paging.total}` : undefined}
         >
+          {/* Narrowed to one run. It states which one and how to leave, because a feed
+              showing six rows when the app has run for weeks needs to say why. */}
+          {parentFilter && (
+            <FilterChip
+              on
+              count={paging.total}
+              label={parentRun ? `In ${parentRun.title || TYPE_LABELS[parentRun.type] || parentRun.type}` : "In one run"}
+              title="Showing one run and everything it spawned — click to show every activity"
+              onClick={() => browse.setFlag("parent", null)}
+            />
+          )}
           <FilterChip
             on={statusFilter === "error"}
             count={facet("status", "error")}
@@ -346,21 +363,30 @@ export default function Activity() {
           <table className="data">
             <thead>
               <tr>
+                {/* The rail's gutter. No header: it labels nothing, it draws a relation. */}
+                <th className="rail" aria-hidden="true" />
                 <th>When</th>
-                <th>Event</th>
+                <th>Activity</th>
                 <th>Status</th>
                 <th style={{ textAlign: "right" }}>Duration</th>
                 <th>Summary</th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((ev) => (
-                <FeedRows
+              {rows.map((ev, i) => (
+                <FeedRow
                   key={ev.id}
                   event={ev}
-                  expanded={expanded.has(ev.id)}
-                  onToggle={() => toggleExpanded(ev.id)}
+                  run={runOf(ev)}
+                  joinsAbove={runOf(ev) !== null && runOf(rows[i - 1]) === runOf(ev)}
+                  joinsBelow={runOf(ev) !== null && runOf(rows[i + 1]) === runOf(ev)}
+                  lit={lit !== null && runOf(ev) === lit}
+                  // Narrowed to this run already: the toolbar says so once, and
+                  // repeating it on every row states the filter as if it were news.
+                  namesItsRun={ev.parent_id !== parentFilter}
+                  onLight={setLit}
                   onSelect={setSelected}
+                  onOpenRun={(id) => browse.setFlag("parent", id)}
                 />
               ))}
             </tbody>
@@ -368,13 +394,21 @@ export default function Activity() {
         </div>
       )}
 
-      <Pager paging={paging} unit="events" />
+      <Pager paging={paging} unit="activities" />
 
-      {/* Opening a stage replaces the run in the same modal rather than stacking a
-          second one — a dialog over a dialog is harder to get out of than it is to get
-          into, and the run is one click away in the feed behind it. */}
+      {/* One modal, one activity: the thing you clicked, its own counters, its own
+          detail. Opening a run used to list its stages and swap itself for whichever
+          you picked, which is two levels of navigation to reach a row the feed can
+          simply hold. */}
       {selected && (
-        <EventDetail event={selected} onClose={() => setSelected(null)} onOpenStage={setSelected} />
+        <EventDetail
+          event={selected}
+          onClose={() => setSelected(null)}
+          onOpenRun={(id) => {
+            setSelected(null);
+            browse.setFlag("parent", id);
+          }}
+        />
       )}
     </div>
   );
@@ -412,184 +446,128 @@ function RunningCell({ event }: { event: Event }) {
 }
 
 /**
- * One feed row, plus its stages when expanded.
+ * The cascade an activity belongs to, or null for one that stands alone.
  *
- * The feed lists runs, so without this the relationship between a run and the seven
- * things it did was only visible once the run was open — the page read as a list of
- * unrelated rows. Stages are indented under their run rather than shown as siblings:
- * they are not separate work, and a nightly run would otherwise be seven of the fifty
- * rows on the page.
- *
- * They load on expand rather than with the feed. Fifty runs would drag several hundred
- * stage rows behind them to draw a screen where most stay collapsed, and the count
- * needed to *offer* the expansion is already on the row.
+ * A run and everything it spawned share one key — the run's id — so adjacency in the
+ * feed is a comparison rather than a tree walk. An activity nobody spawned and that
+ * spawned nothing has no rail at all: a line through a single row would claim a
+ * relationship it does not have.
  */
-function FeedRows({
+function runOf(ev?: Event): string | null {
+  if (!ev) return null;
+  if (ev.parent_id) return ev.parent_id;
+  return (ev.child_count ?? 0) > 0 ? ev.id : null;
+}
+
+/**
+ * One activity: one row, at the time it started, whatever started it.
+ *
+ * Every row is the same row. A stage of a run and a verb somebody pressed are the same
+ * work — the run only changes where it came from — so the feed renders them identically
+ * and says the relationship instead of building it into the structure. It used to nest:
+ * stages hid behind a disclosure on the run, rendered as a stripped-down variant with no
+ * timestamp of its own, which made a cascading activity look like a lesser kind of thing
+ * and put its detail two modals deep.
+ *
+ * The relation is the **rail** in the gutter (a line joining the rows of one cascade,
+ * capped by a dot on the run itself) plus the run's name under the title. The rail
+ * carries it when the rows are adjacent, which they usually are — one job runs at a
+ * time — and the name carries it when something else ran in between.
+ */
+function FeedRow({
   event,
-  expanded,
-  onToggle,
+  run,
+  joinsAbove,
+  joinsBelow,
+  lit,
+  namesItsRun,
+  onLight,
   onSelect,
+  onOpenRun,
 }: {
   event: Event;
-  expanded: boolean;
-  onToggle: () => void;
+  run: string | null;
+  joinsAbove: boolean;
+  joinsBelow: boolean;
+  lit: boolean;
+  namesItsRun: boolean;
+  onLight: (run: string | null) => void;
   onSelect: (ev: Event) => void;
+  onOpenRun: (id: string) => void;
 }) {
-  const [children, setChildren] = useState<Event[] | null>(null);
-  const [loading, setLoading] = useState(false);
+  const isRun = !!run && !event.parent_id;
   const count = event.child_count ?? 0;
 
-  // Reloaded when the run changes phase as well as when it is expanded: a phase change
-  // is precisely when a new stage exists, so a run watched while it works fills in as
-  // it goes rather than showing whatever it had at the moment it was opened.
-  useEffect(() => {
-    if (!expanded) {
-      setChildren(null);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    api
-      .get<Event>(`/events/${event.id}`)
-      .then((full) => !cancelled && setChildren(full.children ?? []))
-      .catch(() => !cancelled && setChildren([]))
-      .finally(() => !cancelled && setLoading(false));
-    return () => {
-      cancelled = true;
-    };
-  }, [event.id, expanded, event.status, event.phase]);
-
   return (
-    <>
-      <tr style={{ cursor: "pointer" }} onClick={() => onSelect(event)}>
-        <td className="mono dim" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
-          {new Date(event.started_at).toLocaleString()}
-        </td>
-        <td style={{ color: "var(--text)" }}>
-          <span className="row" style={{ gap: 6, alignItems: "center" }}>
-            {count > 0 ? (
-              <button
-                className="twisty"
-                aria-expanded={expanded}
-                aria-label={expanded ? "Hide stages" : `Show ${count} stages`}
-                title={expanded ? "Hide stages" : `Show ${count} stages`}
-                onClick={(e) => {
-                  // The row opens the detail; the twisty only expands. Two jobs, two
-                  // hit areas — expanding must not also open a modal over it.
-                  e.stopPropagation();
-                  onToggle();
-                }}
-              >
-                {expanded ? "▾" : "▸"}
-              </button>
-            ) : (
-              <span className="twisty-gap" aria-hidden="true" />
-            )}
-            {event.title || TYPE_LABELS[event.type] || event.type}
-            {count > 0 && <span className="dim mono" style={{ fontSize: 11 }}>{count}</span>}
-          </span>
-          {/* Only present when the feed is returning stage rows, which it does when a
-              filter is active. A stage row in a flat list is otherwise unmoored. */}
-          {event.parent_title && (
-            <div className="dim" style={{ fontSize: 11, marginLeft: 22 }}>
-              in {event.parent_title}
-            </div>
-          )}
-        </td>
-        <td><EventStatus status={event.status} /></td>
-        <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(event)}>
-          {eventDuration(event)}
-        </td>
-        <td className="muted">
-          <RunningCell event={event} />
-        </td>
-      </tr>
-
-      {expanded && loading && !children && (
-        <tr className="stagerow-feed">
-          <td />
-          <td colSpan={4} className="dim" style={{ fontSize: 12 }}>Loading stages…</td>
-        </tr>
-      )}
-
-      {(children ?? []).map((stage) => (
-        <tr key={stage.id} className="stagerow-feed" style={{ cursor: "pointer" }} onClick={() => onSelect(stage)}>
-          <td />
-          <td style={{ color: "var(--text-muted)" }}>
-            <span style={{ marginLeft: 22 }}>{TYPE_LABELS[stage.type] ?? stage.type}</span>
-          </td>
-          <td><EventStatus status={stage.status} /></td>
-          <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(stage)}>
-            {eventDuration(stage)}
-          </td>
-          <td className="muted" style={{ fontSize: 12 }}>
-            <RunningCell event={stage} />
-          </td>
-        </tr>
-      ))}
-    </>
+    <tr
+      className={lit ? "lit" : undefined}
+      style={{ cursor: "pointer" }}
+      onClick={() => onSelect(event)}
+      onMouseEnter={() => onLight(run)}
+      onMouseLeave={() => onLight(null)}
+    >
+      <td className="rail" aria-hidden="true">
+        {run && (
+          <>
+            {joinsAbove && <i className="up" />}
+            {joinsBelow && <i className="down" />}
+            {isRun ? <i className="dot" /> : <i className="tick" />}
+          </>
+        )}
+      </td>
+      <td className="mono dim" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+        {new Date(event.started_at).toLocaleString()}
+      </td>
+      <td style={{ color: "var(--text)" }}>
+        {event.title || TYPE_LABELS[event.type] || event.type}
+        {/* Where this came from, or what it started. Both narrow the feed to the one
+            cascade, which is what answers "show me this run" when a health check or a
+            hand-pressed refresh has broken the rail's run of adjacent rows. */}
+        {namesItsRun && event.parent_id && event.parent_title && (
+          <div>
+            <button
+              className="railref"
+              title={`Show only ${event.parent_title}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenRun(event.parent_id!);
+              }}
+            >
+              ↳ <span>{event.parent_title}</span>
+            </button>
+          </div>
+        )}
+        {isRun && count > 0 && (
+          <div>
+            <button
+              className="railref"
+              title="Show only this run and what it spawned"
+              onClick={(e) => {
+                e.stopPropagation();
+                onOpenRun(event.id);
+              }}
+            >
+              <span>
+                └ {count} activit{count === 1 ? "y" : "ies"}
+              </span>
+            </button>
+          </div>
+        )}
+      </td>
+      <td><EventStatus status={event.status} /></td>
+      <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(event)}>
+        {eventDuration(event)}
+      </td>
+      <td className="muted">
+        <RunningCell event={event} />
+      </td>
+    </tr>
   );
 }
 
 function num(details: Record<string, unknown> | null, key: string): number {
   const v = details?.[key];
   return typeof v === "number" ? v : 0;
-}
-
-/**
- * The stages a run performed, in the order they happened, each opening its own detail.
- *
- * This is the answer to "what did this run actually do, and which part took the time".
- * A run does six distinct things — refresh metadata, walk and tag, re-tag what drifted,
- * tell Plex, apply identity changes, re-derive the collection — and while it reported
- * as one row, five of them had nowhere to put their counters.
- *
- * Each row states its own summary rather than a shared set of columns, because the
- * stages do not share a unit: one counts entities, one counts files, one counts albums.
- */
-function StageList({ stages, onOpen }: { stages: Event[]; onOpen: (ev: Event) => void }) {
-  if (stages.length === 0) return null;
-
-  // Each stage's share of the time the run spent working. Share of the total rather
-  // than of the longest stage: the question is "where did the four hours go", and one
-  // stage at 95% *should* leave the others as slivers, because that is the answer.
-  const spans = stages.map(durationMs);
-  const total = spans.reduce((a, b) => a + b, 0);
-
-  return (
-    <div className="stack" style={{ gap: 6, marginBottom: 16 }}>
-      <div className="eyebrow">Stages ({stages.length})</div>
-      {stages.map((stage, i) => {
-        const share = total > 0 ? spans[i] / total : 0;
-        return (
-          <button
-            key={stage.id}
-            className="stagerow"
-            onClick={() => onOpen(stage)}
-            title={`Open ${TYPE_LABELS[stage.type] ?? stage.type}`}
-          >
-            <EventStatus status={stage.status} />
-            <span style={{ fontSize: 13, color: "var(--text)", whiteSpace: "nowrap" }}>
-              {TYPE_LABELS[stage.type] ?? stage.type}
-            </span>
-            <span className="muted" style={{ fontSize: 12, flex: 1, minWidth: 0 }}>
-              {stage.summary}
-            </span>
-            <span
-              className="stagebar"
-              aria-hidden="true"
-              title={`${Math.round(share * 100)}% of this run's time`}
-            >
-              <i style={{ width: `${Math.max(share * 100, share > 0 ? 2 : 0)}%` }} />
-            </span>
-            <span className="dim mono" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(stage)}>
-              {eventDuration(stage)}
-            </span>
-          </button>
-        );
-      })}
-    </div>
-  );
 }
 
 /**
@@ -698,44 +676,64 @@ function statColor(stat: EventStat): string | undefined {
   return undefined;
 }
 
+/**
+ * One activity, on its own terms: its status, its own span, the counters it declared and
+ * the rows it recorded.
+ *
+ * It shows nothing about its siblings. A run's modal used to list its stages and swap
+ * itself for whichever one you picked, so reading what a run wrote meant a row, a modal,
+ * a list and a second modal — for data the feed can hold directly. The one thing kept is
+ * a way back out to the run, and it goes to the *feed* filtered to that run rather than
+ * to another modal.
+ */
 function EventDetail({
   event,
   onClose,
-  onOpenStage,
+  onOpenRun,
 }: {
   event: Event;
   onClose: () => void;
-  onOpenStage: (ev: Event) => void;
+  onOpenRun: (id: string) => void;
 }) {
-  // The feed's copy of an event carries no per-file rows or stages — they only come
-  // with the single-event fetch, so opening one loads it.
+  // The feed's copy of an event carries no per-file rows — they only come with the
+  // single-event fetch, so opening one loads it.
   const full = useFetch<Event>(() => api.get(`/events/${event.id}`), [event.id]);
   const [filter, setFilter] = useState<string | null>(null);
 
-  // Reset the filter when the modal moves to another event: a chip left active from
-  // the run would silently hide most of the stage you just opened.
+  // Reset the filter when the modal moves to another event: a chip left active would
+  // silently hide most of the activity you just opened.
   useEffect(() => setFilter(null), [event.id]);
 
   const d = full.data?.details ?? event.details;
   const items = full.data?.items ?? [];
-  const stages = full.data?.children ?? [];
   const stats = full.data?.stats ?? event.stats ?? [];
   const errorFiles = Array.isArray(d?.error_files) ? (d!.error_files as string[]) : [];
   const libraries = Array.isArray(d?.libraries) ? (d!.libraries as string[]) : [];
 
   return (
     <Modal title={event.title || TYPE_LABELS[event.type] || event.type} onClose={onClose} wide>
-      <div className="row" style={{ gap: 10, marginBottom: 14 }}>
+      <div className="row" style={{ gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
         <EventStatus status={event.status} />
         <span className="dim mono" style={{ fontSize: 11 }} title={durationTitle(event)}>
           {new Date(event.started_at).toLocaleString()} · {eventDuration(event)}
         </span>
+        {/* Always stated here, even when the feed behind is already narrowed to this
+            run: a modal carries no toolbar to have said it. */}
+        {event.parent_id && event.parent_title && (
+          <button className="railref" onClick={() => onOpenRun(event.parent_id!)}>
+            ↳ <span>Part of {event.parent_title}</span>
+          </button>
+        )}
+        {!event.parent_id && (event.child_count ?? 0) > 0 && (
+          <button className="railref" onClick={() => onOpenRun(event.id)}>
+            <span>
+              └ {event.child_count} activit{event.child_count === 1 ? "y" : "ies"} in this run
+            </span>
+          </button>
+        )}
       </div>
 
       <div className="stack">
-        {/* What this run did, in order, and where its time went. */}
-        <StageList stages={stages} onOpen={onOpenStage} />
-
         <StatRow stats={stats} items={items} active={filter} onFilter={setFilter} />
 
         <PhaseBreakdown details={d} />
@@ -861,7 +859,9 @@ function ItemList({
           return (
             <div key={phase} className="stack" style={{ gap: 8 }}>
               {grouped && (
-                <div className="eyebrow">{phase ? PHASE_LABELS[phase] ?? phase : "Files"}</div>
+                <div className="eyebrow">
+                  {ITEM_PHASE_LABELS[phase] ?? PHASE_LABELS[phase] ?? phase}
+                </div>
               )}
               {rows.map((item) => <ItemRow key={item.id} item={item} />)}
             </div>

@@ -49,6 +49,7 @@ const maxDetailItemsRecorded = 500
 // the metadata cache, walks the libraries, then acts on what changed — these name
 // each stage in order.
 const (
+	PhaseCounting   = "counting"   // walking every root to size the run
 	PhaseRefresh    = "refresh"    // re-reading metadata due for a refresh
 	PhaseScanning   = "scanning"   // walking libraries and tagging files
 	PhaseDrift      = "drift"      // re-tagging files of upstream-changed releases
@@ -789,7 +790,7 @@ func (r *Runner) runScope(scope Scope) {
 	// running event, so the Activity feed can draw a bar. Stopped before Finish, whose
 	// Save must not race the flusher for the row.
 	r.resetProgress()
-	r.setPhase(PhaseRefresh)
+	r.setPhase(PhaseCounting)
 	stopProgress := events.StartProgress(r.db, event, r.progressSnapshot)
 
 	// Per-run MusicBrainz accounting. Only the `fetches` figure pays the rate
@@ -807,16 +808,11 @@ func (r *Runner) runScope(scope Scope) {
 	// same walk WalkAndProcess does per root, summed across every target, so the bar
 	// tracks the whole scan rather than resetting per library. One extra disk walk,
 	// against the far heavier tag reads the scan is about to do.
-	var totalFiles int
-	for _, target := range scope.Targets {
-		roots := target.Roots
-		if len(roots) == 0 {
-			roots = []string{target.Library.Path}
-		}
-		for _, root := range roots {
-			totalFiles += modules.CountSupportedFiles(root)
-		}
-	}
+	//
+	// It records its own event because it is a disk walk that can take minutes on a
+	// cold library, and it used to happen inside the refresh phase with the bar at
+	// 0 of 0 — a run's first minutes reported as nothing at all.
+	totalFiles := r.countFiles(scope, event)
 	r.progTotal.Store(int64(totalFiles))
 
 	// What this run is allowed to touch through the index rather than through the
@@ -836,13 +832,19 @@ func (r *Runner) runScope(scope Scope) {
 	// It records its own event under this run. It is minutes of rate-limited work,
 	// often the first minutes, and reporting it as a `details.refresh` blob on the run
 	// meant the stage a user was actually waiting on had no row to open.
+	r.setPhase(PhaseRefresh)
 	due := r.narrowDue(modules.MusicbrainzDueForRefresh(), filter)
 	refreshResult := r.refresh.RunStage(context.Background(), mirror.DueScope(due), event)
 
 	fullScan := scopeIsFull(scope)
 
+	// The tagging stage: everything this run writes to disk, under one event. The walk
+	// below finds files changed on disk; the drift pass after it rewrites files whose
+	// release changed upstream. They ran as two events for a while, which put the
+	// walk's counters beside a row whose only content was a list of release MBIDs the
+	// metadata stage had already listed. One activity, two phases in its detail.
 	r.setPhase(PhaseScanning)
-	walkEvent := events.BeginChild(r.db, event, models.EventTypeProcessFiles, "Processing files")
+	tagEvent := events.BeginChild(r.db, event, models.EventTypeTagFiles, taggingTitle(scope))
 	for _, target := range scope.Targets {
 		library := target.Library
 		libraryNames = append(libraryNames, library.Name)
@@ -891,32 +893,42 @@ func (r *Runner) runScope(scope Scope) {
 		logger.Log.Info("processed library: " + library.Path)
 	}
 
-	// Drift re-tag stage. shouldSkip drops files whose size and mtime are unchanged,
-	// which is every file of a release that changed only *upstream* — so the walk
-	// above cannot have caught them. This is where the refresh stage's findings are
-	// acted on, and it is here rather than in the refresh verb because writing files
-	// is the scan's job, not the refresh's.
+	// Drift re-tag. shouldSkip drops files whose size and mtime are unchanged, which is
+	// every file of a release that changed only *upstream* — so the walk above cannot
+	// have caught them. This is where the refresh stage's findings are acted on, and it
+	// is here rather than in the refresh verb because writing files is the scan's job,
+	// not the refresh's.
 	//
 	// It writes only inside the scope. A release is not confined to one folder — the
 	// same edition can be held twice, in two libraries — so the filter is applied per
 	// file, not per release.
-	// The walk is closed out before the stages that follow it, so its row carries the
-	// file counters and the per-file detail rather than the run — the run's own event
-	// used to be these counters, which is why it read as a tagging event with the other
-	// five stages missing.
-	r.finishWalk(walkEvent, processed, unchanged, tagsWritten, removed, errorFiles, detail, libraryNames)
-
+	//
+	// Its rows join the walk's on the same tagging event, phase-tagged so the detail
+	// list keeps "found on disk" and "changed upstream" apart.
 	drift := releaseRefresh{}
 	if len(refreshResult.ChangedReleases) > 0 {
 		r.setPhase(PhaseDrift)
 		logger.Log.Infof("%d release(s) changed upstream; re-tagging their files", len(refreshResult.ChangedReleases))
-		driftEvent := events.BeginChild(r.db, event, models.EventTypeTagFiles, "Tag files changed upstream")
 		driftDetail := components.NewDetailCollector(maxDetailItemsRecorded)
 		drift = r.retagReleases(refreshResult.ChangedReleases, refreshSet, driftDetail, filter)
 		tagsWritten += drift.retagged
 		errorFiles = append(errorFiles, drift.errorFiles...)
-		r.finishDrift(driftEvent, refreshResult, drift, driftDetail)
+		detail.Adopt(driftDetail, models.EventItemPhaseDrift)
 	}
+
+	// The tagging stage is closed out before the stages that follow it, so its row
+	// carries the file counters and the per-file detail rather than the run — the run's
+	// own event used to be these counters, which is why it read as a tagging event with
+	// the other stages missing.
+	r.finishTagging(tagEvent, taggingResult{
+		processed:   processed,
+		unchanged:   unchanged,
+		tagsWritten: tagsWritten,
+		removed:     removed,
+		errorFiles:  errorFiles,
+		drift:       drift,
+		libraries:   libraryNames,
+	}, detail)
 
 	r.setPhase(PhasePlex)
 	r.flushPlex(refreshSet, event)
@@ -1028,70 +1040,141 @@ func (r *Runner) runScope(scope Scope) {
 	events.Prune(r.db, eventRetention)
 }
 
-// finishWalk closes the walk's own event: the file counters and the per-file detail,
-// which is the shape the Tag files verb records too — the same information about the
-// same thing, under the verb that actually did it.
-func (r *Runner) finishWalk(ev *models.Event, processed, unchanged, tagsWritten, removed int, errorFiles []string, detail *components.DetailCollector, libraryNames []string) {
+// countFiles sizes the run and records the walk that did it.
+//
+// The count is one full pass over every root, and on a cold library it is minutes of
+// disk. It used to run inside the refresh phase with the progress bar at 0 of 0, so a
+// run's first minutes reported as nothing happening at all — the shape of a hang. Its
+// own activity says what it is doing and, afterwards, how big the run is.
+func (r *Runner) countFiles(scope Scope, parent *models.Event) int {
+	ev := events.BeginChild(r.db, parent, models.EventTypeCountFiles, "Counting files")
+
+	total := 0
+	perLibrary := map[string]int{}
+	for _, target := range scope.Targets {
+		roots := target.Roots
+		if len(roots) == 0 {
+			roots = []string{target.Library.Path}
+		}
+		n := 0
+		for _, root := range roots {
+			n += modules.CountSupportedFiles(root)
+		}
+		perLibrary[target.Library.Name] = n
+		total += n
+	}
+
+	stats := make([]models.EventStat, 0, len(perLibrary)+1)
+	stats = append(stats, models.EventStat{Label: "Files to process", Value: total, Kind: models.EventStatNotable})
+	for _, target := range scope.Targets {
+		stats = append(stats, models.EventStat{Label: target.Library.Name, Value: perLibrary[target.Library.Name], Kind: models.EventStatMuted})
+	}
+	ev.Stats = stats
+
+	summary := fmt.Sprintf("%d file(s) to process across %d librar%s", total, len(scope.Targets), plural(len(scope.Targets), "y", "ies"))
+	events.Finish(r.db, ev, models.EventStatusOK, summary, map[string]any{
+		"files":         total,
+		"by_library":    perLibrary,
+		"library_count": len(scope.Targets),
+	})
+	return total
+}
+
+// plural picks the singular or plural form for n. One-off English, kept here so the
+// summary lines above read as sentences rather than as "1 libraries".
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return many
+}
+
+// taggingTitle names a run's tagging activity. It carries the scope so the row still
+// says what it covered when the feed is read flat, away from the run it belongs to.
+func taggingTitle(scope Scope) string {
+	if scope.Title == "" {
+		return "Tagging"
+	}
+	return "Tagging — " + scope.Title
+}
+
+// taggingResult is everything one tagging pass wrote, from both of the ways a run
+// reaches a file: the walk that found it changed on disk, and the drift pass that
+// rewrote it because its release changed upstream.
+type taggingResult struct {
+	processed   int
+	unchanged   int
+	tagsWritten int
+	removed     int
+	errorFiles  []string
+	drift       releaseRefresh
+	libraries   []string
+}
+
+// finishTagging closes a tagging activity: the file counters, the per-file detail, and
+// what the drift half of it did.
+//
+// One emitter for every tagging pass, whether a run reached it as a stage or a user
+// pressed *Tag files*. Two emitters is how the same work ends up reported with
+// different words in it depending on what started it — and a cascading activity and a
+// hand-pressed one are the same work.
+func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *components.DetailCollector) {
 	status := models.EventStatusOK
-	if len(errorFiles) > 0 {
+	if len(res.errorFiles) > 0 {
 		status = models.EventStatusError
 	}
-	recorded := errorFiles
+	recorded := res.errorFiles
 	if len(recorded) > maxErrorFilesRecorded {
 		recorded = recorded[:maxErrorFilesRecorded]
 	}
-	changed := processed - unchanged
-	summary := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, len(errorFiles))
-	if removed > 0 {
-		summary += fmt.Sprintf(" · %d removed", removed)
-	}
-	ev.Stats = []models.EventStat{
-		{Label: "Processed", Value: processed},
-		{Label: "Unchanged", Value: unchanged, Kind: models.EventStatMuted},
-		{Label: "Changed", Value: changed, Kind: models.EventStatNotable, Filter: models.EventItemStatusChanged},
-		{Label: "Tags written", Value: tagsWritten},
-		{Label: "Removed", Value: removed},
-		{Label: "Failed", Value: len(errorFiles), Kind: models.EventStatBad, Filter: models.EventItemStatusError},
-	}
-	events.Finish(r.db, ev, status, summary, map[string]any{
-		"processed":     processed,
-		"unchanged":     unchanged,
-		"changed":       changed,
-		"tags_written":  tagsWritten,
-		"files_removed": removed,
-		"errors":        len(errorFiles),
-		"error_files":   recorded,
-		"libraries":     libraryNames,
-		"detail":        detailSummary(detail),
-	})
-	events.AddItems(r.db, ev, detail.Items())
-}
+	changed := res.processed - res.unchanged
 
-// finishDrift closes the drift re-tag's own event. The release rows ride it rather
-// than the per-file collector, so a run that filled the file limit during the walk
-// cannot starve the few high-value rows saying which releases changed upstream.
-func (r *Runner) finishDrift(ev *models.Event, refreshResult mirror.Result, drift releaseRefresh, detail *components.DetailCollector) {
-	status := models.EventStatusOK
-	if len(drift.errorFiles) > 0 {
-		status = models.EventStatusError
+	summary := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors",
+		res.processed, changed, res.tagsWritten, len(res.errorFiles))
+	if res.removed > 0 {
+		summary += fmt.Sprintf(" · %d removed", res.removed)
 	}
-	summary := fmt.Sprintf("%d release(s) changed upstream · %d files re-tagged · %d errors",
-		len(refreshResult.ChangedReleases), drift.retagged, len(drift.errorFiles))
-	ev.Stats = []models.EventStat{
-		{Label: "Releases checked", Value: refreshResult.Checked},
-		{Label: "Changed upstream", Value: len(refreshResult.ChangedReleases), Kind: models.EventStatNotable, Filter: models.EventItemStatusRefreshed},
-		{Label: "Files re-tagged", Value: drift.retagged, Filter: models.EventItemStatusChanged},
-		{Label: "Failed", Value: len(drift.errorFiles), Kind: models.EventStatBad, Filter: models.EventItemStatusError},
+	if res.drift.changedReleases > 0 {
+		summary += fmt.Sprintf(" · %d re-tagged from %d release(s) changed upstream",
+			res.drift.retagged, res.drift.changedReleases)
 	}
+
+	// Both halves declare their counters, but only when they happened: a run where
+	// nothing drifted should not carry two zeroes explaining a stage it never entered.
+	stats := []models.EventStat{
+		{Label: "Processed", Value: res.processed},
+		{Label: "Unchanged", Value: res.unchanged, Kind: models.EventStatMuted},
+		{Label: "Changed", Value: changed, Kind: models.EventStatNotable, Filter: models.EventItemStatusChanged},
+		{Label: "Tags written", Value: res.tagsWritten},
+		{Label: "Removed", Value: res.removed},
+	}
+	if res.drift.changedReleases > 0 {
+		stats = append(stats,
+			models.EventStat{Label: "Changed upstream", Value: res.drift.changedReleases, Kind: models.EventStatNotable, Filter: models.EventItemStatusRefreshed},
+			models.EventStat{Label: "Re-tagged", Value: res.drift.retagged},
+		)
+	}
+	stats = append(stats, models.EventStat{Label: "Failed", Value: len(res.errorFiles), Kind: models.EventStatBad, Filter: models.EventItemStatusError})
+	ev.Stats = stats
+
 	events.Finish(r.db, ev, status, summary, map[string]any{
-		"releases_checked": refreshResult.Checked,
-		"releases_changed": len(refreshResult.ChangedReleases),
-		"files_retagged":   drift.retagged,
-		"errors":           len(drift.errorFiles),
+		"processed":        res.processed,
+		"unchanged":        res.unchanged,
+		"changed":          changed,
+		"tags_written":     res.tagsWritten,
+		"files_removed":    res.removed,
+		"errors":           len(res.errorFiles),
+		"error_files":      recorded,
+		"libraries":        res.libraries,
+		"releases_changed": res.drift.changedReleases,
+		"files_retagged":   res.drift.retagged,
 		"detail":           detailSummary(detail),
 	})
-	items := detail.Items()
-	items = append(items, drift.refreshItems...)
+
+	// The release rows go on last: they are few, they are the tie between a metadata
+	// change and the files it rewrote, and they must not be lost to a walk that filled
+	// the detail limit on its own.
+	items := append(detail.Items(), res.drift.refreshItems...)
 	events.AddItems(r.db, ev, items)
 }
 
@@ -1116,13 +1199,22 @@ func scanSummaryLine(processed, changed, tagsWritten, errorCount, removed, credi
 	return s
 }
 
-// refreshDetailItem builds the Activity detail row for a release that changed
-// upstream during the scan's refresh stage. filesRetagged is how many of that
-// release's files the drift stage rewrote as a result, which is what ties the
-// metadata change to the file changes elsewhere in the same feed.
+// refreshDetailItem builds the Activity detail row for a release that changed upstream
+// and had files rewritten because of it. filesRetagged is how many, which is what ties
+// the metadata change to the file changes in the same activity.
+//
+// It is an **entity** row: the identifier is an MBID, not a path. Without the kind it
+// rendered through the file branch, which reports "N tags written" — so a release that
+// needed no rewrite read as "0 tags written" against a release ID, a claim about the
+// user's audio made by a row that is not about a file at all.
+//
+// Only releases that actually caused a write get one. Every release that changed
+// upstream is already listed, one row each, on the metadata refresh activity of the
+// same run; repeating the ones that changed nothing here says nothing twice.
 func refreshDetailItem(mbID string, filesRetagged int) models.EventItem {
 	return models.EventItem{
 		Path:        mbID,
+		Kind:        models.EventItemKindEntity,
 		Status:      models.EventItemStatusRefreshed,
 		Phase:       models.EventItemPhaseRefresh,
 		TagsWritten: filesRetagged,
@@ -1151,28 +1243,16 @@ func (r *Runner) setStatus(f func(*Summary)) {
 // rebuildCollection refreshes the present/collection view after a run. It is
 // best-effort — a failure is logged, not propagated — and returns what the pass
 // changed so a run can report it.
+//
+// It goes through collection.RecordScan, the same call the Scan button makes, so the
+// verb records one activity with one set of words in it however it was reached. The
+// only difference is the parent: pressed on its own it is top-level, reached by a run
+// it belongs to that run.
 func (r *Runner) rebuildCollection(parent *models.Event) collection.RebuildStats {
-	ev := events.BeginChild(r.db, parent, models.EventTypeCollectionScan, "Collection scan")
-	stats, err := collection.Rebuild(r.db)
-
-	status := models.EventStatusOK
-	details := map[string]any{
-		"artists":              stats.Artists,
-		"owned_release_groups": stats.Owned,
-		"credit_changes":       stats.CreditChanges,
-	}
-	summary := fmt.Sprintf("%d artists · %d albums on disk", stats.Artists, stats.Owned)
-	if stats.CreditChanges > 0 {
-		summary += fmt.Sprintf(" · %d credit change(s)", stats.CreditChanges)
-	}
+	stats, err := collection.RecordScanUnder(r.db, parent, "Collection scan", collection.RebuildScope{}, nil)
 	if err != nil {
 		logger.Log.Warnf("failed to rebuild collection: %s", err.Error())
-		status = models.EventStatusError
-		details["error"] = err.Error()
-		summary = "failed — " + err.Error()
 	}
-	ev.Stats = collection.ScanStats(stats)
-	events.Finish(r.db, ev, status, summary, details)
 	return stats
 }
 
@@ -1589,15 +1669,14 @@ func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshS
 		var items []models.LibraryItem
 		if err := r.db.Where("mb_release_id = ? AND status = ?", mbID, models.LibraryItemStatusOK).Find(&items).Error; err != nil {
 			logger.Log.Warnf("failed to load items for release %s: %s", mbID, err.Error())
-			// The release still changed upstream; record it with an unknown file count
-			// rather than dropping the fact because its files could not be listed.
-			res.refreshItems = append(res.refreshItems, refreshDetailItem(mbID, 0))
 			continue
 		}
 		items = filter.keep(items)
 		before := res.retagged
 		res.retagItems(r, items, libraries, refreshSet, detail)
-		res.refreshItems = append(res.refreshItems, refreshDetailItem(mbID, res.retagged-before))
+		if written := res.retagged - before; written > 0 {
+			res.refreshItems = append(res.refreshItems, refreshDetailItem(mbID, written))
+		}
 	}
 	return res
 }

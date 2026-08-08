@@ -71,13 +71,18 @@ func TestScanSummaryLine(t *testing.T) {
 }
 
 // TestRefreshDetailItem: a changed-release row is a release outcome, not a file one —
-// it carries the release MBID, the refreshed status/phase, and the count of files the
-// drift stage re-tagged as a result (its TagsWritten), with no tag diff.
+// it carries the release MBID, the entity kind, the refreshed status/phase, and the
+// count of files re-tagged as a result (its TagsWritten), with no tag diff.
 func TestRefreshDetailItem(t *testing.T) {
 	item := refreshDetailItem("rel-abc", 5)
 
 	if item.Path != "rel-abc" {
 		t.Errorf("Path = %q, want rel-abc", item.Path)
+	}
+	// Without the kind it renders through the file branch, which reports "N tags
+	// written" — a claim about the user's audio made by a row that is not about a file.
+	if item.Kind != models.EventItemKindEntity {
+		t.Errorf("Kind = %q, want %q", item.Kind, models.EventItemKindEntity)
 	}
 	if item.Status != models.EventItemStatusRefreshed {
 		t.Errorf("Status = %q, want %q", item.Status, models.EventItemStatusRefreshed)
@@ -93,11 +98,13 @@ func TestRefreshDetailItem(t *testing.T) {
 	}
 }
 
-// TestRetagReleasesRecordsRefreshRows: every release that changed upstream gets one
-// detail row, even when it owns no indexed files to re-tag (0 files). The fact that
-// the release changed is what the feed must not lose. Using releases with no library
+// TestRetagReleasesRecordsOnlyReleasesThatCausedAWrite: a release row on the tagging
+// activity exists to tie an upstream change to the files it rewrote, so a release that
+// rewrote nothing gets no row — every release that changed upstream is already listed,
+// one row each, on the metadata refresh of the same run, and repeating the silent ones
+// here filled the list with release IDs and nothing else. Using releases with no library
 // items keeps the test off disk and the network while still exercising the wiring.
-func TestRetagReleasesRecordsRefreshRows(t *testing.T) {
+func TestRetagReleasesRecordsOnlyReleasesThatCausedAWrite(t *testing.T) {
 	db, err := database.Connect(models.DatabaseConfig{Type: "sqlite", DSN: filepath.Join(t.TempDir(), "t.db")})
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
@@ -110,29 +117,13 @@ func TestRetagReleasesRecordsRefreshRows(t *testing.T) {
 	changed := []string{"rel-1", "rel-2"}
 	res := r.retagReleases(changed, refreshSet, detail, scopeFilter{})
 
+	// The releases are still counted: what changed upstream is true whatever it cost
+	// in file writes, and the counter is what the activity's summary reports.
 	if res.checked != 2 || res.changedReleases != 2 {
 		t.Errorf("checked/changedReleases = %d/%d, want 2/2", res.checked, res.changedReleases)
 	}
-	if len(res.refreshItems) != 2 {
-		t.Fatalf("refreshItems = %d, want 2 (one per changed release)", len(res.refreshItems))
-	}
-
-	seen := map[string]models.EventItem{}
-	for _, item := range res.refreshItems {
-		seen[item.Path] = item
-	}
-	for _, mbID := range changed {
-		item, ok := seen[mbID]
-		if !ok {
-			t.Errorf("no refresh row for release %q", mbID)
-			continue
-		}
-		if item.Status != models.EventItemStatusRefreshed || item.Phase != models.EventItemPhaseRefresh {
-			t.Errorf("row for %q = status %q phase %q, want refreshed/refresh", mbID, item.Status, item.Phase)
-		}
-		if item.TagsWritten != 0 {
-			t.Errorf("row for %q re-tagged %d files, want 0 (no indexed files)", mbID, item.TagsWritten)
-		}
+	if len(res.refreshItems) != 0 {
+		t.Fatalf("refreshItems = %d, want 0 — neither release owned a file to re-tag", len(res.refreshItems))
 	}
 
 	// No files existed to re-tag, so no file rows and no re-tag count.

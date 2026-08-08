@@ -213,10 +213,16 @@ func ReconcileRunning(db *gorm.DB) {
 }
 
 // MigrateLegacyTypes rewrites event rows recorded under a type name that has since
-// been renamed. Today that is one: the full pipeline was recorded as "scan" before
-// Scan came to mean the collection re-derivation, so old rows would otherwise sit in
-// the feed under a verb that no longer describes what they did — and the feed's type
-// filter would offer two entries for the same thing.
+// been renamed, so the feed's type filter never offers two entries for one thing and
+// no row sits under a verb that no longer describes what it did.
+//
+// Two so far: the full pipeline was recorded as "scan" before Scan came to mean the
+// collection re-derivation, and a run's walk was recorded as "process_files" before
+// tagging became one activity however it was reached.
+//
+// Not every old name is migrated — "drift_sync" deliberately keeps its own, because a
+// pre-split drift sync genuinely refreshed metadata *and* re-tagged, so relabelling it
+// would misreport history. These two describe exactly what their new name describes.
 //
 // It runs at startup beside ReconcileRunning, and is a no-op once the rows are
 // rewritten: events are capped at a few hundred, so the pass costs one indexed update
@@ -225,15 +231,23 @@ func MigrateLegacyTypes(db *gorm.DB) {
 	if db == nil {
 		return
 	}
-	res := db.Model(&models.Event{}).
-		Where("type = ?", models.EventTypeLegacyScan).
-		Update("type", models.EventTypeProcess)
-	if res.Error != nil {
-		logger.Log.Warnf("failed to migrate legacy event types: %s", res.Error.Error())
-		return
+	renames := []struct {
+		from, to, what string
+	}{
+		{models.EventTypeLegacyScan, models.EventTypeProcess, "legacy scan event(s) to the process verb"},
+		{models.EventTypeProcessFiles, models.EventTypeTagFiles, "walk event(s) to the tagging activity"},
 	}
-	if res.RowsAffected > 0 {
-		logger.Log.Infof("renamed %d legacy scan event(s) to the process verb", res.RowsAffected)
+	for _, rename := range renames {
+		res := db.Model(&models.Event{}).
+			Where("type = ?", rename.from).
+			Update("type", rename.to)
+		if res.Error != nil {
+			logger.Log.Warnf("failed to migrate legacy event types: %s", res.Error.Error())
+			return
+		}
+		if res.RowsAffected > 0 {
+			logger.Log.Infof("renamed %d %s", res.RowsAffected, rename.what)
+		}
 	}
 }
 

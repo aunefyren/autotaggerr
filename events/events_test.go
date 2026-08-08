@@ -275,6 +275,7 @@ func TestMigrateLegacyTypes(t *testing.T) {
 	db := testDB(t)
 
 	old := Begin(db, models.EventTypeLegacyScan, "an old run")
+	walk := Begin(db, models.EventTypeProcessFiles, "an old walk")
 	other := Begin(db, models.EventTypeMirror, "a refresh")
 
 	MigrateLegacyTypes(db)
@@ -285,6 +286,17 @@ func TestMigrateLegacyTypes(t *testing.T) {
 	}
 	if migrated.Type != models.EventTypeProcess {
 		t.Errorf("type = %q, want %q", migrated.Type, models.EventTypeProcess)
+	}
+
+	// The walk was a tagging pass under another name. Leaving it would put two entries
+	// in the feed's type filter for one kind of work. (Its own variable: a reloaded
+	// struct carries its primary key into the next First as an extra condition.)
+	var migratedWalk models.Event
+	if err := db.First(&migratedWalk, "id = ?", walk.ID).Error; err != nil {
+		t.Fatalf("reload the walk: %v", err)
+	}
+	if migratedWalk.Type != models.EventTypeTagFiles {
+		t.Errorf("walk type = %q, want %q", migratedWalk.Type, models.EventTypeTagFiles)
 	}
 
 	var untouched models.Event
@@ -298,7 +310,9 @@ func TestMigrateLegacyTypes(t *testing.T) {
 	// Idempotent: nothing left to rename on the next boot.
 	MigrateLegacyTypes(db)
 	var legacy int64
-	db.Model(&models.Event{}).Where("type = ?", models.EventTypeLegacyScan).Count(&legacy)
+	db.Model(&models.Event{}).
+		Where("type IN ?", []string{models.EventTypeLegacyScan, models.EventTypeProcessFiles}).
+		Count(&legacy)
 	if legacy != 0 {
 		t.Errorf("%d legacy rows remain", legacy)
 	}

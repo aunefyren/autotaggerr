@@ -68,6 +68,34 @@ func (d *DetailCollector) AddError(path string, err error) {
 	})
 }
 
+// Adopt folds another collector's rows into this one under the given phase, and adds
+// its totals to this one's. It is how a run's tagging stage reports both halves of what
+// it wrote — the files the walk found changed on disk, and the files re-tagged because
+// their release changed upstream — as one event whose detail list still keeps the two
+// apart.
+//
+// The adopted rows are kept **whole, past this collector's limit**: they carry their
+// own bound already (the caller's collector has one), and there are a handful of them
+// against a walk that can fill 500 rows on its own. Letting a big walk starve them would
+// drop precisely the rows nothing else records — the run's counters say a file was
+// re-tagged, only these say which.
+func (d *DetailCollector) Adopt(other *DetailCollector, phase string) {
+	if d == nil || other == nil {
+		return
+	}
+	items := other.Items()
+	changed, failed := other.Totals()
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.changed += changed
+	d.failed += failed
+	for _, item := range items {
+		item.Phase = phase
+		d.items = append(d.items, item)
+	}
+}
+
 // append stores an entry if there is room. Callers hold the lock.
 func (d *DetailCollector) append(item models.EventItem) {
 	if d.limit < 1 || len(d.items) >= d.limit {

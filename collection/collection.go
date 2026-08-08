@@ -100,7 +100,7 @@ func RebuildArtist(db *gorm.DB, artistMBID string) (RebuildStats, error) {
 	return RebuildScoped(db, RebuildScope{ArtistMBID: artistMBID})
 }
 
-// RecordScan runs a Scan and records it as an Activity event.
+// RecordScan runs a Scan and records it as a top-level Activity event.
 //
 // The Scan verb was the one of the four that reported nothing at all: it answers its
 // HTTP caller inline, so there was no background job to attach a row to, and pressing
@@ -111,7 +111,17 @@ func RebuildArtist(db *gorm.DB, artistMBID string) (RebuildStats, error) {
 // identically — they are the same verb, and two call sites is how two summaries with
 // different words in them happen.
 func RecordScan(db *gorm.DB, title string, scope RebuildScope, detail map[string]any) (RebuildStats, error) {
-	ev := events.Begin(db, models.EventTypeCollectionScan, title)
+	return RecordScanUnder(db, nil, title, scope, detail)
+}
+
+// RecordScanUnder is RecordScan owned by a parent event — the same Scan, reached as a
+// stage of a processing run instead of by pressing the button.
+//
+// A cascading activity and a hand-pressed one are the same work and must read as the
+// same row; the run only changes what the row belongs to. A nil parent gives a
+// top-level event, which is what the button wants.
+func RecordScanUnder(db *gorm.DB, parent *models.Event, title string, scope RebuildScope, detail map[string]any) (RebuildStats, error) {
+	ev := events.BeginChild(db, parent, models.EventTypeCollectionScan, title)
 	stats, err := RebuildScoped(db, scope)
 
 	status := models.EventStatusOK

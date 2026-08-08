@@ -11,9 +11,10 @@ import (
 	"github.com/aunefyren/autotaggerr/models"
 )
 
-// The feed lists runs. A run's stages are reached by opening it, so six stages must not
-// push five other runs off the first page.
-func TestFeedListsRunsNotStages(t *testing.T) {
+// The feed is flat: one row per thing that happened, at the time it happened, whether a
+// user started it or a run spawned it. An activity that only appeared once you expanded
+// the run that spawned it is an activity most readers never see.
+func TestFeedIsFlat(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 
@@ -23,6 +24,7 @@ func TestFeedListsRunsNotStages(t *testing.T) {
 	events.Finish(api.DB, run, models.EventStatusOK, "done", nil)
 
 	var page struct {
+		Total  int            `json:"total"`
 		Events []models.Event `json:"events"`
 	}
 	w := do(r, "GET", "/api/v1/events", token, nil)
@@ -32,26 +34,76 @@ func TestFeedListsRunsNotStages(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	for _, ev := range page.Events {
-		if ev.ParentID != nil {
-			t.Fatalf("feed returned a stage event (%s) — it belongs under its run", ev.Type)
-		}
+	if page.Total != 2 || len(page.Events) != 2 {
+		t.Fatalf("feed returned %d of %d events, want both the run and its stage", len(page.Events), page.Total)
 	}
 
-	// A type filter still has to be able to find one, or "show me every metadata
-	// refresh" would silently skip the ones that ran inside a run.
-	w = do(r, "GET", "/api/v1/events?nested=1&type="+models.EventTypeMirror, token, nil)
-	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
-		t.Fatalf("decode nested: %v", err)
+	// Related, not nested: the row says which run it came from, and the run says how
+	// many it spawned. That is what a flat feed has instead of a tree.
+	byID := map[string]models.Event{}
+	for _, ev := range page.Events {
+		byID[ev.ID.String()] = ev
 	}
-	if len(page.Events) != 1 || page.Events[0].ID != stage.ID {
-		t.Fatalf("nested=1 did not return the stage: %+v", page.Events)
+	if got := byID[stage.ID.String()].ParentTitle; got != "Process all libraries" {
+		t.Errorf("stage row parent title = %q, want the run's", got)
+	}
+	if got := byID[run.ID.String()].ChildCount; got != 1 {
+		t.Errorf("run child_count = %d, want 1", got)
+	}
+
+	// The old shape is still reachable for a caller that wants runs only.
+	w = do(r, "GET", "/api/v1/events?nested=0", token, nil)
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode nested=0: %v", err)
+	}
+	if len(page.Events) != 1 || page.Events[0].ID != run.ID {
+		t.Fatalf("nested=0 returned %+v, want the run alone", page.Events)
 	}
 }
 
-// Browsing groups; filtering flattens. Asking for every metadata refresh means every
-// one — a filter that silently skipped the ones inside runs would be answering a
-// narrower question than it was asked.
+// `parent` narrows the feed to one cascade — the run and everything it spawned. It is
+// how a run is read together when something else ran in between, and it includes the run
+// itself, because "show me this run" without the run answers a narrower question.
+func TestParentFilterReturnsOneCascade(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	run := events.Begin(api.DB, models.EventTypeProcess, "Process all libraries")
+	stage := events.BeginChild(api.DB, run, models.EventTypeMirror, "Metadata refresh")
+	events.Finish(api.DB, stage, models.EventStatusOK, "4 entities", nil)
+	events.Finish(api.DB, run, models.EventStatusOK, "done", nil)
+
+	// An unrelated activity that must not appear.
+	other := events.Begin(api.DB, models.EventTypeHealth, "Health check")
+	events.Finish(api.DB, other, models.EventStatusOK, "ok", nil)
+
+	var page struct {
+		Total  int            `json:"total"`
+		Events []models.Event `json:"events"`
+	}
+	w := do(r, "GET", "/api/v1/events?parent="+run.ID.String(), token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if page.Total != 2 {
+		t.Fatalf("cascade returned %d events, want the run and its one stage", page.Total)
+	}
+	for _, ev := range page.Events {
+		if ev.ID != run.ID && (ev.ParentID == nil || *ev.ParentID != run.ID) {
+			t.Errorf("cascade included an unrelated event: %s", ev.Type)
+		}
+	}
+
+	if w := do(r, "GET", "/api/v1/events?parent=not-an-id", token, nil); w.Code != http.StatusBadRequest {
+		t.Errorf("status for a malformed parent = %d, want 400", w.Code)
+	}
+}
+
+// Asking for every metadata refresh means every one — a filter that silently skipped the
+// ones inside runs would be answering a narrower question than it was asked.
 func TestAFilterIncludesStagesWithoutAskingTwice(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
@@ -206,8 +258,9 @@ func TestFeedSearchIsCaseInsensitiveOnTitle(t *testing.T) {
 	}
 }
 
-// A feed row offers to expand only when there is something to expand into, so the count
-// has to arrive with the row rather than after a fetch it exists to avoid.
+// A run row says how many activities it spawned, and offers to narrow the feed to them.
+// One that spawned none must not offer, so the count has to arrive with the row rather
+// than after a fetch it exists to avoid.
 func TestFeedRowsCarryTheirStageCount(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)

@@ -250,7 +250,9 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Grouped table sections** (`.group-section` / `.group-head`) — a collapsible section per real
   category, with its count and its own coverage meter in the header. Grouping must encode data (the
   MusicBrainz primary type), never visual chunking. Sections that are numerous and rarely the reason
-  you opened the page start closed. One sort and one filter apply across every section.
+  you opened the page start closed. One sort and one filter apply across every section. The header's
+  caret is `.twisty`; a *list* is never collapsed this way — the Activity feed tried it and the rows
+  it hid were the ones worth reading (see *Run rail*).
 - **Browse state lives in the URL** (`useBrowse`) — query, sort key, direction, active filter, open
   sections, selected detail row, **page**. Written with `replace`, not `push`, so sorting a table is
   not a history entry. The reason is concrete: opening an album and coming back must not reset the
@@ -372,25 +374,24 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   read as "working, unquantified". Which phases drive the bar is one shared rule
   (`phaseDrivesProgress`, `components/phases.ts`), because the Activity banner, the Activity feed
   rows, the Dashboard widget and the Artist page all draw the same counters.
-- **Stage row** (`.stagerow`, `StageList` in `Activity.tsx`) — one stage of a run inside its detail
-  modal: status pill, stage name, the stage's *own* summary line, a share-of-time bar, duration. A
-  `<button>`, not a div, because the stages are the way into what a run actually did and must be
-  reachable without a mouse. Quiet chrome (`--surface-2` on the modal's `--surface-3`) so the numbers
-  stay the loud thing. **Each row states its own summary rather than sharing columns** — the stages
-  do not share a unit (one counts entities, one files, one albums), and a shared grid would force
-  three of them to report zero in a column that means nothing to them.
-  **Share-of-time bar** (`.stagebar`) — each stage's fraction of the run's working time, so "which
-  stage ate the four hours" is answered by scanning down rather than by comparing durations. Share
-  of the *total*, not of the longest stage: one stage at 95% should leave the others as slivers,
-  because that is the answer. Deliberately neither the coverage meter nor the progress bar — this is
-  neither "how much is on disk" nor "how far along", and reusing either language would make a claim
-  about the library.
-- **Feed disclosure** (`.twisty`, `FeedRows` in `Activity.tsx`) — expands a grouped row into what it
-  contains. **Two jobs, two hit areas**, the same rule as the master/detail split: the row opens the
-  detail modal, the twisty only expands, and `stopPropagation` keeps expanding from also opening a
-  modal over what you just revealed. A row with nothing to expand renders `.twisty-gap` instead, so
-  titles stay in a column. Children are **indented, not tinted** (`.stagerow-feed`, recessed to
-  `--bg`): they are the same feed one level down, not a different kind of thing.
+- **Run rail** (`.rail`, `FeedRow` in `Activity.tsx`) — how a flat feed shows that several activities
+  came from one run. The Activity feed is one row per thing that happened, ordered only by when it
+  happened, so the relationship cannot be structural: a line in a 20px gutter joins the rows of one
+  cascade, capped by a dot on the run itself — which sits at the *bottom* of its group, because it
+  started first, so the rail reads as the cascade growing upward out of the thing that started it.
+  Quiet by default (`--border-strong`, a divider's weight); **hovering or focusing any row lights the
+  whole cascade** (`--accent` rail on an `--accent-subtle` fill), which is the answer to "which of
+  these belong together" without giving each run a colour of its own. A per-run hue is the rule this
+  deliberately avoids — a full page needs two hundred of them, and colour here belongs to status.
+  It replaced a disclosure that nested stages under their run. **Every row is the same row**: a stage
+  of a run and a verb somebody pressed are the same work, so they render identically, with their own
+  timestamp, duration, progress bar and modal. Nesting made a cascading activity look like a lesser
+  kind of thing and put its detail two modals deep.
+- **Run reference** (`.railref`) — the name of the run a row came from (`↳ Nightly process`), or the
+  count of what a run spawned (`└ 5 activities`), sitting quiet under the title. Both narrow the feed
+  to that one cascade, which is what carries the relationship when the rail cannot — a health check
+  or a hand-pressed refresh between two stages breaks the run of adjacent rows. `--text-dim` at
+  `--text-xs`: it is provenance, not the row's subject.
 - **Event counters** (`StatRow` in `Activity.tsx`) — an event declares its own counters
   (`models.EventStat`), and the UI renders what it finds rather than knowing each type's keys.
   A counter naming an `EventItem` status becomes a **`FilterChip`** over the detail list below it,

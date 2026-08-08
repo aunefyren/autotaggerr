@@ -14,9 +14,8 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 - **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
   manual attach. The last unbuilt piece of the native manager. It has no Activity event, and the
-  event ships with the feature rather than before it — but it is not the only verb without one: the
-  collection rebuild and the migration stage are silent too, which
-  [Activity: one row per thing that happened](#activity-one-row-per-thing-that-happened) covers.
+  event ships with the feature rather than before it — every other verb has one now, so an import
+  that reports nothing would be the only silent thing in the feed.
 - **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
   pulls the whole back catalogue of the chosen types. A global follow default could layer on later
   without a schema change.
@@ -39,13 +38,13 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 ## Activity: one row per thing that happened
 
-In progress. A run used to do six things and report as one row — that row being the *walk's*
-counters, so it read as a tagging event while the other five stages went into `details.*` keys
-nothing rendered. Every stage is now its own event under the run, the progress bar no longer claims
-a position it does not have, and the detail view renders whatever an event declares about itself
-rather than a branch per type. What is left is how the relationship reads in the feed.
+Shipped. A run used to do six things and report as one row — that row being the *walk's* counters, so
+it read as a tagging event while the other five stages went into `details.*` keys nothing rendered.
+Every activity a run spawns is now its own row in a flat feed, at the time it started, rendered
+exactly like one a user pressed. See [scanning.md](scanning.md#a-run-spawns-activities-each-one-is-a-row)
+and [the feed is flat](scanning.md#the-feed-is-flat).
 
-**Shipped so far:**
+**What shipped:**
 
 - *The bar no longer lies.* Indeterminate outside the phase that owns the counters, on all four
   surfaces that draw them. See [scanning.md](scanning.md#the-bar-belongs-to-one-phase) and the
@@ -53,28 +52,39 @@ rather than a branch per type. What is left is how the relationship reads in the
 - *A metadata pass records what it found.* Per-phase tallies and one `EventItem` per changed / gone
   / relinked / failed entity, instead of discarding `Result.ChangedReleases` to a `len()`. See
   [mirror.md](mirror.md#what-a-pass-records-about-itself).
-- *Every stage is its own event, under the run.* `Event.ParentID`, seven stage types, the walk's
-  counters moved off the run onto `process_files`, the Scan verb emitting at last, and retention
-  counting runs rather than rows. See
-  [scanning.md](scanning.md#a-run-is-a-parent-its-stages-are-the-rows).
-- *The detail view renders what an event declares.* `Event.Stats` replaced the branch-per-type
-  chain, counters that name a row status became filter chips over one unified list, `EventItem.Kind`
-  separates a file row from an entity row, and each stage row carries its share of the run's time.
-  See [scanning.md](scanning.md#an-event-declares-its-own-counters) and the *Event counters* /
-  *Stage row* entries in [style-guide.md](style-guide.md#components).
-- *The feed shows the cascade.* Runs expand into their stages in place, a running run opens itself,
-  and a filtered feed returns stages with the run they belong to named on the row. See
-  [scanning.md](scanning.md#browsing-groups-filtering-flattens).
+- *Every stage is its own event, under the run.* `Event.ParentID`, the stage types, the walk's
+  counters moved off the run, the Scan verb emitting at last, and retention counting runs rather than
+  rows.
+- *The detail view renders what an event declares.* `Event.Stats` replaced the branch-per-type chain,
+  counters that name a row status became filter chips over one unified list, and `EventItem.Kind`
+  separates a file row from an entity row. See
+  [scanning.md](scanning.md#an-event-declares-its-own-counters).
+- *The feed is flat, and relation is annotated.* Every activity is a row at its own start time; the
+  run rail joins one cascade in the gutter, the run's name rides each row it spawned, and
+  `?parent=<id>` narrows the feed to one run. Nesting is gone, and so is the modal-inside-a-modal it
+  needed. See the *Run rail* entry in [style-guide.md](style-guide.md#components).
+- *A cascading activity is identical to a pressed one.* One emitter and one type per verb — tagging
+  is `tag_files` whether a run reached it or a user pressed it, a scan goes through
+  `collection.RecordScanUnder` either way — so the same work cannot be reported with two different
+  sets of words depending on what started it.
+- *Tagging is one activity.* The walk and the drift re-tag share an event, phase-tagged in the detail
+  list, which ended a second row whose only content was release IDs the metadata refresh had already
+  listed — and, with `EventItem.Kind` finally set on them, the `<mbid> 0 tags written` lines those
+  rows rendered as.
+- *Counting files is its own activity.* The walk that sizes the bar is a phase and a row, so a cold
+  run's first minutes say what they are doing instead of reporting a metadata pass sitting at 0.
 - *Both long lists page.* One `usePaging` + `Pager` in `browse.tsx` serves Activity (server-paged,
   `offset` in the query) and the Collection (client-paged, `offset` as an array index), with the
   page in the URL and any narrowing resetting it. See *Paging* in
   [style-guide.md](style-guide.md#components).
 - *The feed filters.* Status chips, a type select and title search, all server-side with facet
-  counts so every control states its own result. See
-  [scanning.md](scanning.md#browsing-groups-filtering-flattens).
+  counts so every control states its own result.
 
 **What is left:**
 
+- **A page holds less history now.** 50 rows is 50 activities, not 50 runs, so a screen covers
+  roughly eight nightly runs instead of fifty. `parent` and the type filter carry what the grouping
+  used to; if it starts to bite, the answer is a date jump rather than bringing nesting back.
 - **The Items page still cannot answer "what failed?"** for *files*. Activity answers it for events
   now, but the rows on the Items page carry `error`, `last_error_at` and `last_error_transient` —
   exactly the split needed to separate "MusicBrainz was down, this will retry" from "someone has to
@@ -84,21 +94,18 @@ rather than a branch per type. What is left is how the relationship reads in the
 - **`EventItem` has no index on `status`.** The detail modal filters rows in the browser, which is
   right for the ≤500 a single event holds, but any future "every failed file across every run" view
   would want one.
-
-The **stage timeline** that used to be listed here is largely done as part of the modal work: each
-stage row carries a share-of-time bar (`.stagebar`), which answers "which stage ate the four hours"
-by scanning down the list. A separate segmented band would be a second way to read the same fact —
-worth doing only if the per-row bar turns out not to carry it.
+- **Where did the four hours go?** The share-of-time bar went with the stage list it lived in — each
+  row now states its own duration, in a column, which answers the same question by scanning down. If
+  that turns out not to carry it, the place for a segmented band is the run's own modal, over the
+  cascade it spawned.
 
 Smaller things this work exposed rather than solved:
 
 - **Retention is still hardcoded** — 200 runs, 500 detail rows per run, 500 entity rows per metadata
   pass. Now that it counts runs the number means something stable, but it could be configurable, and
-  time-based retention would suit a feed better than a count.
-- **The `refresh` phase covers two operations.** It is set before `CountSupportedFiles` walks every
-  root to size the bar, so the phase spans the counting walk (with `Total` still 0) and then the
-  due-release refresh. Splitting the count into its own phase is nearly free and makes the first
-  minutes of a run legible.
+  time-based retention would suit a feed better than a count. Note that a tagging activity can now
+  exceed the per-event limit by design: the drift rows are adopted whole
+  (`DetailCollector.Adopt`) so a big walk cannot starve them.
 - **A credit change still has no affordance.** `collection_scan` now reports the count, but it is
   still the only identity change with no Migrations row to click through to — the count is the only
   way to notice one, and there is nothing to open.
@@ -160,8 +167,9 @@ The manager-authority boundary is now honoured end to end (see
   retry" from "someone has to fix this" — and nothing reads them. There is no way to ask *what
   failed?*, and Activity does not use the transient flag to keep an outage from reading as hundreds
   of broken files.
-Surfacing the stages a run hides — the refresh stage, the collection stage, the unrendered
-`details.*` keys — is no longer a list of rendering gaps. It is one piece of work; see
+
+The stages a run used to hide — the refresh stage, the collection stage, the unrendered `details.*`
+keys — are all rows of their own now; see
 [Activity: one row per thing that happened](#activity-one-row-per-thing-that-happened).
 
 ## Roadmap / ideas

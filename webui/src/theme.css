@@ -193,29 +193,42 @@ table.data td .path { font-family: var(--font-mono); color: var(--text); font-si
   to { background-position: 14.142px 0; }
 }
 
-/* Stage row — one stage of a run inside its detail modal. A button, not a div: the
-   stages are the way into what a run actually did, so they must be reachable without
-   a mouse. Quiet chrome (surface-2 on the modal's surface-3) so the run's own numbers
-   stay the loud thing. */
-.stagerow {
-  display: flex; align-items: center; gap: var(--space-5); width: 100%;
-  padding: var(--space-3) var(--space-5); text-align: left;
-  background: var(--surface-2); border: 1px solid var(--border);
-  border-radius: var(--radius); color: var(--text); font: inherit; cursor: pointer;
-  transition: border-color var(--dur) var(--ease), background var(--dur) var(--ease);
+/* Run rail — how a flat feed shows that several activities came from one run.
+   The feed is one row per thing that happened, ordered by when it happened, so the
+   relationship cannot be structural: it is drawn in the gutter instead. A continuous
+   line joins the rows of one cascade, capped by a dot on the run itself — which sits
+   at the *bottom* of its group, because it started first, so the rail reads as the
+   cascade growing upward out of the thing that started it.
+   Quiet by default (--border-strong, the same weight as a divider); the accent is
+   spent only on the group you are pointing at. */
+.rail { width: 20px; padding: 0 !important; position: relative; }
+.rail i {
+  position: absolute; left: 9px; width: 2px; background: var(--border-strong);
+  transition: background var(--dur) var(--ease);
 }
-.stagerow:hover { border-color: var(--border-strong); background: var(--surface-3); }
-/* A stage's share of the run's working time. Deliberately not the coverage meter or the
-   progress bar: this is neither "how much is on disk" nor "how far along", it is where
-   the time went, and reusing either language would make a claim about the library. */
-.stagebar {
-  display: block; flex: none; width: 56px; height: 3px; border-radius: var(--radius-pill);
-  background: var(--surface-1); overflow: hidden;
+.rail i.up { top: 0; height: 50%; }
+.rail i.down { top: 50%; bottom: 0; }
+.rail i.tick { top: calc(50% - 1px); left: 9px; width: 7px; height: 2px; }
+.rail i.dot {
+  top: calc(50% - 3px); left: 6px; width: 8px; height: 8px; border-radius: 50%;
+  background: var(--border-strong);
 }
-.stagebar i { display: block; height: 100%; background: var(--border-strong); }
+/* The whole cascade lights when any row of it is pointed at or focused — the answer to
+   "which of these belong together" without giving each run a colour of its own. */
+table.data tbody tr.lit > td { background: var(--accent-subtle); }
+table.data tbody tr.lit .rail i { background: var(--accent); }
+/* Names the run a row came from, and narrows the feed to it. Quiet, one line under the
+   title: it is provenance, not the row's subject. */
+.railref {
+  display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; padding: 0;
+  background: none; border: none; color: var(--text-dim); font: inherit; font-size: 11px;
+  cursor: pointer; max-width: 340px;
+}
+.railref span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.railref:hover { color: var(--accent-text); }
+.railref:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--radius-sm); }
 
-/* Feed disclosure — expands a run to the stages it performed. Its own hit area, because
-   the row it sits in opens the detail modal and expanding must not also do that. */
+/* Section disclosure — expands a grouped table section (Collection, Artist). */
 .twisty {
   display: inline-flex; align-items: center; justify-content: center;
   width: 16px; height: 28px; flex: none; padding: 0;
@@ -224,16 +237,6 @@ table.data td .path { font-family: var(--font-mono); color: var(--text); font-si
 }
 .twisty:hover { color: var(--text); background: var(--surface-2); }
 .twisty:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
-/* Keeps titles in a column when a row has no stages to expand. */
-.twisty-gap { display: inline-block; width: 16px; flex: none; }
-
-/* A stage inside the feed, indented under its run. Recessed rather than tinted: it is
-   the same feed, one level down, not a different kind of thing. */
-.stagerow-feed > td { background: var(--bg); }
-.stagerow-feed:hover > td { background: var(--surface-2); }
-.stagerow:focus-visible {
-  outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
-}
 
 /* Disk marker — the glyph that keeps colour from being the only signal. */
 .disk-marker { font-size: 12px; line-height: 1; flex: none; }

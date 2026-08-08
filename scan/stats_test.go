@@ -67,21 +67,21 @@ func TestChangedCounterSelectsTheRowsItCounts(t *testing.T) {
 	r.RunAll()
 	r.waitIdle(t)
 
-	var walk models.Event
-	if err := db.Where("type = ?", models.EventTypeProcessFiles).First(&walk).Error; err != nil {
-		t.Fatalf("load the walk event: %v", err)
+	var tagging models.Event
+	if err := db.Where("type = ? AND parent_id IS NOT NULL", models.EventTypeTagFiles).First(&tagging).Error; err != nil {
+		t.Fatalf("load the tagging event: %v", err)
 	}
 
-	changed, ok := statByLabel(walk.Stats, "Changed")
+	changed, ok := statByLabel(tagging.Stats, "Changed")
 	if !ok {
-		t.Fatalf("the walk declares no Changed counter: %+v", walk.Stats)
+		t.Fatalf("tagging declares no Changed counter: %+v", tagging.Stats)
 	}
 	if changed.Filter != models.EventItemStatusChanged {
 		t.Errorf("Changed selects %q, want %q — a filter that matches no row is a dead chip",
 			changed.Filter, models.EventItemStatusChanged)
 	}
 
-	failed, ok := statByLabel(walk.Stats, "Failed")
+	failed, ok := statByLabel(tagging.Stats, "Failed")
 	if !ok || failed.Kind != models.EventStatBad {
 		t.Errorf("Failed counter = %+v, want it marked bad", failed)
 	}

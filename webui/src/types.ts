@@ -320,18 +320,18 @@ export interface Event {
   /** Per-file detail. Only the single-event endpoint returns it, never the feed. */
   items?: EventItem[];
   /**
-   * Set on a stage event: the run that performed it. The feed lists runs only, so a
-   * row with this set is reached by opening its parent.
+   * Set on an activity a run spawned: the run that spawned it. The feed is flat — every
+   * activity is its own row — so this is what relates the rows rather than nesting them.
    */
   parent_id?: string;
   /**
-   * The stages this run performed, oldest first — the order things happened in.
-   * Only the single-event endpoint returns them.
+   * The activities this run spawned, oldest first. Only the single-event endpoint
+   * returns them; the feed lists them as rows of their own.
    */
   children?: Event[];
-  /** How many stages this run has, so a feed row can offer to expand without fetching. */
+  /** How many activities this run spawned, so a row can offer to narrow the feed to them. */
   child_count?: number;
-  /** The run a stage belongs to. Only set on stage rows returned by a filtered feed. */
+  /** The run this activity came from, set on every row that has one. */
   parent_title?: string;
 }
 

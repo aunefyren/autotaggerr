@@ -11,6 +11,7 @@
 /** Human labels for the stage a running job reports, across runs and metadata passes. */
 export const PHASE_LABELS: Record<string, string> = {
   // processing phases
+  counting: "Counting files",
   refresh: "Refreshing metadata",
   scanning: "Scanning files",
   drift: "Re-tagging changed releases",
@@ -29,12 +30,12 @@ export const PHASE_LABELS: Record<string, string> = {
  * The phases whose own work advances the counters the bar is drawn from.
  *
  * A processing run counts **files**, and only the walk moves that number. Its other
- * five stages do real, sometimes long work in a different unit entirely — the refresh
- * stage counts releases against the MusicBrainz rate limit, the collection stage
- * re-derives the whole collection and mirrors the manager — while the file counters
- * sit wherever the walk left them. So the bar reads 0% for the minutes before the walk
- * and 100% for the minutes after it, which is the "stuck" that this set exists to stop
- * us drawing.
+ * stages do real, sometimes long work in a different unit entirely — counting sizes the
+ * run before there is a total at all, the refresh stage counts releases against the
+ * MusicBrainz rate limit, the collection stage re-derives the whole collection and
+ * mirrors the manager — while the file counters sit wherever the walk left them. So the
+ * bar reads 0% for the minutes before the walk and 100% for the minutes after it, which
+ * is the "stuck" that this set exists to stop us drawing.
  *
  * A metadata pass counts **entities**, and every one of its phases advances them, so
  * all four are here. `paused` is too: a yielded pass has not moved, but its counters

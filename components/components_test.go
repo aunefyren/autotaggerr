@@ -622,6 +622,48 @@ func TestDetailCollectorDisabled(t *testing.T) {
 	}
 }
 
+// TestDetailCollectorAdoptKeepsWhatTheWalkWouldStarve: a run's tagging activity reports
+// both halves of what it wrote, so the drift rows are folded into the walk's collector
+// under their own phase. They must survive a walk that already filled the limit —
+// otherwise the rows nothing else records are exactly the rows dropped, and the phase is
+// what keeps the two halves apart in the detail list.
+func TestDetailCollectorAdoptKeepsWhatTheWalkWouldStarve(t *testing.T) {
+	const limit = 3
+	walk := NewDetailCollector(limit)
+	for i := 0; i < limit+2; i++ {
+		walk.AddChanged(fmt.Sprintf("/music/%d.flac", i), 1, nil)
+	}
+
+	drift := NewDetailCollector(limit)
+	drift.AddChanged("/music/drifted.flac", 4, nil)
+	drift.AddError("/music/broken.flac", errors.New("nope"))
+
+	walk.Adopt(drift, models.EventItemPhaseDrift)
+
+	items := walk.Items()
+	if len(items) != limit+2 {
+		t.Fatalf("held %d rows, want the walk's %d plus both adopted ones", len(items), limit)
+	}
+	for _, item := range items[limit:] {
+		if item.Phase != models.EventItemPhaseDrift {
+			t.Errorf("adopted row %q has phase %q, want %q", item.Path, item.Phase, models.EventItemPhaseDrift)
+		}
+	}
+	// The walk's own rows keep theirs: a file found on disk is not a file re-tagged
+	// because its release moved.
+	if items[0].Phase != "" {
+		t.Errorf("a walk row was re-phased to %q", items[0].Phase)
+	}
+
+	changed, failed := walk.Totals()
+	if changed != limit+3 || failed != 1 {
+		t.Errorf("totals = %d changed / %d failed, want %d/1", changed, failed, limit+3)
+	}
+
+	// A nil source is a run where nothing drifted.
+	walk.Adopt(nil, models.EventItemPhaseDrift)
+}
+
 // TestDetailCollectorNilErrorIgnored: AddError(nil) is a no-op, so a caller need not
 // branch on whether the error is real.
 func TestDetailCollectorNilErrorIgnored(t *testing.T) {

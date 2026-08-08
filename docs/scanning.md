@@ -326,9 +326,9 @@ stamped on a failure, so the next run re-attempts the file for free, and a file 
 `details` JSON via a gorm serializer, optional `ref_type`+`ref_id`), with `events.Begin` /
 `Finish` / `Prune`. Processing runs prune to the newest 200.
 
-`GET /events` (filter by type/status, paginated) and `GET /events/:id`. The **Activity** page is a
-reverse-chronological feed with status pills, a live banner, a "Process all libraries" button and a
-click-through detail modal (run stat grid, per-file detail, drift detail).
+`GET /events` (filter by type/status/parent, paginated) and `GET /events/:id`. The **Activity** page
+is a flat reverse-chronological feed with status pills, a live banner, a "Process all libraries"
+button and a click-through detail modal (stat grid, per-file detail).
 
 **Duration is derived, never stored.** The feed's Duration column and the detail modal both compute
 it from the row's own `started_at`/`finished_at`, so every event type has one — including the ones
@@ -337,68 +337,94 @@ to also write a `details.duration` string; that was the only reason those two ha
 other five did not, and it has been removed rather than copied into the rest. A running event counts
 up in the same format as the banner's elapsed counter; an event with no finish stamp reads `—`.
 
-Emitted today: `process`, `process_files`, `tag_files`, `collection_scan`, `lidarr_sync`,
+Emitted today: `process`, `count_files`, `tag_files`, `collection_scan`, `lidarr_sync`,
 `mb_mirror`, `mb_migration`, `plex_refresh`, `health_check`.
 
-### A run is a parent, its stages are the rows
+### A run spawns activities; each one is a row
 
-A processing run does six distinct things, and for a long time reported as one row. That row was
+A processing run does several distinct things, and for a long time reported as one row. That row was
 the *walk's* counters — processed / changed / tags written — so a run read as a tagging event with
-the other five stages missing, and each of them had nowhere to put what it found: they went into
+the other stages missing, and each of them had nowhere to put what it found: they went into
 `details.*` keys nothing rendered.
 
-Each stage now records **its own event**, linked to the run by `Event.ParentID`:
+Each stage records **its own event**, linked to the run by `Event.ParentID`:
 
 | Stage | Event type | Recorded |
 | --- | --- | --- |
+| counting (`countFiles`) | `count_files` | always |
 | refresh (`mirror.RunStage`) | `mb_mirror` | always |
-| the walk | `process_files` | always |
-| drift re-tag | `tag_files` | when a release changed upstream |
+| the walk **and** the drift re-tag | `tag_files` | always |
 | Plex | `plex_refresh` | when an album was touched and Plex is configured |
 | identity changes | `mb_migration` | **only when something was found** |
 | collection scan | `collection_scan` | always |
 | manager mirror | `lidarr_sync` | full-library runs only |
 
 The run's own row keeps what only it knows — the scope, what narrowed it, the roll-up summary and
-the overall outcome — and **carries no detail rows at all**. Every row belongs to the stage that
+the overall outcome — and **carries no detail rows at all**. Every row belongs to the activity that
 produced it, so opening a run does not show the same file twice.
 
-Three things are load-bearing here:
+Four things are load-bearing here:
 
-- **The walk is `process_files`, not `tag_files`.** The two carry identical counters and identical
-  per-file detail, but they belong to different verbs: Tag files walks no folders and is something a
-  user presses on its own. Filing the walk under it would put a verb in the feed that nobody
-  invoked, which is exactly what [no verb triggers another](#the-four-verbs-and-why-none-of-them-cascades)
-  exists to prevent.
+- **A cascading activity is identical to a pressed one.** Both go through the same emitter, carry the
+  same counters and render as the same row; the run only changes what the row *belongs to*. So the
+  run's tagging stage is `tag_files`, the type the *Tag files* button records, and its collection
+  scan goes through `collection.RecordScanUnder` — the same call the *Scan* button makes with no
+  parent. Two emitters for one verb is how the same work ends up reported with different words in it
+  depending on what started it.
+  The walk was kept apart as `process_files` for a while, on the grounds that a stage nobody pressed
+  should not appear under a verb's name. That held while a stage row had nothing on it saying where
+  it came from; the feed [names every row's run](#the-feed-is-flat) now, and the split had become two
+  entries in the type filter for one thing. Old rows are rewritten by `events.MigrateLegacyTypes`.
+- **Tagging is one activity, however the run reached the file.** The walk finds files changed on
+  disk; the drift pass rewrites files whose release changed upstream. They ran as two events, which
+  put the walk's counters beside a row whose only content was a list of release MBIDs — the same
+  releases the metadata refresh had already listed, one row each. Now the two halves share one event
+  and are told apart by `EventItem.Phase` (`""` and `drift`), which the detail list groups by. A
+  release row survives only when it actually caused a write, and carries how many files it caused.
+- **Counting is its own activity.** `CountSupportedFiles` walks every root before the run starts, to
+  size the bar. On a cold library that is minutes of disk with the bar reading `0 / 0` — the shape of
+  a hang — and it happened inside the refresh phase, so nothing said what was going on.
 - **An empty migration queue records nothing.** Draining it is one indexed query; a row per run
   saying "0 applied" would bury the runs that actually re-pointed a record.
-- **`plex_refresh` was always its own event** — the only stage that was — but it was not linked to
-  the run that produced it, so it appeared in the feed beside a run with nothing saying they were
-  the same work.
 
 The **Scan verb** (`collection.Rebuild`) records `collection_scan` whether it was pressed on its own
 or ran as a stage. It answers its HTTP caller inline, which is why it recorded nothing for so long —
 but being fast is not the same as being uninteresting, and a pass that can move an album between
-artists left no trace. `collection.RecordScan` is the shared emitter, so the artist and
-collection-wide scopes cannot drift into two different summaries.
+artists left no trace. `collection.RecordScan` (top-level) and `RecordScanUnder` (owned by a run) are
+one function, so the artist, collection-wide and cascading scopes cannot drift into three summaries.
 
 **Retention counts runs, not rows.** `events.Prune` keeps the newest 200 **parentless** events and
 cascades their stages and every detail row belonging to either. Counting rows would cut history by
-however many stages the runs happened to have — and worse, several stages call `Prune` as they
+however many activities the runs happened to spawn — and worse, several stages call `Prune` as they
 finish, so a long run would have deleted its own earlier stages out from under itself.
 
-### Browsing groups; filtering flattens
+### The feed is flat
 
-`GET /events` lists **runs** by default, and each row carries `child_count` so it can offer to
-expand into its stages without first fetching them. `GET /events/:id` attaches the stages as
-`children`, oldest first.
+`GET /events` lists **every activity**, newest first: one row per thing that happened, at the time it
+happened, whether a user pressed it or a run spawned it. `nested=0` returns runs only, for a caller
+that wants the old shape.
 
-A **filter is a different question**. Asking for every metadata refresh means every one, including
-those that ran inside a run, so any `type`, `status` or `q` filter includes stages — a filter that
-silently skipped them would answer something narrower than it was asked. Stage rows returned that
-way carry `parent_title`, because "Metadata refresh" in a flat list says nothing about which run
-found it. `nested=1` / `nested=0` overrides the inference in either direction, so an API caller is
-never stuck with it.
+It used to list runs and hide their stages behind a disclosure. That made a cascading activity a
+lesser kind of thing than a pressed one — a stripped row with no timestamp of its own, reachable only
+by expanding — and put its detail behind a row, a modal, a stage list and a second modal. The rows
+are all the same kind of thing; only the ordering key is shared.
+
+Relation is therefore **annotated, not structural**:
+
+- `parent_title` on every row a run spawned, so "Tagging" says which run it came from.
+- `child_count` on a run, so it can offer to narrow the feed to what it spawned.
+- `parent=<id>` returns **one cascade** — the run and everything it spawned, the run included,
+  because "show me this run" without the run answers a narrower question than it was asked.
+
+In the UI those become the **run rail** (see [the style guide](style-guide.md#components)): a line in
+the left gutter joining the rows of one cascade, capped by a dot on the run, which sits at the bottom
+of its group because it started first. The rail carries the relationship when the rows are adjacent —
+one job runs at a time, so they usually are — and the run's name under the title carries it when a
+health check or a hand-pressed refresh has run in between. Hovering any row lights the whole cascade;
+a colour per run would need two hundred hues on a full page, and colour here is spent on status.
+
+The cost is honest and worth stating: a page of 50 is 50 activities, not 50 runs, so the feed holds
+less history per screen than it did. The type filter and `parent` carry what the grouping used to.
 
 `q` matches the event **title**, which is where the useful nouns are — an artist, a library, the
 scope that narrowed a run. It compares `LOWER(title)` against a lowercased needle rather than
@@ -411,25 +437,21 @@ there is nothing behind it. Two rules make the numbers mean something:
 
 - **Each facet excludes its own filter**, so the type list stays a list of what you could switch to
   rather than collapsing to the one already chosen the moment you pick it.
-- **Counts are over the flattened set**, stages included, because clicking any of them flattens. A
-  chip has one job — predict its own result — and a count taken over runs only would promise 2 and
-  deliver 15. It does mean the chips can sum to more than the unfiltered feed shows, which is the
-  honest reading: the feed is grouped until you ask it something.
+- **`parent` is a scope, not a facet.** Narrowing to one cascade narrows what the chips count, the
+  same way it narrows the feed.
 
 Both annotations are filled by two grouped queries per page (`annotateFeed`), not a lookup per row:
-the alternative is fifty queries to draw one screen, for counts that exist only to avoid a fetch.
-
-In the UI, stages are **indented under their run and load on expand**. Fifty runs would otherwise
-drag several hundred stage rows behind them to draw a screen where most stay collapsed. A *running*
-run auto-expands, since "what is it doing right now" is the one time that is the reason the page is
-open — and its stage list reloads when the run changes phase, which is precisely when a new stage
-exists.
+the alternative is fifty queries to draw one screen.
 
 **`drift_sync` is a read-only legacy type.** The Tag files verb recorded its events under that name
 until the verbs were named apart, which made a Tag files run read as "Metadata sync" — the name of
 the verb that was *split out* of it. New runs record `tag_files`; the old rows keep `drift_sync`
 rather than being migrated, because a pre-split drift sync genuinely did both jobs and relabelling
 it would misreport history. The Activity page renders both with the same stat grid.
+
+`process_files` and `scan` are the two that *are* migrated (`events.MigrateLegacyTypes`, at startup):
+each named exactly what its successor names — the walk was tagging, the old `scan` was a processing
+run — so leaving them would have put two entries in the type filter for one kind of work.
 
 - **`plex_refresh`** — one event per run wrapping `flushPlex`, summarising albums refreshed and
   failed (`albums_refreshed` / `albums_failed` / `failed_albums`). One per album would flood the feed
@@ -451,8 +473,9 @@ called before `Finish` so its `Save` keeps the values rather than racing them.
 
 - **Processing runs** keep the live figures in lock-free atomics on the `scan.Runner`, so the per-file callback
   (`WalkAndProcess`'s `onFile`) never contends on the status mutex across the worker pool. `Total` is
-  every supported file, counted up front across all targets (`modules.CountSupportedFiles`); `Phase`
-  moves through `refresh` → `scanning` → `drift` → `plex` → `migrations` → `collection`; `Current` is the artist
+  every supported file, counted up front across all targets (`modules.CountSupportedFiles`, its own
+  `counting` phase and its own activity); `Phase` moves through `counting` → `refresh` → `scanning` →
+  `drift` → `plex` → `migrations` → `collection`; `Current` is the artist
   folder of the most recently started file — a liveness indicator, not a strict cursor under
   concurrency. `Status()` overlays the atomics onto the summary while a run is in flight, so `/process/status`
   and the event row agree.
@@ -473,7 +496,7 @@ called before `Finish` so its `Save` keeps the values rather than racing them.
 #### The bar belongs to one phase
 
 `Total`/`Done` on a processing run count **files**, and only the `scanning` phase moves them. The
-other five stages do real work in a different unit — `refresh` counts releases against the
+other stages do real work in a different unit — `refresh` counts releases against the
 MusicBrainz rate limit, `collection` re-derives the collection and mirrors the manager — while the
 file counters sit wherever the walk left them. So the bar read `0 / 12000` for the minutes before
 the walk and `12000 / 12000` for the minutes after it, and both were reported as a hang.
@@ -485,10 +508,10 @@ shared predicate (`phaseDrivesProgress`, `webui/src/components/phases.ts`) decid
 surfaces draw these same counters. A metadata pass is unaffected — it counts entities and every one
 of its phases advances them.
 
-Worth knowing when reading a run's first minutes: the `refresh` phase is set *before*
-`CountSupportedFiles` walks every root to size the bar, so that phase covers two invisible
-operations — the counting walk (during which `Total` is still 0) and then the due-release refresh.
-Splitting them apart is [wip](wip.md).
+Worth knowing when reading a run's first minutes: `counting` is a phase and an activity of its own,
+because sizing the bar means walking every root and `Total` is 0 for the whole of it. It used to run
+inside `refresh`, so the first minutes of a cold run reported as a rate-limited metadata pass that
+was not moving.
 
 ### An event declares its own counters
 
@@ -547,13 +570,18 @@ interesting file within an event — path, outcome, tags written, error, and the
 
 **A row says what it describes.** `EventItem.Kind` is `""` (a file) or `entity` (an MBID), because
 the two render as different things and one of them would otherwise lie: a file row reports how many
-tags were written to it, and a metadata refresh writes none — "0 tags written" beside a release MBID
-reads as a claim about the user's audio, from the one verb that promises not to touch it. Making it
-a field on the row rather than a component boundary is what lets one list render an event that
-carries both kinds, grouped by `Phase`.
+tags were written to it, and a release did not have tags written *to it* — "0 tags written" beside a
+release MBID reads as a claim about the user's audio. That is not hypothetical: the run's own
+release rows were written without the kind for a while, so a tagging activity listed ten or twenty
+`<mbid> 0 tags written` lines and nothing else. Making it a field on the row rather than a component
+boundary is what lets one list render an event that carries both kinds, grouped by `Phase`.
 
-Both processing runs and drift syncs record detail. The UI renders it with the same old → new diff language as
-the file-tags view (`.diff` / `.diffrow`), so it is learned once.
+`Phase` is what keeps a tagging activity's two halves apart — `""` for a file the walk found changed
+on disk, `drift` for one rewritten because its release changed upstream, `refresh` for the release
+rows themselves — so one event's detail list reads as sections rather than as an interleaving.
+
+The UI renders every kind with the same old → new diff language as the file-tags view
+(`.diff` / `.diffrow`), so it is learned once.
 
 ## Caching and rate limits
 

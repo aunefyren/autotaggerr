@@ -47,17 +47,24 @@ func TestARunRecordsItsStages(t *testing.T) {
 	}
 
 	stages := stageTypes(t, r, run.ID)
-	// The walk, the metadata refresh and the collection scan happen on every run,
-	// however empty the library is. Plex, drift and migrations are conditional and are
+	// Counting, the metadata refresh, tagging and the collection scan happen on every
+	// run, however empty the library is. Plex and migrations are conditional and are
 	// deliberately not asserted here.
 	for _, want := range []string{
-		models.EventTypeProcessFiles,
+		models.EventTypeCountFiles,
 		models.EventTypeMirror,
+		models.EventTypeTagFiles,
 		models.EventTypeCollectionScan,
 	} {
 		if stages[want] == 0 {
 			t.Errorf("run recorded no %q stage; got %+v", want, stages)
 		}
+	}
+	// Tagging is one activity however a run reached the files. Two rows is what put the
+	// walk's counters next to a row whose only content was release IDs the metadata
+	// stage had already listed.
+	if stages[models.EventTypeProcessFiles] > 0 {
+		t.Errorf("run recorded a separate walk stage; tagging is one activity: %+v", stages)
 	}
 }
 
