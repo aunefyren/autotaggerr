@@ -230,6 +230,44 @@ func validManagerType(t string) bool {
 
 func (a *API) getManager(c *gin.Context) { getEntity[models.Manager](a, c) }
 
+// testManager probes one manager's connection on demand, with the credentials the
+// pipeline itself would use — it builds the manager through components.NewManager, the
+// same constructor a scan calls, rather than re-deriving a client from config.
+//
+// A rejected probe is still a successful test, so the status is 200 either way and the
+// verdict is in the body; a non-2xx would make the UI report "the test failed" for the
+// case where the test worked perfectly and the answer was no. The two `*_set` flags are
+// there because the most confusing failure is not a wrong credential but an absent one:
+// they say what was sent without ever returning the secret.
+func (a *API) testManager(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	var m models.Manager
+	if err := a.DB.First(&m, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	manager, err := components.NewManager(m)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	healthy, probeErr := manager.HealthCheck()
+	out := gin.H{
+		"healthy":     healthy,
+		"api_key_set": m.LidarrAPIKey != "",
+		"cookie_set":  m.LidarrHeaderCookie != "",
+	}
+	if probeErr != nil {
+		out["error"] = probeErr.Error()
+		logger.Log.Warnf("manager %q failed its connection test: %s", m.Name, probeErr.Error())
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 // deleteManager removes a manager, but first hands the artists it governs back to
 // Autotaggerr rather than letting them fall to "managed by an authority that no longer
 // exists".

@@ -1,7 +1,9 @@
 package modules
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -71,6 +73,13 @@ func LidarrInvalidateCaches() {
 	logger.Log.Debug("invalidated Lidarr caches (artists, albums, tracks, trackfiles)")
 }
 
+// ErrLidarrArtistNotFound means Lidarr answered, and none of the artists it manages
+// has a folder matching the file's artist directory. It is a distinct sentinel because
+// it is the one Lidarr failure that is about *the library*, not about Lidarr: nothing
+// is broken, the two sides simply disagree on a folder name. Callers use it to say so
+// instead of reporting a lookup failure.
+var ErrLidarrArtistNotFound = errors.New("artist folder not found in Lidarr")
+
 // must be local in the file
 type LidarrClient struct {
 	BaseURL   string
@@ -90,36 +99,100 @@ func NewLidarrClient(baseURL, apiKey string, cookie *string) *LidarrClient {
 	}
 }
 
-// retrieves the Lidarr API path JSON
+// lidarrBodySnippet caps how much of a response body an error quotes. A proxy login
+// page is tens of kilobytes of HTML; the first few hundred bytes identify it.
+const lidarrBodySnippet = 400
+
+// retrieves the Lidarr API path JSON.
+//
+// Every error names the endpoint, where the request actually ended up, and — when the
+// answer was not JSON — what it was instead. Lidarr normally sits behind a reverse
+// proxy (Authelia and friends), and the two failures that look identical from inside
+// a decoder are exactly the ones worth telling apart: "Lidarr said no" and "the proxy
+// answered a login page instead of Lidarr". A bare `invalid character '<'` names
+// neither, and neither does a status line when the portal replies 200.
 func (c *LidarrClient) getJSON(pathWithQuery string, dst any) error {
-	req, err := http.NewRequest("GET", c.BaseURL+pathWithQuery, nil)
+	url := c.BaseURL + pathWithQuery
+	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
-		return err
+		return fmt.Errorf("lidarr GET %s: could not build request: %w", url, err)
 	}
 	req.Header.Set("X-Api-Key", c.APIKey)
 	req.Header.Set("Accept", "application/json")
 
-	if c.Cookie != nil {
+	// An empty cookie is not a cookie: setting the header anyway makes the trace log
+	// claim credentials were sent when nothing was.
+	sentCookie := c.Cookie != nil && *c.Cookie != ""
+	if sentCookie {
 		req.Header.Set("Cookie", *c.Cookie)
 	}
 
 	do := func() error {
+		logger.Log.Tracef("lidarr GET %s (api key: %t, cookie: %t)", url, c.APIKey != "", sentCookie)
+
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
-			return err
+			return fmt.Errorf("lidarr GET %s: request failed: %w", url, err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != 200 {
-			b, _ := io.ReadAll(resp.Body)
-			return fmt.Errorf("lidarr %s -> %d: %s", pathWithQuery, resp.StatusCode, strings.TrimSpace(string(b)))
+
+		// Where the request ended up is load-bearing. Go strips the Cookie header when
+		// a redirect crosses to another host, so a proxy that bounces an API call to its
+		// login portal gets answered without the credentials we carefully set — and the
+		// portal happily returns 200.
+		where := "lidarr GET " + url
+		redirected := false
+		if resp.Request != nil && resp.Request.URL != nil && resp.Request.URL.String() != url {
+			where += " (redirected to " + resp.Request.URL.String() + ")"
+			redirected = true
 		}
-		return json.NewDecoder(resp.Body).Decode(dst)
+
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, lidarrBodySnippet))
+			return fmt.Errorf("%s -> %d %s: %s%s", where, resp.StatusCode,
+				http.StatusText(resp.StatusCode), strings.TrimSpace(string(b)),
+				authHint(resp.StatusCode, redirected, sentCookie))
+		}
+
+		// Peek rather than buffer the whole body: the artist list is megabytes, and all
+		// an error needs is the first line of whatever came back.
+		buffered := bufio.NewReader(resp.Body)
+		head, _ := buffered.Peek(lidarrBodySnippet)
+		contentType := resp.Header.Get("Content-Type")
+
+		if err := json.NewDecoder(buffered).Decode(dst); err != nil {
+			return fmt.Errorf("%s -> 200 but the body is not JSON (content-type %q): %w; body starts: %q%s",
+				where, contentType, err, strings.TrimSpace(string(head)),
+				authHint(resp.StatusCode, redirected, sentCookie))
+		}
+		return nil
 	}
 
 	if c.RateLimit != nil {
 		return c.RateLimit(do)
 	}
 	return do()
+}
+
+// authHint appends the reading that turns a raw HTTP outcome into an instruction, for
+// the responses that mean "you never reached Lidarr". Everything else gets nothing —
+// a hint on an error that is not about auth is noise that outlives its usefulness.
+func authHint(status int, redirected, sentCookie bool) string {
+	switch {
+	case redirected:
+		hint := " — the request was redirected, which usually means an authentication proxy answered instead of Lidarr"
+		if sentCookie {
+			hint += "; note that Go drops the configured Cookie header when a redirect crosses to another host, so the session never reached the target"
+		}
+		return hint
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		if sentCookie {
+			return " — credentials were sent (API key + cookie) but rejected; the cookie may have expired"
+		}
+		return " — no cookie is configured for this manager; if Lidarr is behind an authentication proxy it needs one"
+	default:
+		return ""
+	}
 }
 
 // FindArtistByName searches the Lidarr artist list for one whose folder name matches artistName.
@@ -188,7 +261,13 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 		return validArtists, nil
 	}
 
-	return nil, fmt.Errorf("artist %q not found in Lidarr", artistName)
+	// Name what was compared, not just that it failed. The match is folder-to-folder
+	// (our artist directory against the last segment of Lidarr's stored path), never
+	// artist-name-to-artist-name, so "Lidarr obviously has this artist" and "no match"
+	// are entirely compatible — a differently spelled folder on either side is the
+	// usual cause, and the message has to point at the folders to be actionable.
+	return nil, fmt.Errorf("%w: no Lidarr artist has folder %q (compared against the last path segment of all %d artists Lidarr returned)",
+		ErrLidarrArtistNotFound, artistName, len(artists))
 }
 
 // getTrackFilesByArtist returns all Lidarr track files for an artist, cached per
@@ -529,13 +608,13 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 	// derive the artist from the path folder
 	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(rootDir, trackPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("could not read an artist folder out of the file path (expected <root>/<artist>/<album>/[<media>/]<track> under root %q): %w", rootDir, err)
 	}
 	logger.Log.Debugf("artist name found: %s", artistName)
 
 	artists, err := cli.FindArtistByName(artistName)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("artist lookup for %q failed: %w", artistName, err)
 	} else if len(artists) > 1 {
 		logger.Log.Warnf("%d artists found by that name, checking all and returning first match", len(artists))
 	}
@@ -546,7 +625,7 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 
 		tf, err := cli.FindTrackFileByPath(artist.ID, trackPath, rootDir)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("track file lookup for artist %q (Lidarr ID %d) failed: %w", artist.Name, artist.ID, err)
 		} else if tf == nil {
 			logger.Log.Warn("tracks not found in Lidarr by file path")
 			continue
@@ -556,7 +635,7 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 
 		tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
 		if err != nil {
-			return &lidarrTrackMetadataDetails, err
+			return &lidarrTrackMetadataDetails, fmt.Errorf("track list lookup for album %d (artist %q, Lidarr ID %d) failed: %w", tf.AlbumID, artist.Name, artist.ID, err)
 		} else if tracks == nil {
 			logger.Log.Warn("tracks not found in Lidarr by album and artist")
 			continue
@@ -589,7 +668,7 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 
 		mbReleaseID, err := cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
 		if err != nil {
-			return &lidarrTrackMetadataDetails, err
+			return &lidarrTrackMetadataDetails, fmt.Errorf("monitored release lookup for album %d (artist %q, Lidarr ID %d) failed: %w", tf.AlbumID, artist.Name, artist.ID, err)
 		} else if mbReleaseID == nil {
 			logger.Log.Warn("MusicBrainz Release ID not found in Lidarr by album ID")
 			continue

@@ -136,6 +136,12 @@ func NewManager(row models.Manager) (Manager, error) {
 			cookie := row.LidarrHeaderCookie
 			client = modules.NewLidarrClient(row.LidarrBaseURL, row.LidarrAPIKey, &cookie)
 		}
+		// Say which credentials a scan is about to use. These come from the manager
+		// *row*, which is a different copy from the config.json values the startup
+		// health checker probes — so "Lidarr is healthy" and "every file fails to
+		// resolve" can both be true, and the log has to make that visible.
+		logger.Log.Debugf("Lidarr manager %q: base URL %q, API key set: %t, cookie set: %t, client built: %t",
+			row.Name, row.LidarrBaseURL, row.LidarrAPIKey != "", row.LidarrHeaderCookie != "", client != nil)
 		return &LidarrManager{client: client}, nil
 	case models.ManagerTypeAutotaggerr:
 		return &AutotaggerrManager{}, nil

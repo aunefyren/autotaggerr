@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
@@ -21,10 +22,20 @@ import (
 // the other event-recording paths.
 const eventRetention = 200
 
-// service is one monitored connection and the probe that reports its health.
+// service is one monitored connection and the probe that reports its health. The key
+// identifies it across runs (a manager's ID, which survives a rename); the name is what
+// the feed shows. A service built without a key is identified by its name.
 type service struct {
+	key   string
 	name  string
 	check func() (bool, error)
+}
+
+func (s service) stateKey() string {
+	if s.key != "" {
+		return s.key
+	}
+	return s.name
 }
 
 // Checker holds the monitored services and the last health seen for each, so a run can
@@ -32,28 +43,61 @@ type service struct {
 // startup call to share.
 type Checker struct {
 	db       *gorm.DB
-	services []service
+	services []service // static probes; manager probes are read from the DB per run
 
 	mu   sync.Mutex
-	last map[string]bool // service name -> healthy at last check; absent = never checked
+	last map[string]bool // service key -> healthy at last check; absent = never checked
 	seen bool            // whether any check has run this process
 }
 
-// NewChecker builds a checker for whichever of Lidarr/Plex are configured; a nil
-// client is simply not monitored. Returns nil when nothing is configured, and the
-// nil-receiver Run makes that a no-op the caller need not special-case.
-func NewChecker(db *gorm.DB, lidarr *modules.LidarrClient, plex *modules.PlexClient) *Checker {
-	var svcs []service
-	if lidarr != nil {
-		svcs = append(svcs, service{name: "Lidarr", check: lidarr.HealthCheck})
-	}
-	if plex != nil {
-		svcs = append(svcs, service{name: "Plex", check: plex.HealthCheck})
-	}
-	if len(svcs) == 0 {
+// NewChecker builds a checker for the Plex client plus whatever managers the database
+// holds. Unlike the static clients, managers are read per run (see probes), so it
+// returns a usable checker whenever there is a database to read — a manager added or
+// re-credentialed later is picked up without a restart. Returns nil only without a DB,
+// and the nil-receiver Run makes that a no-op the caller need not special-case.
+func NewChecker(db *gorm.DB, plex *modules.PlexClient) *Checker {
+	if db == nil {
 		return nil
 	}
+	var svcs []service
+	if plex != nil {
+		svcs = append(svcs, service{key: "plex", name: "Plex", check: plex.HealthCheck})
+	}
 	return &Checker{db: db, services: svcs, last: map[string]bool{}}
+}
+
+// probes lists the connections to check, rebuilt on every run.
+//
+// Lidarr is probed through the enabled manager *rows*, constructed with the very same
+// components.NewManager the pipeline calls, so the check authenticates with exactly the
+// credentials a scan will use. It used to probe a client built in main from
+// files.ConfigFile instead — a second, independent copy of the same credentials that
+// config.json stops feeding the moment the manager row exists. The two drifted the
+// first time either side was edited alone, and the failure that produced was the worst
+// kind: a green "Lidarr healthy" beside a library where every single file failed to
+// resolve. Reading the rows per run is also what makes a cookie pasted into the UI take
+// effect on the next check rather than the next restart.
+func (c *Checker) probes() []service {
+	var rows []models.Manager
+	if err := c.db.Where("enabled = ? AND type = ?", true, models.ManagerTypeLidarr).
+		Order("name").Find(&rows).Error; err != nil {
+		logger.Log.Warnf("health check could not read manager rows: %s", err.Error())
+	}
+
+	svcs := make([]service, 0, len(rows)+len(c.services))
+	for _, row := range rows {
+		manager, err := components.NewManager(row)
+		if err != nil {
+			logger.Log.Warnf("health check skipping manager %q: %s", row.Name, err.Error())
+			continue
+		}
+		name := strings.TrimSpace(row.Name)
+		if name == "" {
+			name = "Lidarr"
+		}
+		svcs = append(svcs, service{key: row.ID.String(), name: name, check: manager.HealthCheck})
+	}
+	return append(svcs, c.services...)
 }
 
 // Run probes every monitored service and records one health event when any service's
@@ -66,22 +110,34 @@ func (c *Checker) Run() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	svcs := c.probes()
+	if len(svcs) == 0 {
+		// Nothing configured to probe. An event listing no services would say nothing,
+		// and forgetting the previous state means a connection configured later gets a
+		// fresh baseline rather than being compared against a stale one.
+		c.last = map[string]bool{}
+		return
+	}
+
 	type result struct {
 		healthy bool
 		err     error
 	}
-	results := make(map[string]result, len(c.services))
-	changed := !c.seen // the first run always records a baseline
-	for _, s := range c.services {
+	results := make(map[string]result, len(svcs))
+	// A probe appearing or disappearing is itself a change worth a row: a manager was
+	// added, deleted or disabled, and the feed should say so.
+	current := make(map[string]bool, len(svcs))
+	changed := !c.seen || len(svcs) != len(c.last)
+	for _, s := range svcs {
 		healthy, err := s.check()
 		if err != nil {
 			healthy = false
 		}
 		results[s.name] = result{healthy: healthy, err: err}
-		if prev, ok := c.last[s.name]; !ok || prev != healthy {
+		if prev, ok := c.last[s.stateKey()]; !ok || prev != healthy {
 			changed = true
 		}
-		c.last[s.name] = healthy
+		current[s.stateKey()] = healthy
 
 		switch {
 		case healthy:
@@ -92,6 +148,7 @@ func (c *Checker) Run() {
 			logger.Log.Errorf("%s connection is unhealthy", s.name)
 		}
 	}
+	c.last = current
 	c.seen = true
 
 	if !changed {

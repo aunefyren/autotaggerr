@@ -202,15 +202,22 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `smtp_username` | `-smtpusername` | `smtpusername` | string | SMTP auth username. Empty means no authentication is attempted. Default empty. |
 | `smtp_password` | `-smtppassword` | `smtppassword` | string | SMTP auth password. Default empty. |
 | `smtp_from` | `-smtpfrom` | `smtpfrom` | string | Sender address for outgoing mail. Default empty. |
-| `lidarr_base_url` | — | — | string | Base URL of the Lidarr instance (fallback metadata source). Default empty. |
-| `lidarr_api_key` | — | — | string | Lidarr API key. Default empty. |
-| `lidarr_header_cookie` | — | — | string | Optional cookie header sent with Lidarr requests (e.g. for a reverse proxy). Default empty. |
+| `lidarr_base_url` | — | — | string | **Seed only** (see below). Base URL of the Lidarr instance. Default empty. |
+| `lidarr_api_key` | — | — | string | **Seed only.** Lidarr API key. Default empty. |
+| `lidarr_header_cookie` | — | — | string | **Seed only.** Optional `name=value` cookie sent with Lidarr requests, for an authentication proxy such as Authelia. Default empty. |
 | `plex_base_url` | — | — | string | Base URL of the Plex instance to refresh. Default empty. |
 | `plex_token` | — | — | string | Plex auth token. Default empty. |
 | — | `-file` | `file` | string | Process a single file, then exit instead of running the service. Runtime-only, not stored in config. |
 | — | `-fileRoot` | `fileRoot` | string | Library root containing the artist folder for `-file`. Required with `-file`. Runtime-only. |
 | — | — | `PUID` | int | **Env only.** UID the container process runs as. Default `1000`. |
 | — | — | `PGID` | int | **Env only.** GID the container process runs as. Default `1000`. |
+
+> **Seed only:** the three `lidarr_*` keys are copied into the Lidarr **manager** record on first
+> run and never read from `config.json` again. Everything that talks to Lidarr — scans and the
+> health check alike — uses the manager record, so change these under **Managers** in the web UI.
+> Editing them in `config.json` after the first run has no effect. The *Test* button there probes
+> the connection with exactly the credentials a scan would use; an auth-proxy cookie expires on its
+> own schedule, and that button is how you find out it has.
 
 ---
 

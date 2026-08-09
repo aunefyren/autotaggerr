@@ -83,6 +83,62 @@ a re-processed file get *tagged* to the manager's answer while the row claimed `
 
 See [scanning.md](scanning.md) for skip-unchanged, drift sync and performance.
 
+### A failed Lidarr lookup says which step failed
+
+The error a file carries is not a label, it is the whole diagnosis: `recordItem` stores
+`procErr.Error()` on the `library_items` row, and that string is what the Items page and the Activity
+detail list render. Anything a wrapper drops is therefore unrecoverable from the UI — which is what
+made `failed to retrieve track details from Lidarr for '<path>'` useless, since one sentence stood in
+for a rejected cookie, a proxy login page, a folder Lidarr spells differently and a path that does
+not fit the layout convention.
+
+So every step of `ResolveMetadataDetailsFromLidarr` annotates its own failure (which artist, which
+Lidarr ID, which album), `ResolveCorrelation` wraps rather than replaces, and `LidarrClient.getJSON`
+answers the question a decoder cannot:
+
+- **Where the request ended up.** A redirect is named, because Go strips the `Cookie` header when one
+  crosses to another hostname — the reason a *valid* Authelia session can still never reach Lidarr,
+  and a failure that is otherwise indistinguishable from a bad cookie.
+- **What came back instead of JSON.** Content type plus the first bytes of the body, so an
+  authentication portal answering `200 text/html` reads as a portal rather than as
+  `invalid character '<' looking for beginning of value`.
+- **Whether credentials were sent at all**, on 401/403.
+
+`ErrLidarrArtistNotFound` is a sentinel because it is the one Lidarr failure that is about the
+*library*, not about Lidarr: the match is folder-to-folder (our artist directory against the last
+segment of Lidarr's stored path), never name-to-name, so "Lidarr obviously has this artist" and "no
+match" are entirely compatible. The message names both sides of that comparison.
+
+Guarded by `TestLidarrClientReportsLoginPage`, `…ReportsCrossHostRedirect`,
+`TestLidarrFindArtistByNameNotFound` and `TestResolveCorrelationKeepsLidarrCause`.
+
+### One copy of the credentials, and one way to check them
+
+A manager's credentials live on the **manager row**. `config.json` seeds that row once
+(`database/seed.go:146` returns early the moment a Lidarr manager exists) and is never read for them
+again, so editing `lidarr_header_cookie` there after first run changes nothing the pipeline sees.
+The row is edited through `PUT /managers/:id` and the Managers page, which is why that page says so
+in as many words.
+
+Nothing else may build a Lidarr client. `main.go` used to build one from `files.ConfigFile` for the
+health check — a second copy that diverged from the row the first time either side was edited alone,
+and whose failure mode was the worst available: a green *Lidarr healthy* beside a library where every
+file failed to resolve, because the two were authenticating with different cookies. `health.Checker`
+now reads the enabled manager rows on **every run** and probes them through `components.NewManager`,
+the same constructor the pipeline calls. Per run, not at boot, so a credential pasted into the UI is
+checked on the next tick rather than the next restart — and so a manager added later is picked up at
+all, which is why `NewChecker` no longer returns nil for "nothing configured".
+
+`POST /managers/:id/test` is the same probe on demand, behind the **Test** button on each row. It
+answers 200 whether or not the connection works: a rejected probe is a successful test, and a non-2xx
+would make the UI report a failure of the test rather than of the credentials. The response carries
+`api_key_set` and `cookie_set` — never the secrets — because the most expensive failure to diagnose
+is not a wrong credential but an absent one. `Manager.HealthCheck` exists on both manager types and
+this is what finally calls it.
+
+Guarded by `TestCheckerProbesManagerRows`, `TestNewCheckerWithNothingToProbe` and
+`TestManagerTestConnection`.
+
 ## Infrastructure
 
 **Database.** SQLite via GORM, dialector pluggable (postgres/mysql later) chosen by

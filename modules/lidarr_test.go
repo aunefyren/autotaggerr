@@ -2,10 +2,13 @@ package modules
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -132,6 +135,10 @@ func TestLidarrFindArtistByName(t *testing.T) {
 	}
 }
 
+// TestLidarrFindArtistByNameNotFound: "Lidarr obviously has this artist, why does it
+// say not found?" is answered by naming the comparison — our folder against the last
+// segment of Lidarr's stored path, never name against name — so the error points at
+// the mismatch instead of reading as though Lidarr were unreachable.
 func TestLidarrFindArtistByNameNotFound(t *testing.T) {
 	resetLidarrCaches()
 	mock := newLidarrMock(t, map[string]any{
@@ -139,8 +146,17 @@ func TestLidarrFindArtistByNameNotFound(t *testing.T) {
 	})
 	client := NewLidarrClient(mock.server.URL, "test-key", nil)
 
-	if _, err := client.FindArtistByName("Nonexistent"); err == nil {
-		t.Error("expected error for artist not found")
+	_, err := client.FindArtistByName("Nonexistent")
+	if err == nil {
+		t.Fatal("expected error for artist not found")
+	}
+	if !errors.Is(err, ErrLidarrArtistNotFound) {
+		t.Errorf("error %q is not ErrLidarrArtistNotFound", err)
+	}
+	for _, want := range []string{"Nonexistent", "last path segment"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
 	}
 }
 
@@ -577,5 +593,92 @@ func TestLidarrClientReportsHTTPFailures(t *testing.T) {
 	}
 	if _, err := client.GetArtistAlbums(1); err == nil {
 		t.Error("a 401 from Lidarr was reported as success")
+	}
+}
+
+// TestLidarrClientReportsLoginPage is the failure this diagnostic work exists for: an
+// authentication proxy answers the API call with its own login page, status 200. The
+// decoder's "invalid character '<'" names nothing an operator can act on, so the error
+// has to say it got HTML, from where, and that a proxy is the usual reason.
+func TestLidarrClientReportsLoginPage(t *testing.T) {
+	resetLidarrCaches()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = w.Write([]byte("<!DOCTYPE html><html><head><title>Authelia</title></head><body>Sign in</body></html>"))
+	}))
+	t.Cleanup(server.Close)
+	cookie := "authelia_session=abc"
+	client := NewLidarrClient(server.URL, "test-key", &cookie)
+
+	_, err := client.GetArtists()
+	if err == nil {
+		t.Fatal("an HTML login page was decoded as a successful artist list")
+	}
+	for _, want := range []string{"not JSON", "text/html", "<!DOCTYPE html", "/api/v1/artist"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+// TestLidarrClientReportsCrossHostRedirect covers the case where the cookie is valid
+// and still never arrives: Go strips the Cookie header when a redirect crosses to
+// another host, so the proxy's portal answers unauthenticated. The error must name the
+// redirect, because from the caller's side this is indistinguishable from a bad cookie.
+func TestLidarrClientReportsCrossHostRedirect(t *testing.T) {
+	resetLidarrCaches()
+	var cookieReached atomic.Bool
+	portal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookieReached.Store(r.Header.Get("Cookie") != "")
+		w.Header().Set("Content-Type", "text/html")
+		_, _ = w.Write([]byte("<html>login</html>"))
+	}))
+	t.Cleanup(portal.Close)
+
+	// The redirect has to target a different *hostname* for Go to drop the cookie —
+	// same host on another port keeps it — so the portal is addressed as localhost
+	// while the client starts at 127.0.0.1. That is the shape of the real case
+	// (lidarr.example.com redirecting to auth.example.com).
+	portalURL := strings.Replace(portal.URL, "127.0.0.1", "localhost", 1)
+	lidarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, portalURL+"/login", http.StatusFound)
+	}))
+	t.Cleanup(lidarr.Close)
+
+	cookie := "authelia_session=abc"
+	client := NewLidarrClient(lidarr.URL, "test-key", &cookie)
+
+	_, err := client.GetArtists()
+	if err == nil {
+		t.Fatal("a redirect to a login portal was reported as success")
+	}
+	if cookieReached.Load() {
+		t.Skip("this environment forwarded the cookie across the redirect; the drop cannot be reproduced here")
+	}
+	if !strings.Contains(err.Error(), "redirected to") || !strings.Contains(err.Error(), "crosses to another host") {
+		t.Errorf("error %q does not explain the redirect and the dropped cookie", err)
+	}
+}
+
+// TestResolveCorrelationKeepsLidarrCause guards the wrapping that makes all of the
+// above visible: recordItem stores this error verbatim on the library item, so a cause
+// dropped here is a cause the Items page and the Activity feed can never show.
+func TestResolveCorrelationKeepsLidarrCause(t *testing.T) {
+	resetLidarrCaches()
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/artist": []models.LidarrArtist{{ID: 1, Name: "Other", Path: "/music/Other"}},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	root := filepath.Join("/music")
+	_, err := ResolveCorrelation(filepath.Join(root, "Radiohead", "OK Computer (1997)", "01 Airbag.flac"), client, root, false)
+	if err == nil {
+		t.Fatal("an unknown artist resolved successfully")
+	}
+	if !errors.Is(err, ErrLidarrArtistNotFound) {
+		t.Errorf("error %q lost the Lidarr cause", err)
+	}
+	if !strings.Contains(err.Error(), "Radiohead") {
+		t.Errorf("error %q does not name the artist folder that failed to match", err)
 	}
 }

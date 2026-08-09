@@ -108,6 +108,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/managers/:id", a.getManager)
 		protected.PUT("/managers/:id", a.updateManager)
 		protected.DELETE("/managers/:id", a.deleteManager)
+		protected.POST("/managers/:id/test", a.testManager)
 
 		// Tagger profiles
 		protected.GET("/tagger-profiles", a.listTaggerProfiles)

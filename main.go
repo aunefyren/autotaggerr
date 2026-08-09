@@ -44,7 +44,6 @@ import (
 )
 
 var (
-	lidarrClient *modules.LidarrClient
 	plexClient   *modules.PlexClient
 	db           *gorm.DB
 	scanRunner   *scan.Runner
@@ -162,10 +161,11 @@ func main() {
 	}
 	logger.Log.Info("timezone set")
 
-	// configure Lidarr client
-	if files.ConfigFile.LidarrBaseURL != "" && files.ConfigFile.LidarrAPIKey != "" {
-		lidarrClient = modules.NewLidarrClient(files.ConfigFile.LidarrBaseURL, files.ConfigFile.LidarrAPIKey, &files.ConfigFile.LidarrHeaderCookie)
-	}
+	// Lidarr is NOT wired here. Its credentials live on the manager row (config.json
+	// seeds that row once, on first run, and is never read for it again), and both the
+	// pipeline and the health check build their client from the row via
+	// components.NewManager. A client built here from files.ConfigFile would be a second
+	// copy that silently diverges the moment either side is edited alone.
 
 	// configure Plex client
 	if files.ConfigFile.PlexBaseURL != "" && files.ConfigFile.PlexToken != "" {
@@ -201,9 +201,9 @@ func main() {
 	// Scheduled health checks for the configured connections. A baseline runs at
 	// startup (off the main goroutine, so a slow endpoint cannot stall boot); the cron
 	// then re-checks and records an event only when a connection's health changes.
-	// NewChecker returns nil when neither Lidarr nor Plex is configured, and Run is a
-	// no-op on nil.
-	healthChecker := health.NewChecker(db, lidarrClient, plexClient)
+	// Managers are read from the database on every run, so this probes the same
+	// credentials the pipeline uses and picks up an edit without a restart.
+	healthChecker := health.NewChecker(db, plexClient)
 	if filePath == nil {
 		go healthChecker.Run()
 	}

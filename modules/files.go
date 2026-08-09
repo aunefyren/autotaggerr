@@ -200,7 +200,11 @@ func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 		lidarrTrackObject, err := ResolveMetadataDetailsFromLidarr(lidarrClient, filePath, rootDir)
 		if err != nil {
 			logger.Log.Errorf("failed to retrieve track details from Lidarr for '%s'. error: %s", filePath, err.Error())
-			return correlation, fmt.Errorf("failed to retrieve track details from Lidarr for '%s'", filePath)
+			// Wrap, do not replace. This error is what recordItem stores on the item and
+			// what the Items page and Activity feed show, so dropping the cause here left
+			// every Lidarr failure — auth, a proxy login page, a folder mismatch, a
+			// malformed path — rendering as the same sentence with nothing to act on.
+			return correlation, fmt.Errorf("failed to retrieve track details from Lidarr for '%s': %w", filePath, err)
 		} else if lidarrTrackObject == nil {
 			logger.Log.Warnf("Lidarr successfully executed, but found nothing for %s", filePath)
 		} else {

@@ -178,6 +178,50 @@ func TestManagerCreateSecretNotReturned(t *testing.T) {
 	}
 }
 
+// TestManagerTestConnection: a rejected probe is a *successful* test. The endpoint says
+// so with 200 and a verdict in the body, because a non-2xx would make the UI report
+// that the test failed for the case where it worked and the answer was no. The two
+// `*_set` flags answer the question that costs the most time to get wrong — "were any
+// credentials sent at all?" — without returning the secrets themselves.
+func TestManagerTestConnection(t *testing.T) {
+	r, _ := setupAPI(t)
+	tok := loginToken(t, r)
+
+	w := do(r, "POST", "/api/v1/managers", tok, map[string]any{
+		"name": "L", "type": "lidarr", "lidarr_base_url": "http://127.0.0.1:1",
+		"lidarr_api_key": "TOPSECRET", "lidarr_header_cookie": "session=COOKIEVALUE",
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create manager = %d: %s", w.Code, w.Body.String())
+	}
+	id := idOf(t, w.Body.Bytes())
+
+	w = do(r, "POST", "/api/v1/managers/"+id+"/test", tok, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("test unreachable manager = %d, want 200: %s", w.Code, w.Body.String())
+	}
+	for _, want := range []string{`"healthy":false`, `"api_key_set":true`, `"cookie_set":true`, `"error"`} {
+		if !bytes.Contains(w.Body.Bytes(), []byte(want)) {
+			t.Errorf("test response missing %s: %s", want, w.Body.String())
+		}
+	}
+	for _, secret := range []string{"TOPSECRET", "COOKIEVALUE"} {
+		if bytes.Contains(w.Body.Bytes(), []byte(secret)) {
+			t.Errorf("test response leaked %s: %s", secret, w.Body.String())
+		}
+	}
+
+	// A native manager has nothing to reach, and says so rather than erroring.
+	w = do(r, "POST", "/api/v1/managers", tok, map[string]any{"name": "N", "type": "autotaggerr"})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create native manager = %d: %s", w.Code, w.Body.String())
+	}
+	w = do(r, "POST", "/api/v1/managers/"+idOf(t, w.Body.Bytes())+"/test", tok, nil)
+	if w.Code != http.StatusOK || !bytes.Contains(w.Body.Bytes(), []byte(`"healthy":true`)) {
+		t.Errorf("test native manager = %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestLibraryValidation(t *testing.T) {
 	r, _ := setupAPI(t)
 	tok := loginToken(t, r)
