@@ -34,6 +34,32 @@ const TYPE_LABELS: Record<string, string> = {
   collection_scan: "Collection scan",
 };
 
+/**
+ * What a kind of activity is, and — where a reader would otherwise have to ask — why it
+ * runs where it runs.
+ *
+ * A stage in a flat feed has to explain itself: three of these land *after* the tagging
+ * that a reader thinks of as the point of the run, and "did that happen in the wrong
+ * order?" is the question the order itself provokes. The answer is a property of the
+ * work, so it belongs beside the work.
+ *
+ * A map rather than a branch per type in the detail view: this is the one thing the UI
+ * legitimately knows that an emitter cannot (an emitter would be writing English into
+ * the database), and a type with nothing to explain simply has no entry.
+ */
+const TYPE_NOTES: Record<string, string> = {
+  mb_mirror:
+    "A metadata refresh writes no files. Releases that changed upstream are re-tagged by the next processing run, or immediately with Tag files.",
+  count_files:
+    "Sizes the run before it starts: every folder walked once to count the files it will visit. It reads no tags and changes nothing.",
+  collection_scan:
+    "Re-derives the collection from the files already indexed — no disk walk, no network, no file writes. It runs after tagging on purpose: it can only describe what this run has already recorded.",
+  lidarr_sync:
+    "Mirrors the manager's catalogue over the collection. It runs after the collection scan on purpose: the mirror only covers artists the collection already knows about, including any this run just discovered.",
+  plex_refresh:
+    "Tells Plex to re-read the albums this run touched. One event per run rather than per album, which would flood the feed.",
+};
+
 // What a group of detail rows is, when an activity recorded more than one kind.
 //
 // These name the *rows*, not the stage that produced them, which is why they are not
@@ -734,18 +760,21 @@ function EventDetail({
       </div>
 
       <div className="stack">
+        {/* The line the feed row states, restated here. It was the one thing an activity
+            always has — every emitter writes one — and opening a row used to *lose* it,
+            which is why a stage with nothing but zero counters opened onto a blank
+            modal. It leads, because for the short activities it is the whole story. */}
+        {(full.data?.summary ?? event.summary) && (
+          <div style={{ fontSize: 13, color: "var(--text)" }}>{full.data?.summary ?? event.summary}</div>
+        )}
+
         <StatRow stats={stats} items={items} active={filter} onFilter={setFilter} />
 
         <PhaseBreakdown details={d} />
 
-        {/* Stated wherever a metadata refresh is read, not only on the Metadata page:
-            an event listing releases that changed reads like something happened to the
-            files, and nothing did. */}
-        {event.type === "mb_mirror" && (
-          <div className="dim" style={{ fontSize: 12 }}>
-            A metadata refresh writes no files. Releases that changed upstream are re-tagged by the
-            next processing run, or immediately with <em>Tag files</em>.
-          </div>
+        {/* What this kind of activity is, and why it runs where it runs. */}
+        {TYPE_NOTES[event.type] && (
+          <div className="dim" style={{ fontSize: 12, maxWidth: "70ch" }}>{TYPE_NOTES[event.type]}</div>
         )}
 
         {libraries.length > 0 && (

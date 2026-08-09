@@ -213,9 +213,11 @@ table.data td .path { font-family: var(--font-mono); color: var(--text); font-si
   top: calc(50% - 3px); left: 6px; width: 8px; height: 8px; border-radius: 50%;
   background: var(--border-strong);
 }
-/* The whole cascade lights when any row of it is pointed at or focused — the answer to
-   "which of these belong together" without giving each run a colour of its own. */
-table.data tbody tr.lit > td { background: var(--accent-subtle); }
+/* Pointing at any row of a cascade lights **the rail**, across every row of it — the
+   answer to "which of these belong together". Only the gutter: filling the rows too
+   made a hovered row indistinguishable from its six relatives, so the one thing the
+   pointer is actually on stopped being obvious. The row keeps the table's own hover
+   fill, and the relation is drawn beside it. */
 table.data tbody tr.lit .rail i { background: var(--accent); }
 /* Names the run a row came from, and narrows the feed to it. Quiet, one line under the
    title: it is provenance, not the row's subject. */

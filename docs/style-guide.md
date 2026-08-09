@@ -379,10 +379,14 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   happened, so the relationship cannot be structural: a line in a 20px gutter joins the rows of one
   cascade, capped by a dot on the run itself — which sits at the *bottom* of its group, because it
   started first, so the rail reads as the cascade growing upward out of the thing that started it.
-  Quiet by default (`--border-strong`, a divider's weight); **hovering or focusing any row lights the
-  whole cascade** (`--accent` rail on an `--accent-subtle` fill), which is the answer to "which of
-  these belong together" without giving each run a colour of its own. A per-run hue is the rule this
-  deliberately avoids — a full page needs two hundred of them, and colour here belongs to status.
+  Quiet by default (`--border-strong`, a divider's weight); **pointing at any row lights the rail of
+  its whole cascade** (`--accent`), which is the answer to "which of these belong together" without
+  giving each run a colour of its own. A per-run hue is the rule this deliberately avoids — a full
+  page needs two hundred of them, and colour here belongs to status.
+  **The rows themselves are not tinted with it.** Filling all seven rows made the one under the
+  pointer indistinguishable from its relatives, so the row you were about to click stopped being
+  obvious — the row keeps the table's ordinary `--surface-2` hover and the relation is drawn beside
+  it, in the gutter. Two facts, two places.
   It replaced a disclosure that nested stages under their run. **Every row is the same row**: a stage
   of a run and a verb somebody pressed are the same work, so they render identically, with their own
   timestamp, duration, progress bar and modal. Nesting made a cascading activity look like a lesser
@@ -392,6 +396,16 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   to that one cascade, which is what carries the relationship when the rail cannot — a health check
   or a hand-pressed refresh between two stages breaks the run of adjacent rows. `--text-dim` at
   `--text-xs`: it is provenance, not the row's subject.
+- **Activity detail** (`EventDetail` in `Activity.tsx`) — one modal, one activity: never a list of
+  its siblings and never a modal that swaps itself for another. It opens with the **summary line the
+  feed row states**, because every emitter writes one and the counters are what may be missing — a
+  stage whose figures are all zero (a refresh with nothing due) drops every counter and would
+  otherwise open onto a blank panel. Then the counters, then a one-line **note about the kind of
+  activity** (`TYPE_NOTES`) where a reader would otherwise have to ask: three stages run *after* the
+  tagging that looks like the point of the run, and "did that happen in the wrong order?" is a
+  question the order itself provokes. The note is in the UI rather than in the emitter's summary
+  because it is the same sentence every time — a Go package should not be writing English into the
+  database — and a type with nothing to explain has no entry.
 - **Event counters** (`StatRow` in `Activity.tsx`) — an event declares its own counters
   (`models.EventStat`), and the UI renders what it finds rather than knowing each type's keys.
   A counter naming an `EventItem` status becomes a **`FilterChip`** over the detail list below it,

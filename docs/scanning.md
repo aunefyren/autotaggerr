@@ -541,6 +541,12 @@ Three rules keep it honest:
 collapsed *Raw details* block over it — the stats are what an emitter chose to surface, and the
 times those two differ is exactly when the difference is the bug.
 
+**The summary line leads the detail view**, above the counters. Every emitter writes one; the
+counters are what may be missing, because zero-valued stats are dropped and a stage can legitimately
+be all zeroes — a refresh with nothing due checked nothing, fetched nothing and changed nothing.
+Opening it used to show a blank panel, having thrown away the one sentence the feed row was already
+stating.
+
 ### Per-file detail
 
 Counters say twelve files changed; they never say *which* twelve. `models.EventItem` is one row per
