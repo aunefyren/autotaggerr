@@ -169,10 +169,28 @@ func TestSetMP3TagsStripsTheLegacyID3v1Trailer(t *testing.T) {
 // The skip-unchanged path must stay a genuine skip. A trailing v1 tag is not a reason
 // to rewrite a file whose v2 tag is already correct — that would turn the first run
 // after this change into a full-library rewrite.
+//
+// The fixture is settled first. A legacy file now genuinely needs one migrating write
+// (UFID, and the ISRC moving to TSRC — see TestLegacyFfmpegFilesConvergeAfterOneRewrite),
+// and that write also strips the trailer, so the trailer is put back afterwards. What
+// is being tested is the *second* write, where the v2 tag is correct and the trailer is
+// the only thing left that could wrongly trigger one.
 func TestID3v1DoesNotForceARewrite(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 	meta := fullFileTags()
 	writeLegacyMP3Tags(t, path, meta)
+
+	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+		t.Fatalf("settling write: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if err := os.WriteFile(path, append(data, id3v1Block()...), 0o644); err != nil {
+		t.Fatalf("re-add trailer: %v", err)
+	}
 
 	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
 	if err != nil {

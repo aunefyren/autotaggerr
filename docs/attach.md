@@ -20,7 +20,7 @@ natively forever after. Attaching is a one-time cost per file, not an annotation
   version bump, an edited file) re-tags *to the pin* rather than to whatever the manager would have
   said. The index write is guarded the same way, so the MB IDs and the `manual` label cannot drift
   apart.
-- Tags are written through `scan.Runner.RetagItem`, which **refuses while a scan is running**
+- Tags are written through `process.Runner.RetagItem`, which **refuses while a scan is running**
   rather than writing the same file from two goroutines.
 - A tagging failure returns **202 and keeps the correlation** — it is a real decision the user made
    — with a warning, instead of discarding it.
@@ -75,7 +75,7 @@ a **Skip** option per row, and duplicate targets blocked — before anything is 
 them: the user reviewed the mapping as a whole, so a half-applied album is worse than a rejected
 one. Rows with an empty track ID are skips, not errors.
 
-`scan.Runner.RetagItems` takes the scan run-guard **once for the batch** and reuses the resolved
+`process.Runner.RetagItems` takes the scan run-guard **once for the batch** and reuses the resolved
 libraries, so an album is one unit of work rather than N. `RetagItem` delegates to it, which also
 upgrades its old check-then-act guard to a CAS.
 

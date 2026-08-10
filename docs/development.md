@@ -120,7 +120,7 @@ drops below it. Two things about it are easy to get wrong:
   - *Everywhere else* (`routers`, `collection`, `components`, `mirror`): inject a fake
     `metadata.MetadataSource`. Every non-`modules` MB fetch routes through that port — the concrete
     one is `modules.NewMetadataSource()`; a test supplies a fake with zero network. `routers.API.Meta`
-    (nil ⇒ `API.meta()` falls back to the real source), `scan.Runner`/`mirror.Runner` carry a
+    (nil ⇒ `API.meta()` falls back to the real source), `process.Runner`/`mirror.Runner` carry a
     defaulted `meta` field, and `collection.SyncArtist`/`ReleaseGroupEditions` /
     `components.ComputeItemDiff` take the port as a parameter. See `routers/metadata_source_test.go`
     (`fakeMeta`) and `collection/sync_artist_test.go` for the pattern. AcoustID (`acoustidBaseURL`)

@@ -22,7 +22,7 @@ func TestPassCountsEachPhaseSeparately(t *testing.T) {
 	t.Cleanup(srv.Close)
 	modules.SetMusicBrainzBaseURLForTest(t, srv.URL)
 
-	r := NewRunner(nil, nil)
+	r := NewRunner(nil, nil, models.ConfigStruct{})
 	res := r.RunInline(context.Background(), Scope{Groups: []string{"g1"}, Releases: []string{"r1"}})
 
 	for _, phase := range []string{PhaseEditions, PhaseReleases} {
@@ -50,7 +50,7 @@ func TestPassRecordsWhatItCouldNotRead(t *testing.T) {
 	t.Cleanup(srv.Close)
 	modules.SetMusicBrainzBaseURLForTest(t, srv.URL)
 
-	r := NewRunner(nil, nil)
+	r := NewRunner(nil, nil, models.ConfigStruct{})
 	res := r.RunInline(context.Background(), Scope{Groups: []string{"g1"}})
 
 	if res.ItemsTotal != 1 || len(res.Items) != 1 {
@@ -72,18 +72,51 @@ func TestPassRecordsWhatItCouldNotRead(t *testing.T) {
 }
 
 // The cap bounds what is stored, not what is reported. A pass that recorded 500 of
-// 3120 must be able to say so, or the UI implies 500 was all of it.
+// 3120 must be able to say so, or the UI implies 500 was all of it. The cap is the
+// configured one, and an unset limit falls back to the default rather than to zero —
+// which would store nothing while still counting everything.
 func TestDetailRowsAreCappedButStillCounted(t *testing.T) {
-	res := Result{}
-	for i := 0; i < maxDetailItemsRecorded+25; i++ {
-		res.note(models.EventItem{Path: "rel", Status: models.EventItemStatusRefreshed})
+	for _, tc := range []struct {
+		name  string
+		limit int
+		want  int
+	}{
+		{"configured", 20, 20},
+		{"unset falls back to the default", 0, models.DefaultEventDetailRetention},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Result{detailLimit: tc.limit}
+			total := tc.want + 25
+			for i := 0; i < total; i++ {
+				res.note(models.EventItem{Path: "rel", Status: models.EventItemStatusRefreshed})
+			}
+
+			if len(res.Items) != tc.want {
+				t.Errorf("stored %d rows, want the cap of %d", len(res.Items), tc.want)
+			}
+			if res.ItemsTotal != total {
+				t.Errorf("ItemsTotal = %d, want every row counted (%d)", res.ItemsTotal, total)
+			}
+		})
+	}
+}
+
+// The runner is what carries the configured cap onto each pass's Result, and a
+// non-positive setting must not mean "keep nothing".
+func TestRunnerResolvesRetentionFromConfig(t *testing.T) {
+	r := NewRunner(nil, nil, models.ConfigStruct{
+		AutotaggerrEventRetention:       10,
+		AutotaggerrEventDetailRetention: 25,
+	})
+	if r.eventRetention != 10 || r.detailRetention != 25 {
+		t.Errorf("configured retention not carried: events=%d detail=%d", r.eventRetention, r.detailRetention)
 	}
 
-	if len(res.Items) != maxDetailItemsRecorded {
-		t.Errorf("stored %d rows, want the cap of %d", len(res.Items), maxDetailItemsRecorded)
-	}
-	if res.ItemsTotal != maxDetailItemsRecorded+25 {
-		t.Errorf("ItemsTotal = %d, want every row counted", res.ItemsTotal)
+	zero := NewRunner(nil, nil, models.ConfigStruct{})
+	if zero.eventRetention != models.DefaultEventRetention ||
+		zero.detailRetention != models.DefaultEventDetailRetention {
+		t.Errorf("unset retention should fall back to the defaults: events=%d detail=%d",
+			zero.eventRetention, zero.detailRetention)
 	}
 }
 
@@ -113,7 +146,7 @@ func TestPhaseDetailsKeepWalkOrderAndSkipEmptyPhases(t *testing.T) {
 // shows an empty list beside a non-zero count.
 func TestFinishWritesTheDetailRows(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	ev := events.Begin(db, models.EventTypeMirror, "Metadata refresh")
 	res := Result{
@@ -161,7 +194,7 @@ func TestFinishWritesTheDetailRows(t *testing.T) {
 // every filter a pass declares has to be a status it actually writes.
 func TestDeclaredFiltersMatchTheRowsWritten(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	ev := events.Begin(db, models.EventTypeMirror, "Metadata refresh")
 	res := Result{
@@ -212,7 +245,7 @@ func TestPassRowsAreMarkedAsEntities(t *testing.T) {
 	t.Cleanup(srv.Close)
 	modules.SetMusicBrainzBaseURLForTest(t, srv.URL)
 
-	r := NewRunner(nil, nil)
+	r := NewRunner(nil, nil, models.ConfigStruct{})
 	res := r.RunInline(context.Background(), Scope{Groups: []string{"g1"}})
 
 	if len(res.Items) == 0 {

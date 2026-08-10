@@ -1,8 +1,13 @@
-// Package scan runs library scans and tracks their status. It wraps the component
-// pipeline (components.ScanLibrary) behind a single serial job queue (see queue.go)
-// and a last-run summary, so the scheduled job, the startup run, and the API all share
-// one runner and one queue.
-package scan
+// Package process owns the *Process* verb — walk the library, resolve each file, tag it
+// — and the two other verbs that write files, *Tag files* and the re-tag half of a drift
+// sync. It wraps the component pipeline (components.ScanLibrary) behind a single serial
+// job queue (see queue.go) and a last-run summary, so the scheduled job, the startup run,
+// and the API all share one runner and one queue.
+//
+// It is not the *Scan* verb, despite the ScanLibrary/scanRunner names inherited from
+// before the verbs were split: re-deriving the collection from the index is
+// collection.Rebuild. See docs/scanning.md for the four verbs and why none cascades.
+package process
 
 import (
 	"context"
@@ -29,21 +34,22 @@ import (
 	"gorm.io/gorm"
 )
 
-// eventRetention caps how many Activity events are kept after a scan.
-const eventRetention = 200
-
 // defaultWorkers is the worker count a non-positive concurrency setting falls back
 // to, matching the config loader's default.
 const defaultWorkers = 4
 
+// retentionOrDefault keeps a non-positive setting from disabling retention entirely.
+// Zero would mean "keep nothing", which is never what an unset or mistyped value
+// meant, and would silently empty the feed after the first run.
+func retentionOrDefault(configured, fallback int) int {
+	if configured < 1 {
+		return fallback
+	}
+	return configured
+}
+
 // maxErrorFilesRecorded bounds the error-file list stored on a scan event.
 const maxErrorFilesRecorded = 100
-
-// maxDetailItemsRecorded bounds the per-file detail rows stored for one run. A large
-// library can change tens of thousands of files in a single cold scan; the point of
-// the detail is to show what happened, which the first few hundred rows do, so the
-// rest are counted and dropped rather than turned into a table nobody reads.
-const maxDetailItemsRecorded = 500
 
 // Scan phases, reported in Summary.Phase so a running scan is legible. A scan reads
 // the metadata cache, walks the libraries, then acts on what changed — these name
@@ -106,6 +112,15 @@ type Runner struct {
 	// stage cannot drift apart in what they fetch.
 	refresh *mirror.Runner
 
+	// Activity retention: how many runs the feed keeps, and how many per-file detail
+	// rows one event stores. Resolved from config in NewRunner and shared with the
+	// mirror runner, which prunes the same tables. Not atomic like concurrency —
+	// these are read once when a run opens its collector, so a settings change
+	// applies from the next run rather than mid-walk, which is the only reading under
+	// which "showing 500 of 3120" stays true for the rows already collected.
+	eventRetention  int
+	detailRetention int
+
 	running atomic.Bool // a job is currently executing
 	// stopping is set by Shutdown. From then on the queue accepts nothing and the
 	// worker starts no further job — what is already running is left to finish.
@@ -144,14 +159,16 @@ type Runner struct {
 // Refresher.
 func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *Runner {
 	r := &Runner{
-		db:      db,
-		plex:    plex,
-		version: cfg.AutotaggerrVersion,
-		meta:    modules.NewMetadataSource(),
-		wake:    make(chan struct{}, 1),
+		db:              db,
+		plex:            plex,
+		version:         cfg.AutotaggerrVersion,
+		meta:            modules.NewMetadataSource(),
+		wake:            make(chan struct{}, 1),
+		eventRetention:  retentionOrDefault(cfg.AutotaggerrEventRetention, models.DefaultEventRetention),
+		detailRetention: retentionOrDefault(cfg.AutotaggerrEventDetailRetention, models.DefaultEventDetailRetention),
 	}
 	r.SetConcurrency(cfg.AutotaggerrProcessConcurrency)
-	r.refresh = mirror.NewRunner(db, nil)
+	r.refresh = mirror.NewRunner(db, nil, cfg)
 	go r.worker()
 	return r
 }
@@ -799,7 +816,7 @@ func (r *Runner) runScope(scope Scope) {
 	modules.MusicbrainzResetStats()
 
 	refreshSet := modules.NewAlbumRefreshSet(nil)
-	detail := components.NewDetailCollector(maxDetailItemsRecorded)
+	detail := components.NewDetailCollector(r.detailRetention)
 	var processed, unchanged, tagsWritten, removed int
 	var errorFiles []string
 	libraryNames := make([]string, 0, len(scope.Targets))
@@ -909,7 +926,7 @@ func (r *Runner) runScope(scope Scope) {
 	if len(refreshResult.ChangedReleases) > 0 {
 		r.setPhase(PhaseDrift)
 		logger.Log.Infof("%d release(s) changed upstream; re-tagging their files", len(refreshResult.ChangedReleases))
-		driftDetail := components.NewDetailCollector(maxDetailItemsRecorded)
+		driftDetail := components.NewDetailCollector(r.detailRetention)
 		drift = r.retagReleases(refreshResult.ChangedReleases, refreshSet, driftDetail, filter)
 		tagsWritten += drift.retagged
 		errorFiles = append(errorFiles, drift.errorFiles...)
@@ -1037,7 +1054,7 @@ func (r *Runner) runScope(scope Scope) {
 	// it — files to the walk, releases to the drift re-tag — and duplicating them onto
 	// the parent would show the same file twice to anyone opening the run.
 	events.Finish(r.db, event, status, summary, details)
-	events.Prune(r.db, eventRetention)
+	events.Prune(r.db, r.eventRetention)
 }
 
 // countFiles sizes the run and records the walk that did it.
@@ -1230,7 +1247,7 @@ func detailSummary(detail *components.DetailCollector) map[string]any {
 		"changed_files": changed,
 		"failed_files":  failed,
 		"recorded":      len(detail.Items()),
-		"limit":         maxDetailItemsRecorded,
+		"limit":         detail.Limit(),
 	}
 }
 
@@ -1517,7 +1534,7 @@ func (r *Runner) retagAllNow() {
 	logger.Log.Infof("re-tagging %d files across %d library(ies)", len(items), len(libraries))
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in every library")
 	refreshSet := modules.NewAlbumRefreshSet(nil)
-	detail := components.NewDetailCollector(maxDetailItemsRecorded)
+	detail := components.NewDetailCollector(r.detailRetention)
 
 	result := releaseRefresh{}
 	result.retagItems(r, items, map[uuid.UUID]models.Library{}, refreshSet, detail)
@@ -1557,7 +1574,7 @@ func (r *Runner) retagLibraryNow(libraryID uuid.UUID) {
 	logger.Log.Infof("re-tagging %d files for library: %s", len(items), library.Name)
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in "+library.Name)
 	refreshSet := modules.NewAlbumRefreshSet(nil)
-	detail := components.NewDetailCollector(maxDetailItemsRecorded)
+	detail := components.NewDetailCollector(r.detailRetention)
 
 	result := releaseRefresh{}
 	result.retagItems(r, items, map[uuid.UUID]models.Library{}, refreshSet, detail)
@@ -1601,7 +1618,7 @@ func (r *Runner) retagArtistNow(artistMBID string) {
 	logger.Log.Infof("re-tagging %d files for artist: %s", len(items), artist.Name)
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files for "+artist.Name)
 	refreshSet := modules.NewAlbumRefreshSet(nil)
-	detail := components.NewDetailCollector(maxDetailItemsRecorded)
+	detail := components.NewDetailCollector(r.detailRetention)
 
 	result := releaseRefresh{}
 	result.retagItems(r, items, map[uuid.UUID]models.Library{}, refreshSet, detail)
@@ -1744,7 +1761,7 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 		"albums_failed":    len(failed),
 		"failed_albums":    failed,
 	})
-	events.Prune(r.db, eventRetention)
+	events.Prune(r.db, r.eventRetention)
 }
 
 // finishRefresh records the Activity event shared by every re-tagging run, with
@@ -1787,7 +1804,7 @@ func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseR
 	}
 	events.Finish(r.db, event, status, summary, details)
 	events.AddItems(r.db, event, detail.Items())
-	events.Prune(r.db, eventRetention)
+	events.Prune(r.db, r.eventRetention)
 }
 
 // retagItem rewrites one indexed file's tags from its stored correlation and its

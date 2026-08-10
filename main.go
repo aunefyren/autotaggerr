@@ -33,8 +33,8 @@ import (
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/aunefyren/autotaggerr/process"
 	"github.com/aunefyren/autotaggerr/routers"
-	"github.com/aunefyren/autotaggerr/scan"
 	"github.com/aunefyren/autotaggerr/settings"
 	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/aunefyren/autotaggerr/web"
@@ -46,7 +46,7 @@ import (
 var (
 	plexClient   *modules.PlexClient
 	db           *gorm.DB
-	scanRunner   *scan.Runner
+	scanRunner   *process.Runner
 	mirrorRunner *mirror.Runner
 	// settingsRuntime owns the recurring schedules and re-applies settings saved in
 	// the UI to this running process.
@@ -191,7 +191,7 @@ func main() {
 
 	// Shared scan runner: the cron job, the startup run, and the API all drive
 	// library processing through this one instance (single-run guard + status).
-	scanRunner = scan.NewRunner(db, plexClient, files.ConfigFile)
+	scanRunner = process.NewRunner(db, plexClient, files.ConfigFile)
 
 	// The metadata-refresh runner is owned by the scan runner and already wired to
 	// yield to it: both spend the same one-request-per-second MusicBrainz budget,
@@ -304,7 +304,7 @@ const shutdownGrace = 30 * time.Second
 // ones in flight — including the synchronous re-tags that write files outside the
 // queue. Only then the job runner, because until the API is closed it can still be
 // handed work.
-func shutdown(server *http.Server, runner *scan.Runner, schedules *settings.Runtime) {
+func shutdown(server *http.Server, runner *process.Runner, schedules *settings.Runtime) {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 	logger.Log.Infof("received %s; shutting down", <-stop)
@@ -327,7 +327,7 @@ func shutdown(server *http.Server, runner *scan.Runner, schedules *settings.Runt
 	logger.Log.Info("Autotaggerr stopped")
 }
 
-func initRouter(db *gorm.DB, scanRunner *scan.Runner, mirrorRunner *mirror.Runner, cfg models.ConfigStruct) *gin.Engine {
+func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Runner, cfg models.ConfigStruct) *gin.Engine {
 	router := gin.Default()
 
 	router.Use(cors.New(cors.Config{

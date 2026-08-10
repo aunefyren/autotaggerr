@@ -3,6 +3,7 @@ package events
 import (
 	"io"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/database"
@@ -124,6 +125,58 @@ func TestReconcileRunning(t *testing.T) {
 	}
 	if gotDone.Status != models.EventStatusOK || gotDone.Summary != "done" {
 		t.Errorf("finished event was altered: %+v", gotDone)
+	}
+}
+
+// TestReconcileRunningNamesTheStage covers the half a run cannot report itself: the
+// stage that was in flight lives on a different row, so without this the feed says a
+// run was interrupted but not what it was doing. The stage's own row needs no help —
+// its title already says — so it keeps the plain summary.
+func TestReconcileRunningNamesTheStage(t *testing.T) {
+	db := testDB(t)
+	run := Begin(db, models.EventTypeProcess, "interrupted run")
+	stage := BeginChild(db, run, models.EventTypeTagFiles, "Tagging")
+
+	// A run that crashed between stages has nothing to name, and a finished stage is
+	// not what the run died in — neither may reach the run's summary.
+	quiet := Begin(db, models.EventTypeProcess, "run with no stage open")
+	Finish(db, BeginChild(db, run, models.EventTypeCountFiles, "Counting files"),
+		models.EventStatusOK, "done", nil)
+
+	ReconcileRunning(db)
+
+	var gotRun models.Event
+	if err := db.First(&gotRun, "id = ?", run.ID).Error; err != nil {
+		t.Fatalf("reload run: %v", err)
+	}
+	if !strings.Contains(gotRun.Summary, "Tagging") {
+		t.Errorf("run summary should name the stage it died in, got %q", gotRun.Summary)
+	}
+	if strings.Contains(gotRun.Summary, "Counting files") {
+		t.Errorf("run summary named a stage that had already finished: %q", gotRun.Summary)
+	}
+	if gotRun.Status != models.EventStatusError || gotRun.FinishedAt == nil {
+		t.Errorf("run not closed: status=%q finished=%v", gotRun.Status, gotRun.FinishedAt)
+	}
+
+	var gotStage models.Event
+	if err := db.First(&gotStage, "id = ?", stage.ID).Error; err != nil {
+		t.Fatalf("reload stage: %v", err)
+	}
+	if gotStage.Status != models.EventStatusError || gotStage.FinishedAt == nil {
+		t.Errorf("stage not closed: status=%q finished=%v", gotStage.Status, gotStage.FinishedAt)
+	}
+	if strings.Contains(gotStage.Summary, "during") {
+		t.Errorf("stage should keep the plain summary, got %q", gotStage.Summary)
+	}
+
+	var gotQuiet models.Event
+	if err := db.First(&gotQuiet, "id = ?", quiet.ID).Error; err != nil {
+		t.Fatalf("reload quiet run: %v", err)
+	}
+	if gotQuiet.Status != models.EventStatusError || strings.Contains(gotQuiet.Summary, "during") {
+		t.Errorf("run with no open stage should get the plain summary: status=%q summary=%q",
+			gotQuiet.Status, gotQuiet.Summary)
 	}
 }
 

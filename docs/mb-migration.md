@@ -215,7 +215,7 @@ the user does not follow.
 
 ## Where it runs
 
-`scan.Runner.applyMigrations` drains the queue at the end of a scan and of a drift sync — both fetch
+`process.Runner.applyMigrations` drains the queue at the end of a scan and of a drift sync — both fetch
 releases, so both detect. It runs there rather than at the point of detection because applying one
 rewrites MB IDs across several tables; doing that between files would interleave schema-wide
 rewrites with tag writes. A run that detects nothing costs one indexed query over an empty set.

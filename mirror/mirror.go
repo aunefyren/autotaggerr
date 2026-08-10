@@ -16,7 +16,7 @@
 // and tag writes touch the user's actual audio files.
 //
 // What acts on the result is the scan (which owns file writes) and the tag verb.
-// A run reports the releases whose content changed upstream; `scan.Runner` re-tags
+// A run reports the releases whose content changed upstream; `process.Runner` re-tags
 // those in its own pass, and a user who wants it now presses Tag files.
 //
 // # Why it is scheduled
@@ -51,10 +51,6 @@ import (
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
-
-// eventRetention caps how many Activity events are kept after a pass. It matches
-// the scan runner's figure — they prune the same table.
-const eventRetention = 200
 
 // yieldPollInterval is how often a paused pass re-checks whether the file-writing
 // work it yielded to has finished. Long enough to be free, short enough that a pass
@@ -117,11 +113,6 @@ type Summary struct {
 	Cached map[string]int `json:"cached,omitempty"`
 }
 
-// maxDetailItemsRecorded caps how many per-entity detail rows one pass stores. It
-// matches the scan runner's figure — they write the same table, and a forced
-// collection pass has as many entities as a scan has files.
-const maxDetailItemsRecorded = 500
-
 // PhaseStat is one phase's share of a pass. A pass reads four kinds of entity at very
 // different costs, and a single "1204 fetched" cannot say whether the four hours went
 // on discographies or on release payloads.
@@ -156,20 +147,34 @@ type Result struct {
 	// Items is the per-entity detail: which release changed, which entity is gone,
 	// which one failed and why. The counters say twelve releases changed upstream;
 	// these say which twelve, which is the whole handover to the verbs that write
-	// files. Bounded at maxDetailItemsRecorded; ItemsTotal is how many there would
-	// have been, so the UI can say "showing 500 of 3120".
+	// files. Bounded at detailLimit; ItemsTotal is how many there would have been, so
+	// the UI can say "showing 500 of 3120".
 	Items      []models.EventItem
 	ItemsTotal int
+
+	// detailLimit caps Items. Carried on the Result rather than read from the Runner
+	// because note is what enforces it and a Result is built without one in tests;
+	// zero means the default, so a zero-valued Result still bounds itself.
+	detailLimit int
 }
 
 // note records one entity's outcome as a detail row, keeping the count honest once the
 // cap is reached so the reader is told it is seeing a subset rather than everything.
 func (r *Result) note(item models.EventItem) {
 	r.ItemsTotal++
-	if len(r.Items) >= maxDetailItemsRecorded {
+	if len(r.Items) >= r.detailCap() {
 		return
 	}
 	r.Items = append(r.Items, item)
+}
+
+// detailCap is detailLimit with the default applied, so an unset limit bounds rather
+// than disables the cap.
+func (r *Result) detailCap() int {
+	if r.detailLimit < 1 {
+		return models.DefaultEventDetailRetention
+	}
+	return r.detailLimit
 }
 
 // tally adds one entity's outcome to its phase's running total.
@@ -386,6 +391,15 @@ type Runner struct {
 	// case a pass never yields.
 	yieldTo func() bool
 
+	// Activity retention: how many runs the feed keeps, and how many per-entity
+	// detail rows one pass stores. Both come from the same config keys the processing
+	// runner reads — the two write and prune the same tables, so holding different
+	// figures would make the feed's depth depend on which verb ran last. Resolved
+	// once in NewRunner rather than read per pass, so a config edit mid-pass cannot
+	// move the cap the rows are already being counted against.
+	eventRetention  int
+	detailRetention int
+
 	running atomic.Bool // drops overlapping passes
 	jobMu   sync.Mutex  // serializes pass bodies
 
@@ -396,9 +410,27 @@ type Runner struct {
 	cancel   context.CancelFunc
 }
 
-// NewRunner builds a refresh runner. yieldTo may be nil.
-func NewRunner(db *gorm.DB, yieldTo func() bool) *Runner {
-	return &Runner{db: db, meta: modules.NewMetadataSource(), yieldTo: yieldTo}
+// NewRunner builds a refresh runner. yieldTo may be nil. A zero-valued cfg is
+// legitimate — every field it reads falls back to its default — so a test need not
+// construct one.
+func NewRunner(db *gorm.DB, yieldTo func() bool, cfg models.ConfigStruct) *Runner {
+	return &Runner{
+		db:              db,
+		meta:            modules.NewMetadataSource(),
+		yieldTo:         yieldTo,
+		eventRetention:  retentionOrDefault(cfg.AutotaggerrEventRetention, models.DefaultEventRetention),
+		detailRetention: retentionOrDefault(cfg.AutotaggerrEventDetailRetention, models.DefaultEventDetailRetention),
+	}
+}
+
+// retentionOrDefault keeps a non-positive setting from disabling retention entirely.
+// Zero would mean "keep nothing", which is never what an unset or mistyped value
+// meant, and would silently empty the feed after the first run.
+func retentionOrDefault(configured, fallback int) int {
+	if configured < 1 {
+		return fallback
+	}
+	return configured
 }
 
 // Status returns a copy of the current/last summary, with live cache-coverage
@@ -548,7 +580,7 @@ func (r *Runner) Progress() events.Progress {
 // execute is the pass body. track says whether to publish progress into the shared
 // Summary — the scan's inline stage does not, because the scan is reporting its own.
 func (r *Runner) execute(ctx context.Context, scope Scope, track bool) (Result, bool) {
-	res := Result{}
+	res := Result{detailLimit: r.detailRetention}
 
 	type unit struct {
 		entity string
@@ -845,7 +877,7 @@ func (r *Runner) record(ev *models.Event, started, finished time.Time, scope Sco
 		"detail": map[string]any{
 			"recorded": len(res.Items),
 			"total":    res.ItemsTotal,
-			"limit":    maxDetailItemsRecorded,
+			"limit":    res.detailCap(),
 		},
 	}
 	if res.LastError != "" {
@@ -877,7 +909,7 @@ func (r *Runner) record(ev *models.Event, started, finished time.Time, scope Sco
 	// Errors are per-entity and the pass carried on regardless, so a pass that hit
 	// some is still an "ok" outcome with a count — not a failed job.
 	events.Finish(r.db, ev, models.EventStatusOK, line, details)
-	events.Prune(r.db, eventRetention)
+	events.Prune(r.db, r.eventRetention)
 }
 
 // phaseDetails renders the per-phase breakdown for the event payload, in the order a

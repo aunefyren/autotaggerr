@@ -1,4 +1,4 @@
-package scan
+package process
 
 import (
 	"path/filepath"
@@ -112,7 +112,7 @@ func TestRetagReleasesRecordsOnlyReleasesThatCausedAWrite(t *testing.T) {
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	refreshSet := modules.NewAlbumRefreshSet(nil)
-	detail := components.NewDetailCollector(maxDetailItemsRecorded)
+	detail := components.NewDetailCollector(models.DefaultEventDetailRetention)
 
 	changed := []string{"rel-1", "rel-2"}
 	res := r.retagReleases(changed, refreshSet, detail, scopeFilter{})

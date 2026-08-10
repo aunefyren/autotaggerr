@@ -1,4 +1,4 @@
-package scan
+package process
 
 // Pruning index rows whose files are gone.
 //

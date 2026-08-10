@@ -17,6 +17,22 @@ type DatabaseConfig struct {
 // which a genre list still reads as a description rather than a dump.
 const DefaultMaxGenres = 5
 
+// Activity retention. Both figures are shared by every emitter that prunes or writes
+// the event tables — the processing runner and the metadata mirror — because they
+// write the same two tables and a feed pruned to two different depths would drop
+// history depending on which verb happened to run last.
+const (
+	// DefaultEventRetention is how many top-level runs the Activity feed keeps.
+	// Counted in runs rather than rows, so a run's stages never prune each other
+	// out (see events.Prune).
+	DefaultEventRetention = 200
+	// DefaultEventDetailRetention bounds the per-file (or per-entity) detail rows one
+	// event stores. A cold scan can change tens of thousands of files; the detail
+	// exists to show *what* happened, which the first few hundred rows do, so the
+	// rest are counted and dropped rather than turned into a table nobody reads.
+	DefaultEventDetailRetention = 500
+)
+
 // How the SMTP connection is encrypted. The default is Auto, which infers the answer
 // from the port and is right for every hosted provider; the explicit modes exist for
 // the self-hosted relay that gets it wrong — one that offers STARTTLS and fails the
@@ -68,6 +84,15 @@ type ConfigStruct struct {
 	// which on a popular release group is dozens — so the cap is what keeps GENRE
 	// readable rather than a wall of near-synonyms. Zero or less means the default.
 	AutotaggerrMaxGenres int `json:"autotaggerr_max_genres"`
+
+	// AutotaggerrEventRetention and AutotaggerrEventDetailRetention size the Activity
+	// feed: how many runs are kept, and how much per-file detail each one stores.
+	// They trade history against database size — a busy library with the detail cap
+	// raised keeps a far bigger event table — so they are one knob for someone who
+	// wants a longer audit trail and one for someone who wants a smaller database.
+	// Zero or less means the default.
+	AutotaggerrEventRetention       int `json:"autotaggerr_event_retention"`
+	AutotaggerrEventDetailRetention int `json:"autotaggerr_event_detail_retention"`
 	// AutotaggerrMP3MultiValueTags picks how an MP3 says that a field has several
 	// values. Off (the default) joins them into one string with "; "; on writes the
 	// spec-correct ID3v2.4 form, one frame whose values are separated by a null byte.
@@ -119,13 +144,16 @@ type ConfigStruct struct {
 	SMTPHost    string `json:"smtp_host"`
 	SMTPPort    int    `json:"smtp_port"`
 	// SMTPTLS is how the connection is encrypted; see the SMTPTLS* constants.
-	SMTPTLS            string `json:"smtp_tls"`
-	SMTPUsername       string `json:"smtp_username"`
-	SMTPPassword       string `json:"smtp_password"`
-	SMTPFrom           string `json:"smtp_from"`
-	LidarrBaseURL      string `json:"lidarr_base_url"`
-	LidarrAPIKey       string `json:"lidarr_api_key"`
-	LidarrHeaderCookie string `json:"lidarr_header_cookie"`
-	PlexBaseURL        string `json:"plex_base_url"`
-	PlexToken          string `json:"plex_token"`
+	SMTPTLS      string `json:"smtp_tls"`
+	SMTPUsername string `json:"smtp_username"`
+	SMTPPassword string `json:"smtp_password"`
+	SMTPFrom     string `json:"smtp_from"`
+
+	// Plex is still configured here: it is not a manager row, and the process-level
+	// client is built from these at startup (see main.go). The Lidarr equivalents used
+	// to sit beside them and are gone — they seeded the first manager on the first
+	// boot and were ignored forever after, so the manager row is the only copy of
+	// those credentials now.
+	PlexBaseURL string `json:"plex_base_url"`
+	PlexToken   string `json:"plex_token"`
 }

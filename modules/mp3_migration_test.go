@@ -76,12 +76,19 @@ func writeLegacyMP3Tags(t *testing.T, path string, meta models.FileTags) {
 	}
 }
 
-// TestLegacyFfmpegFilesNeedNoRewrite is the property that makes the engine swap safe
-// to ship: a file the old writer tagged must read back through the new reader as
-// already correct. If it does not, changing the engine silently re-tags every MP3 in
-// every library — hours of writes, and a modification time on every file, for a
-// change that was supposed to be invisible.
-func TestLegacyFfmpegFilesNeedNoRewrite(t *testing.T) {
+// TestLegacyFfmpegFilesConvergeAfterOneRewrite is the property that makes the UFID and
+// TSRC pass safe to ship. It replaces an older test that asserted a legacy file needed
+// *no* rewrite at all — true of the engine swap, which was supposed to be invisible,
+// and deliberately not true of this change, which adds a frame and moves another.
+//
+// What must still hold is that the cost is paid once. A file the ffmpeg-era writer
+// tagged is rewritten exactly one time, and reads as correct forever after; a field
+// that failed to converge would re-tag every MP3 in every library on every scan, which
+// is the failure this guards.
+//
+// The first rewrite must also be *only* the intended fields. Anything else in the diff
+// means this pass is dragging an unrelated regression along with it.
+func TestLegacyFfmpegFilesConvergeAfterOneRewrite(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 	meta := fullFileTags()
 	writeLegacyMP3Tags(t, path, meta)
@@ -90,18 +97,176 @@ func TestLegacyFfmpegFilesNeedNoRewrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
+	if unchanged || written == 0 {
+		t.Fatalf("a legacy file must be migrated once, got unchanged=%v written=%d", unchanged, written)
+	}
+	// The ISRC moves frames without changing value, so it is not in the diff — the
+	// migration is silent by design. UFID is the only field whose value is new.
+	for _, change := range changes {
+		if change.Field != ufidTagKey {
+			t.Errorf("unexpected field in the migration diff: %s (%q -> %q)",
+				change.Field, change.Old, change.New)
+		}
+	}
+
+	// The frames themselves: the artefact gone, the standard ones in its place.
+	frames := dumpID3Frames(t, path)
+	isrc := utilities.JoinTagValues(meta.ISRCs)
+	if contains(frames, fmt.Sprintf("TXXX[%s]=%s", legacyISRCFrameDescription, packISRCFrameValue(isrc))) {
+		t.Error("the legacy ISRC frame survived the migration")
+	}
+	if !contains(frames, "TSRC="+isrc) {
+		t.Errorf("ISRC did not reach TSRC; frames: %v", frames)
+	}
+	if !contains(frames, fmt.Sprintf("UFID[%s]=%s", musicBrainzUFIDOwner, meta.MBRecordingID)) {
+		t.Errorf("UFID not written; frames: %v", frames)
+	}
+
+	// And it settles: the second write is a no-op.
+	unchanged, written, changes, err = SetMP3Tags(path, meta, models.ConfigStruct{})
+	if err != nil {
+		t.Fatalf("second SetMP3Tags: %v", err)
+	}
 	if !unchanged || written != 0 {
+		for _, change := range changes {
+			t.Errorf("would rewrite again: %s %q -> %q", change.Field, change.Old, change.New)
+		}
+		t.Fatalf("a migrated file must be stable, got unchanged=%v written=%d", unchanged, written)
+	}
+}
+
+// TestMigratedISRCSurvivesWhenTheReleaseNoLongerSuppliesOne is the case that separates
+// a frame migration from a deletion. A file carrying the legacy ISRC frame, rewritten
+// while the desired tags have no ISRC at all, must keep the one it has: the value is
+// read off the file, not out of the desired map.
+//
+// Getting this wrong loses an ISRC on any track whose MusicBrainz data thinned out —
+// silently, and only on files that were tagged before the move.
+func TestMigratedISRCSurvivesWhenTheReleaseNoLongerSuppliesOne(t *testing.T) {
+	path := synthAudio(t, ".mp3")
+	meta := fullFileTags()
+	writeLegacyMP3Tags(t, path, meta)
+	isrc := utilities.JoinTagValues(meta.ISRCs)
+
+	// remove_values stays off, so an empty desired ISRC is "nothing to say", not
+	// "delete it" — which is exactly when the value must be carried across.
+	thinned := meta
+	thinned.ISRCs = nil
+	if _, _, _, err := SetMP3Tags(path, thinned, models.ConfigStruct{}); err != nil {
+		t.Fatalf("SetMP3Tags: %v", err)
+	}
+
+	frames := dumpID3Frames(t, path)
+	if !contains(frames, "TSRC="+isrc) {
+		t.Errorf("the migration dropped an ISRC the file already had; frames: %v", frames)
+	}
+
+	tags, err := GetMP3Tags(path)
+	if err != nil {
+		t.Fatalf("GetMP3Tags: %v", err)
+	}
+	if got := utilities.JoinTagValues(tags["ISRC"]); got != isrc {
+		t.Errorf("ISRC reads back as %q, want %q", got, isrc)
+	}
+}
+
+// TestForeignUFIDFramesAreLeftAlone: the UFID frame ID is shared by every tagger that
+// writes one, and only the MusicBrainz owner is ours. Deleting by frame ID would throw
+// away identifiers belonging to tools Autotaggerr knows nothing about.
+func TestForeignUFIDFramesAreLeftAlone(t *testing.T) {
+	path := synthAudio(t, ".mp3")
+	meta := fullFileTags()
+
+	tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	tag.SetVersion(4)
+	tag.AddUFIDFrame(id3v2.UFIDFrame{
+		OwnerIdentifier: "http://example.org/other-tagger",
+		Identifier:      []byte("not-ours"),
+	})
+	if err := tag.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	_ = tag.Close()
+
+	// Write twice: the second pass is where a delete-by-ID bug shows up, because by
+	// then our own frame exists too and the foreign one is no longer the only UFID.
+	for i := 0; i < 2; i++ {
+		if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+			t.Fatalf("SetMP3Tags pass %d: %v", i+1, err)
+		}
+	}
+
+	frames := dumpID3Frames(t, path)
+	if !contains(frames, "UFID[http://example.org/other-tagger]=not-ours") {
+		t.Errorf("a foreign UFID frame was removed; frames: %v", frames)
+	}
+	if !contains(frames, fmt.Sprintf("UFID[%s]=%s", musicBrainzUFIDOwner, meta.MBRecordingID)) {
+		t.Errorf("our own UFID frame is missing; frames: %v", frames)
+	}
+
+	// Ours must appear exactly once — AddUFIDFrame appends, so a missing delete
+	// would stack a new frame on every write.
+	ours := 0
+	for _, line := range frames {
+		if strings.HasPrefix(line, "UFID["+musicBrainzUFIDOwner+"]") {
+			ours++
+		}
+	}
+	if ours != 1 {
+		t.Errorf("wrote %d MusicBrainz UFID frames, want exactly 1", ours)
+	}
+}
+
+// TestUFIDIsReadBackFromEitherScheme: some taggers write the owner over https. A file
+// carrying that form already has the right identifier, and reporting it as drift would
+// rewrite it on every scan without ever settling.
+func TestUFIDIsReadBackFromEitherScheme(t *testing.T) {
+	path := synthAudio(t, ".mp3")
+	meta := fullFileTags()
+	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+		t.Fatalf("SetMP3Tags: %v", err)
+	}
+
+	// Replace ours with the https spelling, leaving everything else settled.
+	tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	tag.SetVersion(4)
+	tag.DeleteFrames("UFID")
+	tag.AddUFIDFrame(id3v2.UFIDFrame{
+		OwnerIdentifier: musicBrainzUFIDOwnerAlt,
+		Identifier:      []byte(meta.MBRecordingID),
+	})
+	if err := tag.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	_ = tag.Close()
+
+	unchanged, _, changes, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	if err != nil {
+		t.Fatalf("SetMP3Tags: %v", err)
+	}
+	if !unchanged {
 		for _, change := range changes {
 			t.Errorf("would rewrite %s: %q -> %q", change.Field, change.Old, change.New)
 		}
-		t.Fatalf("a file written by the ffmpeg writer must need no rewrite, got unchanged=%v written=%d",
-			unchanged, written)
+		t.Error("an https-owner UFID carrying the right MBID must not read as drift")
 	}
 }
 
 // TestNewWriterReproducesTheLegacyFrames is the other half: not just "no diff", but
 // the same frames on disk. A reader that happened to be forgiving in the same way the
-// writer was wrong would pass the test above; this one compares the actual tag.
+// writer was wrong would pass the convergence test above; this one compares the actual
+// tag.
+//
+// The three intended departures from the ffmpeg-era tag are listed explicitly rather
+// than the comparison being loosened, so this keeps catching what it was written for:
+// any *fourth* difference is a regression, not a feature. Drop an entry here when a
+// frame stops being intentional and the test starts failing again, which is the point.
 //
 // TSSE is excluded because ffmpeg stamps its own encoder name into every file it
 // rewrites, which is exactly the kind of gratuitous change this migration removes.
@@ -119,14 +284,38 @@ func TestNewWriterReproducesTheLegacyFrames(t *testing.T) {
 	legacy := dumpID3Frames(t, legacyPath)
 	current := dumpID3Frames(t, newPath)
 
+	isrc := utilities.JoinTagValues(meta.ISRCs)
+	// Retired: the ISRC artefact, a TXXX frame described "TXXX".
+	retired := []string{
+		fmt.Sprintf("TXXX[%s]=%s", legacyISRCFrameDescription, packISRCFrameValue(isrc)),
+	}
+	// Added: the standard ISRC frame, and Picard's home for the recording MBID.
+	added := []string{
+		"TSRC=" + isrc,
+		fmt.Sprintf("UFID[%s]=%s", musicBrainzUFIDOwner, meta.MBRecordingID),
+	}
+
 	for _, frame := range legacy {
-		if !contains(current, frame) {
+		if !contains(current, frame) && !contains(retired, frame) {
 			t.Errorf("the new writer did not produce: %s", frame)
 		}
 	}
 	for _, frame := range current {
-		if !contains(legacy, frame) {
+		if !contains(legacy, frame) && !contains(added, frame) {
 			t.Errorf("the new writer produced something ffmpeg did not: %s", frame)
+		}
+	}
+
+	// The intended departures must actually have happened — otherwise this test would
+	// keep passing if the migration silently stopped working.
+	for _, frame := range retired {
+		if contains(current, frame) {
+			t.Errorf("expected %s to be retired, but the new writer still produces it", frame)
+		}
+	}
+	for _, frame := range added {
+		if !contains(current, frame) {
+			t.Errorf("expected the new writer to produce %s", frame)
 		}
 	}
 }
@@ -155,6 +344,11 @@ func dumpID3Frames(t *testing.T, path string) []string {
 				lines = append(lines, fmt.Sprintf("%s=%s", frameID, typed.Text))
 			case id3v2.UserDefinedTextFrame:
 				lines = append(lines, fmt.Sprintf("TXXX[%s]=%s", typed.Description, typed.Value))
+			case id3v2.UFIDFrame:
+				// Rendered by owner and payload: a UFID compared as "<id3v2.UFIDFrame>"
+				// would match any other tagger's identifier, which is the one thing the
+				// owner string exists to distinguish.
+				lines = append(lines, fmt.Sprintf("UFID[%s]=%s", typed.OwnerIdentifier, typed.Identifier))
 			default:
 				lines = append(lines, fmt.Sprintf("%s=<%T>", frameID, frame))
 			}

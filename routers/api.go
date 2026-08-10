@@ -10,7 +10,7 @@ import (
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
-	"github.com/aunefyren/autotaggerr/scan"
+	"github.com/aunefyren/autotaggerr/process"
 	"github.com/aunefyren/autotaggerr/settings"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -19,7 +19,7 @@ import (
 // API holds the dependencies shared by the JSON API handlers.
 type API struct {
 	DB     *gorm.DB
-	Scan   *scan.Runner
+	Scan   *process.Runner
 	Mirror *mirror.Runner
 	// Rebuilder re-derives the collection after a handler changes the file index.
 	// May be nil, in which case requests are dropped (see collection.Rebuilder).

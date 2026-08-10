@@ -144,9 +144,6 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"autotaggerr_process_cron_schedule": "0 0 18 * * 7",
 	"autotaggerr_process_concurrency": 4,
 	"autotaggerr_mirror_cron_schedule": "0 0 3 * * *",
-	"lidarr_base_url": "https://lidarr.mycooldomain.com",
-	"lidarr_api_key": "XXX",
-	"lidarr_header_cookie": "",
 	"plex_base_url": "https://plex.mycooldomain.com",
 	"plex_token": "XXX"
 }
@@ -195,6 +192,8 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |
 | `autotaggerr_migration_review_pinned` | — | — | bool | Hold any migration that would rewrite a **manually attached** file's MB ID, whatever its type. Default `false` (apply). |
 | `autotaggerr_migration_review_deletions` | — | — | bool | Hold **deleted** entities for manual approval. Applying one marks the affected files unmatched. Default `false` (apply). |
+| `autotaggerr_event_retention` | — | — | int | How many runs the **Activity** feed keeps. Counted in runs, not rows, so a run's stages are never pruned out from under it. Default `200`; `0` or less means the default. |
+| `autotaggerr_event_detail_retention` | — | — | int | How many per-file (or per-entity) detail rows one Activity event stores. Rows past the cap are counted but not kept, so the event still reports "showing 500 of 3120". Raising it on a busy library grows the database noticeably. Default `500`; `0` or less means the default. |
 | `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. Used by the *Send test message* button on **Settings → Email**; nothing else sends mail yet. |
 | `smtp_host` | `-smtphost` | `smtphost` | string | SMTP server hostname. Default empty. |
 | `smtp_port` | `-smtpport` | `smtpport` | int | SMTP server port. Default `0`. |
@@ -202,23 +201,19 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `smtp_username` | `-smtpusername` | `smtpusername` | string | SMTP auth username. Empty means no authentication is attempted. Default empty. |
 | `smtp_password` | `-smtppassword` | `smtppassword` | string | SMTP auth password. Default empty. |
 | `smtp_from` | `-smtpfrom` | `smtpfrom` | string | Sender address for outgoing mail. Default empty. |
-| `lidarr_base_url` | — | — | string | **Seed only** (see below). Base URL of the Lidarr instance. Default empty. |
-| `lidarr_api_key` | — | — | string | **Seed only.** Lidarr API key. Default empty. |
-| `lidarr_header_cookie` | — | — | string | **Seed only.** Optional `name=value` cookie sent with Lidarr requests, for an authentication proxy such as Authelia. Default empty. |
-| `plex_base_url` | — | — | string | Base URL of the Plex instance to refresh. Default empty. |
-| `plex_token` | — | — | string | Plex auth token. Default empty. |
+| `plex_base_url` | — | — | string | Base URL of the Plex instance to refresh. Default empty. Editable on **Settings → Plex**. |
+| `plex_token` | — | — | string | Plex auth token. Default empty. Editable on **Settings → Plex**. |
 | — | `-file` | `file` | string | Process a single file, then exit instead of running the service. Runtime-only, not stored in config. |
 | — | `-fileRoot` | `fileRoot` | string | Library root containing the artist folder for `-file`. Required with `-file`. Runtime-only. |
 | — | — | `PUID` | int | **Env only.** UID the container process runs as. Default `1000`. |
 | — | — | `PGID` | int | **Env only.** GID the container process runs as. Default `1000`. |
 
-> **Seed only:** the three `lidarr_*` keys are copied into the Lidarr **manager** record on first
-> run and never read from `config.json` again. Everything that talks to Lidarr — scans and the
-> health check alike — uses the manager record, so change these under **Managers** in the web UI.
-> Editing them in `config.json` after the first run has no effect — and if you do, the log says so
-> on the next startup, naming the keys that no longer match the manager. The *Test* button there
-> probes the connection with exactly the credentials a scan would use; an auth-proxy cookie expires
-> on its own schedule, and that button is how you find out it has.
+> **Lidarr is not configured here.** It used to be, through three `lidarr_*` keys that were copied
+> into the Lidarr **manager** record on the first run and never read again. Those keys are gone: a
+> Lidarr connection is created and edited under **Managers** in the web UI, which is the only place
+> the credentials live. A stale copy left in an old `config.json` is ignored and can be deleted.
+> The *Test* button there probes the connection with exactly the credentials a scan would use; an
+> auth-proxy cookie expires on its own schedule, and that button is how you find out it has.
 
 ---
 

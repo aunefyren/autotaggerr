@@ -11,7 +11,7 @@ import (
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
-	"github.com/aunefyren/autotaggerr/scan"
+	"github.com/aunefyren/autotaggerr/process"
 	"github.com/aunefyren/autotaggerr/web"
 	"github.com/gin-gonic/gin"
 )
@@ -33,8 +33,8 @@ func testRouter(t *testing.T) *gin.Engine {
 		t.Fatalf("Connect: %v", err)
 	}
 	cfg := models.ConfigStruct{AutotaggerrName: "Autotaggerr", AutotaggerrVersion: "test"}
-	scanRunner := scan.NewRunner(db, nil, cfg)
-	return initRouter(db, scanRunner, mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }), cfg)
+	scanRunner := process.NewRunner(db, nil, cfg)
+	return initRouter(db, scanRunner, mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, cfg), cfg)
 }
 
 func routerGet(t *testing.T, r *gin.Engine, path string) *httptest.ResponseRecorder {

@@ -319,7 +319,7 @@ mb_release_id <> '' AND status <> 'unmatched'
 ```
 
 It replaced `status = ok` at seven call sites (`collection.ArtistItems`/`ReleaseGroupItems`, the
-three re-tag queries in `scan.Runner`, and the two guards in `routers` that refuse a re-tag with
+three re-tag queries in `process.Runner`, and the two guards in `routers` that refuse a re-tag with
 nothing to do). That predicate got both directions wrong:
 
 - **An error is not a disqualification.** A file that failed to tag was dropped from its own artist,

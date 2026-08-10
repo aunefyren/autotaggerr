@@ -27,7 +27,7 @@ What replaces the cascade is a handover. A refresh **reports** the releases whos
 upstream; the next processing run re-tags them in its drift stage, and a user who wants it immediately presses
 *Tag files*. Nothing is lost, and nothing happens that was not asked for.
 
-This package (`mirror`) is the refresh verb. `scan.Runner` owns the two that write.
+This package (`mirror`) is the refresh verb. `process.Runner` owns the two that write.
 
 ### One name, two forms
 
@@ -337,7 +337,7 @@ pacing.
 processing run's refresh stage reports. It neither takes the pass guard nor publishes into the
 shared `Summary`, because the run already holds the file-writing guard and is reporting its own
 progress; a stage that reset the metadata runner's status would make `/mirror/status` describe a
-pass nobody started. See [scanning.md](scanning.md#a-run-is-a-parent-its-stages-are-the-rows).
+pass nobody started. See [scanning.md](scanning.md#a-run-spawns-activities-each-one-is-a-row).
 
 ## Configuration
 
@@ -398,7 +398,7 @@ the button says so.
 ## How processing uses this
 
 A processing run reads files through the *cache*, so without a refresh stage it would tag from a week-old
-copy and never notice a release that changed upstream. `scan.Runner.Run` therefore:
+copy and never notice a release that changed upstream. `process.Runner.Run` therefore:
 
 1. runs `RunInline` over `DueScope` — expired releases only, so a nightly run does not re-fetch
    the collection;

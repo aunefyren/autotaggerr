@@ -158,6 +158,34 @@ func Sections() []Section {
 			},
 		},
 		{
+			// Plex is the one connection that is not a manager row: there is no Plex
+			// manager type and no Managers entry for it, so config.json is where it
+			// lives and main.go builds the process-level client from these at startup.
+			//
+			// It used to be listed as "managed elsewhere" alongside the lidarr_* keys,
+			// pointing at a page that has never had a Plex field on it — and under a
+			// heading promising that editing the file changes nothing, which was the
+			// opposite of true. These are ordinary settings; this is where they belong.
+			ID:          "plex",
+			Title:       "Plex",
+			Description: "The Plex server told to refresh an album after its files change. Optional — leave empty and nothing is notified.",
+			Fields: []Field{
+				{
+					Key: "plex_base_url", Label: "Base URL", Type: TypeString, Tier: TierRestart,
+					Help:        "e.g. http://192.168.1.10:32400. Both this and the token are needed before anything is sent.",
+					Placeholder: "http://plex.local:32400",
+					get:         func(c models.ConfigStruct) any { return c.PlexBaseURL },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.PlexBaseURL = v }, nil),
+				},
+				{
+					Key: "plex_token", Label: "Token", Type: TypeSecret, Tier: TierRestart,
+					Help: "A Plex authentication token (X-Plex-Token).",
+					get:  func(c models.ConfigStruct) any { return c.PlexToken },
+					set:  setString(func(c *models.ConfigStruct, v string) { c.PlexToken = v }, nil),
+				},
+			},
+		},
+		{
 			// "Mirror" stays the package name, the config keys and the word the docs use
 			// for the local copy. It is not a word the UI says: every surface a user
 			// presses calls this one thing a metadata refresh, and a settings section
@@ -299,6 +327,23 @@ func Sections() []Section {
 					get:     func(c models.ConfigStruct) any { return c.AutotaggerrEnvironment },
 					set:     setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrEnvironment = v }, oneOf("prod", "test")),
 				},
+				// Both are TierRestart because the two runners resolve retention once, when
+				// they are built. That is deliberate rather than a limitation: a pass that
+				// reports "showing 500 of 3120" counted those rows against the cap it
+				// started with, and moving it underneath a running job would make the pair
+				// a lie.
+				{
+					Key: "autotaggerr_event_retention", Label: "Activity runs kept", Type: TypeInt, Tier: TierRestart,
+					Help: "How far back the Activity feed goes. Counted in runs, so a run's stages are never pruned out from under it.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventRetention },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventRetention = v }, intRange(1, 10000)),
+				},
+				{
+					Key: "autotaggerr_event_detail_retention", Label: "Detail rows per activity", Type: TypeInt, Tier: TierRestart,
+					Help: "Per-file detail kept for one activity. Rows past the cap are still counted, so the total stays honest — but this is what dominates database size on a large library.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventDetailRetention },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventDetailRetention = v }, intRange(1, 100000)),
+				},
 			},
 		},
 		{
@@ -340,12 +385,6 @@ type ManagedElsewhere struct {
 
 func Managed() []ManagedElsewhere {
 	return []ManagedElsewhere{
-		{
-			Keys:  []string{"lidarr_base_url", "lidarr_api_key", "lidarr_header_cookie", "plex_base_url", "plex_token"},
-			Label: "Managers",
-			Path:  "/managers",
-			Note:  "Connection details moved into the database; these keys only seeded the first manager.",
-		},
 		{
 			Keys: []string{"autotaggerr_use_current_artist_name", "autotaggerr_ignore_redundant_contributing_artists",
 				"autotaggerr_use_custom_artist_delimiter", "autotaggerr_custom_artist_delimiter",

@@ -62,7 +62,7 @@ scheduling; `models/` holds structs; `files/` handles config; `utilities/` has p
 **The four verbs** — *Process* (walk, resolve, tag), *Scan* (re-derive the collection from the
 index), *Refresh metadata*, *Tag files* — are named in
 [docs/scanning.md](docs/scanning.md#the-four-verbs-and-why-none-of-them-cascades). The Go package
-`scan` owns *Process*, not *Scan*; the *Scan* verb is `collection.Rebuild`.
+`process` owns *Process*; the *Scan* verb is `collection.Rebuild`, in `collection/`.
 
 **Two entry paths, one core:**
 - Scheduled/startup: `main.processLibraries` → `modules.ScanFolderRecursive` walks each
@@ -106,7 +106,7 @@ MusicBrainz calls go through `RateLimit()` — respect it when adding new MusicB
 ## Concurrency
 
 Every background verb (processing runs, re-tags, metadata refreshes) is enqueued onto a **single serial job
-queue** in `scan.Runner`, drained by one worker goroutine that holds `jobMu` per job (`scan/queue.go`).
+queue** in `process.Runner`, drained by one worker goroutine that holds `jobMu` per job (`process/queue.go`).
 The cron job, the startup run and the API all enqueue; jobs dedup by key and file-writing jobs take
 priority over pending metadata jobs. Interactive `RetagItems` stays synchronous and `TryLock`s
 `jobMu`. On startup, `events.ReconcileRunning` closes out events left `running` by a crashed process.

@@ -152,6 +152,18 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrEventRetention < 1 {
+		// set new value (how many Activity runs are kept)
+		ConfigFile.AutotaggerrEventRetention = models.DefaultEventRetention
+		anythingChanged = true
+	}
+
+	if ConfigFile.AutotaggerrEventDetailRetention < 1 {
+		// set new value (per-file detail rows kept per Activity event)
+		ConfigFile.AutotaggerrEventDetailRetention = models.DefaultEventDetailRetention
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrLibraries == nil {
 		// Set new value
 		ConfigFile.AutotaggerrLibraries = []string{}
@@ -209,6 +221,8 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrIgnoreRedundantContributingArtists = true
 	ConfigFile.AutotaggerrRemoveValues = false
 	ConfigFile.AutotaggerrMaxGenres = models.DefaultMaxGenres
+	ConfigFile.AutotaggerrEventRetention = models.DefaultEventRetention
+	ConfigFile.AutotaggerrEventDetailRetention = models.DefaultEventDetailRetention
 
 	// The MusicBrainz mirror runs nightly by default but not on startup: a first
 	// pass over a large collection is hours of rate-limited fetching, and tying that

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -43,7 +42,7 @@ func Seed(db *gorm.DB, cfg models.ConfigStruct) (*AdminCredentials, error) {
 		return nil, fmt.Errorf("seed tagger profile: %w", err)
 	}
 
-	managerID, err := seedLidarrManager(db, cfg)
+	managerID, err := lidarrManagerID(db)
 	if err != nil {
 		return nil, fmt.Errorf("seed lidarr manager: %w", err)
 	}
@@ -139,68 +138,28 @@ func seedDefaultTaggerProfile(db *gorm.DB, cfg models.ConfigStruct) (*uuid.UUID,
 	return &profile.ID, nil
 }
 
-// seedLidarrManager creates a Lidarr manager from config when Lidarr is
-// configured. Returns the manager ID to link libraries to, or nil when Lidarr is
-// not configured (libraries are then created unassigned for the user to wire up).
-func seedLidarrManager(db *gorm.DB, cfg models.ConfigStruct) (*uuid.UUID, error) {
+// lidarrManagerID returns the Lidarr manager's ID so seeded libraries can be linked to
+// it, or nil when there is none (libraries are then created unassigned for the user to
+// wire up on Settings → Libraries).
+//
+// It does not create one. config.json used to carry lidarr_base_url, lidarr_api_key and
+// lidarr_header_cookie for exactly that, and they were seed-only — read once on the
+// first boot and ignored on every boot after, which made editing them look like fixing
+// a stale credential while the manager kept using the old value. The manager row is the
+// single copy now, created on Settings → Managers.
+//
+// A fresh install therefore starts with no manager, which is the deliberate trade: one
+// place credentials live, rather than two where one silently wins.
+func lidarrManagerID(db *gorm.DB) (*uuid.UUID, error) {
 	var existing models.Manager
 	err := db.Where("type = ?", models.ManagerTypeLidarr).First(&existing).Error
 	if err == nil {
-		warnLidarrConfigIgnored(cfg, existing)
 		return &existing.ID, nil
 	}
 	if err != gorm.ErrRecordNotFound {
 		return nil, err
 	}
-
-	if strings.TrimSpace(cfg.LidarrBaseURL) == "" || strings.TrimSpace(cfg.LidarrAPIKey) == "" {
-		return nil, nil // Lidarr not configured
-	}
-
-	manager := models.Manager{
-		Name:               "Lidarr",
-		Type:               models.ManagerTypeLidarr,
-		Enabled:            true,
-		LidarrBaseURL:      cfg.LidarrBaseURL,
-		LidarrAPIKey:       cfg.LidarrAPIKey,
-		LidarrHeaderCookie: cfg.LidarrHeaderCookie,
-	}
-	if err := db.Create(&manager).Error; err != nil {
-		return nil, err
-	}
-	return &manager.ID, nil
-}
-
-// warnLidarrConfigIgnored reports config.json's three lidarr_* keys as ignored once
-// the manager row they seeded exists.
-//
-// They are seed-only: seedLidarrManager returns on the row it finds and never reads
-// them again, so from the second boot onwards the manager's own credentials are the
-// only ones anything uses. That is documented, but a key that silently does nothing
-// is still a trap — editing lidarr_header_cookie there when a session expires looks
-// exactly like fixing it, and the manager keeps using the stale value.
-//
-// Only a *divergence* is worth a line. Values identical to the manager's are the
-// historical seed sitting where it was left, and warning about them every boot would
-// train the user to ignore the message that matters. The key is named but never its
-// value: a cookie or an API key does not belong in a log.
-func warnLidarrConfigIgnored(cfg models.ConfigStruct, manager models.Manager) {
-	ignored := []string{}
-	for _, key := range []struct{ name, configured, active string }{
-		{"lidarr_base_url", cfg.LidarrBaseURL, manager.LidarrBaseURL},
-		{"lidarr_api_key", cfg.LidarrAPIKey, manager.LidarrAPIKey},
-		{"lidarr_header_cookie", cfg.LidarrHeaderCookie, manager.LidarrHeaderCookie},
-	} {
-		if strings.TrimSpace(key.configured) != "" && key.configured != key.active {
-			ignored = append(ignored, key.name)
-		}
-	}
-	if len(ignored) == 0 {
-		return
-	}
-
-	logger.Log.Warnf("config.json sets %s to a value the %q manager does not use — these keys only seed the manager on first run; edit the credentials on the manager itself (Settings → Managers) or they will keep being ignored",
-		strings.Join(ignored, ", "), manager.Name)
+	return nil, nil
 }
 
 func seedLibraries(db *gorm.DB, cfg models.ConfigStruct, managerID, dataSourceID, taggerID *uuid.UUID) error {

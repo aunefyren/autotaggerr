@@ -17,8 +17,13 @@ demuxed and remuxed the whole file; frames could only be addressed through ffmpe
 translation, so `UFID` was unreachable and the ISRC ended up in a frame *described* `TXXX`; and the
 `ffprobe` read flattened a multi-value frame to its first value, which is what made the
 spec-correct representation unreachable rather than merely unwritten. The frame layout was kept
-byte-for-byte across that change, so no existing file was re-tagged
-(`TestLegacyFfmpegFilesNeedNoRewrite`, `TestNewWriterReproducesTheLegacyFrames`).
+byte-for-byte across the engine swap itself, so that change re-tagged nothing
+(`TestNewWriterReproducesTheLegacyFrames`).
+
+Addressing frames directly is what later made `UFID` and `TSRC` reachable
+([below](#the-recording-mbid-is-written-twice-on-purpose)). Those two *are* a one-time rewrite of
+every MP3 — the deliberate kind, shipped together so the cost is paid once
+(`TestLegacyFfmpegFilesConvergeAfterOneRewrite`).
 
 Settings come from the library's **tagger profile** (`models.TaggerProfile`), the DB-backed
 successor to the old `autotaggerr_*` config flags.
@@ -102,21 +107,51 @@ above). The differences that remain are ones the formats force:
 | | FLAC (Vorbis) | MP3 (ID3) |
 |---|---|---|
 | Genres | `GENRE` | `GENRE` → `TCON` |
-| Recording MBID | `MUSICBRAINZ_TRACKID` | `TXXX:MusicBrainz Recording Id` |
+| Recording MBID | `MUSICBRAINZ_TRACKID` | `TXXX:MusicBrainz Recording Id` **and** `UFID` |
+| ISRC | `ISRC` | `TSRC` |
 | Release date | `DATE` + `RELEASEDATE` | `TDRC` |
 | Disc total | `DISCTOTAL` + `TOTALDISCS` | half of the paired `TPOS` |
 
 Vorbis has no single spelling everyone agrees on, hence the duplicated keys; ID3 does. The `TXXX`
 spelling for the recording MBID is the one `extractFromID3v2` already read back for the `recording`
-type, so writing it repaired a lookup that had never had a source. Picard additionally puts it in a
-`UFID` frame, which ffmpeg could not write at all; that is now reachable and merely not done yet
-(see [wip.md](wip.md#tagging--what-is-left)).
+type, so writing it repaired a lookup that had never had a source.
 
-The ISRC is the one field whose frame does not read as a deliberate choice: it lives in a `TXXX`
-frame *described* `TXXX`, whose value carries its own `ISRC:<value>` packing. That is an artefact of
-`-metadata TXXX=ISRC:…`, the only way the ffmpeg writer could reach a user-defined frame. The
-spelling is preserved because changing it would re-tag every MP3 in every library; moving it to the
-standard `TSRC` frame is a deliberate change, not a cleanup.
+### The recording MBID is written twice, on purpose
+
+MP3 carries it in both `TXXX:MusicBrainz Recording Id` and `UFID` — Picard's canonical home, and the
+only one a reader can identify without first agreeing on a `TXXX` description, since the owner
+string (`http://musicbrainz.org`) is part of the frame.
+
+They are two frames with **two separate diff keys** (`MusicBrainz Recording Id` and `UFID`). One key
+naming both would read the same MBID into one slot twice, report drift no write could settle, and
+rewrite the file on every scan forever — the failure mode this file keeps coming back to.
+
+`UFID` is also the one frame ID shared with other taggers, so only the MusicBrainz owner is ever
+touched: a foreign `UFID` is a different identifier in a different namespace and is left exactly as
+it is. The owner is matched over either scheme when reading and written over `http`, so a file
+tagged by something that used `https` does not read as drift.
+
+### The ISRC moved to `TSRC`
+
+It used to live in a `TXXX` frame *described* `TXXX`, whose value carried its own `ISRC:<value>`
+packing — an artefact of `-metadata TXXX=ISRC:…`, the only way the ffmpeg writer could reach a
+user-defined frame at all. It is now in `TSRC`, the standard frame.
+
+The legacy frame is still **read**, and that support is not transitional: a library tagged by an
+older Autotaggerr keeps those frames until something rewrites each file, and a file nothing ever
+changes is never rewritten. Both spellings decode to the same `ISRC` key, so a file mid-migration
+and a file after it are indistinguishable to everything above the frame layer.
+
+A file still carrying the legacy frame is migrated on its next write, **whether or not the ISRC
+itself changed** — otherwise a file whose ISRC is already correct would keep the artefact forever,
+since nothing would ever mark it as drift. The value carried across is the one read *off the file*,
+not the one in the desired tags: reading the desired value would silently delete the ISRC of any
+track whose MusicBrainz data no longer supplies one, turning a frame migration into a deletion.
+
+Adding `UFID` and moving the ISRC cost **one rewrite per MP3**, once. That is the whole reason they
+shipped together rather than as two passes over the library.
+`TestLegacyFfmpegFilesConvergeAfterOneRewrite` pins both halves: the migration happens, and it
+happens exactly once.
 
 `ASIN`, `COMPOSER` and `AUTHOR` are written by neither. `BuildFileTags` has never populated them,
 so listing them only ever cleared another tagger's value once `remove_values` was on.
@@ -171,10 +206,11 @@ step — the profile is one promise, and it used to hold on FLAC while ID3 quiet
 **Every key in the change set must be written.** The MP3 writer's reported diff is derived from the
 change set rather than from what it did, so a key that is reported but skipped is reported as
 written while nothing happens, and is re-reported on every scan forever. The paired frames (`TRCK`,
-`TPOS`) each hold a number and a total in one frame and are cleared together; the ISRC's `TXXX`
-frame is deleted outright rather than left holding an empty `ISRC:` payload. Deleting one `TXXX`
+`TPOS`) each hold a number and a total in one frame and are cleared together. Deleting one `TXXX`
 means reading the others out and putting them back, since a frame ID can only be deleted whole —
-`deleteUserDefinedFrame` exists for that and not by preference. Regression test:
+`deleteUserDefinedFrame` exists for that and not by preference, and
+`deleteMusicBrainzUFIDFrame` does the same for `UFID`, where the thing being preserved is other
+taggers' identifiers rather than other descriptions. Regression test:
 `TestMP3RemoveValuesClearsAndConverges`.
 
 ## Idempotency is the property that matters
@@ -182,7 +218,8 @@ means reading the others out and putting them back, since a frame ID can only be
 If the desired tags never equal what is read back, the file is rewritten on **every** scan forever.
 That has happened once, and the shape of the bug is worth remembering:
 
-> **Multi-value ISRC on MP3.** ISRC is packed into a single `TXXX` frame as `ISRC:<value>`, but the
+> **Multi-value ISRC on MP3.** ISRC used to be packed into a single `TXXX` frame as `ISRC:<value>`
+> (it is in `TSRC` now, but the legacy frame is still read), and the
 > decoder split the frame value on `;` *before* the `KEY:value` split — so a `"; "`-joined
 > multi-ISRC string (common on singles and featured tracks) read back as only its first value. The
 > diff never converged. Fixed by splitting on the **first colon only** (`SplitN(val, ":", 2)`); the

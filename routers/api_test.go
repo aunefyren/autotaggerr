@@ -13,7 +13,7 @@ import (
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
-	"github.com/aunefyren/autotaggerr/scan"
+	"github.com/aunefyren/autotaggerr/process"
 	"github.com/gin-gonic/gin"
 	"github.com/sirupsen/logrus"
 
@@ -40,11 +40,11 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 		t.Fatalf("create user: %v", err)
 	}
 
-	scanRunner := scan.NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	scanRunner := process.NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 	api := &API{
 		DB:         db,
 		Scan:       scanRunner,
-		Mirror:     mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }),
+		Mirror:     mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, models.ConfigStruct{}),
 		Rebuilder:  collection.NewRebuilder(db),
 		SigningKey: []byte("signing-key"),
 		AppName:    "AT",

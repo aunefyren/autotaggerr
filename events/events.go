@@ -4,6 +4,8 @@
 package events
 
 import (
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -191,11 +193,65 @@ func Items(db *gorm.DB, eventID uuid.UUID) ([]models.EventItem, error) {
 // Startup-only by contract: it must run before the process starts any job of its own,
 // because it cannot tell "a previous process left this" from "this process just began
 // it". The caller places it ahead of every auto-start and schedule.
+//
+// A run is closed *by name*: its stages are separate rows (see models.Event.ParentID),
+// so the run's own row knows only that it was running, while the stage that was in
+// flight is the one fact worth keeping — "interrupted during Tagging" is actionable in
+// a way "interrupted" is not. The stage rows need no such help; each already carries
+// its own title.
 func ReconcileRunning(db *gorm.DB) {
 	if db == nil {
 		return
 	}
+	var running []models.Event
+	if err := db.Select("id", "parent_id", "title").
+		Where("status = ?", models.EventStatusRunning).
+		Find(&running).Error; err != nil {
+		logger.Log.Warnf("failed to enumerate interrupted events: %s", err.Error())
+		return
+	}
+	if len(running) == 0 {
+		return
+	}
+
+	// Which stages were in flight, per run. The serial job queue means this is
+	// normally one, but a crash during handover can leave two, and naming both is
+	// more honest than picking one.
+	stagesByRun := map[uuid.UUID][]string{}
+	for _, ev := range running {
+		if ev.ParentID == nil || ev.Title == "" {
+			continue
+		}
+		stagesByRun[*ev.ParentID] = append(stagesByRun[*ev.ParentID], ev.Title)
+	}
+
 	now := time.Now()
+	closed := 0
+
+	// Runs whose stage is known are closed one at a time, since each gets its own
+	// summary. There is at most a handful: one boot's worth of a serial queue.
+	for _, ev := range running {
+		stages := stagesByRun[ev.ID]
+		if len(stages) == 0 {
+			continue
+		}
+		res := db.Model(&models.Event{}).
+			Where("id = ? AND status = ?", ev.ID, models.EventStatusRunning).
+			Updates(map[string]any{
+				"status":      models.EventStatusError,
+				"finished_at": now,
+				"summary": fmt.Sprintf("interrupted during %s — the service restarted while this was running",
+					strings.Join(stages, " and ")),
+			})
+		if res.Error != nil {
+			logger.Log.Warnf("failed to reconcile interrupted run: %s", res.Error.Error())
+			continue
+		}
+		closed += int(res.RowsAffected)
+	}
+
+	// Everything still running: the stages themselves, and any run that died before
+	// opening one.
 	res := db.Model(&models.Event{}).
 		Where("status = ?", models.EventStatusRunning).
 		Updates(map[string]any{
@@ -207,8 +263,9 @@ func ReconcileRunning(db *gorm.DB) {
 		logger.Log.Warnf("failed to reconcile interrupted events: %s", res.Error.Error())
 		return
 	}
-	if res.RowsAffected > 0 {
-		logger.Log.Infof("marked %d interrupted event(s) as failed on startup", res.RowsAffected)
+	closed += int(res.RowsAffected)
+	if closed > 0 {
+		logger.Log.Infof("marked %d interrupted event(s) as failed on startup", closed)
 	}
 }
 

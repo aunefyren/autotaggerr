@@ -200,7 +200,7 @@ func TestDueScope(t *testing.T) {
 }
 
 func TestRunnerRunningStartsFalse(t *testing.T) {
-	if NewRunner(testDB(t), nil).Running() {
+	if NewRunner(testDB(t), nil, models.ConfigStruct{}).Running() {
 		t.Error("a fresh runner reports a pass in progress")
 	}
 }
@@ -209,7 +209,7 @@ func TestRunnerRunningStartsFalse(t *testing.T) {
 // without any MusicBrainz call — the whole-collection entry point still works when
 // there is nothing to refresh.
 func TestRunCollectionOverEmptyCollection(t *testing.T) {
-	r := NewRunner(testDB(t), nil)
+	r := NewRunner(testDB(t), nil, models.ConfigStruct{})
 	if err := r.RunCollection(context.Background(), false); err != nil {
 		t.Fatalf("RunCollection: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestRunCollectionOverEmptyCollection(t *testing.T) {
 
 func TestRunOverEmptyCollection(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	if _, err := r.Run(context.Background(), Scope{Title: "Metadata refresh"}); err != nil {
 		t.Fatalf("Run: %v", err)
@@ -242,7 +242,7 @@ func TestRunOverEmptyCollection(t *testing.T) {
 // compete for the same rate-limit budget to redo work the first is already doing.
 func TestRunDropsOverlappingPasses(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	// Hold the pass open by claiming the guard directly — the pass body is what a
 	// real overlap would be sitting in.
@@ -263,7 +263,7 @@ func TestRunDropsOverlappingPasses(t *testing.T) {
 // whether its request started a pass rather than racing the goroutine it spawned.
 func TestStartClaimsGuardBeforeReturning(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	if err := r.Start(context.Background(), Scope{Title: "Metadata refresh"}); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -281,7 +281,7 @@ func TestStartClaimsGuardBeforeReturning(t *testing.T) {
 // Cancelling is safe at any point because a pass keeps no cursor: the next one
 // resumes by skipping whatever is already fresh.
 func TestWaitForTurnReturnsOnCancel(t *testing.T) {
-	r := NewRunner(nil, func() bool { return true })
+	r := NewRunner(nil, func() bool { return true }, models.ConfigStruct{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -300,7 +300,7 @@ func TestWaitForTurnYieldsThenResumes(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return busy
-	})
+	}, models.ConfigStruct{})
 
 	// Shorten the poll so the test does not wait out the production interval.
 	original := yieldPollInterval
@@ -328,13 +328,13 @@ func TestWaitForTurnYieldsThenResumes(t *testing.T) {
 }
 
 func TestWaitForTurnReturnsImmediatelyWhenIdle(t *testing.T) {
-	r := NewRunner(nil, func() bool { return false })
+	r := NewRunner(nil, func() bool { return false }, models.ConfigStruct{})
 	if err := r.waitForTurn(context.Background(), true); err != nil {
 		t.Fatalf("waitForTurn: %v", err)
 	}
 
 	// A nil predicate means nothing to yield to.
-	if err := NewRunner(nil, nil).waitForTurn(context.Background(), true); err != nil {
+	if err := NewRunner(nil, nil, models.ConfigStruct{}).waitForTurn(context.Background(), true); err != nil {
 		t.Fatalf("waitForTurn with no predicate: %v", err)
 	}
 }
@@ -356,7 +356,7 @@ func TestSummaryLine(t *testing.T) {
 // Status folds in live cache coverage, which is meaningful between passes and so
 // must not be reset with the per-pass counters.
 func TestStatusReportsCacheCoverage(t *testing.T) {
-	status := NewRunner(testDB(t), nil).Status()
+	status := NewRunner(testDB(t), nil, models.ConfigStruct{}).Status()
 	if status.Cached == nil {
 		t.Fatal("expected cache coverage in the status")
 	}
@@ -370,7 +370,7 @@ func TestStatusReportsCacheCoverage(t *testing.T) {
 // queued job in flight. Both draw the same bar, so it has to be the live summary and
 // not a copy taken when the pass began.
 func TestProgressTracksTheLivePass(t *testing.T) {
-	r := NewRunner(testDB(t), nil)
+	r := NewRunner(testDB(t), nil, models.ConfigStruct{})
 
 	r.setStatus(func(s *Summary) {
 		*s = Summary{Running: true, Total: 26373, Done: 19963, Phase: PhaseEditions}
@@ -391,7 +391,7 @@ func TestProgressTracksTheLivePass(t *testing.T) {
 // so it is worth asserting separately from a pass that can reach the network.
 func TestFinishRecordsAnEvent(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	r.setStatus(func(s *Summary) {
 		*s = Summary{Running: true, Total: 4, Done: 4, Fetched: 1, Fresh: 3}
@@ -420,7 +420,7 @@ func TestFinishRecordsAnEvent(t *testing.T) {
 // is still an "ok" outcome with a count — not a failed job.
 func TestFinishRecordsErrorCounts(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	ev := events.Begin(db, models.EventTypeMirror, "Metadata refresh")
 	r.finish(ev, time.Now(), Scope{}, Result{Errors: 1}, false)
@@ -439,7 +439,7 @@ func TestFinishRecordsErrorCounts(t *testing.T) {
 
 func TestCancelledPassIsNotAFailure(t *testing.T) {
 	db := testDB(t)
-	r := NewRunner(db, nil)
+	r := NewRunner(db, nil, models.ConfigStruct{})
 
 	r.setStatus(func(s *Summary) { *s = Summary{Running: true, Total: 10, Done: 3} })
 	ev := events.Begin(db, models.EventTypeMirror, "Metadata refresh")
@@ -463,7 +463,7 @@ func TestCancelledPassIsNotAFailure(t *testing.T) {
 // Cancel on an idle runner is a no-op rather than a panic — the API exposes it
 // unconditionally.
 func TestCancelWhenIdle(t *testing.T) {
-	NewRunner(testDB(t), nil).Cancel()
+	NewRunner(testDB(t), nil, models.ConfigStruct{}).Cancel()
 }
 
 // The contract this package exists to hold: a refresh reports what changed and
@@ -523,7 +523,7 @@ func TestForcedRefreshActuallyRefetches(t *testing.T) {
 	t.Cleanup(srv.Close)
 	modules.SetMusicBrainzBaseURLForTest(t, srv.URL)
 
-	r := NewRunner(nil, nil)
+	r := NewRunner(nil, nil, models.ConfigStruct{})
 	warm := Scope{Artists: []string{"a1"}}
 
 	// Warm the cache, then ask again without forcing: the second pass must not fetch.
@@ -566,7 +566,7 @@ func TestRefreshRespectsMigrationApprovalPolicy(t *testing.T) {
 		t.Fatalf("seed migration: %v", err)
 	}
 
-	NewRunner(db, nil).applyMigrations()
+	NewRunner(db, nil, models.ConfigStruct{}).applyMigrations()
 
 	var after models.MusicbrainzMigration
 	if err := db.First(&after, "old_mb_id = ?", "old-release").Error; err != nil {
@@ -598,7 +598,7 @@ func TestRefreshAppliesMigrationsWhenPolicyAllows(t *testing.T) {
 		t.Fatalf("seed migration: %v", err)
 	}
 
-	NewRunner(db, nil).applyMigrations()
+	NewRunner(db, nil, models.ConfigStruct{}).applyMigrations()
 
 	var after models.MusicbrainzMigration
 	if err := db.First(&after, "old_mb_id = ?", "old-release").Error; err != nil {

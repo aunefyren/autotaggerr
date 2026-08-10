@@ -1,6 +1,7 @@
 package database
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -128,9 +129,6 @@ func fullConfig() models.ConfigStruct {
 		AutotaggerrCustomArtistDelimiter:       " & ",
 		AutotaggerrCustomArtistDelimiterCommas: true,
 		AutotaggerrLibraries:                   []string{"/music", "/more-music/"},
-		LidarrBaseURL:                          "https://lidarr.example.com",
-		LidarrAPIKey:                           "key123",
-		LidarrHeaderCookie:                     "cookie=abc",
 	}
 }
 
@@ -191,8 +189,11 @@ func TestSeedFromConfig(t *testing.T) {
 	if got := count(t, db, &models.TaggerProfile{}); got != 1 {
 		t.Errorf("tagger profiles = %d, want 1", got)
 	}
-	if got := count(t, db, &models.Manager{}); got != 1 {
-		t.Errorf("managers = %d, want 1", got)
+	// Seeding never creates a manager: credentials live on the manager row, which is
+	// made on Settings -> Managers. config.json used to carry lidarr_* keys for this
+	// and they were read exactly once, on the first boot, then ignored forever.
+	if got := count(t, db, &models.Manager{}); got != 0 {
+		t.Errorf("managers = %d, want 0 — seeding does not create one", got)
 	}
 	if got := count(t, db, &models.Library{}); got != 2 {
 		t.Errorf("libraries = %d, want 2", got)
@@ -207,13 +208,17 @@ func TestSeedFromConfig(t *testing.T) {
 		t.Errorf("tagger profile did not mirror config: %+v", profile)
 	}
 
-	// Libraries link to the manager, data source, and tagger profile, and derive a name.
+	// Libraries link to the data source and tagger profile and derive a name. The
+	// manager is left unassigned, because there is none to assign.
 	var lib models.Library
 	if err := db.Where("path = ?", "/music").First(&lib).Error; err != nil {
 		t.Fatalf("load library: %v", err)
 	}
-	if lib.ManagerID == nil || lib.DataSourceID == nil || lib.TaggerProfileID == nil {
-		t.Errorf("library not fully linked: %+v", lib)
+	if lib.ManagerID != nil {
+		t.Errorf("library should be unassigned when no manager exists, got %v", *lib.ManagerID)
+	}
+	if lib.DataSourceID == nil || lib.TaggerProfileID == nil {
+		t.Errorf("library not linked to its data source and profile: %+v", lib)
 	}
 	if lib.Name != "music" {
 		t.Errorf("library name = %q, want %q", lib.Name, "music")
@@ -256,8 +261,8 @@ func TestSeedIdempotent(t *testing.T) {
 	if got := count(t, db, &models.DataSource{}); got != 2 {
 		t.Errorf("data sources after re-seed = %d, want 2", got)
 	}
-	if got := count(t, db, &models.Manager{}); got != 1 {
-		t.Errorf("managers after re-seed = %d, want 1", got)
+	if got := count(t, db, &models.Manager{}); got != 0 {
+		t.Errorf("managers after re-seed = %d, want 0", got)
 	}
 	if got := count(t, db, &models.Library{}); got != 2 {
 		t.Errorf("libraries after re-seed = %d, want 2", got)
@@ -267,29 +272,53 @@ func TestSeedIdempotent(t *testing.T) {
 	}
 }
 
-func TestSeedWithoutLidarr(t *testing.T) {
+// Seeding does not create a manager, but it still links libraries to one that already
+// exists — which is the whole of what lidarrManagerID does now, and the case that makes
+// adding a library to an established install behave.
+func TestSeedLinksLibrariesToAnExistingManager(t *testing.T) {
 	db := testDB(t)
-	cfg := fullConfig()
-	cfg.LidarrBaseURL = ""
-	cfg.LidarrAPIKey = ""
+	manager := models.Manager{
+		Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true,
+		LidarrBaseURL: "https://lidarr.example.com", LidarrAPIKey: "key123",
+	}
+	if err := db.Create(&manager).Error; err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
 
-	if _, err := Seed(db, cfg); err != nil {
+	if _, err := Seed(db, fullConfig()); err != nil {
 		t.Fatalf("Seed: %v", err)
 	}
 
-	if got := count(t, db, &models.Manager{}); got != 0 {
-		t.Errorf("managers = %d, want 0 when Lidarr unconfigured", got)
+	if got := count(t, db, &models.Manager{}); got != 1 {
+		t.Errorf("managers = %d, want the one that already existed", got)
 	}
-	// Libraries are still created, just without a manager assigned.
 	var lib models.Library
 	if err := db.Where("path = ?", "/music").First(&lib).Error; err != nil {
 		t.Fatalf("load library: %v", err)
 	}
-	if lib.ManagerID != nil {
-		t.Errorf("library manager should be nil when Lidarr unconfigured, got %v", *lib.ManagerID)
+	if lib.ManagerID == nil || *lib.ManagerID != manager.ID {
+		t.Errorf("library not linked to the existing manager: %+v", lib.ManagerID)
 	}
-	if lib.DataSourceID == nil {
-		t.Error("library should still link a data source")
+}
+
+// Credentials set in config.json must not reach the database. They were seed-only and
+// are gone from the config struct entirely; a stale copy left in a user's config.json
+// is now inert, which is the point of removing them rather than merely warning.
+func TestLidarrCredentialsInConfigAreNotRead(t *testing.T) {
+	db := testDB(t)
+
+	raw := `{"lidarr_base_url":"https://lidarr.example.com","lidarr_api_key":"key123","lidarr_header_cookie":"cookie=abc"}`
+	var cfg models.ConfigStruct
+	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
+		t.Fatalf("unmarshal legacy config: %v", err)
+	}
+	cfg.AutotaggerrLibraries = []string{"/music"}
+
+	if _, err := Seed(db, cfg); err != nil {
+		t.Fatalf("Seed: %v", err)
+	}
+	if got := count(t, db, &models.Manager{}); got != 0 {
+		t.Errorf("managers = %d, want 0 — the lidarr_* keys must be inert", got)
 	}
 }
 

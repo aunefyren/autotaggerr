@@ -1,4 +1,4 @@
-package scan
+package process
 
 import (
 	"github.com/aunefyren/autotaggerr/logger"

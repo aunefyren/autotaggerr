@@ -114,6 +114,16 @@ func (d *DetailCollector) Items() []models.EventItem {
 	return append([]models.EventItem(nil), d.items...)
 }
 
+// Limit is the cap Items was collected under, so a caller reporting "showing 500 of
+// 3120" can name the figure without being told it separately — the collector is
+// already the thing that knows.
+func (d *DetailCollector) Limit() int {
+	if d == nil {
+		return 0
+	}
+	return d.limit
+}
+
 // Totals reports how many changed and failed files were seen in total — including
 // those past the limit, which is what makes a truncated list honest about it.
 func (d *DetailCollector) Totals() (changed, failed int) {

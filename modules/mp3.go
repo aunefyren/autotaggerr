@@ -76,7 +76,8 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
 		// back apart.
 		"TRACKTOTAL": single(metadata.TrackTotal),
 		"DISCTOTAL":  single(metadata.DiscTotal),
-		// ISRC is written as a TXXX:ISRC frame (see below) and decoded by GetMP3Tags.
+		// ISRC goes to the standard TSRC frame. Files written before that carry it in
+		// the legacy TXXX artefact instead; GetMP3Tags reads both.
 		"ISRC": metadata.ISRCs,
 
 		"SCRIPT":        single(metadata.Script),
@@ -113,10 +114,12 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
 		// tags than the same track as FLAC (which has carried MUSICBRAINZ_TRACKID all
 		// along). The TXXX spelling is the one extractFromID3v2 already reads back
 		// for the "recording" metadata type, so writing it here closes that loop.
-		// Picard additionally writes a UFID frame, which is reachable now that the
-		// writer addresses frames directly but is deliberately not written yet — see
-		// docs/wip.md.
 		"MusicBrainz Recording Id": single(metadata.MBRecordingID),
+		// The same MBID again, in the UFID frame — Picard's canonical home for it,
+		// and the only one a reader can identify without agreeing on a TXXX
+		// description first, since the owner string is part of the frame. Written
+		// under its own key for the reason ufidTagKey explains.
+		ufidTagKey: single(metadata.MBRecordingID),
 	}
 }
 
@@ -161,6 +164,10 @@ var id3TextFrameForKey = map[string]string{
 	"TDOR":        "TDOR",
 	"TMED":        "TMED",
 	"PUBLISHER":   "TPUB",
+	// TSRC is the standard frame for the ISRC. It replaced the TXXX artefact
+	// described by legacyISRCFrameDescription; being in this map gives it the read
+	// direction for free, through id3KeyForTextFrame.
+	"ISRC": "TSRC",
 }
 
 // id3PairedFrames are the two frames that carry a number and a total in one value.
@@ -180,15 +187,46 @@ var id3KeyForTextFrame = func() map[string]string {
 	return reverse
 }()
 
-// isrcFrameDescription is the description of the TXXX frame the ISRC lives in.
+// legacyISRCFrameDescription is the description of the TXXX frame the ISRC *used* to
+// live in, kept only so files written before the move still read.
 //
-// It is not "ISRC" but the literal string "TXXX", which is an artefact: the previous
+// It is not "ISRC" but the literal string "TXXX", which was an artefact: the original
 // writer passed `-metadata TXXX=ISRC:<value>` to ffmpeg, which stored a user-defined
-// frame *described* "TXXX" whose value carries its own "KEY:value" packing. The
-// spelling is preserved deliberately — changing it would re-tag every MP3 in every
-// library for no gain, and moving the ISRC to the standard TSRC frame is a separate,
-// deliberate change (see docs/wip.md).
-const isrcFrameDescription = "TXXX"
+// frame *described* "TXXX" whose value carries its own "KEY:value" packing — the only
+// way that writer could reach a user-defined frame at all. The ISRC now goes to TSRC,
+// the standard frame for it (see id3TextFrameForKey), and any file still carrying the
+// legacy frame is migrated on its next write (see migrateLegacyISRCFrame).
+//
+// Read support is not transitional and should not be removed: a library tagged by an
+// older Autotaggerr keeps these frames until something rewrites each file, and a file
+// nothing ever changes is never rewritten at all.
+const legacyISRCFrameDescription = "TXXX"
+
+// ufidTagKey is the desired-tag key for the UFID frame's payload.
+//
+// It is deliberately *not* "MusicBrainz Recording Id", even though it carries the same
+// recording MBID: that key already names the TXXX frame, and one key naming two frames
+// would read the MBID twice into the same slot, report drift that no write can settle,
+// and rewrite the file on every scan forever. Two frames, two keys, one diff each.
+const ufidTagKey = "UFID"
+
+// musicBrainzUFIDOwner is the owner identifier written into the UFID frame. Picard's
+// canonical value, so a file tagged here and a file tagged by Picard agree.
+const musicBrainzUFIDOwner = "http://musicbrainz.org"
+
+// musicBrainzUFIDOwnerAlt is the same owner over https, which some taggers write.
+// Accepted when reading, never written — the point is not to report drift against a
+// file whose UFID is already correct in everything but the scheme.
+const musicBrainzUFIDOwnerAlt = "https://musicbrainz.org"
+
+// isMusicBrainzUFID reports whether a UFID frame is the MusicBrainz one. A file may
+// carry several UFID frames from different taggers, each with its own owner, and the
+// others are none of our business — they are left exactly as they are.
+func isMusicBrainzUFID(owner string) bool {
+	owner = strings.TrimSpace(owner)
+	return strings.EqualFold(owner, musicBrainzUFIDOwner) ||
+		strings.EqualFold(owner, musicBrainzUFIDOwnerAlt)
+}
 
 // SetMP3Tags writes ID3v2.4 metadata with github.com/bogem/id3v2. The returned
 // changes are the field-level before/after actually applied; see models.TagChange.
@@ -258,6 +296,18 @@ func SetMP3Tags(filePath string, metadata models.FileTags, configFile models.Con
 			Value:       value,
 		})
 	}
+	// UFID is keyed by its owner, not by a description, so replacing ours means
+	// dropping only the MusicBrainz frame and putting every other tagger's back.
+	writeUFID := func(value string) {
+		deleteMusicBrainzUFIDFrame(tag)
+		if value == "" {
+			return
+		}
+		tag.AddUFIDFrame(id3v2.UFIDFrame{
+			OwnerIdentifier: musicBrainzUFIDOwner,
+			Identifier:      []byte(value),
+		})
+	}
 
 	// The paired frames first: either half changing rewrites the whole frame, and
 	// both being empty clears it.
@@ -284,8 +334,8 @@ func SetMP3Tags(filePath string, metadata models.FileTags, configFile models.Con
 		logger.Log.Trace("adding " + upperKey)
 
 		switch {
-		case upperKey == "ISRC":
-			writeUserDefined(isrcFrameDescription, packISRCFrameValue(valueOf(upperKey)))
+		case upperKey == ufidTagKey:
+			writeUFID(valueOf(upperKey))
 		default:
 			if frameID, ok := id3TextFrameForKey[upperKey]; ok {
 				writeText(frameID, valueOf(upperKey))
@@ -293,6 +343,14 @@ func SetMP3Tags(filePath string, metadata models.FileTags, configFile models.Con
 				writeUserDefined(spellingOf[upperKey], valueOf(upperKey))
 			}
 		}
+		tagsWritten++
+	}
+
+	// Every write is also the chance to retire the legacy ISRC frame, whether or not
+	// the ISRC itself changed — a file whose ISRC is already correct would otherwise
+	// keep the artefact forever, since nothing would ever mark it as drift.
+	_, isrcChanged := changes["ISRC"]
+	if migrateLegacyISRCFrame(tag, existing, isrcChanged) {
 		tagsWritten++
 	}
 
@@ -410,8 +468,10 @@ func isPairedHalf(upperKey string) bool {
 	return false
 }
 
-// packISRCFrameValue applies the "KEY:value" packing the ISRC frame carries. An empty
-// ISRC packs to "", which deletes the frame rather than leaving "ISRC:" behind.
+// packISRCFrameValue applies the "KEY:value" packing the *legacy* ISRC frame carries.
+// An empty ISRC packs to "", which deletes the frame rather than leaving "ISRC:"
+// behind. Nothing writes this form any more — it is kept so tests can build a
+// pre-migration file, which is the only way to prove the migration works.
 func packISRCFrameValue(value string) string {
 	if value == "" {
 		return ""
@@ -423,6 +483,59 @@ func packISRCFrameValue(value string) string {
 // bogem can only delete a whole frame ID at once, so every other TXXX frame is read
 // out first and put back — deleting the ID outright would take the MusicBrainz
 // identifiers with it.
+// migrateLegacyISRCFrame retires the TXXX artefact the ISRC used to live in, moving
+// its value to TSRC when nothing else already has. It reports whether it did anything.
+//
+// The value is taken from `existing` — what was read off the file — rather than from
+// the desired tags, because the case this exists for is the file whose ISRC is *not*
+// changing. Reading the desired value would silently drop the ISRC of any file whose
+// release no longer supplies one, turning a frame migration into a deletion.
+//
+// When the ISRC did change, the change set has already written TSRC with the new
+// value and there is nothing to carry over — only the old frame to remove.
+func migrateLegacyISRCFrame(tag *id3v2.Tag, existing map[string][]string, isrcChanged bool) bool {
+	if !hasUserDefinedFrame(tag, legacyISRCFrameDescription) {
+		return false
+	}
+	deleteUserDefinedFrame(tag, legacyISRCFrameDescription)
+	if isrcChanged {
+		return true
+	}
+	if value := encodeID3FrameValue(existing["ISRC"]); value != "" {
+		tag.AddTextFrame("TSRC", id3v2.EncodingUTF8, value)
+	}
+	return true
+}
+
+// hasUserDefinedFrame reports whether a TXXX frame with this description is present,
+// so a migration can tell "already done" from "nothing to do".
+func hasUserDefinedFrame(tag *id3v2.Tag, description string) bool {
+	for _, frame := range tag.GetFrames("TXXX") {
+		if userDefined, ok := frame.(id3v2.UserDefinedTextFrame); ok &&
+			strings.EqualFold(strings.TrimSpace(userDefined.Description), description) {
+			return true
+		}
+	}
+	return false
+}
+
+// deleteMusicBrainzUFIDFrame drops our UFID frame and keeps every other owner's. The
+// frame ID is shared by every tagger that writes one, so deleting by ID alone would
+// throw away identifiers that are not ours to remove.
+func deleteMusicBrainzUFIDFrame(tag *id3v2.Tag) {
+	kept := make([]id3v2.Framer, 0)
+	for _, frame := range tag.GetFrames("UFID") {
+		if ufid, ok := frame.(id3v2.UFIDFrame); ok && isMusicBrainzUFID(ufid.OwnerIdentifier) {
+			continue
+		}
+		kept = append(kept, frame)
+	}
+	tag.DeleteFrames("UFID")
+	for _, frame := range kept {
+		tag.AddFrame("UFID", frame)
+	}
+}
+
 func deleteUserDefinedFrame(tag *id3v2.Tag, description string) {
 	kept := make([]id3v2.Framer, 0)
 	for _, frame := range tag.GetFrames("TXXX") {
@@ -484,6 +597,13 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 			case id3v2.UserDefinedTextFrame:
 				key, value := decodeUserDefinedFrame(typed)
 				add(key, value)
+			case id3v2.UFIDFrame:
+				// Only ours. Another tagger's UFID is a different identifier in a
+				// different namespace, and folding it in here would diff our
+				// recording MBID against a value that was never meant to be one.
+				if isMusicBrainzUFID(typed.OwnerIdentifier) {
+					add(ufidTagKey, string(typed.Identifier))
+				}
 			}
 		}
 	}
@@ -491,8 +611,10 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 }
 
 // decodeUserDefinedFrame turns a TXXX frame into a canonical key and value. Normally
-// the description *is* the key; the ISRC frame is the exception whose value carries
-// its own "KEY:value" packing (see isrcFrameDescription).
+// the description *is* the key; the legacy ISRC frame is the exception whose value
+// carries its own "KEY:value" packing (see legacyISRCFrameDescription). It still
+// decodes to the same "ISRC" key the TSRC frame reads back as, so a file mid-migration
+// and a file after it are indistinguishable to everything above this function.
 //
 // That packing is split on the FIRST colon only. The value may itself contain the
 // separators used for multi-value tags — a "; "-joined ISRC list is routine on singles
@@ -501,7 +623,7 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 // scan. Regression test: TestMP3MultiISRCIdempotent.
 func decodeUserDefinedFrame(frame id3v2.UserDefinedTextFrame) (key, value string) {
 	description := strings.ToUpper(strings.TrimSpace(frame.Description))
-	if description != isrcFrameDescription {
+	if description != legacyISRCFrameDescription {
 		return description, frame.Value
 	}
 	packed := strings.SplitN(frame.Value, ":", 2)

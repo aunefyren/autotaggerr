@@ -114,18 +114,25 @@ Guarded by `TestLidarrClientReportsLoginPage`, `…ReportsCrossHostRedirect`,
 
 ### One copy of the credentials, and one way to check them
 
-A manager's credentials live on the **manager row**. `config.json` seeds that row once
-(`seedLidarrManager` returns early the moment a Lidarr manager exists) and is never read for them
-again, so editing `lidarr_header_cookie` there after first run changes nothing the pipeline sees.
-The row is edited through `PUT /managers/:id` and the Managers page, which is why that page says so
-in as many words.
+A manager's credentials live on the **manager row**, and nowhere else. The row is created and edited
+through `PUT /managers/:id` and the Managers page.
 
-Because that is a trap — an expired session makes editing the cookie in `config.json` look exactly
-like fixing it — the seed **says so at startup**: `warnLidarrConfigIgnored` logs a warning naming
-any of the three `lidarr_*` keys whose configured value differs from what the manager actually uses.
-Only a divergence is reported. A value identical to the manager's is the original seed sitting where
-it was left, and warning about it on every boot would train the reader to ignore the line that
-matters. The key is named, never its value.
+`config.json` used to hold a second copy in three `lidarr_*` keys, which seeded the row on the first
+boot and were ignored on every boot after. That was a trap: an expired session makes editing
+`lidarr_header_cookie` in the file look exactly like fixing it, while the manager keeps using the
+stale value. It was mitigated for a while with a startup warning naming any key whose value diverged
+from the manager's — but a key that exists, is documented, and does nothing is a trap whether or not
+it is announced. The keys are gone from `models.ConfigStruct` entirely, so a stale copy in an old
+`config.json` is inert and can be deleted.
+
+What remains of the seed is `lidarrManagerID`, which *finds* an existing Lidarr manager so a newly
+seeded library can be linked to it. It never creates one. The cost is that a fresh install starts
+with no manager and the user makes one in the UI; the gain is that there is exactly one place
+credentials live, rather than two where one silently wins.
+
+Plex is the exception that proves the shape: it is not a manager (there is no Plex manager type), so
+`plex_base_url` and `plex_token` genuinely are config, read by `main.go` at every start, and they
+are ordinary editable fields on **Settings → Plex**.
 
 Nothing else may build a Lidarr client. `main.go` used to build one from `files.ConfigFile` for the
 health check — a second copy that diverged from the row the first time either side was edited alone,
@@ -199,7 +206,7 @@ consults the guide and either follows it or reshapes it *in the same change*.
 |---|-----------|-------|
 | M0 | DB + config split + seed | GORM + pure-Go sqlite in `database/`, models in `models/db.go`, idempotent first-run seed. No pipeline behaviour change. |
 | M1 | Component pipeline | The `ResolveCorrelation`/`TagResolvedFile` split, the `components/` package, skip-unchanged scanning, MB release cache moved into the DB. |
-| M2 | API + auth | `auth/` package, `/api/v1` CRUD, `library-items` browse, scan control behind a shared `scan.Runner`. |
+| M2 | API + auth | `auth/` package, `/api/v1` CRUD, `library-items` browse, scan control behind a shared `process.Runner`. |
 | M3 | Style guide + SPA | The design system, the embedded SPA, the tag-diff detail view, edit forms, first-run onboarding. |
 | M4 | Drift sync | Catching upstream MusicBrainz changes — see [scanning.md](scanning.md). |
 | M5 | Present vs wanted | The collection — see [collection.md](collection.md). |

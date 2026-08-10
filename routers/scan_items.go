@@ -9,7 +9,7 @@ import (
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
-	"github.com/aunefyren/autotaggerr/scan"
+	"github.com/aunefyren/autotaggerr/process"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -204,7 +204,7 @@ func (a *API) processArtist(c *gin.Context) {
 	}
 	scope, err := a.Scan.ArtistScope(artist.MBID)
 	if err != nil {
-		if errors.Is(err, scan.ErrNothingToProcess) {
+		if errors.Is(err, process.ErrNothingToProcess) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
@@ -282,7 +282,7 @@ func (a *API) recorrelateReleaseGroup(c *gin.Context) {
 	rgMBID := c.Param("mbid")
 	if err := a.Scan.ForceRecorrelateReleaseGroup(rgMBID); err != nil {
 		switch {
-		case errors.Is(err, scan.ErrNothingToProcess):
+		case errors.Is(err, process.ErrNothingToProcess):
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "release group not found"})
@@ -323,7 +323,7 @@ func (a *API) recorrelateArtist(c *gin.Context) {
 		return
 	}
 	if err := a.Scan.ForceRecorrelateArtist(artist.MBID); err != nil {
-		if errors.Is(err, scan.ErrNothingToProcess) {
+		if errors.Is(err, process.ErrNothingToProcess) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}

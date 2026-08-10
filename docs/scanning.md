@@ -9,10 +9,10 @@ A library is acted on by exactly four verbs, each available at whatever scope yo
 
 | Verb | Reads | Writes files | Owner |
 | --- | --- | --- | --- |
-| **Process** | disk + MusicBrainz | **yes** | `scan.Runner` |
+| **Process** | disk + MusicBrainz | **yes** | `process.Runner` |
 | **Scan** | the local database | no | `collection.Rebuild` |
 | **Refresh metadata** | MusicBrainz | no | `mirror.Runner` |
-| **Tag files** | the local database | **yes** | `scan.Runner` |
+| **Tag files** | the local database | **yes** | `process.Runner` |
 
 **Process** is the full pipeline the app exists for: walk the folders, resolve each file's
 metadata, write its tags. It is the only verb that reads the disk and so the only one that can
@@ -78,15 +78,17 @@ now means something much cheaper.
 
 ## The processing runner
 
-`scan.Runner` is shared by the cron job, the startup run and the API. Every background verb —
+`process.Runner` is shared by the cron job, the startup run and the API. Every background verb —
 processing runs, re-tags, and metadata refreshes — is enqueued onto **one serial job queue**
 drained by a single worker (see [the queue](#the-job-queue)), so exactly one runs at a time and the
 rest are shown as pending rather than dropped. `Status()` reports that queue alongside the last
 run's summary.
 
-The Go package is still called `scan`: it owns *Process*, whose middle stage is the folder walk
-the package is named for. Renaming it is a follow-up in [wip.md](wip.md), not a silent side effect
-of renaming the buttons.
+The Go package is `process`, after the verb it owns. It was called `scan` until the rename, after
+the folder walk that is *Process*'s middle stage — a name that collided with *Scan* once the verbs
+were split. Some identifiers inside it still carry the older word (`components.ScanLibrary`, the
+`scanRunner` variable in `main.go`); they are the walk, not the *Scan* verb, which is
+`collection.Rebuild`.
 
 | Endpoint | Purpose |
 |----------|---------|
@@ -105,7 +107,7 @@ drift sync, so the collection view stays current without anyone pressing anythin
 
 ## Scopes
 
-Every processing run goes through a `scan.Scope`: a title, per-library `Target`s, and any detail worth
+Every processing run goes through a `process.Scope`: a title, per-library `Target`s, and any detail worth
 recording about what narrowed it. A whole-library run is a scope whose targets have no roots, so a
 partial run is not a second code path — it is the same run with fewer folders in it.
 
@@ -326,7 +328,7 @@ Catches upstream MusicBrainz changes and re-tags the files a processing run woul
 - `MusicbrainzDueForRefresh` finds expired cache entries.
 - `RefreshMusicBrainzRelease` force-fetches and compares the old and new `hashRelease` (sha256 of
   the payload) → changed or not.
-- `scan.Runner.SyncDrift` enqueues onto the shared [job queue](#the-job-queue), refreshes what is due, and for changed releases
+- `process.Runner.SyncDrift` enqueues onto the shared [job queue](#the-job-queue), refreshes what is due, and for changed releases
   re-tags the affected `library_items` from their stored correlation via `TagResolvedFile` plus the
   library's tagger — refreshing each item's on-disk identity afterwards so skip-unchanged stays
   correct.
@@ -424,10 +426,23 @@ but being fast is not the same as being uninteresting, and a pass that can move 
 artists left no trace. `collection.RecordScan` (top-level) and `RecordScanUnder` (owned by a run) are
 one function, so the artist, collection-wide and cascading scopes cannot drift into three summaries.
 
-**Retention counts runs, not rows.** `events.Prune` keeps the newest 200 **parentless** events and
+**Retention counts runs, not rows.** `events.Prune` keeps the newest **parentless** events and
 cascades their stages and every detail row belonging to either. Counting rows would cut history by
 however many activities the runs happened to spawn — and worse, several stages call `Prune` as they
 finish, so a long run would have deleted its own earlier stages out from under itself.
+
+Two config keys size it: `autotaggerr_event_retention` (runs kept, default 200) and
+`autotaggerr_event_detail_retention` (detail rows per event, default 500), both on **Settings →
+Diagnostics**. They trade history against database size, which is why they are two knobs and not one
+— the run count is what a longer audit trail needs, the detail cap is what dominates the table's
+size on a busy library. Both are `restart`-tier: see below for why that is deliberate.
+
+Both runners that write these tables — `process.Runner` and `mirror.Runner` — read the *same* two
+keys, resolved once at construction. They prune and fill one pair of tables, so different figures
+would make the feed's depth depend on which verb happened to run last. Resolving at construction
+rather than per pass also means a settings edit applies from the next run, so the "showing 500 of
+3120" pair stays true for rows already collected. A non-positive value falls back to the default
+rather than meaning "keep nothing", which would silently empty the feed after one run.
 
 ### The feed is flat
 
@@ -502,7 +517,7 @@ ticker by `events.StartProgress`, which **polls** a snapshot of the job's own co
 seconds — the per-item hot path never touches the database — and lands a final snapshot on `stop()`,
 called before `Finish` so its `Save` keeps the values rather than racing them.
 
-- **Processing runs** keep the live figures in lock-free atomics on the `scan.Runner`, so the per-file callback
+- **Processing runs** keep the live figures in lock-free atomics on the `process.Runner`, so the per-file callback
   (`WalkAndProcess`'s `onFile`) never contends on the status mutex across the worker pool. `Total` is
   every supported file, counted up front across all targets (`modules.CountSupportedFiles`, its own
   `counting` phase and its own activity); `Phase` moves through `counting` → `refresh` → `scanning` →
@@ -670,7 +685,7 @@ first run is still paced by MusicBrainz, and a local mirror is the only way arou
 Every background verb the runner exposes — `RunAll` / `RunLibrary` / `RunArtist` (processing),
 `RetagAll` / `RetagLibrary` / `RetagArtist` (re-tags), `SyncDrift` / `VerifyIdentities` / `RefreshArtist` /
 `RefreshLibrary` (metadata refreshes) — is now an **enqueue**, not an inline run. A single worker
-goroutine (`scan/queue.go`, started in `NewRunner`) drains the queue one job at a time, holding
+goroutine (`process/queue.go`, started in `NewRunner`) drains the queue one job at a time, holding
 `jobMu` for the whole of each. This replaced the old "atomic CAS that dropped overlapping runs",
 which is what left a user's second run silently vanishing and, after a crash, events stuck at
 `running` forever (the latter is also swept on startup — see [reconciliation](#restart-reconciliation)).
@@ -707,7 +722,7 @@ stopping means something:
 2. **`http.Server.Shutdown`** stops accepting requests and waits for the ones in flight — which
    includes the synchronous re-tags (`RetagItems`), the only file writes that happen outside the
    queue.
-3. **`scan.Runner.Shutdown`** stops the queue and waits for the job already executing.
+3. **`process.Runner.Shutdown`** stops the queue and waits for the job already executing.
 
 The third step is deliberately *not* `Wait`. Draining the whole queue would hold the process open
 for however long a full scan queued behind the current job takes; the pending jobs have started
@@ -730,6 +745,16 @@ previous process's orphan from a job this process just began.
 
 It remains the safety net for a kill or a crash. A graceful stop no longer needs it: the running job
 finishes and closes its own event, and only a job that outran the grace period leaves an orphan.
+
+**A run is closed by name.** Stages are separate rows
+([above](#a-run-spawns-activities-each-one-is-a-row)), so a crashed run leaves
+both the run and the stage that was in flight marked failed — and the run's own row knows only that
+it was running. `ReconcileRunning` therefore reads the running stages first and gives each run a
+summary naming its own: *"interrupted during Tagging — the service restarted while this was
+running"*. Which stage a run died in is the difference between a crash worth investigating and a
+long tag write that outran the grace period, and it is the one fact the run cannot record for
+itself. The stage rows keep the plain summary, since each already carries its title; so does a run
+that crashed between stages, which genuinely has nothing to name.
 
 ## Plex refresh
 

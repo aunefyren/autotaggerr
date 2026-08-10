@@ -1,4 +1,4 @@
-package scan
+package process
 
 import (
 	"path/filepath"
@@ -155,7 +155,7 @@ func TestRetagReleasesHonoursScope(t *testing.T) {
 		{Library: library, Roots: []string{filepath.Join(root, "Parliament")}},
 	}})
 	res := r.retagReleases([]string{"rel-1"}, modules.NewAlbumRefreshSet(nil),
-		components.NewDetailCollector(maxDetailItemsRecorded), filter)
+		components.NewDetailCollector(models.DefaultEventDetailRetention), filter)
 
 	if res.retagged != 1 {
 		t.Errorf("re-tagged %d file(s), want 1 — only the file inside the scanned folder", res.retagged)

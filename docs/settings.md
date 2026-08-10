@@ -39,7 +39,7 @@ says.
 | Tier | Meaning | Examples |
 |---|---|---|
 | `live` | Re-applied to the running process on save | log level, all three cron schedules, scan concurrency, the mirror switch, migration review flags |
-| `restart` | Written to `config.json` now, read at the next start | port, instance name, external URL, timezone, SMTP, environment |
+| `restart` | Written to `config.json` now, read at the next start | port, instance name, external URL, timezone, SMTP, environment, Activity retention |
 | `readonly` | Shown, never written | database type/DSN, version, session signing key |
 
 The split is the honest part of the page. A setting the running process cannot adopt must not look
@@ -64,7 +64,7 @@ Two placements are worth explaining:
   rather than only recording the preference. Owning the schedules here is what makes them editable at
   all: `main` used to schedule them inline, where nothing held the handle needed to reschedule.
 - **The log level**, straight onto the logger.
-- **Scan concurrency**, through `scan.Runner.SetConcurrency`. The worker count is an atomic because
+- **Scan concurrency**, through `process.Runner.SetConcurrency`. The worker count is an atomic because
   the API writes it from a request goroutine while a scan reads it; a scan already running keeps the
   pool it started with.
 
@@ -108,10 +108,19 @@ oversight, and this doc is where to revisit it if per-role permissions ever grow
 ## Managed elsewhere
 
 Some `config.json` keys are no longer read at runtime: they seeded the database on first start and
-are edited on their own page now — Lidarr/Plex credentials (**Managers**), the tag-writing flags
-(**Tagger profiles**) and the library list (**Libraries**). They are listed at the bottom of the page
-with a link to their owner, rather than omitted, because the keys are still in the file and a page
-that silently drops them invites someone to edit the file and wonder why nothing changed.
+are edited on their own page now — the tag-writing flags (**Tagger profiles**) and the library list
+(**Libraries**). They are listed at the bottom of the page with a link to their owner, rather than
+omitted, because the keys are still in the file and a page that silently drops them invites someone
+to edit the file and wonder why nothing changed.
+
+Two things have left this list, in opposite directions. The three `lidarr_*` keys are **gone from
+the config struct**: a key that exists, is documented and does nothing is a trap whether or not the
+page explains it, so Managers is now the only place those credentials exist at all (see
+[media-manager.md](media-manager.md#one-copy-of-the-credentials-and-one-way-to-check-them)).
+`plex_base_url` and `plex_token` went the other way — they were listed here, but Plex is not a
+manager and never had a field on that page, while `main.go` reads them at every start. Being told
+that editing the file "changes nothing" was the opposite of true for them. They are ordinary
+`restart`-tier fields under **Plex** now.
 
 ## Email, and the one action on this page
 

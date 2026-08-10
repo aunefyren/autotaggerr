@@ -30,7 +30,7 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   hundreds of broken files, in Activity as well as on Items. The faceted-filter shape the Activity
   feed now uses is the obvious model.
 - **An unmatched file keeps its identity and is dropped from the disk view anyway.** `recordItem`
-  preserves `mb_release_id` through a failure (`components/pipeline.go:381`) — Autotaggerr still
+  preserves `mb_release_id` through a failure (`components/pipeline.go:391`) — Autotaggerr still
   knows exactly which release those files are — but `ownedItemRows` excludes `unmatched`, so a
   Lidarr hiccup empties the album from the collection regardless. This is deliberate and documented
   ([collection.md](collection.md#the-disk-view-counts-files-not-successes)): under a manager,
@@ -61,12 +61,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 - **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
   collection already knows about. Artists reached only by browsing still fall back to the
   on-demand path.
-- **The `scan` Go package owns the *Process* verb.** The buttons, routes and event types were
-  renamed (Process / Scan / Refresh metadata / Tag files — see
-  [scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)) but the package was not,
-  so `scan.Runner` is the processing runner and `collection.Rebuild` is the Scan verb. Renaming the
-  package is mechanical and touches `main.go`, `routers/` and every file under `scan/`; it was left
-  out of the rename to keep that diff reviewable.
 - **A running job cannot be cancelled.** Graceful shutdown has shipped (see
   [scanning.md](scanning.md#stopping-on-purpose)): schedules stop, HTTP drains, pending jobs are
   dropped and the job in flight is given 30 seconds. What is missing is the ability to *stop* that
@@ -77,37 +71,26 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 - **`RetagItems` (the interactive attach flow) opens no event**, so its Plex refresh is top-level
   rather than parented. That is the correct reading of the data, but it means one file-writing path
   is still invisible in the feed.
-- **Stage events are not reconciled by name.** `events.ReconcileRunning` marks orphaned `running`
-  rows failed at startup, which now includes stages; a crashed run leaves both the run and whatever
-  stage was in flight marked failed, which is right, but neither says which stage it died in.
 - **A credit change still has no affordance.** `collection_scan` reports the count, but it is still
   the only identity change with no Migrations row to click through to — the count is the only way to
   notice one, and there is nothing to open.
-- **Retention is hardcoded** — 200 runs, 500 detail rows per run, 500 entity rows per metadata pass.
-  Now that it counts runs the number means something stable, but it could be configurable, and
-  time-based retention would suit a feed better than a count. Note that a tagging activity can
-  exceed the per-event limit by design: the drift rows are adopted whole (`DetailCollector.Adopt`)
-  so a big walk cannot starve them.
-- **The three `lidarr_*` keys in `config.json` are seed-only.** Startup now warns when one is set to
-  something the manager row does not use (see
-  [media-manager.md](media-manager.md#one-copy-of-the-credentials-and-one-way-to-check-them)), which
-  closes the trap. Dropping them from the config struct entirely is still open, once the manager UI
-  has been in a release long enough.
+- **Retention is a count, not a duration.** The two figures are configurable now
+  (`autotaggerr_event_retention` / `autotaggerr_event_detail_retention`, see
+  [scanning.md](scanning.md#a-run-spawns-activities-each-one-is-a-row)), but time-based retention
+  would suit a feed better than a count — "keep 90 days" is what someone actually wants, and a
+  count means a busy week silently evicts a quiet month. Note that a tagging activity can exceed
+  the per-event limit by design: the drift rows are adopted whole (`DetailCollector.Adopt`) so a
+  big walk cannot starve them.
 
 ## Tagging — what is left
 
 Multi-value tags and the four "match what Lidarr writes" flags are both done; the reference lives
 in [tagging.md](tagging.md#several-values-in-one-field). FLAC writes one Vorbis comment per value
 unconditionally, MP3 writes ID3v2.4's null-separated form when the profile's `mp3_multi_value_tags`
-says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. What is still open:
+says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. `UFID` and `TSRC` have shipped as
+one pass — see [tagging.md](tagging.md#the-recording-mbid-is-written-twice-on-purpose). What is
+still open:
 
-- **`UFID` is reachable but not written.** Picard's canonical home for the recording MBID, and
-  `tag.AddUFIDFrame` is right there now that the writer addresses frames directly. Additive, so the
-  cost is one extra frame and a one-time write per file.
-- **The ISRC frame is an artefact.** It lives in a `TXXX` frame *described* `TXXX`, whose value
-  carries its own `ISRC:<value>` packing — the only way the old ffmpeg writer could reach a
-  user-defined frame. `TSRC` is the standard frame for it. Both this and `UFID` are one-time
-  rewrites of every MP3, so they belong in the same pass.
 - **Composer and ASIN are not written at all.** The three dead `FileTags` fields are gone (they were
   hardcoded to `""` and read by neither tag map), so this is now a feature rather than a cleanup:
   MusicBrainz can supply composer via work relations and ASIN on the release. That is a fetch and a
@@ -153,7 +136,7 @@ manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
   `<lockdata>`, `<dateadded>`, artwork paths, AudioDB IDs); Kodi-plain vs. Emby/Jellyfin dialect;
   only useful if Jellyfin's NFO *saver* is off, otherwise it rewrites the file.
 - **Granular actions beyond the artist.** The three per-artist actions have shipped (see
-  [scanning.md](scanning.md)) on a `scan.Scope` built to extend. A release-group or single-album
+  [scanning.md](scanning.md)) on a `process.Scope` built to extend. A release-group or single-album
   scope needs a new constructor and UI, not new machinery — worth doing once the artist actions have
   been used against a real library.
 - **Folder structure.** Mapping to current content, creating folders, renaming and keeping up to
