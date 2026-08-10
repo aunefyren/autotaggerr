@@ -301,7 +301,11 @@ type LibraryItem struct {
 	// above are the file's identity and outlive any failure to act on it — a lookup
 	// that fails must not erase what a file is, or the file leaves the disk view and
 	// its album reads as mismatched against the manager.
-	Status string `json:"status"`
+	//
+	// Because of that it is never the test for membership — see models.TaggableItems
+	// and collection.ArtistItems. It is indexed for the queries that legitimately ask
+	// about outcomes: collection.disownedItems, and asking a library what failed.
+	Status string `gorm:"index" json:"status"`
 	Error  string `json:"error"`
 	// LastErrorAt dates the failure in Error. A bare string cannot answer "is this
 	// still happening or did it clear weeks ago", which is the first thing worth
@@ -313,6 +317,39 @@ type LibraryItem struct {
 	// matters most during an outage, when every file in a run fails at once and
 	// would otherwise be indistinguishable from a library full of broken files.
 	LastErrorTransient bool `json:"last_error_transient"`
+}
+
+// TaggableItems is a GORM scope narrowing a LibraryItem query to the files a tag write
+// has something to write: the ones carrying an identity the manager has not withdrawn.
+// It is the membership test for every path that *writes*.
+//
+// It replaces `status = ok`, which was the wrong question in both directions:
+//
+//   - **An error is not a disqualification.** Status is what the last attempt did, not
+//     what the file is, and identity survives a failure (see recordItem). Excluding an
+//     errored file from a re-tag is exactly what stopped it recovering once the cause
+//     was fixed — the failure kept the file out of the only verb that could clear it.
+//   - **`unmatched` is a disqualification, and a different one.** It is not a failed
+//     attempt: it is the manager answering that it does not know this file. Whatever
+//     release ID the row still carries is an answer that has been withdrawn, and
+//     writing tags from it would stamp the file with an identity its authority has
+//     disclaimed. The same reasoning that keeps these out of the disk view
+//     (collection.ownedItemRows), applied to writes.
+//
+// The two failure states part company here, which `status = ok` could not express.
+// Folder resolution for the repair verbs deliberately reaches wider — see
+// collection.ArtistTargets.
+//
+// It exists as a scope rather than as a predicate spelled out per call site because
+// the guard and the work must agree: the API refuses a re-tag that would touch no
+// files by counting them, and if that count and the runner's query drifted apart the
+// button would either refuse work there was, or queue a run that tagged nothing.
+// The columns are table-qualified so the scope survives a join: the collection-wide
+// guard counts across `libraries`, and an unqualified name there relies on the other
+// table not happening to have one too.
+func TaggableItems(db *gorm.DB) *gorm.DB {
+	return db.Where("library_items.mb_release_id <> '' AND library_items.status <> ?",
+		LibraryItemStatusUnmatched)
 }
 
 // MusicbrainzReleaseCache replaces config/mb_releases.json. Its primary key is the

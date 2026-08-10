@@ -1508,7 +1508,7 @@ func (r *Runner) retagAllNow() {
 	}
 
 	var items []models.LibraryItem
-	if err := r.db.Where("library_id IN ? AND status = ?", ids, models.LibraryItemStatusOK).
+	if err := r.db.Where("library_id IN ?", ids).Scopes(models.TaggableItems).
 		Order("path").Find(&items).Error; err != nil {
 		logger.Log.Warnf("failed to load items for a collection-wide re-tag: %s", err.Error())
 		return
@@ -1548,7 +1548,7 @@ func (r *Runner) retagLibraryNow(libraryID uuid.UUID) {
 	}
 
 	var items []models.LibraryItem
-	if err := r.db.Where("library_id = ? AND status = ?", libraryID, models.LibraryItemStatusOK).
+	if err := r.db.Where("library_id = ?", libraryID).Scopes(models.TaggableItems).
 		Order("path").Find(&items).Error; err != nil {
 		logger.Log.Warnf("failed to load items for library %s: %s", library.Name, err.Error())
 		return
@@ -1668,7 +1668,7 @@ func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshS
 		res.changedReleases++
 
 		var items []models.LibraryItem
-		if err := r.db.Where("mb_release_id = ? AND status = ?", mbID, models.LibraryItemStatusOK).Find(&items).Error; err != nil {
+		if err := r.db.Where("mb_release_id = ?", mbID).Scopes(models.TaggableItems).Find(&items).Error; err != nil {
 			logger.Log.Warnf("failed to load items for release %s: %s", mbID, err.Error())
 			continue
 		}

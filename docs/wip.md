@@ -12,36 +12,19 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 ## The next thing to do
 
-**Membership must follow identity, not the last attempt's outcome** — and the two items under it are
-the same pass. Everything else here is independent.
+- **Re-correlate buttons.** Behind a confirm dialog that says it **discards manual pins** and
+  rewrites files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`), per-album on the
+  release-group page (`POST /release-groups/:mbid/recorrelate`) and per-library on library settings
+  (`POST /libraries/:id/recorrelate`). All three endpoints exist and none has any UI — the remaining
+  action-half endpoints with none. Use the shared `ConfirmDialog` (`ui.tsx`, `danger`) rather than a
+  new one. Confirmed needed in anger: repairing one album after a Lidarr re-import meant hand-rolling
+  the `curl`, and the library-scoped one was the only form that would start.
 
-- **The membership queries still filter on `status = OK`.** Seven of them answer "which files belong
-  to this artist/album" that way (`collection/paths.go` ×2, `scan/runner.go` ×3,
-  `routers/scan_items.go` ×2), feeding retag and the per-artist counts. By the same logic as the
-  shipped fix in [collection.md](collection.md#the-disk-view-counts-files-not-successes) they should
-  follow identity instead: excluding an errored file from a retag is precisely what stops it
-  recovering once the cause is fixed. The re-tag path itself now records outcomes like the pipeline
-  does ([scanning.md](scanning.md#drift-sync)), so this is the last half of that idea — wide diff, so:
-  own pass, own tests.
-
-  **This makes the repair verbs unavailable exactly when they are needed.** `ArtistScope` and
-  `ReleaseGroupScope` resolve their folders through `ArtistTargets`/`ReleaseGroupTargets`, which go
-  via `collection_releases` and then filter `status = OK`. If every file of an album goes unmatched
-  — one stale Lidarr trackfile cache does it — the owned-edition rows are pruned by the next rebuild
-  and both scopes return `ErrNothingToProcess`. Force re-correlate, the verb whose whole job is
-  repairing an artist whose files diverged from what the manager says, then refuses to start, and the
-  only way out is `ForceRecorrelateLibrary` — which is library-wide and discards every Lidarr-governed
-  pin in it. Whatever replaces the status filter has to admit unmatched files here specifically, or
-  the catch-22 survives the fix.
-
-- **Re-correlate buttons**, which that fix unblocks. Behind a confirm dialog that says it **discards
-  manual pins** and rewrites files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`),
-  per-album on the release-group page (`POST /release-groups/:mbid/recorrelate`) and per-library on
-  library settings (`POST /libraries/:id/recorrelate`). All three endpoints exist and none has any
-  UI — the remaining action-half endpoints with none. Use the shared `ConfirmDialog` (`ui.tsx`,
-  `danger`) rather than a new one. Confirmed needed in anger: repairing one album after a Lidarr
-  re-import meant hand-rolling the `curl`, and the library-scoped one was the only form that would
-  start. Doing these before the fix above ships two buttons that refuse to run.
+  The catch-22 that made the per-artist and per-album forms refuse to run has been fixed — membership
+  follows identity now, and folder resolution admits disowned files, so both scopes start on exactly
+  the damage they repair (see
+  [collection.md](collection.md#the-same-rule-applied-to-membership)). These three buttons are what
+  is left to build.
 
 ## Open work
 
@@ -64,12 +47,15 @@ the same pass. Everything else here is independent.
   feed now uses is the obvious model.
 - **An unmatched file keeps its identity and is dropped from the disk view anyway.** `recordItem`
   preserves `mb_release_id` through a failure (`components/pipeline.go:381`) — Autotaggerr still
-  knows exactly which release those files are — but `ownedItemRows` excludes on `status`, so a
+  knows exactly which release those files are — but `ownedItemRows` excludes `unmatched`, so a
   Lidarr hiccup empties the album from the collection regardless. This is deliberate and documented
   ([collection.md](collection.md#the-disk-view-counts-files-not-successes)): under a manager,
-  "unmatched" means the authority does not know the file, and it should leave the collection. Worth
-  revisiting anyway, because the *transient* Lidarr case has exactly the shape the MusicBrainz fix
-  was written for — an hour-old cache is not the manager changing its mind.
+  "unmatched" means the authority does not know the file, and it should leave the collection. The
+  repair verbs no longer suffer for it — folder resolution admits these files
+  ([collection.md](collection.md#the-same-rule-applied-to-membership)) — so what is left is the
+  *collection* half: the transient Lidarr case has exactly the shape the MusicBrainz fix was written
+  for, and an hour-old cache is not the manager changing its mind. `last_error_transient` already
+  exists to carry that distinction and nothing reads it.
 - **A retry with backoff** inside the MusicBrainz fetch (one attempt spaced by the existing
   `RateLimit()` interval) would absorb most single 503s before any of the above matters. Kept
   separate because it interacts with the in-flight coalescing and the limiter; the shipped work makes

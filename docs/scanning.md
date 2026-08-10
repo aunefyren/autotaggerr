@@ -232,8 +232,8 @@ user chose by hand.
 
 `library_items` is keyed by **path**, and a run only ever writes rows for files it finds — so for a
 long time nothing removed one. A file that a manager moved, renamed or deleted left its row behind
-with `status = ok` and its release still set, and `collection.Rebuild` counts exactly those rows
-(`status = ok AND mb_release_id <> ''`, no existence check). The library therefore kept owning albums
+with its release still set, and `collection.Rebuild` counts exactly those rows
+(`ownedItemRows`: correlated and not `unmatched`, no existence check). The library therefore kept owning albums
 it no longer had, under whatever artist the *old* path had resolved to. Lidarr moving an album
 between artist folders is the everyday way to produce one.
 

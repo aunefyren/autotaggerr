@@ -87,10 +87,13 @@ func (a *API) retagAll(c *gin.Context) {
 		return
 	}
 
+	// Counted with the same scope the runner selects with (models.TaggableItems), so
+	// the refusal cannot disagree with the work.
 	var count int64
 	a.DB.Model(&models.LibraryItem{}).
 		Joins("JOIN libraries ON libraries.id = library_items.library_id").
-		Where("libraries.enabled = ? AND library_items.status = ?", true, models.LibraryItemStatusOK).
+		Where("libraries.enabled = ?", true).
+		Scopes(models.TaggableItems).
 		Count(&count)
 	if count == 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files — process a library first"})
@@ -123,7 +126,7 @@ func (a *API) retagLibrary(c *gin.Context) {
 	// queues behind whatever is ahead of it.
 	var count int64
 	a.DB.Model(&models.LibraryItem{}).
-		Where("library_id = ? AND status = ?", lib.ID, models.LibraryItemStatusOK).Count(&count)
+		Where("library_id = ?", lib.ID).Scopes(models.TaggableItems).Count(&count)
 	if count == 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files in this library — process it first"})
 		return

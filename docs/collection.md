@@ -308,6 +308,42 @@ the next run re-attempts it. The **absence** of that column is the retry mechani
 because tidying the write onto the shared path would silently turn a transient outage into a
 permanent skip.
 
+### The same rule, applied to membership
+
+The three-facts split above governs every query that asks *which files belong to this thing*, not
+just the disk view. `models.TaggableItems` is where that lives — the scope every path that **writes**
+selects with:
+
+```
+mb_release_id <> '' AND status <> 'unmatched'
+```
+
+It replaced `status = ok` at seven call sites (`collection.ArtistItems`/`ReleaseGroupItems`, the
+three re-tag queries in `scan.Runner`, and the two guards in `routers` that refuse a re-tag with
+nothing to do). That predicate got both directions wrong:
+
+- **An error is not a disqualification.** A file that failed to tag was dropped from its own artist,
+  so the re-tag that would have fixed it could not see it. The failure kept the file out of the only
+  verb able to clear it — self-perpetuating, and the exact inverse of what a repair is for.
+- **`unmatched` is a disqualification, and a different one.** Not a failed attempt: the manager
+  saying it does not know this file. The release ID still on the row is an answer that has been
+  withdrawn, and writing tags from it would stamp the file with an identity its authority disclaimed.
+
+The scope is shared rather than spelled out per site because the guard and the work have to agree —
+the API refuses a re-tag that would touch no files by *counting* them, and a count that drifted from
+the runner's query would either refuse work there was or queue a run that tagged nothing.
+
+**Folder resolution deliberately reaches wider.** `ArtistTargets` and `ReleaseGroupTargets` also
+admit *disowned* files (`unmatched`, with the release ID they last held) when deciding which
+directories to walk, matching them to the artist or release-group through the release cache. Without
+that the repair verbs were unavailable exactly when they were needed: one stale Lidarr trackfile
+cache turns every file of an album `unmatched`, the next rebuild prunes the owned-edition rows those
+files were reachable through, and the artist scope returned `ErrNothingToProcess` — so force
+re-correlate, whose whole job is repairing an artist whose files diverged from what the manager says,
+refused to start, leaving only the library-wide form that discards every manager-governed pin in the
+library. Deciding a folder is worth walking is a far weaker claim than owning a release, and a
+re-correlate re-resolves identity from scratch rather than writing the stale one.
+
 ### An album with no edition selected
 
 Lidarr picks one release per album — the `monitored` flag on `album.releases[]` — and its

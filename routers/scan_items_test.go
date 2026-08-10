@@ -348,6 +348,65 @@ func TestLibraryScopedActions(t *testing.T) {
 	}
 }
 
+// The guard counts with models.TaggableItems because the runner selects with it. If
+// the two drift the failure is silent in both directions: a button that refuses work
+// there is, or one that queues a run which then tags nothing.
+func TestRetagGuardCountsWhatTheRunnerWouldTag(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+
+	// A file whose last attempt failed is still taggable — it has an identity, and
+	// the re-tag is what clears the error.
+	if err := api.DB.Create(&models.LibraryItem{
+		LibraryID: lib.ID, Path: "/m/broken.flac",
+		Status: models.LibraryItemStatusError, MBReleaseID: "rel-1",
+	}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+	for _, path := range []string{
+		"/api/v1/libraries/" + lib.ID.String() + "/retag",
+		"/api/v1/retag",
+	} {
+		if w := do(r, "POST", path, token, nil); w.Code != http.StatusAccepted {
+			t.Errorf("%s = %d, want 202 — an errored file is still taggable: %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
+// The converse: files the manager has disowned, or that were never identified, are not
+// work. Counting them would queue a run with nothing to write.
+func TestRetagGuardRefusesUntaggableFiles(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	for _, item := range []models.LibraryItem{
+		{LibraryID: lib.ID, Path: "/m/disowned.flac", Status: models.LibraryItemStatusUnmatched, MBReleaseID: "rel-1"},
+		{LibraryID: lib.ID, Path: "/m/unknown.flac", Status: models.LibraryItemStatusUnmatched},
+	} {
+		if err := api.DB.Create(&item).Error; err != nil {
+			t.Fatalf("item: %v", err)
+		}
+	}
+
+	for _, path := range []string{
+		"/api/v1/libraries/" + lib.ID.String() + "/retag",
+		"/api/v1/retag",
+	} {
+		if w := do(r, "POST", path, token, nil); w.Code != http.StatusConflict {
+			t.Errorf("%s = %d, want 409 — nothing here is fit to write: %s", path, w.Code, w.Body.String())
+		}
+	}
+}
+
 func TestLibraryScopedActionsUnknownLibrary(t *testing.T) {
 	r, _ := setupAPI(t)
 	token := loginToken(t, r)

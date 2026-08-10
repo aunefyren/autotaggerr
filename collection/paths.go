@@ -6,6 +6,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
@@ -67,9 +68,19 @@ func ArtistReleaseMBIDs(db *gorm.DB, artistMBID string) ([]string, error) {
 	return mbids, nil
 }
 
-// ArtistItems returns the indexed files that belong to this artist: successfully
-// correlated items pointing at one of the artist's owned editions. Files that failed
-// to correlate are excluded — there is nothing to re-tag them from.
+// ArtistItems returns the indexed files that belong to this artist: items pointing at
+// one of the artist's owned editions.
+//
+// Membership follows **identity**, not the outcome of the last attempt on the file.
+// This used to also require status = ok, which inverted the meaning of a failure: a
+// file that failed to tag was dropped from its own artist, so the re-tag that would
+// have fixed it could not see it. Excluding an errored file from a repair is precisely
+// what stops it recovering once the cause is fixed — the same reasoning that took the
+// status filter out of the disk view (see ownedItemRows), one level up.
+//
+// models.TaggableItems carries the rule, so this and the library-scoped re-tags cannot
+// disagree about what a file being "one of these" means: it needs an identity, and one
+// the manager has not withdrawn.
 func ArtistItems(db *gorm.DB, artistMBID string) ([]models.LibraryItem, error) {
 	releases, err := ArtistReleaseMBIDs(db, artistMBID)
 	if err != nil || len(releases) == 0 {
@@ -77,7 +88,7 @@ func ArtistItems(db *gorm.DB, artistMBID string) ([]models.LibraryItem, error) {
 	}
 
 	var items []models.LibraryItem
-	err = db.Where("mb_release_id IN ? AND status = ?", releases, models.LibraryItemStatusOK).
+	err = db.Where("mb_release_id IN ?", releases).Scopes(models.TaggableItems).
 		Order("path").Find(&items).Error
 	return items, err
 }
@@ -109,17 +120,90 @@ func ReleaseGroupReleaseMBIDs(db *gorm.DB, releaseGroupMBID string) ([]string, e
 }
 
 // ReleaseGroupItems returns the indexed files owned of a release-group's editions,
-// mirroring ArtistItems one level down. Failed items are excluded — there is nothing to
-// re-tag them from.
+// mirroring ArtistItems one level down — and following identity for the same reason.
 func ReleaseGroupItems(db *gorm.DB, releaseGroupMBID string) ([]models.LibraryItem, error) {
 	releases, err := ReleaseGroupReleaseMBIDs(db, releaseGroupMBID)
 	if err != nil || len(releases) == 0 {
 		return nil, err
 	}
 	var items []models.LibraryItem
-	err = db.Where("mb_release_id IN ? AND status = ?", releases, models.LibraryItemStatusOK).
+	err = db.Where("mb_release_id IN ?", releases).Scopes(models.TaggableItems).
 		Order("path").Find(&items).Error
 	return items, err
+}
+
+// disownedItems are the files the disk view deliberately drops: status `unmatched`
+// means the manager was asked and answered that it does not know this file, so no
+// owned edition is recorded for it and `collection_releases` has nothing to match on.
+//
+// They still carry the release ID they were last correlated to — recordItem clears the
+// outcome of an attempt, never the identity — which is the only thing left to find
+// them by. It is a stale answer and unfit to *write* from, which is why these never
+// reach a re-tag. It is perfectly good for deciding **which folder to walk**, which is
+// all the repair verbs need.
+//
+// The query is narrow on purpose: the whole point is the one status ownedItemRows
+// excludes. Anything else with an identity is reachable through its owned edition.
+func disownedItems(db *gorm.DB) ([]models.LibraryItem, error) {
+	var items []models.LibraryItem
+	err := db.Where("status = ? AND mb_release_id <> ''", models.LibraryItemStatusUnmatched).
+		Order("path").Find(&items).Error
+	return items, err
+}
+
+// withDisowned appends the disowned files that belong belongs() to a target list,
+// deduplicated by ID — a release can be half owned and half disowned, which puts the
+// same file in reach of both routes.
+func withDisowned(db *gorm.DB, items []models.LibraryItem, belongs func(models.LibraryItem) bool) ([]models.LibraryItem, error) {
+	disowned, err := disownedItems(db)
+	if err != nil {
+		return nil, err
+	}
+	if len(disowned) == 0 {
+		return items, nil
+	}
+
+	seen := make(map[uuid.UUID]bool, len(items))
+	for _, item := range items {
+		seen[item.ID] = true
+	}
+	for _, item := range disowned {
+		if seen[item.ID] || !belongs(item) {
+			continue
+		}
+		seen[item.ID] = true
+		items = append(items, item)
+	}
+
+	sort.Slice(items, func(i, j int) bool { return items[i].Path < items[j].Path })
+	return items, nil
+}
+
+// creditedTo reports whether a file's last known release was credited to this artist,
+// read from the release cache — the same lookup Rebuild derives collection artists
+// with. A release that is no longer cached simply does not match: this is a widening
+// step, and a miss costs the user the narrow verb, not correctness.
+func creditedTo(artistMBID string) func(models.LibraryItem) bool {
+	return func(item models.LibraryItem) bool {
+		release, ok := modules.CachedRelease(item.MBReleaseID)
+		if !ok {
+			return false
+		}
+		for _, credit := range albumArtistCredit(release) {
+			if credit.Artist.ID == artistMBID {
+				return true
+			}
+		}
+		return false
+	}
+}
+
+// partOf reports whether a file's last known release belongs to this release-group.
+func partOf(releaseGroupMBID string) func(models.LibraryItem) bool {
+	return func(item models.LibraryItem) bool {
+		rgID, ok := modules.CachedReleaseGroupID(item.MBReleaseID)
+		return ok && rgID == releaseGroupMBID
+	}
 }
 
 // ReleaseGroupTargets returns the folders to walk to re-process one release-group's
@@ -130,8 +214,15 @@ func ReleaseGroupItems(db *gorm.DB, releaseGroupMBID string) ([]models.LibraryIt
 // directory is the right granularity here.
 func ReleaseGroupTargets(db *gorm.DB, releaseGroupMBID string) ([]ArtistTarget, error) {
 	items, err := ReleaseGroupItems(db, releaseGroupMBID)
-	if err != nil || len(items) == 0 {
+	if err != nil {
 		return nil, err
+	}
+	items, err = withDisowned(db, items, partOf(releaseGroupMBID))
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
 	}
 
 	libraries := map[uuid.UUID]models.Library{}
@@ -171,10 +262,27 @@ func ReleaseGroupTargets(db *gorm.DB, releaseGroupMBID string) ([]ArtistTarget, 
 // directly in the library root, say) contributes its own directory instead of being
 // dropped: scanning too narrow a folder still processes the file, whereas skipping it
 // would silently leave it out of a scan the user asked for.
+//
+// Disowned files count here (see disownedItems), and this is the one place they do.
+// Without them the repair verbs were unavailable exactly when they were needed: one
+// stale Lidarr trackfile cache turns every file of an album `unmatched`, the next
+// rebuild prunes the owned-edition rows those files were reachable through, and this
+// returns nothing — so force re-correlate, whose whole job is repairing an artist whose
+// files diverged from what the manager says, refused to start. The only way out was
+// ForceRecorrelateLibrary, which is library-wide and discards every Lidarr-governed pin
+// in it. Deciding a folder is worth walking is a much weaker claim than owning a
+// release, and it is the claim a repair actually needs.
 func ArtistTargets(db *gorm.DB, artistMBID string) ([]ArtistTarget, error) {
 	items, err := ArtistItems(db, artistMBID)
-	if err != nil || len(items) == 0 {
+	if err != nil {
 		return nil, err
+	}
+	items, err = withDisowned(db, items, creditedTo(artistMBID))
+	if err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
 	}
 
 	libraries := map[uuid.UUID]models.Library{}
