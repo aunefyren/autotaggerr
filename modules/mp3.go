@@ -354,6 +354,15 @@ func SetMP3Tags(filePath string, metadata models.FileTags, tagger models.TaggerS
 		tagsWritten++
 	}
 
+	// Same opportunity, for a frame that is not ours: a descriptionless TXXX is a value
+	// with no key, which nothing can read and nothing can address. Counted like the
+	// migration above — it is a change to the tag with no row in the diff, which is why
+	// tagsWritten can exceed the reported change set.
+	if dropped := dropUnkeyedUserDefinedFrames(tag); dropped > 0 {
+		logger.Log.Debugf("dropped %d TXXX frame(s) carrying no description", dropped)
+		tagsWritten += dropped
+	}
+
 	if err := tag.Save(); err != nil {
 		return false, 0, nil, fmt.Errorf("id3 tag write failed: %w", err)
 	}
@@ -376,10 +385,13 @@ func SetMP3Tags(filePath string, metadata models.FileTags, tagger models.TaggerS
 	// exceed this count — a changed DISCNUMBER also rewrites its paired DISCTOTAL.
 	changed = make([]models.TagChange, 0, len(changes))
 	for key, values := range changes {
+		// Described rather than joined, for the same reason as FLAC: with
+		// mp3_multi_value_tags on, the change from a "; "-joined frame to a
+		// null-separated one is invisible once both sides are joined back together.
 		changed = append(changed, models.TagChange{
 			Field: key,
-			Old:   utilities.JoinTagValues(existing[key]),
-			New:   utilities.JoinTagValues(values),
+			Old:   utilities.DescribeTagValues(existing[key]),
+			New:   utilities.DescribeTagValues(values),
 		})
 	}
 	utilities.SortTagChanges(changed)
@@ -534,6 +546,47 @@ func deleteMusicBrainzUFIDFrame(tag *id3v2.Tag) {
 	for _, frame := range kept {
 		tag.AddFrame("UFID", frame)
 	}
+}
+
+// dropUnkeyedUserDefinedFrames removes TXXX frames that carry no description, and
+// reports how many it dropped.
+//
+// A TXXX is a key/value pair whose *description* is the key, so one without a
+// description names nothing. It is unreachable from both directions: GetMP3Tags trims
+// the key, finds it empty and drops the value, so the frame is invisible to the diff;
+// and deleteUserDefinedFrame matches by description, so nothing can ever target it.
+// Invisible and immune, it would sit in the file forever.
+//
+// They are not hypothetical. A Windows Explorer property edit rewrites the whole ID3
+// tag through the Windows property handler, and one file came back holding a TXXX whose
+// description was empty and whose *value* was the text "MusicBrainz Recording Id" — the
+// description shifted into the value slot and the MBID lost. Autotaggerr rewrote the
+// MBID into a fresh frame beside it and could not touch the wreckage.
+//
+// Like stripID3v1, this runs only on a file that is already being rewritten for a real
+// change: an unkeyed frame is not a diff and must never be the reason a file is written.
+func dropUnkeyedUserDefinedFrames(tag *id3v2.Tag) int {
+	frames := tag.GetFrames("TXXX")
+	kept := make([]id3v2.Framer, 0, len(frames))
+	for _, frame := range frames {
+		if userDefined, ok := frame.(id3v2.UserDefinedTextFrame); ok &&
+			strings.TrimSpace(userDefined.Description) == "" {
+			continue
+		}
+		kept = append(kept, frame)
+	}
+
+	dropped := len(frames) - len(kept)
+	if dropped == 0 {
+		return 0
+	}
+	// A frame ID can only be deleted whole, so the survivors go back in — the same
+	// dance deleteUserDefinedFrame does, and for the same reason.
+	tag.DeleteFrames("TXXX")
+	for _, frame := range kept {
+		tag.AddFrame("TXXX", frame)
+	}
+	return dropped
 }
 
 func deleteUserDefinedFrame(tag *id3v2.Tag, description string) {

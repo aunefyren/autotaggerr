@@ -298,7 +298,9 @@ export default function Activity() {
               none, so they are shown only for that kind of job. */}
           {isProcessJob(status.data.current_job) && (
             <span className="muted" style={{ fontSize: 12 }}>
-              {status.data.processed} processed · {status.data.changed} changed · {status.data.errors} errors
+              {/* Same sentence the finished activity stores as its summary, so a run
+                  reads the same while it works as it does afterwards. */}
+              {status.data.processed} files processed · {status.data.changed} changed · {status.data.errors} errors
             </span>
           )}
         </div>

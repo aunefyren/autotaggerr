@@ -245,6 +245,32 @@ func JoinTagValues(values []string) string {
 	return strings.Join(NormalizeTagValues(values), MultiValueSeparator)
 }
 
+// DescribeTagValues renders a tag field's values for a human reading a diff, and is
+// display only — nothing it returns is ever written to a file.
+//
+// It exists because the joined form is lossy in exactly the case the diff has to
+// explain. One Vorbis comment reading "Universal Music Special Markets; Intrada" and
+// two comments reading "Universal Music Special Markets" and "Intrada" are a real
+// difference — the whole point of writing the spec-correct form — and JoinTagValues
+// renders both as the same string, so the change reported for a file another tagger
+// wrote the joined form into read "X became X" and looked like a bug in the diff.
+//
+// A single value stays bare, so the ordinary row is unchanged; several values become a
+// quoted list, which is unambiguous against a single value containing separators. Both
+// sides of a comparison go through this, so a list on one side and a bare string on the
+// other is itself the message.
+func DescribeTagValues(values []string) string {
+	normalized := NormalizeTagValues(values)
+	if len(normalized) < 2 {
+		return JoinTagValues(normalized)
+	}
+	quoted := make([]string, 0, len(normalized))
+	for _, value := range normalized {
+		quoted = append(quoted, strconv.Quote(value))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
+}
+
 // DiffFlacTags compares the Vorbis comments on disk with the ones Autotaggerr wants
 // and returns only the keys that need to change. Both sides are multi-valued: a
 // Vorbis key may legitimately repeat, and so may the desired value once the engine

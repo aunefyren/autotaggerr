@@ -488,6 +488,12 @@ MUSICBRAINZ_ALBUMID   e28e29e0-…-a6beffd99aad   ← current (mono, --text-mute
   "Lidarr didn't respond — check the base URL and API key."
 - Empty states are invitations, not decoration.
 - Identifiers are shown verbatim in mono; never paraphrase an MB ID or path.
+- **A counter names its unit whenever the row it sits in mixes units.** A scan's stats are files
+  *and* tags side by side, so they read **Files processed · Files unchanged · Files changed · Tags
+  written** — bare "Changed 1 · Tags written 21" invites the reading that 21 things changed when one
+  file did. Say the unit once per line where the clauses share it ("27 files processed · 1 changed"),
+  and on every chip where they do not. Counters that carry it already — Releases checked, Entities
+  checked, Files re-tagged — are the pattern, not the exception.
 
 ---
 

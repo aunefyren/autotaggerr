@@ -213,6 +213,71 @@ func TestEnginesRenderTheSameValuesDifferently(t *testing.T) {
 	}
 }
 
+// TestJoinedMultiValueTagIsReportedLegiblyAndConvergesOnce is the file every library
+// tagged by something else starts as: another tagger wrote a field's several values as
+// one joined comment, and Autotaggerr's first pass splits it into the spec-correct one
+// comment per value.
+//
+// Two properties, and the second is the one that was missing. The write must happen
+// exactly once — a second pass reads back what it wrote and stops. And the change has
+// to be *readable*: both sides used to be rendered with JoinTagValues, which put the
+// joined comment and the split comments back into the same string, so a real change
+// reported as "Universal Music Special Markets; Intrada" became "Universal Music
+// Special Markets; Intrada" and looked like a diff that could not settle.
+func TestJoinedMultiValueTagIsReportedLegiblyAndConvergesOnce(t *testing.T) {
+	requireTool(t, "metaflac")
+	path := synthAudio(t, ".flac")
+
+	labels := []string{"Universal Music Special Markets", "Intrada"}
+	meta := models.FileTags{
+		Artist:       "Jerry Goldsmith",
+		Album:        "Alien: Complete Original Motion Picture Soundtrack",
+		Title:        "Main Title",
+		RecordLabels: labels,
+	}
+
+	// Seed the field the way a joined-form tagger leaves it: one comment, both values.
+	seed := exec.Command("metaflac", "--no-utf8-convert", "--set-tag",
+		"LABEL="+utilities.JoinTagValues(labels), path)
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seeding the joined LABEL failed: %v\n%s", err, out)
+	}
+
+	_, _, changed, err := SetFlacTags(path, meta, models.TaggerSettings{})
+	if err != nil {
+		t.Fatalf("first SetFlacTags: %v", err)
+	}
+
+	var label *models.TagChange
+	for i := range changed {
+		if changed[i].Field == "LABEL" {
+			label = &changed[i]
+		}
+	}
+	if label == nil {
+		t.Fatal("LABEL must be reported: one joined comment is not the two comments the writer emits")
+	}
+	if label.Old == label.New {
+		t.Errorf("LABEL reported as %q -> %q; a change whose two sides render alike cannot be read", label.Old, label.New)
+	}
+
+	tags, err := getFlacTagsMap(path)
+	if err != nil {
+		t.Fatalf("getFlacTagsMap: %v", err)
+	}
+	if !slices.Equal(tags["LABEL"], labels) {
+		t.Fatalf("LABEL on disk = %v, want one comment per value", tags["LABEL"])
+	}
+
+	unchanged, written, _, err := SetFlacTags(path, meta, models.TaggerSettings{})
+	if err != nil {
+		t.Fatalf("second SetFlacTags: %v", err)
+	}
+	if !unchanged || written != 0 {
+		t.Errorf("second pass wrote again (unchanged=%v written=%d): the split must be a one-time migration", unchanged, written)
+	}
+}
+
 // TestFFmpegJoinsRepeatedVorbisComments encodes the measurement the FLAC decision
 // rests on. Plex reads tags through ffmpeg, and ffmpeg's FLAC demuxer joins repeated
 // comments into one delimited string by itself — so writing the spec-correct form

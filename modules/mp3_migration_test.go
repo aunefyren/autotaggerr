@@ -14,6 +14,91 @@ import (
 	"github.com/bogem/id3v2"
 )
 
+// TestUnkeyedTXXXFrameIsClearedButNeverCausesAWrite covers the wreckage a foreign
+// tagger can leave: a TXXX frame with no description, which is a value with no key.
+//
+// Both halves matter. It must not be a reason to rewrite a file — a library full of
+// them would otherwise be rewritten on the next scan for something no user asked about
+// — and it must not survive a rewrite that happens anyway, because nothing else in the
+// engine can see it or address it.
+func TestUnkeyedTXXXFrameIsClearedButNeverCausesAWrite(t *testing.T) {
+	path := synthAudio(t, ".mp3")
+	meta := models.FileTags{Artist: "Jerry Goldsmith", Album: "Alien", Title: "Main Title"}
+
+	if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
+		t.Fatalf("first SetMP3Tags: %v", err)
+	}
+
+	// The frame as Windows leaves it: the description shifted into the value.
+	addUnkeyed := func() {
+		tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
+		if err != nil {
+			t.Fatalf("open for seeding: %v", err)
+		}
+		tag.AddUserDefinedTextFrame(id3v2.UserDefinedTextFrame{
+			Encoding: id3v2.EncodingUTF8, Description: "", Value: "MusicBrainz Recording Id",
+		})
+		if err := tag.Save(); err != nil {
+			t.Fatalf("save seeded frame: %v", err)
+		}
+		tag.Close()
+	}
+	unkeyedFrames := func() int {
+		tag, err := id3v2.Open(path, id3v2.Options{Parse: true})
+		if err != nil {
+			t.Fatalf("open for counting: %v", err)
+		}
+		defer tag.Close()
+		n := 0
+		for _, frame := range tag.GetFrames("TXXX") {
+			if userDefined, ok := frame.(id3v2.UserDefinedTextFrame); ok && userDefined.Description == "" {
+				n++
+			}
+		}
+		return n
+	}
+
+	addUnkeyed()
+	if unkeyedFrames() != 1 {
+		t.Fatalf("fixture did not take: %d unkeyed frames", unkeyedFrames())
+	}
+
+	// Nothing else changed, so nothing may be written — and the frame stays.
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.TaggerSettings{})
+	if err != nil {
+		t.Fatalf("second SetMP3Tags: %v", err)
+	}
+	if !unchanged || written != 0 {
+		t.Errorf("an unkeyed frame forced a rewrite (unchanged=%v written=%d)", unchanged, written)
+	}
+	if unkeyedFrames() != 1 {
+		t.Errorf("the file was rewritten when it should not have been")
+	}
+
+	// A real change rewrites the tag, and takes the wreckage with it.
+	meta.Title = "Main Title (alternate)"
+	if _, written, _, err = SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
+		t.Fatalf("third SetMP3Tags: %v", err)
+	}
+	if unkeyedFrames() != 0 {
+		t.Errorf("the unkeyed frame survived a rewrite")
+	}
+	// One key changed and one frame was dropped, so the writer's count exceeds the
+	// diff — the property that lets a cleanup happen without inventing a diff row.
+	if written < 2 {
+		t.Errorf("tags written = %d, want the title change plus the dropped frame", written)
+	}
+
+	// And the tags it was supposed to write are still right.
+	tags, err := GetMP3Tags(path)
+	if err != nil {
+		t.Fatalf("GetMP3Tags: %v", err)
+	}
+	if got := firstTag(tags, "TITLE"); got != "Main Title (alternate)" {
+		t.Errorf("TITLE = %q, want the new title", got)
+	}
+}
+
 // writeLegacyMP3Tags writes tags the way SetMP3Tags did before it moved onto
 // github.com/bogem/id3v2: one `ffmpeg -codec copy` pass over the whole file. Every
 // MP3 in every library Autotaggerr has already touched looks like this, so it is the

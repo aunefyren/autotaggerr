@@ -72,12 +72,14 @@ func TestChangedCounterSelectsTheRowsItCounts(t *testing.T) {
 		t.Fatalf("load the tagging event: %v", err)
 	}
 
-	changed, ok := statByLabel(tagging.Stats, "Changed")
+	// "Files changed", not "Changed": the row mixes files with tags written, so each
+	// counter names its unit (see style-guide.md, Voice & copy).
+	changed, ok := statByLabel(tagging.Stats, "Files changed")
 	if !ok {
-		t.Fatalf("tagging declares no Changed counter: %+v", tagging.Stats)
+		t.Fatalf("tagging declares no Files changed counter: %+v", tagging.Stats)
 	}
 	if changed.Filter != models.EventItemStatusChanged {
-		t.Errorf("Changed selects %q, want %q — a filter that matches no row is a dead chip",
+		t.Errorf("Files changed selects %q, want %q — a filter that matches no row is a dead chip",
 			changed.Filter, models.EventItemStatusChanged)
 	}
 

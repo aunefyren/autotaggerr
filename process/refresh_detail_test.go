@@ -16,7 +16,9 @@ import (
 // an ordinary scan with nothing gone, nothing moved and nothing due upstream must read
 // exactly as it did before.
 func TestScanSummaryLine(t *testing.T) {
-	base := "10 processed · 3 changed · 7 tags written · 0 errors"
+	// "files" is stated once: the clauses that follow share the unit, and "tags
+	// written" is the one that does not — the counters are two units in one line.
+	base := "10 files processed · 3 changed · 7 tags written · 0 errors"
 
 	cases := []struct {
 		name    string

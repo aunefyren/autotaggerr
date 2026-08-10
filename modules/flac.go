@@ -214,10 +214,13 @@ func SetFlacTags(filePath string, metadata models.FileTags, tagger models.Tagger
 		tagsWritten++
 		// Recorded only after the write succeeded, so the diff reports what is on
 		// disk rather than what was intended.
+		// Described, not joined: one comment holding "A; B" and two comments holding
+		// "A" and "B" are the change being made here, and joining renders them
+		// identically (see utilities.DescribeTagValues).
 		changed = append(changed, models.TagChange{
 			Field: key,
-			Old:   utilities.JoinTagValues(existing[key]),
-			New:   utilities.JoinTagValues(values),
+			Old:   utilities.DescribeTagValues(existing[key]),
+			New:   utilities.DescribeTagValues(values),
 		})
 	}
 

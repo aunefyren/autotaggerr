@@ -323,6 +323,47 @@ func TestJoinTagValues(t *testing.T) {
 	}
 }
 
+// TestDescribeTagValues pins the property the diff view needs: a field's value
+// *count* has to survive rendering. One comment holding "A; B" is a different state
+// than two comments holding "A" and "B", and it is the state a scan changes.
+func TestDescribeTagValues(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want string
+	}{
+		{"empty", nil, ""},
+		{"single stays bare", []string{"Intrada"}, "Intrada"},
+		{"single keeps its separators", []string{"Universal; Intrada"}, "Universal; Intrada"},
+		{"several are listed", []string{"Universal", "Intrada"}, `["Universal", "Intrada"]`},
+		{"blanks do not count", []string{"Intrada", "  "}, "Intrada"},
+		{"non-ascii is not escaped", []string{"Café", "Sigur Rós"}, `["Café", "Sigur Rós"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := DescribeTagValues(tc.in); got != tc.want {
+				t.Errorf("DescribeTagValues(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDescribeTagValuesSeparatesTheFormsJoinTagValuesConflates is the regression
+// itself: the joined form and the per-value form of the same values are the change a
+// FLAC write makes, and reporting them through JoinTagValues rendered both sides
+// identically — a real change that read as "X became X".
+func TestDescribeTagValuesSeparatesTheFormsJoinTagValuesConflates(t *testing.T) {
+	joined := []string{"Universal Music Special Markets; Intrada"}
+	separate := []string{"Universal Music Special Markets", "Intrada"}
+
+	if JoinTagValues(joined) != JoinTagValues(separate) {
+		t.Fatal("premise changed: the two forms no longer join to the same string")
+	}
+	if DescribeTagValues(joined) == DescribeTagValues(separate) {
+		t.Errorf("the two forms must not describe alike: %q", DescribeTagValues(joined))
+	}
+}
+
 // TestJoinTagValuesRoundTripsThroughTheDiff is the property the separator has to
 // have: a joined value read back as one string must compare equal to itself, or
 // the writers never converge.

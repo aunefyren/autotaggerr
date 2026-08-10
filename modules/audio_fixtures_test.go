@@ -212,6 +212,61 @@ func TestDiffFileTags(t *testing.T) {
 	}
 }
 
+// TestDiffFileTagsListsValuesOnlyWhereTheyChanged pins where the two renderings
+// belong. The tag-diff view shows every tag, so bracketing each multi-value field
+// unconditionally would decorate rows that are not part of any change; the count only
+// carries information where the two sides can disagree about it.
+func TestDiffFileTagsListsValuesOnlyWhereTheyChanged(t *testing.T) {
+	requireTool(t, "metaflac")
+	path := synthAudio(t, ".flac")
+
+	meta := models.FileTags{
+		Album:  "Alien",
+		Title:  "Main Title",
+		Genres: []string{"hip hop", "rap"},
+	}
+	if _, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
+		t.Fatalf("SetFlacTags: %v", err)
+	}
+
+	// One joined comment, the way another tagger leaves a multi-value field.
+	seed := exec.Command("metaflac", "--no-utf8-convert", "--set-tag",
+		"LABEL=Universal Music Special Markets; Intrada", path)
+	if out, err := seed.CombinedOutput(); err != nil {
+		t.Fatalf("seeding the joined LABEL failed: %v\n%s", err, out)
+	}
+
+	desired := meta
+	desired.RecordLabels = []string{"Universal Music Special Markets", "Intrada"}
+	entries, err := DiffFileTags(path, desired, models.TaggerSettings{})
+	if err != nil {
+		t.Fatalf("DiffFileTags: %v", err)
+	}
+
+	byKey := map[string]models.TagDiffEntry{}
+	for _, e := range entries {
+		byKey[e.Key] = e
+	}
+
+	// Unchanged and multi-valued: joined on both sides, no brackets.
+	genre := byKey["GENRE"]
+	if genre.Changed || genre.Current != "hip hop; rap" || genre.Desired != "hip hop; rap" {
+		t.Errorf("GENRE should read as an unchanged joined value: %+v", genre)
+	}
+
+	// Changed: the count is the change, so the sides must not render alike.
+	label := byKey["LABEL"]
+	if !label.Changed {
+		t.Fatalf("LABEL should be changed: %+v", label)
+	}
+	if label.Current == label.Desired {
+		t.Errorf("LABEL renders both sides as %q; the change is the value count", label.Current)
+	}
+	if want := `["Universal Music Special Markets", "Intrada"]`; label.Desired != want {
+		t.Errorf("LABEL desired = %q, want %q", label.Desired, want)
+	}
+}
+
 func TestMP3MultiISRCIdempotent(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 	meta := models.FileTags{

@@ -131,6 +131,23 @@ touched: a foreign `UFID` is a different identifier in a different namespace and
 it is. The owner is matched over either scheme when reading and written over `http`, so a file
 tagged by something that used `https` does not read as drift.
 
+### A `TXXX` with no description is cleared
+
+A `TXXX` frame's *description* is its key, so one written without a description is a value naming
+nothing. It is unreachable from both directions: `GetMP3Tags` trims the key, finds it empty and drops
+the value, so the diff cannot see it; and `deleteUserDefinedFrame` matches by description, so nothing
+can address it. `dropUnkeyedUserDefinedFrames` removes them on a write that was already happening —
+like `stripID3v1`, never as a reason to write, so a library full of them is not rewritten for
+something no user asked about (`TestUnkeyedTXXXFrameIsClearedButNeverCausesAWrite`).
+
+The frames are real: editing a file's properties in Windows Explorer rewrites the whole ID3 tag
+through the Windows property handler, and one file came back with its MusicBrainz recording frame
+mangled into an empty description carrying the text `MusicBrainz Recording Id` as the *value*.
+That same edit dropped `TPE1`, `TPE2`, `TALB`, `TSRC`, every other `TXXX` and `UFID`, and appended an
+ID3v1 trailer — the next scan restored 21 fields, which is the shape to expect when a file has been
+through a foreign editor. Only the descriptionless frames are dropped; a foreign `TXXX` that names
+its key is another tagger's data and is left alone.
+
 ### The ISRC moved to `TSRC`
 
 It used to live in a `TXXX` frame *described* `TXXX`, whose value carried its own `ISRC:<value>`
@@ -194,6 +211,29 @@ something.
 
 The diff is also the UI's signature element: `GET /library-items/:id/tags` powers the tag-diff
 detail view (current → desired, per tag) described in [style-guide.md](style-guide.md).
+
+### A reported change renders its value count
+
+Both sides of a reported change go through `utilities.DescribeTagValues`, which leaves a single
+value bare and renders several as a quoted list. It is display only — nothing it returns is written
+to a file — and it exists because the alternative is unreadable on exactly the file this section is
+about.
+
+**Only a changed row is rendered that way.** The tag-diff view lists every tag, changed or not, and
+on an unchanged row the count cannot differ — both sides hold the same values in the same shape — so
+those stay joined rather than putting brackets around every multi-value tag the file already agrees
+about (`TestDiffFileTagsListsValuesOnlyWhereTheyChanged`). A write reports only what it changed, so
+`SetFlacTags`/`SetMP3Tags` have no such split.
+
+A field's value *count* is part of the change. One Vorbis comment holding
+`Universal Music Special Markets; Intrada` and two comments holding one label each are a real
+difference, and the difference the first pass over a library tagged by something else makes.
+Rendering both sides with `JoinTagValues` put them back into the same string, so that change
+reported as `LABEL: "Universal Music Special Markets; Intrada" → "Universal Music Special Markets;
+Intrada"` — a write that looks like a diff which cannot settle, on a file that in fact converges on
+the next pass. It applies to MP3 for the same reason: with `mp3_multi_value_tags` on, the move from
+a joined frame to a null-separated one is invisible once both sides are joined back up. Tests:
+`TestDescribeTagValues*`, `TestJoinedMultiValueTagIsReportedLegiblyAndConvergesOnce`.
 
 ### Removing a value
 

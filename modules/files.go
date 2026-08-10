@@ -636,12 +636,25 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 	entries := make([]models.TagDiffEntry, 0, len(keys))
 	for _, k := range keys {
 		up := strings.ToUpper(k)
-		current := utilities.JoinTagValues(existing[up])
-		want := utilities.JoinTagValues(desired[k])
+		_, isChanged := changed[up]
+
+		// The preview says what a write would do, so a changed row renders its two sides
+		// the way the write reports them: a value count is part of the change on a
+		// multi-value field, and joining hides it (see utilities.DescribeTagValues).
+		//
+		// An unchanged row is joined, because there the count cannot differ — the two
+		// sides hold the same values in the same shape, and the list form would only put
+		// brackets around every multi-value tag the file already agrees about. This view
+		// renders every tag, not just the changed ones, so that is most of the page.
+		render := utilities.JoinTagValues
+		if isChanged {
+			render = utilities.DescribeTagValues
+		}
+		current := render(existing[up])
+		want := render(desired[k])
 		if current == "" && want == "" {
 			continue // nothing to show for an empty-on-both tag
 		}
-		_, isChanged := changed[up]
 		entries = append(entries, models.TagDiffEntry{Key: k, Current: current, Desired: want, Changed: isChanged})
 	}
 	return entries, nil

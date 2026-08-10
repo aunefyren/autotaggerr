@@ -1166,7 +1166,9 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 	}
 	changed := res.processed - res.unchanged
 
-	summary := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors",
+	// "files" is stated once and carries across the clauses that share the unit; the
+	// tags clause is the one that does not, which is the whole reason to say it.
+	summary := fmt.Sprintf("%d files processed · %d changed · %d tags written · %d errors",
 		res.processed, changed, res.tagsWritten, len(res.errorFiles))
 	if res.removed > 0 {
 		summary += fmt.Sprintf(" · %d removed", res.removed)
@@ -1178,12 +1180,18 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 
 	// Both halves declare their counters, but only when they happened: a run where
 	// nothing drifted should not carry two zeroes explaining a stage it never entered.
+	// Every file counter names its unit, because the one that does not is "Tags
+	// written" — and a row reading "Unchanged 26 · Changed 1 · Tags written 21" invites
+	// the reading that 21 things changed when one file did. The counters are two units
+	// in one row and only the labels can say so. It is also the vocabulary the run
+	// roll-up, the drift stage and the mirror already use ("Files processed", "Files
+	// re-tagged", "Releases checked").
 	stats := []models.EventStat{
-		{Label: "Processed", Value: res.processed},
-		{Label: "Unchanged", Value: res.unchanged, Kind: models.EventStatMuted},
-		{Label: "Changed", Value: changed, Kind: models.EventStatNotable, Filter: models.EventItemStatusChanged},
+		{Label: "Files processed", Value: res.processed},
+		{Label: "Files unchanged", Value: res.unchanged, Kind: models.EventStatMuted},
+		{Label: "Files changed", Value: changed, Kind: models.EventStatNotable, Filter: models.EventItemStatusChanged},
 		{Label: "Tags written", Value: res.tagsWritten},
-		{Label: "Removed", Value: res.removed},
+		{Label: "Files removed", Value: res.removed},
 	}
 	if res.drift.changedReleases > 0 {
 		stats = append(stats,
@@ -1220,7 +1228,7 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 // ordinary scan with nothing gone and nothing due upstream reads exactly as before
 // rather than trailing a "· 0 releases refreshed" that says nothing.
 func scanSummaryLine(processed, changed, tagsWritten, errorCount, removed, creditChanges int, refresh mirror.Result) string {
-	s := fmt.Sprintf("%d processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, errorCount)
+	s := fmt.Sprintf("%d files processed · %d changed · %d tags written · %d errors", processed, changed, tagsWritten, errorCount)
 	if removed > 0 {
 		s += fmt.Sprintf(" · %d removed", removed)
 	}

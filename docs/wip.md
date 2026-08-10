@@ -82,6 +82,19 @@ still open:
   MusicBrainz can supply composer via work relations and ASIN on the release. That is a fetch and a
   mapping — a field on `models.FileTags`, a key in both tag maps, and the work-relation include on
   the release fetch.
+- **The disc guard has no signal but the folder.** `verifyDiscFolder` refuses a correlation only
+  when the file's media folder names a disc number that disagrees with the resolved medium
+  ([tagging.md](tagging.md#the-disc-guard)). A flat album folder, or one named something
+  `discFolderPattern` does not recognise, leaves it with nothing to check — and the look-alike case
+  it exists for is precisely where the two candidates are otherwise indistinguishable. MusicBrainz
+  supplies `track.Length` (`models/musicbrainz.go:91`) and nothing reads it, which is the missing
+  second signal: Jerry Goldsmith's *Alien* opens both discs with a "Main Title" of 4:12 and 3:34, a
+  gap no tagger could confuse. The comparison has to be **relative, not absolute** — that same file
+  is 4:19 on disk against a stated 4:12, so a tolerance tight enough to be useful would refuse the
+  correct answer. What discriminates is which candidate is *closer*: refuse when the track the file
+  resolved to is much further from the file's duration than the track at the same position on the
+  disc the folder names. Needs the file's duration at the point of the check, which nothing on the
+  tagging path reads today.
 - **AAC/M4A is where the separator choice starts to matter.** ffmpeg never gained multi-value
   support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
   setting's reasoning applies, and the format work should reuse it rather than re-litigate the
@@ -109,6 +122,13 @@ manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
   the first, `Canon`'s NFC pass the second — but nothing in the suite pins either, and both are one
   careless change away from silently matching the wrong disc. Better than the synthetic fixture
   already there, because it is shaped like a real release rather than like the test.
+
+  The same-basename half is no longer hypothetical: with Lidarr's naming format putting the disc in
+  the folder rather than the filename, both discs' track 1 are the same "Main Title" file name, and
+  the pre-`285c7c3` matcher (album + basename, first hit wins) resolved a `CD 01` file to disc 2 and
+  wrote disc 2's identity into it — `DISCNUMBER 2`, `TRACKTOTAL 17`, disc 2's track, recording and
+  ISRC. The current matcher gets it right and repaired the file on the next pass, which is the
+  behaviour a fixture would be pinning.
 
 ## Roadmap / ideas
 

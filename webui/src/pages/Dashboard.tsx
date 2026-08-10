@@ -73,8 +73,11 @@ export default function Dashboard() {
         {scan.data && (scan.data.finished_at || scan.data.running) ? (
           <div className="stack" style={{ gap: 12 }}>
             <div className="row" style={{ gap: 24, flexWrap: "wrap" }}>
-              <ScanStat label="Processed" value={scan.data.processed} />
-              <ScanStat label="Changed" value={scan.data.changed} accent="var(--accent-text)" />
+              {/* The unit is part of the label because this row mixes two: three files
+                  changed can be twenty tags written, and bare "Changed 3 · Tags written
+                  20" reads as one quantity counted twice. See style-guide.md, Voice. */}
+              <ScanStat label="Files processed" value={scan.data.processed} />
+              <ScanStat label="Files changed" value={scan.data.changed} accent="var(--accent-text)" />
               <ScanStat label="Tags written" value={scan.data.tags_written} />
               <ScanStat label="Errors" value={scan.data.errors} accent={scan.data.errors ? "var(--danger-text)" : undefined} />
               <div style={{ marginLeft: "auto" }}>
