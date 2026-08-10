@@ -108,6 +108,21 @@ func providerCacheDropSource(source string) {
 	}
 }
 
+// providerCacheDrop forgets one cached entry. Same reasoning as providerCacheDropSource
+// — the row has to go with the map entry, or the next restart restores exactly what was
+// just discarded — narrowed to the single key a scoped invalidation touches.
+// The condition is a struct rather than a raw fragment so GORM quotes the columns:
+// `key` is a reserved word in MySQL, which the store is meant to be able to move to.
+func providerCacheDrop(source, key string) {
+	if cacheDB == nil || source == "" || key == "" {
+		return
+	}
+	if err := cacheDB.Where(&models.ProviderCache{Source: source, Key: key}).
+		Delete(&models.ProviderCache{}).Error; err != nil {
+		logger.Log.Warnf("failed to clear %s cache entry %q: %s", source, key, err.Error())
+	}
+}
+
 // providerCacheImportJSON imports a legacy config/*.json cache once, when the source
 // has no rows yet. It is a no-op afterwards.
 //

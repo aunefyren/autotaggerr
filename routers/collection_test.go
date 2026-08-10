@@ -467,6 +467,45 @@ func TestSyncLidarrNeedsAManager(t *testing.T) {
 	}
 }
 
+// TestSyncLidarrArtistGating: the per-artist sync has one more thing to refuse than the
+// collection-wide one. An artist the mirror does not govern would sync nothing and
+// report "0 artists synced", which reads as Lidarr having failed rather than as the
+// artist not being Lidarr's to answer for — so it is a 400 with a reason instead.
+func TestSyncLidarrArtistGating(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	if err := api.DB.Create(&models.Manager{
+		Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true,
+		LidarrBaseURL: "http://127.0.0.1:1", LidarrAPIKey: "k",
+	}).Error; err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	for _, a := range []models.CollectionArtist{
+		{MBID: "art-lidarr", Name: "Managed", ManagedBy: models.ManagedByLidarr},
+		{MBID: "art-native", Name: "Native", ManagedBy: models.ManagedByAutotaggerr},
+	} {
+		if err := api.DB.Create(&a).Error; err != nil {
+			t.Fatalf("create artist: %v", err)
+		}
+	}
+
+	if w := do(r, "POST", "/api/v1/artists/art-unknown/sync-lidarr", token, nil); w.Code != http.StatusNotFound {
+		t.Errorf("unknown artist = %d, want 404: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "POST", "/api/v1/artists/art-native/sync-lidarr", token, nil); w.Code != http.StatusBadRequest {
+		t.Errorf("natively managed artist = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	// The option is accepted on the body and is not required: an absent body must not
+	// turn the ordinary pass into an error.
+	if w := do(r, "POST", "/api/v1/artists/art-lidarr/sync-lidarr", token, nil); w.Code != http.StatusAccepted {
+		t.Errorf("managed artist = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "POST", "/api/v1/artists/art-lidarr/sync-lidarr", token, map[string]any{"ignore_cache": true}); w.Code != http.StatusAccepted {
+		t.Errorf("managed artist with ignore_cache = %d, want 202: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestArtistInfoUnknownArtist(t *testing.T) {
 	r, _ := setupAPI(t)
 	token := loginToken(t, r)

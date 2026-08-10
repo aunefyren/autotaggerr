@@ -248,6 +248,33 @@ win:
 - `no_edition` — the counts disagree **and** the manager named no edition, which is the reason they
   disagree. See below.
 
+### Mirroring Lidarr at two scopes
+
+`SyncLidarrWith` takes a `SyncOptions`; `SyncLidarr` is the unscoped form the nightly run uses. An
+artist scope exists because that is the granularity a repair needs — one album's catalog counts going
+stale used to cost a mirror pass over every Lidarr artist in the collection. Both scopes emit the
+same `lidarr_sync` event with the same counters, because they are the same work: a scoped pass that
+reported differently would read as a different verb in the feed.
+
+The per-artist endpoint refuses an artist the mirror does not govern (`managed_by` neither `lidarr`
+nor `mixed`) rather than syncing nothing. A pass that reported *0 artists synced* would read as
+Lidarr having failed, when the truth is that this artist is not Lidarr's to answer for.
+
+**`IgnoreCache` is opt-in, and it does not change what the pass fetches.** `GetArtists` and
+`GetArtistAlbums` — the only two calls a mirror makes — are the only *uncached* Lidarr calls there
+are, so a mirror pass is always fresh. What goes stale is what the **pipeline** reads: the artist's
+track file list, cached an hour and keyed by artist, which is what file paths are matched against. A
+file imported into Lidarr after that list was cached cannot be matched until it expires, and the
+album loses a track from its disk view in the meantime. So the option drops the artist's cached
+Lidarr responses for the benefit of the *next scan*, not this pass — repair, not mirroring, which is
+why it is a checkbox rather than the default.
+
+`modules.LidarrInvalidateArtistCaches` is the scoped drop it uses. The whole-cache flush
+(`LidarrInvalidateCaches`, what force re-correlate calls) exists because the album and track caches
+are keyed by Lidarr's own album IDs, which cannot be derived from an artist — but a mirror pass has
+*just listed the artist's albums*, so it holds exactly the mapping that is otherwise missing and
+passes the IDs in.
+
 ### The disk view counts files, not successes
 
 `ownedItemRows` selects every **correlated** file — `mb_release_id <> ''` — and excludes exactly one
@@ -642,7 +669,7 @@ repeated here because they are about *this* data model.
 | `POST /artists/:mbid/detach` | [take authority back](#detaching-a-manager) from the manager, keeping its decisions as manual wants. **409** when no manager governs the artist — the request is well-formed and was true of an earlier state, so the page is out of date rather than wrong. Idempotent. |
 | `DELETE /artists/:mbid/detach` | hand the artist back; provenance is re-derived at once. Kept wants stay manual. |
 | `POST /scan` · `POST /artists/:mbid/scan` | re-derive the disk view, collection-wide or for one artist |
-| `POST /collection/sync-lidarr` | mirror Lidarr |
+| `POST /collection/sync-lidarr` · `POST /artists/:mbid/sync-lidarr` | [mirror Lidarr](#mirroring-lidarr-at-two-scopes), collection-wide or for one artist. Both take an optional `{"ignore_cache": true}`. **400** without an enabled Lidarr manager; the per-artist form is also **404** for an unknown artist and **400** for one the mirror does not govern |
 
 `Rebuild` also runs automatically at the end of every processing run and drift sync.
 
@@ -674,6 +701,22 @@ toolbar, grouped sections).
 
 All three are real routes, not modals: they are browsing destinations as much as editors, and they
 want a URL and a back button.
+
+**Sync from Lidarr appears on `/collection` and on the artist page**, gated on two conditions that
+are not the same fact: the artist has to be Lidarr's to answer for (`managed_by`), *and* an enabled
+Lidarr manager has to exist to ask. A row can still read "managed by Lidarr" after its manager was
+disabled or deleted, and the endpoint answers that with a 400 — a button whose only outcome is an
+error message is a button that should not be there.
+
+Both open the same `SyncLidarrDialog`, and it is a dialog rather than a bare button because
+`ignore_cache` is not guessable: dropping the cache changes nothing about the numbers *this* pass
+fetches, it changes what the **next scan** matches files against (see
+[above](#mirroring-lidarr-at-two-scopes)). That needs a sentence, and a sentence needs somewhere to
+live. The box starts unticked.
+
+On the artist page the button sits **outside** the group of four verbs and is not disabled while a
+job runs. Those four are Autotaggerr acting on this artist's files and metadata and they share the
+one job queue; this one only re-reads what the manager says, and queues nothing.
 
 ## Artwork
 
@@ -725,9 +768,18 @@ change between syncs: the monitored release is stored and wanted, it re-points w
 selection moves, it is pruned when monitoring stops, it is not invented when Lidarr selected no
 release, and it never overwrites a hand-authored want, appears on a native artist, or is disturbed by
 a rebuild that owns nothing.
+`TestSyncLidarrScopedToArtist` pins the property the artist scope exists for — the artist outside the
+scope is left untouched, not merely rewritten with the same values — and that an artist the mirror
+does not govern syncs *nothing* rather than everything, a scope silently widening to the whole
+collection being the worst failure the option could have.
+`modules.TestLidarrInvalidateArtistCaches` pins the other half: the scoped drop takes the artist's
+four entries and no one else's.
+
 `routers/` covers the wanted-source rules and that recordings round-trip through the HTTP handler —
 added after a field reached the model, the service and the UI but was silently dropped by the
 handler in between. **A field is not wired until the handler is tested.**
+`TestSyncLidarrArtistGating` covers the per-artist sync's three refusals (unknown artist, natively
+managed artist, no Lidarr manager) and that the `ignore_cache` body is genuinely optional.
 
 ## Related
 

@@ -262,6 +262,64 @@ func TestSyncLidarr(t *testing.T) {
 	}
 }
 
+// TestSyncLidarrScopedToArtist: the whole point of the scoped pass is that repairing
+// one artist's counts does not re-mirror the collection. The other artist must be left
+// exactly as it was, untouched rather than merely re-written with the same values.
+func TestSyncLidarrScopedToArtist(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/artist"):
+			_ = json.NewEncoder(w).Encode([]models.LidarrArtist{
+				{ID: 1, ForeignArtistID: "art-1", Name: "Band"},
+				{ID: 2, ForeignArtistID: "art-2", Name: "Other"},
+			})
+		case strings.HasPrefix(r.URL.Path, "/api/v1/album"):
+			id := r.URL.Query().Get("artistId")
+			_ = json.NewEncoder(w).Encode([]models.LidarrAlbum{{
+				ForeignAlbumID: "rg-" + id, Title: "Album " + id, AlbumType: "Album",
+				Statistics: models.LidarrAlbumStatistics{TrackCount: 10, TrackFileCount: 4},
+			}})
+		}
+	}))
+	defer srv.Close()
+
+	db := testDB(t)
+	if err := db.Create(&models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true, LidarrBaseURL: srv.URL, LidarrAPIKey: "k"}).Error; err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	for _, a := range []models.CollectionArtist{
+		{MBID: "art-1", Name: "Band", ManagedBy: models.ManagedByLidarr},
+		{MBID: "art-2", Name: "Other", ManagedBy: models.ManagedByLidarr},
+	} {
+		if err := db.Create(&a).Error; err != nil {
+			t.Fatalf("artist: %v", err)
+		}
+	}
+
+	artists, groups, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: "art-1"})
+	if err != nil {
+		t.Fatalf("SyncLidarrWith: %v", err)
+	}
+	if artists != 1 || groups != 1 {
+		t.Fatalf("scoped sync = %d artists, %d groups; want 1, 1", artists, groups)
+	}
+
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", "rg-1").First(&rg).Error; err != nil {
+		t.Fatalf("the scoped artist was not mirrored: %v", err)
+	}
+	if err := db.Where("mb_id = ?", "rg-2").First(&rg).Error; err == nil {
+		t.Error("the scoped pass mirrored an artist outside its scope")
+	}
+
+	// An artist the mirror does not govern syncs nothing rather than everything: a
+	// scope that silently widened to the whole collection would be the worst failure
+	// this option could have.
+	if a, g, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: "art-native"}); err != nil || a != 0 || g != 0 {
+		t.Errorf("unknown artist = (%d, %d, %v), want (0, 0, nil)", a, g, err)
+	}
+}
+
 // TestRebuildPreservesCatalog is the ordering guarantee: a Rebuild after a Lidarr
 // sync must not wipe the catalog view, and vice versa. Before the split these two
 // wrote the same columns, so whichever ran last decided what the UI showed.

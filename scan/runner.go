@@ -1271,9 +1271,10 @@ func (r *Runner) rebuildCollection(parent *models.Event) collection.RebuildStats
 // rebuild is only in the mirror's scope once that rebuild has committed.
 //
 // Only full-library scans do this. A per-artist or per-release-group scan is an
-// interactive action, and SyncLidarr has no narrower scope than "every Lidarr artist
-// in the collection" — making a one-album button wait on a whole-library mirror would
-// be a poor trade. The button and the nightly scan both still cover it.
+// interactive action, and making a one-album button wait on a mirror pass would be a
+// poor trade. The nightly scan covers it, and a user who wants one artist re-mirrored
+// now has the scoped verb for it (POST /artists/:mbid/sync-lidarr) rather than having
+// to trigger a whole-collection pass.
 func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 	ev := events.BeginChild(r.db, parent, models.EventTypeLidarrSync, "Sync from Lidarr")
 	artists, albums, err := collection.SyncLidarr(r.db)

@@ -73,6 +73,51 @@ func LidarrInvalidateCaches() {
 	logger.Log.Debug("invalidated Lidarr caches (artists, albums, tracks, trackfiles)")
 }
 
+// LidarrInvalidateArtistCaches drops the cached Lidarr responses for one artist and
+// the albums given, in memory and in the database. It is the narrow counterpart to
+// LidarrInvalidateCaches, for a per-artist action that should not cost every other
+// artist their cache.
+//
+// The whole-cache flush exists because the album and track caches are keyed by Lidarr's
+// own album IDs, so an artist-scoped drop cannot be derived from the artist alone. A
+// caller that has *just listed the artist's albums* has exactly the mapping that is
+// missing, which is why this takes the IDs rather than trying to find them: the Lidarr
+// mirror pass knows them, and nothing else needs to.
+func LidarrInvalidateArtistCaches(lidarrArtistID int64, albumIDs []int64) {
+	artistKey := strconv.FormatInt(lidarrArtistID, 10)
+
+	lidarrArtistsCacheMu.Lock()
+	delete(lidarrArtistsCache, artistKey)
+	lidarrArtistsCacheMu.Unlock()
+
+	// Keyed by artist, and the one that matters most: it holds the artist's entire
+	// track file list, so a file Lidarr imported after it was filled is invisible to
+	// path matching until it expires.
+	lidarrTrackFilesCacheMu.Lock()
+	delete(lidarrTrackFilesCache, artistKey)
+	lidarrTrackFilesCacheMu.Unlock()
+
+	providerCacheDrop(models.ProviderCacheLidarrArtists, artistKey)
+	providerCacheDrop(models.ProviderCacheLidarrTrackFiles, artistKey)
+
+	for _, albumID := range albumIDs {
+		albumKey := strconv.FormatInt(albumID, 10)
+
+		lidarrAlbumsCacheMu.Lock()
+		delete(lidarrAlbumsCache, albumKey)
+		lidarrAlbumsCacheMu.Unlock()
+
+		lidarrTracksCacheMu.Lock()
+		delete(lidarrTracksCache, albumKey)
+		lidarrTracksCacheMu.Unlock()
+
+		providerCacheDrop(models.ProviderCacheLidarrAlbums, albumKey)
+		providerCacheDrop(models.ProviderCacheLidarrTracks, albumKey)
+	}
+
+	logger.Log.Debugf("invalidated Lidarr caches for artist %d and %d album(s)", lidarrArtistID, len(albumIDs))
+}
+
 // ErrLidarrArtistNotFound means Lidarr answered, and none of the artists it manages
 // has a folder matching the file's artist directory. It is a distinct sentinel because
 // it is the one Lidarr failure that is about *the library*, not about Lidarr: nothing

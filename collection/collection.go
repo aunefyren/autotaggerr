@@ -1080,13 +1080,41 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 	return nil
 }
 
-// SyncLidarr mirrors Lidarr's albums for the collection's Lidarr-managed artists:
+// SyncOptions narrows and tunes a Lidarr mirror pass.
+type SyncOptions struct {
+	// ArtistMBID limits the pass to one artist. Empty syncs every Lidarr-managed
+	// artist in the collection, which is what the collection-wide button asks for.
+	ArtistMBID string
+	// IgnoreCache drops the cached Lidarr responses for each artist synced, so the
+	// *next scan* re-asks Lidarr instead of matching against data up to an hour old.
+	//
+	// It does nothing for the sync's own numbers: the two calls this pass makes
+	// (GetArtists, GetArtistAlbums) are the only uncached Lidarr calls there are, so a
+	// mirror pass is always fresh. What goes stale is the artist's track file list,
+	// which is what the pipeline matches paths against — a file imported into Lidarr
+	// after that list was cached cannot be matched until it expires. Hence an option
+	// rather than the default: it is repair, not part of mirroring.
+	IgnoreCache bool
+}
+
+// SyncLidarr mirrors Lidarr's albums for every Lidarr-managed artist in the collection.
+// See SyncLidarrWith for what a pass does; this is the unscoped, cache-preserving form
+// that the nightly run and the collection-wide button use.
+func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
+	return SyncLidarrWith(db, SyncOptions{})
+}
+
+// SyncLidarrWith mirrors Lidarr's albums for the collection's Lidarr-managed artists:
 // it reads each artist's albums (with have/total track counts + monitoring) and
 // records them as *catalog* state. Lidarr is authoritative about which albums exist
 // and what is monitored; it is not authoritative about what is on disk, so its
 // counts never touch the disk columns Rebuild owns. Where the two disagree the row
 // reports a Discrepancy (see models.CollectionReleaseGroup).
-func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
+//
+// An artist-scoped pass exists because that is the granularity a repair actually needs:
+// one album's counts going stale used to require re-mirroring every Lidarr artist in
+// the collection.
+func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (artistsSynced, groups int, err error) {
 	var managers []models.Manager
 	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).Find(&managers).Error; err != nil {
 		return 0, 0, err
@@ -1095,8 +1123,12 @@ func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
 		return 0, 0, nil
 	}
 
+	q := db.Where("managed_by IN ?", []string{models.ManagedByLidarr, models.ManagedByMixed})
+	if opts.ArtistMBID != "" {
+		q = q.Where("mb_id = ?", opts.ArtistMBID)
+	}
 	var artists []models.CollectionArtist
-	if err := db.Where("managed_by IN ?", []string{models.ManagedByLidarr, models.ManagedByMixed}).Find(&artists).Error; err != nil {
+	if err := q.Find(&artists).Error; err != nil {
 		return 0, 0, err
 	}
 	want := map[string]bool{}
@@ -1127,6 +1159,18 @@ func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
 			if err != nil {
 				logger.Log.Warnf("failed to list Lidarr albums for %s: %s", la.Name, err.Error())
 				continue
+			}
+
+			// Drop this artist's cached Lidarr responses now that we hold the album IDs
+			// the album and track caches are keyed by — the mapping a scoped drop needs
+			// and the only place it is free. The mirror below uses none of it; the next
+			// scan does.
+			if opts.IgnoreCache {
+				albumIDs := make([]int64, 0, len(albums))
+				for _, al := range albums {
+					albumIDs = append(albumIDs, al.ID)
+				}
+				modules.LidarrInvalidateArtistCaches(la.ID, albumIDs)
 			}
 			// Drop the previous catalog view for this artist so albums removed from
 			// Lidarr stop being listed. Done only after the fetch succeeded, and it

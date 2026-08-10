@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
 )
@@ -681,4 +682,49 @@ func TestResolveCorrelationKeepsLidarrCause(t *testing.T) {
 	if !strings.Contains(err.Error(), "Radiohead") {
 		t.Errorf("error %q does not name the artist folder that failed to match", err)
 	}
+}
+
+// TestLidarrInvalidateArtistCaches: the scoped drop has to take the artist's entries
+// and nothing else. The whole-cache flush is what a per-artist button must not do —
+// repairing one artist by making every other artist re-fetch is the cost this exists
+// to avoid.
+func TestLidarrInvalidateArtistCaches(t *testing.T) {
+	resetLidarrCaches()
+	t.Cleanup(resetLidarrCaches)
+
+	now := time.Now()
+	lidarrArtistsCache["1"] = models.CachedLidarrArtistRelease{Timestamp: now}
+	lidarrArtistsCache["2"] = models.CachedLidarrArtistRelease{Timestamp: now}
+	lidarrTrackFilesCache["1"] = models.CachedLidarrTrackFilesRelease{Timestamp: now}
+	lidarrTrackFilesCache["2"] = models.CachedLidarrTrackFilesRelease{Timestamp: now}
+	lidarrAlbumsCache["10"] = models.CachedLidarrAlbumRelease{Timestamp: now}
+	lidarrAlbumsCache["20"] = models.CachedLidarrAlbumRelease{Timestamp: now}
+	lidarrTracksCache["10"] = models.CachedLidarrTracksRelease{Timestamp: now}
+	lidarrTracksCache["20"] = models.CachedLidarrTracksRelease{Timestamp: now}
+
+	LidarrInvalidateArtistCaches(1, []int64{10})
+
+	for _, tc := range []struct {
+		name    string
+		present bool
+		got     bool
+	}{
+		{"artist 1", false, mapHas(lidarrArtistsCache, "1")},
+		{"artist 2", true, mapHas(lidarrArtistsCache, "2")},
+		{"trackfiles 1", false, mapHas(lidarrTrackFilesCache, "1")},
+		{"trackfiles 2", true, mapHas(lidarrTrackFilesCache, "2")},
+		{"album 10", false, mapHas(lidarrAlbumsCache, "10")},
+		{"album 20", true, mapHas(lidarrAlbumsCache, "20")},
+		{"tracks 10", false, mapHas(lidarrTracksCache, "10")},
+		{"tracks 20", true, mapHas(lidarrTracksCache, "20")},
+	} {
+		if tc.got != tc.present {
+			t.Errorf("%s present = %t, want %t", tc.name, tc.got, tc.present)
+		}
+	}
+}
+
+func mapHas[T any](m map[string]T, key string) bool {
+	_, ok := m[key]
+	return ok
 }

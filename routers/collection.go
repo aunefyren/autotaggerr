@@ -457,22 +457,86 @@ func (a *API) scanCollection(c *gin.Context) {
 // syncLidarr mirrors Lidarr's monitored/missing albums for Lidarr-managed artists
 // in the background, recording the result as an Activity event.
 func (a *API) syncLidarr(c *gin.Context) {
+	if !a.lidarrConfigured(c) {
+		return
+	}
+	a.startLidarrSync(collection.SyncOptions{IgnoreCache: ignoreCacheRequested(c)}, "Sync from Lidarr")
+	c.JSON(http.StatusAccepted, gin.H{"status": "lidarr sync started"})
+}
+
+// syncLidarrArtist is syncLidarr narrowed to one artist — the granularity a repair
+// needs, since one album's counts going stale should not cost a mirror pass over every
+// Lidarr artist in the collection.
+//
+// An artist the mirror does not govern is rejected rather than silently syncing nothing:
+// the pass would report "0 artists synced" and read as a failure of Lidarr rather than
+// as the artist not being Lidarr's to answer for.
+func (a *API) syncLidarrArtist(c *gin.Context) {
+	if !a.lidarrConfigured(c) {
+		return
+	}
+	mbid := c.Param("mbid")
+
+	var artist models.CollectionArtist
+	if err := a.DB.Where("mb_id = ?", mbid).First(&artist).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "unknown artist"})
+		return
+	}
+	if artist.ManagedBy != models.ManagedByLidarr && artist.ManagedBy != models.ManagedByMixed {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "this artist is not managed by Lidarr"})
+		return
+	}
+
+	a.startLidarrSync(
+		collection.SyncOptions{ArtistMBID: mbid, IgnoreCache: ignoreCacheRequested(c)},
+		"Sync "+artist.Name+" from Lidarr",
+	)
+	c.JSON(http.StatusAccepted, gin.H{"status": "lidarr sync started"})
+}
+
+// lidarrConfigured answers the 400 both sync handlers owe when there is no Lidarr to
+// sync from, and reports whether the caller may continue.
+func (a *API) lidarrConfigured(c *gin.Context) bool {
 	var lidarrManagers int64
 	a.DB.Model(&models.Manager{}).Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).Count(&lidarrManagers)
 	if lidarrManagers == 0 {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "no enabled Lidarr manager configured"})
-		return
+		return false
 	}
+	return true
+}
 
+// ignoreCacheRequested reads the opt-in flag. It is deliberately tolerant of an absent
+// or unparseable body: the flag defaults to off, so the worst a malformed request can
+// do is get the ordinary pass it would have got without the field.
+func ignoreCacheRequested(c *gin.Context) bool {
+	var in struct {
+		IgnoreCache bool `json:"ignore_cache"`
+	}
+	_ = c.ShouldBindJSON(&in)
+	return in.IgnoreCache
+}
+
+// startLidarrSync runs a mirror pass in the background under its own Activity event.
+// Both sync verbs report identically — same event type, same counters — because they
+// are the same work at two scopes, and a scoped pass that reported differently would
+// read as a different verb in the feed.
+func (a *API) startLidarrSync(opts collection.SyncOptions, title string) {
 	go func() {
-		ev := events.Begin(a.DB, models.EventTypeLidarrSync, "Sync from Lidarr")
-		artists, groups, err := collection.SyncLidarr(a.DB)
+		ev := events.Begin(a.DB, models.EventTypeLidarrSync, title)
+		artists, groups, err := collection.SyncLidarrWith(a.DB, opts)
 		status := models.EventStatusOK
 		if err != nil {
 			status = models.EventStatusError
 		}
 		summary := fmt.Sprintf("%d artists synced · %d albums", artists, groups)
-		details := map[string]any{"artists": artists, "albums": groups}
+		if opts.IgnoreCache {
+			summary += " · cache dropped"
+		}
+		details := map[string]any{"artists": artists, "albums": groups, "ignore_cache": opts.IgnoreCache}
+		if opts.ArtistMBID != "" {
+			details["artist_mb_id"] = opts.ArtistMBID
+		}
 		if err != nil {
 			details["error"] = err.Error()
 		}
@@ -482,8 +546,6 @@ func (a *API) syncLidarr(c *gin.Context) {
 		}
 		events.Finish(a.DB, ev, status, summary, details)
 	}()
-
-	c.JSON(http.StatusAccepted, gin.H{"status": "lidarr sync started"})
 }
 
 // searchArtists proxies a MusicBrainz artist search, so an artist can be added

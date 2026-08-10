@@ -2,10 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, ScanStatus } from "../types";
+import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, Manager, ScanStatus } from "../types";
 import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
+import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
 import { ProgressBar } from "../components/ProgressBar";
@@ -151,6 +152,15 @@ export default function Artist() {
   const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
   const managerLabel = isLidarr ? "Lidarr" : "MusicBrainz";
 
+  // Two conditions, both required, and they are not the same fact: this artist has to
+  // be Lidarr's to answer for, *and* there has to be an enabled Lidarr to ask. A row
+  // can still read "managed by Lidarr" after its manager was disabled or removed, and
+  // the endpoint rejects that with a 400 — a button whose only outcome is an error
+  // message is a button that should not be there. Same rule as the Collection page.
+  const managers = useFetch<Manager[]>(() => api.get("/managers"));
+  const canSyncLidarr = isLidarr && (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
+  const [syncAsk, setSyncAsk] = useState(false);
+
   const refresh = () => { detail.reload(); disco.reload(); };
 
   // The queued per-artist actions run on the same single-run guard as a full run, so
@@ -179,6 +189,20 @@ export default function Artist() {
       await api.post(`/artists/${mbid}/${path}`);
       toast("info", started);
       setTimeout(() => status.reload(), 300);
+    } catch (e) {
+      toast("err", errMsg(e));
+    }
+  };
+
+  // Not one of the four verbs: it reads Lidarr rather than the files, so it neither
+  // queues on the job runner nor is disabled while one is running. It reports through
+  // Activity like the collection-wide sync does.
+  const syncLidarr = async (ignoreCache: boolean) => {
+    try {
+      await api.post(`/artists/${mbid}/sync-lidarr`, { ignore_cache: ignoreCache });
+      toast("info", "Lidarr sync started — see Activity");
+      setSyncAsk(false);
+      setTimeout(refresh, 3000);
     } catch (e) {
       toast("err", errMsg(e));
     }
@@ -405,6 +429,22 @@ export default function Artist() {
             >
               Process
             </button>
+            {/* Outside the group of four on purpose: those four are Autotaggerr acting
+                on this artist's files and metadata, and this one only re-reads what the
+                manager says. It is also the only action here that does not queue, so it
+                stays available while a job runs. */}
+            {canSyncLidarr && (
+              <>
+                <span className="sep">·</span>
+                <button
+                  className="btn btn-ghost btn-sm"
+                  title="Mirror what Lidarr says should exist for this artist — which albums it tracks, monitors, and how many files it has of each. Reads Lidarr, not MusicBrainz; writes no files."
+                  onClick={() => setSyncAsk(true)}
+                >
+                  Sync from Lidarr
+                </button>
+              </>
+            )}
             {running && (
               <span className="row" style={{ gap: 8, alignItems: "center" }}>
                 <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A job is running">
@@ -493,6 +533,14 @@ export default function Artist() {
               </p>
             </>
           }
+        />
+      )}
+
+      {syncAsk && (
+        <SyncLidarrDialog
+          scope={artist ? artist.name : "this artist"}
+          onConfirm={syncLidarr}
+          onCancel={() => setSyncAsk(false)}
         />
       )}
 

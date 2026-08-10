@@ -9,6 +9,7 @@ import { MBLink } from "../components/MBLink";
 import { AddArtistModal } from "../components/AddArtistModal";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
+import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { FilterChip, Pager, SortHeader, TableToolbar, matches, useBrowse, usePaging, useSorted } from "../components/browse";
 
 function ManagedBy({ managed_by }: { managed_by: string }) {
@@ -71,6 +72,7 @@ export default function Collection() {
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
   const hasLidarr = (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
   const [adding, setAdding] = useState(false);
+  const [syncAsk, setSyncAsk] = useState(false);
   const browse = useBrowse("name");
 
   // The queued verbs share one job runner, so the status says whether any of them
@@ -105,10 +107,11 @@ export default function Collection() {
     }
   };
 
-  const syncLidarr = async () => {
+  const syncLidarr = async (ignoreCache: boolean) => {
     try {
-      await api.post("/collection/sync-lidarr");
+      await api.post("/collection/sync-lidarr", { ignore_cache: ignoreCache });
       toast("info", "Lidarr sync started — see Activity");
+      setSyncAsk(false);
       setTimeout(reload, 3000);
     } catch (e) {
       toast("err", errMsg(e));
@@ -145,7 +148,7 @@ export default function Collection() {
           {hasLidarr && (
             <button
               className="btn btn-secondary btn-sm"
-              onClick={syncLidarr}
+              onClick={() => setSyncAsk(true)}
               title="Mirror what Lidarr says should exist for Lidarr-managed artists. Reads Lidarr, not MusicBrainz; writes no files."
             >
               Sync from Lidarr
@@ -309,6 +312,13 @@ export default function Collection() {
       )}
 
       {adding && <AddArtistModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
+      {syncAsk && (
+        <SyncLidarrDialog
+          scope="every Lidarr-managed artist"
+          onConfirm={syncLidarr}
+          onCancel={() => setSyncAsk(false)}
+        />
+      )}
     </div>
   );
 }

@@ -12,6 +12,31 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 ## Open work
 
+- **A verb that does nothing cannot say why.** On an empty install *Scan* answers
+  `0 artists, 0 albums` and *Sync from Lidarr* records `0 artists synced · 0 albums`, and neither
+  states its cause. The mirror's is the worse one: `SyncLidarrWith` returns before making a single
+  HTTP call when no collection artist is `managed_by` lidarr/mixed, so "there was nothing here to
+  mirror" and "Lidarr was asked and had nothing" render as the same Activity row. Each verb reads the
+  output of the one before it (Process → `library_items` → Scan → collection rows → Sync → catalog
+  columns), so on a cold install only Process has an input, and the other two are honest zeroes that
+  read as duds. The fix is for each to report which input was empty — as the inline result for Scan
+  and as the event summary for the sync — and to disable the buttons with a title saying what is
+  needed first. `no_edition` is the precedent: it exists so "the counts disagree because nobody chose
+  an edition" cannot read as "the manager is stale". Same idea, one level up.
+- **The Lidarr mirror cannot introduce an artist**, so it cannot populate a cold collection — the
+  button a Lidarr-first user reaches for first is the one that can do nothing. `CollectionArtist`
+  rows do not require files (*Add artist* creates one), so nothing structural forbids it; it is a
+  decision about what the collection means, since importing from Lidarr would fill "present vs
+  wanted" with artists no file has ever been seen for. If it happens it belongs behind its own option
+  on the sync dialog or a separate *Import artists from Lidarr* action, not as a change to what the
+  plain Sync button does.
+- **`FindArtistByName` compares two different things depending on the cache.** The cache-hit branch
+  matches the folder name against `cachedArtist.Artist.Name`; the API branch matches it against
+  `filepath.Base(artist.Path)` (`modules/lidarr.go`). Where an artist's Lidarr *name* and their
+  *folder* differ — `AC/DC` vs `AC_DC`, a disambiguated `Nirvana (2)` — the cache can answer for a
+  file the fresh path would not match, and, more often, misses on every lookup and re-fetches
+  `/api/v1/artist` per file. Folder-to-folder is the intended comparison; the cached branch should
+  use it too.
 - **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
   manual attach. The last unbuilt piece of the native manager. It has no Activity event, and the
   event ships with the feature rather than before it — every other verb has one now, so an import
@@ -133,6 +158,25 @@ outages reaching the index at all. What is left:
   precisely what stops it recovering once the cause is fixed. The re-tag path itself now records
   outcomes like the pipeline does ([scanning.md](scanning.md#drift-sync)), so this is the last half
   of that idea — wider diff than the collection fix, so: own pass, own tests.
+
+  **This makes the repair verbs unavailable exactly when they are needed.** `ArtistScope` and
+  `ReleaseGroupScope` resolve their folders through `ArtistTargets`/`ReleaseGroupTargets`, which go
+  via `collection_releases` and then filter `status = OK`. If every file of an album goes unmatched
+  — one stale Lidarr trackfile cache does it, see below — the owned-edition rows are pruned by the
+  next rebuild and both scopes return `ErrNothingToProcess`. Force re-correlate, the verb whose whole
+  job is repairing an artist whose files diverged from what the manager says, then refuses to start,
+  and the only way out is `ForceRecorrelateLibrary` — which is library-wide and discards every
+  Lidarr-governed pin in it. Whatever replaces the status filter has to admit unmatched files here
+  specifically, or the catch-22 survives the fix.
+- **An unmatched file keeps its identity and is dropped from the disk view anyway.** `recordItem`
+  preserves `mb_release_id` through a failure (`components/pipeline.go:381`) — Autotaggerr still
+  knows exactly which release those files are — but `ownedItemRows` excludes on `status`, so a
+  Lidarr hiccup empties the album from the collection regardless. This is deliberate and documented
+  ([collection.md](collection.md#the-disk-view-counts-files-not-successes)): under a manager,
+  "unmatched" means the authority does not know the file, and it should leave the collection. Worth
+  revisiting anyway, because the *transient* Lidarr case has exactly the shape the MusicBrainz fix
+  above was written for — an hour-old cache is not the manager changing its mind. `last_error_transient`
+  already exists to carry that distinction and nothing reads it.
 - **A retry with backoff** inside the fetch (one attempt spaced by the existing `RateLimit()`
   interval) would absorb most single 503s before any of this matters. Kept separate because it
   interacts with the in-flight coalescing and the limiter; the shipped work makes an outage
@@ -144,6 +188,12 @@ Shipped. Nothing durable is memory-only, nothing is a JSON file, and the batched
 see [mirror.md](mirror.md#what-is-cached-and-where) and
 [mirror.md](mirror.md#the-provider-cache). What is left from that audit:
 
+- **The three `lidarr_*` keys in `config.json` are seed-only** and nothing reads them after the
+  manager row exists (`database/seed.go` returns early). That is now stated in the README and in
+  [media-manager.md](media-manager.md#one-copy-of-the-credentials-and-one-way-to-check-them), but a
+  key that silently does nothing is still a trap — someone will edit the cookie there again. Either
+  drop them from the config struct once the manager UI has been in a release long enough, or have
+  `LoadConfig` log when they are set and a manager row already exists.
 - **The legacy JSON files are left on disk** after their one-time import. Harmless, and deliberate —
   an import that had deleted its own source would be unrecoverable if it went wrong — but `config/`
   now holds five files nothing reads (`lidarr_{albums,artists,tracks}.json`, `mb_releases.json`,
@@ -161,7 +211,10 @@ The manager-authority boundary is now honoured end to end (see
   page (`POST /release-groups/:mbid/recorrelate`) and per-library on library settings
   (`POST /libraries/:id/recorrelate`). This is what a user does when Lidarr's answer and the files
   disagree — the remaining action-half endpoint with no UI. Use the shared `ConfirmDialog`
-  (`ui.tsx`, `danger`: it discards pins) rather than a new one.
+  (`ui.tsx`, `danger`: it discards pins) rather than a new one. Confirmed needed in anger: repairing
+  one album after a Lidarr re-import meant hand-rolling the `curl`, and the library-scoped one was
+  the only form that would start (see the `status = OK` catch-22 above). Worth doing together with
+  that fix, since the per-artist and per-album buttons are the ones it unblocks.
 - **A failure filter on the Items page.** The rows carry `error`, `last_error_at` and
   `last_error_transient` — exactly the split needed to separate "MusicBrainz was down, this will
   retry" from "someone has to fix this" — and nothing reads them. There is no way to ask *what
@@ -246,6 +299,12 @@ says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. What is still o
   the cost of a run is finally measurable. The default `autotaggerr_process_concurrency` of 4 has
   never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
   worth it — FLAC rewrites are more disk-bound.
+- **`FindTrackFileByPath` wants a real multi-disc fixture.** A production soundtrack (Jerry
+  Goldsmith's *Alien*, 30 + 17 tracks over `CD 01`/`CD 02`) carries the same basename on both discs
+  *and* a typographic apostrophe in others. Both resolve correctly today — disc numbers disambiguate
+  the first, `Canon`'s NFC pass the second — but nothing in the suite pins either, and both are one
+  careless change away from silently matching the wrong disc. Better than the synthetic fixture
+  already there, because it is shaped like a real release rather than like the test.
 
 ## MusicBrainz entity migration — what is left
 
