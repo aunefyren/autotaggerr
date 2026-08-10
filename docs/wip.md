@@ -10,22 +10,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 [mb-migration.md](mb-migration.md), [mirror.md](mirror.md),
 [authentication.md](authentication.md) and [settings.md](settings.md).
 
-## The next thing to do
-
-- **Re-correlate buttons.** Behind a confirm dialog that says it **discards manual pins** and
-  rewrites files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`), per-album on the
-  release-group page (`POST /release-groups/:mbid/recorrelate`) and per-library on library settings
-  (`POST /libraries/:id/recorrelate`). All three endpoints exist and none has any UI — the remaining
-  action-half endpoints with none. Use the shared `ConfirmDialog` (`ui.tsx`, `danger`) rather than a
-  new one. Confirmed needed in anger: repairing one album after a Lidarr re-import meant hand-rolling
-  the `curl`, and the library-scoped one was the only form that would start.
-
-  The catch-22 that made the per-artist and per-album forms refuse to run has been fixed — membership
-  follows identity now, and folder resolution admits disowned files, so both scopes start on exactly
-  the damage they repair (see
-  [collection.md](collection.md#the-same-rule-applied-to-membership)). These three buttons are what
-  is left to build.
-
 ## Open work
 
 - **A verb that does nothing cannot say why.** On an empty install *Scan* answers

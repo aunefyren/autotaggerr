@@ -180,6 +180,12 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   text), **secondary** (`--surface-2` bg, `--border` border, `--text`), **ghost** (transparent →
   `--surface-2` on hover), **danger** (`--danger` bg). States: hover, active, focus-ring, disabled
   (50% opacity, no pointer), loading (spinner, keeps width). Semibold label, `--radius`.
+  **Ghost + `--danger-text` label** is the destructive member of a row of ordinary ones — Remove in
+  the Libraries table, Re-correlate beside the four verbs. A solid `btn-danger` in a row of ghosts
+  reads as the row's primary action, which is the opposite of the point; the colour marks the
+  consequence while the weight keeps it from being the thing the eye lands on first. Reserve it for
+  actions that overwrite or discard, and pair it with a `ConfirmDialog` — the colour is a hint, not
+  a confirmation.
 - **Input / select / textarea** — `--surface-2` bg, `--border` border, `--text`, `--text-dim`
   placeholder, `--font-mono` when the value is an identifier/path. Focus ring. Invalid = `--danger`
   border + helper text in `--danger-text`.

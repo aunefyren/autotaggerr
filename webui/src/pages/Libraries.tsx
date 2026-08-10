@@ -3,6 +3,7 @@ import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { DataSource, Library, Manager, TaggerProfile, dataSourceCategory } from "../types";
 import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
+import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { useToast } from "../toast";
 
 interface Options {
@@ -20,6 +21,8 @@ export default function Libraries() {
 
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Library | null>(null);
+  const [recorrelating, setRecorrelating] = useState<Library | null>(null);
+  const [busy, setBusy] = useState(false);
 
   const options: Options = {
     managers: managers.data ?? [],
@@ -38,6 +41,24 @@ export default function Libraries() {
       toast("err", errMsg(e));
     }
   };
+  // The widest of the three re-correlate scopes — every file in the library, and every
+  // manager-governed pin in it. Confirmed rather than immediate for exactly that
+  // reason; the artist and album forms exist so this is not the only way to repair one
+  // album.
+  const recorrelate = async () => {
+    if (!recorrelating) return;
+    setBusy(true);
+    try {
+      await api.post(`/libraries/${recorrelating.id}/recorrelate`);
+      toast("info", `Re-correlate started for ${recorrelating.name} — see Activity`);
+      setRecorrelating(null);
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const toggle = async (l: Library) => {
     try {
       await api.put(`/libraries/${l.id}`, { enabled: !l.enabled });
@@ -119,6 +140,14 @@ export default function Libraries() {
                       >
                         Tag files
                       </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
+                        style={{ color: "var(--danger-text)" }}
+                        onClick={() => setRecorrelating(l)}
+                        title="Ask the manager what every file in this library is, ignoring the cached answers and the unchanged-file skip, and rewrite the tags to match. The repair for a re-pointed Lidarr. Writes tags, and discards every manual pin the manager governs — the artist and album pages carry narrower forms of this."
+                      >
+                        Re-correlate
+                      </button>
                       <button className="btn btn-ghost btn-sm" onClick={() => setEditing(l)}>Edit</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => toggle(l)}>{l.enabled ? "Disable" : "Enable"}</button>
                       <button className="btn btn-ghost btn-sm" onClick={() => remove(l)} style={{ color: "var(--danger-text)" }}>Remove</button>
@@ -129,6 +158,21 @@ export default function Libraries() {
             </tbody>
           </table>
         </div>
+      )}
+
+      {recorrelating && (
+        <RecorrelateDialog
+          scope={recorrelating.name}
+          manager={managerName(recorrelating.manager_id)}
+          // Pins are only cleared under a Lidarr manager, so the warning follows the
+          // library's actual manager rather than being printed on every library.
+          discardsPins={
+            options.managers.find((m) => m.id === recorrelating.manager_id)?.type === "lidarr"
+          }
+          busy={busy}
+          onConfirm={recorrelate}
+          onCancel={() => setRecorrelating(null)}
+        />
       )}
 
       {creating && (

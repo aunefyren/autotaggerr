@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
@@ -8,8 +8,10 @@ import {
   CollectionReleaseGroup,
   Edition,
   ReleaseTracks,
+  ScanStatus,
 } from "../types";
 import { ErrorNote, Pill } from "../components/ui";
+import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { MBLink } from "../components/MBLink";
 import { mediaSummary } from "../components/mediaSummary";
 import { useToast } from "../toast";
@@ -49,7 +51,28 @@ export default function ReleaseGroup() {
   );
 
   const [busy, setBusy] = useState(false);
+  const [recorrelateAsk, setRecorrelateAsk] = useState(false);
   const browse = useBrowse("date", "asc");
+
+  // Re-correlate queues on the shared job runner, so the global status is what says
+  // whether it can be started — the same poll the artist page runs, for the same
+  // reason. Polling only continues while something is running.
+  const status = useFetch<ScanStatus>(() => api.get("/process/status"));
+  const running = status.data?.running ?? false;
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => status.reload(), 3000);
+    return () => clearInterval(t);
+  }, [running, status.reload]);
+
+  // A re-correlate rewrites this album's tags and re-answers what its files are, so
+  // the page it happened on has to stop showing the state from before it.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running) reload();
+    wasRunning.current = running;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
 
   const artist = data?.artist;
   const rg = data?.release_group;
@@ -80,8 +103,8 @@ export default function ReleaseGroup() {
   // was the page contradicting itself.
   const anyEditionOn = !!anyDesire || (derivedWant && editionDesires.length === 0);
 
-  const managerLabel =
-    artist?.managed_by === "lidarr" || artist?.managed_by === "mixed" ? "Lidarr" : "the manager";
+  const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
+  const managerLabel = isLidarr ? "Lidarr" : "the manager";
   const derivedReason =
     rg?.wanted_source === "manager"
       ? `${managerLabel} monitors this album${editionDesires.length > 0 ? " on this edition" : ""}.`
@@ -123,6 +146,22 @@ export default function ReleaseGroup() {
         first_release_date: rg.first_release_date,
       });
       reload();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The narrowest repair: one album's folders, rather than the artist's whole
+  // discography. Same verb, same confirm step, one level down.
+  const recorrelate = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/release-groups/${rgid}/recorrelate`);
+      toast("info", "Re-correlate started — see Activity");
+      setRecorrelateAsk(false);
+      setTimeout(() => status.reload(), 300);
     } catch (e) {
       toast("err", errMsg(e));
     } finally {
@@ -255,8 +294,37 @@ export default function ReleaseGroup() {
               Pin
             </button>
           )}
+          {/* The narrowest of the three re-correlate scopes, and the one worth
+              reaching for first: repairing one album after a Lidarr re-import used to
+              mean the library-wide form, which discards every manager-governed pin in
+              it. Stays visible with nothing on disk — it is the control that explains
+              why it cannot run — and disabled, because there are no folders to walk. */}
+          <button
+            className="btn btn-ghost btn-sm"
+            style={{ color: "var(--danger-text)" }}
+            disabled={busy || loading || running || !rg?.owned}
+            title={
+              rg?.owned
+                ? `Ask ${managerLabel} what this album's files are, ignoring the cached answers and the unchanged-file skip, and rewrite their tags to match. The repair for an album that disagrees with ${managerLabel} — a changed edition, a re-import — which an ordinary Process cannot fix because nothing on disk changed. Writes tags.`
+                : "Nothing of this album is on disk, so there are no files to re-correlate."
+            }
+            onClick={() => setRecorrelateAsk(true)}
+          >
+            Re-correlate
+          </button>
         </div>
       </div>
+
+      {recorrelateAsk && (
+        <RecorrelateDialog
+          scope={rg ? rg.title : "this album"}
+          manager={managerLabel}
+          discardsPins={isLidarr}
+          busy={busy}
+          onConfirm={recorrelate}
+          onCancel={() => setRecorrelateAsk(false)}
+        />
+      )}
 
       {loading && <div className="muted">Loading…</div>}
 

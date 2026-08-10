@@ -62,8 +62,11 @@ Every scope offers its full set, so the same four words mean the same four thing
 appear:
 
 - **Collection** — all four, collection-wide.
-- **Artist** — all four, narrowed to that artist.
-- **Libraries** — Process, Refresh metadata, Tag files per library (Scan has no library scope).
+- **Artist** — all four, narrowed to that artist, plus *Re-correlate*.
+- **Release-group** — *Re-correlate* only. The four verbs have no album scope; the repair does,
+  because one album is the unit that drifts.
+- **Libraries** — Process, Refresh metadata, Tag files per library (Scan has no library scope), plus
+  *Re-correlate*.
 - **Activity** — *Process all libraries* only. Activity reports work; it is not where work is
   chosen. The one exception earns its place because "nothing has happened yet" is a state that
   page has to answer for.
@@ -179,6 +182,28 @@ release-group (`collection.ReleaseGroupTargets`, narrowed to album/disc folders 
 does not re-walk the discography) or whole library, via
 `POST /{artists|release-groups}/:mbid/recorrelate` and `POST /libraries/:id/recorrelate`. See
 [collection.md](collection.md#manager-authority--lidarr-owns-identity) for why it is needed.
+
+#### The three re-correlate buttons
+
+One per scope: the artist header, the release-group header, and the Libraries table. All three open
+the same `RecorrelateDialog` — one component, because the three differ only in *how much* they
+touch, and a copy of the wording per page is how a verb comes to mean three things.
+
+- **It is not one of the four.** On the artist page it sits outside that group, in `--danger-text`
+  (the ghost-destructive treatment the Remove button already uses), because it rewrites tags and,
+  under Lidarr, discards work done by hand. The four verbs each do what their label says and stop;
+  this one deliberately does more.
+- **The pin warning follows the actual manager.** `prepareForceRecorrelate` clears pins only for
+  libraries a *Lidarr* manager governs, so `discardsPins` is passed per scope rather than printed
+  everywhere. A warning about work that does not happen is as misleading as no warning at all.
+- **The album button stays visible with nothing on disk**, disabled, saying so. It is the control
+  that explains why it cannot run; hiding it would leave the user looking for it (see
+  [style-guide.md](style-guide.md#components), *Disabled means "not now"*).
+
+The narrow two are what the [membership fix](collection.md#the-same-rule-applied-to-membership)
+unblocked. Before it, an album whose files had all gone `unmatched` — one stale Lidarr trackfile
+cache does it — resolved to no folders, so both refused to start and the only form that would run
+was the library-wide one, which discards every manager-governed pin in the library.
 
 ### Finding an artist on disk
 

@@ -7,6 +7,7 @@ import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
+import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
 import { ProgressBar } from "../components/ProgressBar";
@@ -138,6 +139,7 @@ export default function Artist() {
   // booleans: detaching and reattaching are opposite answers to one question, and
   // both being open at once is not a state that should be representable.
   const [authorityAsk, setAuthorityAsk] = useState<"detach" | "reattach" | null>(null);
+  const [recorrelateAsk, setRecorrelateAsk] = useState(false);
   const browse = useBrowse("year", "desc");
 
   const artist = detail.data?.artist;
@@ -191,6 +193,23 @@ export default function Artist() {
       setTimeout(() => status.reload(), 300);
     } catch (e) {
       toast("err", errMsg(e));
+    }
+  };
+
+  // Force re-correlate is a Process with the unchanged-file skip switched off, so it
+  // queues and reports exactly like one — the confirm step is what makes it a separate
+  // control rather than a checkbox on Process.
+  const recorrelate = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/artists/${mbid}/recorrelate`);
+      toast("info", "Re-correlate started — see Activity");
+      setRecorrelateAsk(false);
+      setTimeout(() => status.reload(), 300);
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -429,6 +448,21 @@ export default function Artist() {
             >
               Process
             </button>
+            {/* A repair, not a routine verb, so it sits outside the four and carries
+                danger colouring: it is Process with the unchanged-file skip switched
+                off, which is the only thing that fixes files whose identity drifted
+                without a byte changing on disk. Confirmed rather than immediate,
+                because it rewrites tags and — under Lidarr — discards manual pins. */}
+            <span className="sep">·</span>
+            <button
+              className="btn btn-ghost btn-sm"
+              style={{ color: "var(--danger-text)" }}
+              disabled={running}
+              title="Ask the manager what every one of this artist's files is, ignoring both the cached answers and the unchanged-file skip, and rewrite the tags to match. This is the repair for files that disagree with the manager — an edition changed in Lidarr, or an album was re-imported — which an ordinary Process cannot fix because nothing on disk changed. Writes tags."
+              onClick={() => setRecorrelateAsk(true)}
+            >
+              Re-correlate
+            </button>
             {/* Outside the group of four on purpose: those four are Autotaggerr acting
                 on this artist's files and metadata, and this one only re-reads what the
                 manager says. It is also the only action here that does not queue, so it
@@ -541,6 +575,20 @@ export default function Artist() {
           scope={artist ? artist.name : "this artist"}
           onConfirm={syncLidarr}
           onCancel={() => setSyncAsk(false)}
+        />
+      )}
+
+      {recorrelateAsk && (
+        <RecorrelateDialog
+          scope={artist ? artist.name : "this artist"}
+          manager={managerLabel}
+          // Only Lidarr-governed files lose their pins; the runner skips every other
+          // manager type. Warning about it regardless would describe work that does
+          // not happen here.
+          discardsPins={isLidarr}
+          busy={busy}
+          onConfirm={recorrelate}
+          onCancel={() => setRecorrelateAsk(false)}
         />
       )}
 
