@@ -82,8 +82,8 @@ func providerCachePutMany(source string, ttl time.Duration, items ...providerCac
 //
 // Expired rows are left in place rather than deleted. They are not restored, they are
 // overwritten by key on the next fetch, and the key space is bounded by what the
-// service holds — while deleting them would empty the source and re-trigger the
-// one-time JSON import below.
+// service holds — while deleting them would empty the source, which is the condition
+// the one-time JSON import below keys off.
 func providerCacheRows(source string) ([]models.ProviderCache, error) {
 	if cacheDB == nil {
 		return nil, nil
@@ -130,9 +130,7 @@ func providerCacheDrop(source, key string) {
 // artist, album and track file again on the first boot after the upgrade — the same
 // cold start the MusicBrainz cache avoided when it moved (musicbrainzMigrateJSONIfNeeded).
 //
-// decode receives the file's bytes and returns the entries to store. The legacy file
-// is left on disk: it is harmless, and a failed import that had deleted its own source
-// would be unrecoverable.
+// decode receives the file's bytes and returns the entries to store.
 func providerCacheImportJSON(source, path string, ttl time.Duration, decode func([]byte) ([]providerCacheItem, error)) {
 	if cacheDB == nil {
 		return
@@ -144,6 +142,9 @@ func providerCacheImportJSON(source, path string, ttl time.Duration, decode func
 		return
 	}
 	if count > 0 {
+		// The source already holds rows, so this file was imported by an earlier boot
+		// (or superseded by a live fetch) and nothing will ever read it again.
+		removeLegacyCacheFile(source, path)
 		return
 	}
 
@@ -157,15 +158,40 @@ func providerCacheImportJSON(source, path string, ttl time.Duration, decode func
 
 	items, err := decode(data)
 	if err != nil {
+		// Keep an unparseable file. This is the one case where the import genuinely
+		// failed, and deleting the evidence would make it unrecoverable.
 		logger.Log.Warnf("could not parse the legacy %s cache: %s", source, err.Error())
 		return
 	}
-	if len(items) == 0 {
+
+	if len(items) > 0 {
+		providerCachePutMany(source, ttl, items...)
+		logger.Log.Infof("imported %d %s cache entr(ies) from %s", len(items), source, path)
+	}
+	removeLegacyCacheFile(source, path)
+}
+
+// removeLegacyCacheFile deletes a config/*.json cache whose contents are now in the
+// database.
+//
+// The import used to leave these behind, on the reasoning that an import which had
+// deleted its own source would be unrecoverable if it went wrong. What that left is
+// worse: config/ accumulates five files nothing reads, indistinguishable from live
+// configuration, and the one-hour provider TTL means their contents are stale within
+// the hour anyway — there is nothing in them to recover. So they go, but only on the
+// paths where the data provably reached the database (or the file never had any), and
+// never on a parse failure.
+//
+// A failed unlink is logged and swallowed: a read-only config/ is a reason to leave
+// the file, not to fail the startup that just imported it successfully.
+func removeLegacyCacheFile(source, path string) {
+	if err := os.Remove(path); err != nil {
+		if !os.IsNotExist(err) {
+			logger.Log.Warnf("could not remove the imported legacy %s cache %s: %s", source, path, err.Error())
+		}
 		return
 	}
-
-	providerCachePutMany(source, ttl, items...)
-	logger.Log.Infof("imported %d %s cache entr(ies) from %s", len(items), source, path)
+	logger.Log.Infof("removed the legacy %s cache file %s; it is stored in the database now", source, path)
 }
 
 // providerCacheDecodeMap adapts a legacy `map[string]T` cache file into import items.

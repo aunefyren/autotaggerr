@@ -115,10 +115,17 @@ Guarded by `TestLidarrClientReportsLoginPage`, `…ReportsCrossHostRedirect`,
 ### One copy of the credentials, and one way to check them
 
 A manager's credentials live on the **manager row**. `config.json` seeds that row once
-(`database/seed.go:146` returns early the moment a Lidarr manager exists) and is never read for them
+(`seedLidarrManager` returns early the moment a Lidarr manager exists) and is never read for them
 again, so editing `lidarr_header_cookie` there after first run changes nothing the pipeline sees.
 The row is edited through `PUT /managers/:id` and the Managers page, which is why that page says so
 in as many words.
+
+Because that is a trap — an expired session makes editing the cookie in `config.json` look exactly
+like fixing it — the seed **says so at startup**: `warnLidarrConfigIgnored` logs a warning naming
+any of the three `lidarr_*` keys whose configured value differs from what the manager actually uses.
+Only a divergence is reported. A value identical to the manager's is the original seed sitting where
+it was left, and warning about it on every boot would train the reader to ignore the line that
+matters. The key is named, never its value.
 
 Nothing else may build a Lidarr client. `main.go` used to build one from `files.ConfigFile` for the
 health check — a second copy that diverged from the row the first time either side was edited alone,

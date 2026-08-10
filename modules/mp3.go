@@ -3,6 +3,7 @@ package modules
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -299,6 +300,18 @@ func SetMP3Tags(filePath string, metadata models.FileTags, configFile models.Con
 		return false, 0, nil, fmt.Errorf("id3 tag write failed: %w", err)
 	}
 
+	// Save reopens the file; release that handle before touching the tail. The
+	// deferred Close above then no-ops on an already-closed file.
+	_ = tag.Close()
+
+	if removed, err := stripID3v1(filePath); err != nil {
+		// The v2 tag — the one everything here reads — is already on disk, so a
+		// failure to tidy the trailer is not a failure to tag the file.
+		logger.Log.Warnf("could not strip the ID3v1 trailer from %s: %s", filePath, err.Error())
+	} else if removed {
+		logger.Log.Debug("removed a stale ID3v1 trailer")
+	}
+
 	// The diff is derived from the change set rather than from the write blocks: the
 	// tag is saved in one pass, so there is no per-field success to report, and
 	// `changes` is already exactly the set of fields that differed. tagsWritten can
@@ -314,6 +327,76 @@ func SetMP3Tags(filePath string, metadata models.FileTags, configFile models.Con
 	utilities.SortTagChanges(changed)
 
 	return false, tagsWritten, changed, nil
+}
+
+const (
+	// id3v1TagSize is the whole of an ID3v1 tag: 128 bytes at the very end of the
+	// file, opening with "TAG". The format has no length field — the size is the
+	// definition.
+	id3v1TagSize = 128
+	// id3v1ExtendedTagSize is the "enhanced tag" some Winamp-era writers put
+	// immediately *before* the 128-byte block, opening with "TAG+".
+	id3v1ExtendedTagSize = 227
+)
+
+// stripID3v1 removes the ID3v1 trailer from a file that has just been retagged,
+// reporting whether there was one. It is a truncation: ID3v1 lives at the end of the
+// file and is not framed, so there is nothing to rewrite around.
+//
+// The trailer is removed rather than refreshed because nothing can keep it honest.
+// The previous writer shelled out to ffmpeg with `-write_id3v1 1`, which rebuilt it on
+// every write; bogem/id3v2 does not manage ID3v1 at all, so an existing one is copied
+// through verbatim and now says whatever it said before Autotaggerr first saw the file.
+// A 30-byte-truncated title and a genre from a fixed list of 80 cannot represent what
+// gets written here anyway — it cannot hold an MBID, which is the thing every consumer
+// in docs/tagging.md actually reads — so refreshing it was never on the table. That
+// leaves keeping a tag that contradicts the file, or removing it; a file that disagrees
+// with itself is the worse of the two, because a v1-only reader has no way to tell
+// which half is current.
+//
+// Only called on a file being written anyway, so it costs nothing on the skip-unchanged
+// path and cannot turn an untouched library into a rewritten one.
+func stripID3v1(filePath string) (bool, error) {
+	file, err := os.OpenFile(filePath, os.O_RDWR, 0)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	info, err := file.Stat()
+	if err != nil {
+		return false, err
+	}
+	size := info.Size()
+	if size < id3v1TagSize {
+		return false, nil
+	}
+
+	magic := make([]byte, 4)
+	if _, err := file.ReadAt(magic[:3], size-id3v1TagSize); err != nil {
+		return false, err
+	}
+	if string(magic[:3]) != "TAG" {
+		return false, nil
+	}
+	size -= id3v1TagSize
+
+	// The enhanced block only ever exists in front of a real ID3v1 tag, so it is
+	// checked for only once one has been found. Leaving it behind would orphan a
+	// structure whose header we just deleted.
+	if size >= id3v1ExtendedTagSize {
+		if _, err := file.ReadAt(magic, size-id3v1ExtendedTagSize); err != nil {
+			return false, err
+		}
+		if string(magic) == "TAG+" {
+			size -= id3v1ExtendedTagSize
+		}
+	}
+
+	if err := file.Truncate(size); err != nil {
+		return false, err
+	}
+	return true, file.Sync()
 }
 
 // isPairedHalf reports whether a key is one half of a paired frame, which is written

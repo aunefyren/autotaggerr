@@ -337,6 +337,12 @@ to also write a `details.duration` string; that was the only reason those two ha
 other five did not, and it has been removed rather than copied into the rest. A running event counts
 up in the same format as the banner's elapsed counter; an event with no finish stamp reads `—`.
 
+A column of durations is deliberately all there is. "Where did the four hours go?" used to be
+answered by a share-of-time bar over the stage list, and that list is gone; the same question is now
+answered by reading down one column, which needs no separate visualisation and works for a
+hand-pressed activity as well as for a run's. If that turns out not to carry it, the place for a
+segmented band is a run's own modal, over the cascade it spawned — not the feed.
+
 Emitted today: `process`, `count_files`, `tag_files`, `collection_scan`, `lidarr_sync`,
 `mb_mirror`, `mb_migration`, `plex_refresh`, `health_check`.
 

@@ -109,7 +109,18 @@ true when the worker pool arrived.)
 Each cache reads its legacy JSON file exactly once, while its source has no rows
 (`providerCacheImportJSON`), so an upgrade does not re-ask Lidarr for everything it already knew.
 Expired rows are **not** deleted: they are not restored into memory, they are overwritten by key on
-the next fetch, and removing them would empty the source and re-trigger that one-time import.
+the next fetch, and removing them would empty the source, which is the condition that one-time
+import keys off.
+
+**The import deletes its source** once the contents are in the database
+(`removeLegacyCacheFile`), including on the boot where it finds the rows already there — so an
+install that upgraded before this existed is cleaned up too. The five files
+(`lidarr_{artists,albums,tracks,trackfiles}.json`, `mb_releases.json`, `plex_album_keys.json`) were
+previously left behind on the reasoning that an import which deleted its own source would be
+unrecoverable if it went wrong. What that actually left was a `config/` directory holding files
+nothing reads, indistinguishable from live configuration, whose contents are stale within the hour
+anyway — a 1 h provider TTL means there is nothing in them to recover. The one exception is a file
+that **does not parse**: that is the case where the import really failed, so it is kept.
 
 ### The entity cache
 

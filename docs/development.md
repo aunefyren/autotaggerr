@@ -216,8 +216,8 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
   `modules.LoadAllCaches` at startup and **written through** as entries are fetched — there is no
   batched flusher and no JSON cache file. MusicBrainz releases and entities have their own tables;
   Lidarr and Plex share `provider_cache` via `modules/provider_cache.go`, keyed by `(source, key)`.
-  The `config/*.json` files are read once for a legacy import (`providerCacheImportJSON`) and never
-  written. MusicBrainz requests go through `RateLimit()` — route any new MusicBrainz call through
+  The legacy `config/*.json` files are read once for a one-time import
+  (`providerCacheImportJSON`), never written, and deleted once their contents are in the database. MusicBrainz requests go through `RateLimit()` — route any new MusicBrainz call through
   it, and cache the result via `mbCachePut` so the mirror can keep it warm. See `docs/mirror.md`.
 - **UI follows the style guide.** Once `docs/style-guide.md` exists, *every* UI change must consult it
   and either follow it or deliberately reshape it (updating the guide in the same change). Reuse the

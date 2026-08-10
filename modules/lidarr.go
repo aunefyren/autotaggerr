@@ -240,16 +240,39 @@ func authHint(status int, redirected, sentCookie bool) string {
 	}
 }
 
+// lidarrArtistFolder is the last segment of Lidarr's stored path for an artist — the
+// name of the directory their files actually live in, which is the only thing a file
+// path can be compared against.
+func lidarrArtistFolder(artist models.LidarrArtist) string {
+	return filepath.Base(utilities.NormPath(artist.Path))
+}
+
+// lidarrArtistFolderMatches reports whether an artist's folder is the one named by
+// folder. Shared by both branches of FindArtistByName so a cache hit and a fresh
+// fetch cannot disagree about what "this artist" means.
+func lidarrArtistFolderMatches(artist models.LidarrArtist, folder string) bool {
+	return strings.EqualFold(lidarrArtistFolder(artist), folder)
+}
+
 // FindArtistByName searches the Lidarr artist list for one whose folder name matches artistName.
 func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtist, error) {
+	want := strings.TrimSpace(artistName)
+
 	// Return any fresh cached artist(s) matching the name; only fall through to
 	// the API when nothing fresh is cached. (Previously inverted: a fresh entry
 	// forced a refetch and a stale entry was served — so /api/v1/artist was hit on
 	// essentially every file, a real drag on full-library scans.)
+	//
+	// The comparison is folder-to-folder, exactly as the API branch below does it.
+	// Matching the cached entry's *artist name* instead made the two branches answer
+	// different questions: wherever a Lidarr artist's name and folder differ — `AC/DC`
+	// stored as `AC_DC`, a disambiguated `Nirvana (2)` — the cache could answer for a
+	// file the fresh path would not match, and, far more often, missed on every lookup
+	// and re-fetched the whole of /api/v1/artist per file.
 	foundCachedArtist := []models.LidarrArtist{}
 	lidarrArtistsCacheMu.RLock()
 	for _, cachedArtist := range lidarrArtistsCache {
-		if strings.EqualFold(cachedArtist.Artist.Name, artistName) &&
+		if lidarrArtistFolderMatches(cachedArtist.Artist, want) &&
 			time.Since(cachedArtist.Timestamp) < lidarrArtistsCacheDuration {
 			foundCachedArtist = append(foundCachedArtist, cachedArtist.Artist)
 		}
@@ -269,7 +292,6 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 		return nil, err
 	}
 
-	want := strings.ToLower(strings.TrimSpace(artistName))
 	logger.Log.Debugf("we want artist: %s", want)
 
 	validArtists := []models.LidarrArtist{}
@@ -285,11 +307,9 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 		lidarrArtistsCache[key] = entry
 		stored = append(stored, providerCacheItem{key: key, value: entry})
 
-		// Extract last folder from Lidarr's stored path
-		lidarrArtistFolder := filepath.Base(utilities.NormPath(artists[i].Path))
-		logger.Log.Debugf("comparing artist folder: %s, original path: %s", lidarrArtistFolder, artists[i].Path)
+		logger.Log.Debugf("comparing artist folder: %s, original path: %s", lidarrArtistFolder(artists[i]), artists[i].Path)
 
-		if strings.EqualFold(lidarrArtistFolder, want) {
+		if lidarrArtistFolderMatches(artists[i], want) {
 			validArtists = append(validArtists, artists[i])
 		}
 	}

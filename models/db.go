@@ -673,7 +673,11 @@ type EventItem struct {
 	// claim about the user's audio, from the one verb that promises not to touch it.
 	Kind string `json:"kind,omitempty"`
 	// Status is EventItemStatus*: what happened to this one file or entity.
-	Status string `json:"status"`
+	//
+	// Indexed for the query the detail modal does not need — it filters the ≤500 rows
+	// one event holds in the browser — but any cross-run "every failed file" view does,
+	// since that one selects on status alone across the whole table.
+	Status string `gorm:"index" json:"status"`
 	// Phase attributes the row to a stage of the run (EventItemPhase*), so the feed
 	// can group, say, releases refreshed upstream apart from files changed by the
 	// scan walk. Empty for the ordinary per-file scan row, which needs no qualifier.

@@ -215,9 +215,10 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 > **Seed only:** the three `lidarr_*` keys are copied into the Lidarr **manager** record on first
 > run and never read from `config.json` again. Everything that talks to Lidarr — scans and the
 > health check alike — uses the manager record, so change these under **Managers** in the web UI.
-> Editing them in `config.json` after the first run has no effect. The *Test* button there probes
-> the connection with exactly the credentials a scan would use; an auth-proxy cookie expires on its
-> own schedule, and that button is how you find out it has.
+> Editing them in `config.json` after the first run has no effect — and if you do, the log says so
+> on the next startup, naming the keys that no longer match the manager. The *Test* button there
+> probes the connection with exactly the credentials a scan would use; an auth-proxy cookie expires
+> on its own schedule, and that button is how you find out it has.
 
 ---
 

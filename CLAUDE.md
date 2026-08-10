@@ -97,8 +97,8 @@ Every cache is a **database table with an in-memory front**, warmed once at proc
 `modules.LoadAllCaches` (called after `modules.SetDB`). MusicBrainz releases and entities have their
 own tables; Lidarr and Plex share `provider_cache`, keyed by `(source, key)`; artwork keeps its
 bytes under `config/artwork/` with an index table. Writes are **write-through** — there is no dirty
-flag, no flush, and no JSON cache file (the `config/*.json` ones are read once for a legacy import
-and never written). A new cache follows that pattern; adding a batched writer back would reintroduce
+flag, no flush, and no JSON cache file (the legacy `config/*.json` ones are read once for a one-time
+import and then deleted). A new cache follows that pattern; adding a batched writer back would reintroduce
 the restart hole that removed it. See [docs/mirror.md](docs/mirror.md#what-is-cached-and-where).
 
 MusicBrainz calls go through `RateLimit()` — respect it when adding new MusicBrainz requests.

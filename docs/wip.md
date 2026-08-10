@@ -10,6 +10,39 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 [mb-migration.md](mb-migration.md), [mirror.md](mirror.md),
 [authentication.md](authentication.md) and [settings.md](settings.md).
 
+## The next thing to do
+
+**Membership must follow identity, not the last attempt's outcome** — and the two items under it are
+the same pass. Everything else here is independent.
+
+- **The membership queries still filter on `status = OK`.** Seven of them answer "which files belong
+  to this artist/album" that way (`collection/paths.go` ×2, `scan/runner.go` ×3,
+  `routers/scan_items.go` ×2), feeding retag and the per-artist counts. By the same logic as the
+  shipped fix in [collection.md](collection.md#the-disk-view-counts-files-not-successes) they should
+  follow identity instead: excluding an errored file from a retag is precisely what stops it
+  recovering once the cause is fixed. The re-tag path itself now records outcomes like the pipeline
+  does ([scanning.md](scanning.md#drift-sync)), so this is the last half of that idea — wide diff, so:
+  own pass, own tests.
+
+  **This makes the repair verbs unavailable exactly when they are needed.** `ArtistScope` and
+  `ReleaseGroupScope` resolve their folders through `ArtistTargets`/`ReleaseGroupTargets`, which go
+  via `collection_releases` and then filter `status = OK`. If every file of an album goes unmatched
+  — one stale Lidarr trackfile cache does it — the owned-edition rows are pruned by the next rebuild
+  and both scopes return `ErrNothingToProcess`. Force re-correlate, the verb whose whole job is
+  repairing an artist whose files diverged from what the manager says, then refuses to start, and the
+  only way out is `ForceRecorrelateLibrary` — which is library-wide and discards every Lidarr-governed
+  pin in it. Whatever replaces the status filter has to admit unmatched files here specifically, or
+  the catch-22 survives the fix.
+
+- **Re-correlate buttons**, which that fix unblocks. Behind a confirm dialog that says it **discards
+  manual pins** and rewrites files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`),
+  per-album on the release-group page (`POST /release-groups/:mbid/recorrelate`) and per-library on
+  library settings (`POST /libraries/:id/recorrelate`). All three endpoints exist and none has any
+  UI — the remaining action-half endpoints with none. Use the shared `ConfirmDialog` (`ui.tsx`,
+  `danger`) rather than a new one. Confirmed needed in anger: repairing one album after a Lidarr
+  re-import meant hand-rolling the `curl`, and the library-scoped one was the only form that would
+  start. Doing these before the fix above ships two buttons that refuse to run.
+
 ## Open work
 
 - **A verb that does nothing cannot say why.** On an empty install *Scan* answers
@@ -23,6 +56,24 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   and as the event summary for the sync — and to disable the buttons with a title saying what is
   needed first. `no_edition` is the precedent: it exists so "the counts disagree because nobody chose
   an edition" cannot read as "the manager is stale". Same idea, one level up.
+- **What failed?** cannot be asked about *files*. Activity answers it for events, but the rows on the
+  Items page carry `error`, `last_error_at` and `last_error_transient` — exactly the split needed to
+  separate "MusicBrainz was down, this will retry" from "someone has to fix this" — and nothing reads
+  them, in the API or the UI. The transient flag is also what would keep an outage from reading as
+  hundreds of broken files, in Activity as well as on Items. The faceted-filter shape the Activity
+  feed now uses is the obvious model.
+- **An unmatched file keeps its identity and is dropped from the disk view anyway.** `recordItem`
+  preserves `mb_release_id` through a failure (`components/pipeline.go:381`) — Autotaggerr still
+  knows exactly which release those files are — but `ownedItemRows` excludes on `status`, so a
+  Lidarr hiccup empties the album from the collection regardless. This is deliberate and documented
+  ([collection.md](collection.md#the-disk-view-counts-files-not-successes)): under a manager,
+  "unmatched" means the authority does not know the file, and it should leave the collection. Worth
+  revisiting anyway, because the *transient* Lidarr case has exactly the shape the MusicBrainz fix
+  was written for — an hour-old cache is not the manager changing its mind.
+- **A retry with backoff** inside the MusicBrainz fetch (one attempt spaced by the existing
+  `RateLimit()` interval) would absorb most single 503s before any of the above matters. Kept
+  separate because it interacts with the in-flight coalescing and the limiter; the shipped work makes
+  an outage *survivable*, which is the part that has to be true regardless.
 - **The Lidarr mirror cannot introduce an artist**, so it cannot populate a cold collection — the
   button a Lidarr-first user reaches for first is the one that can do nothing. `CollectionArtist`
   rows do not require files (*Add artist* creates one), so nothing structural forbids it; it is a
@@ -30,13 +81,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   wanted" with artists no file has ever been seen for. If it happens it belongs behind its own option
   on the sync dialog or a separate *Import artists from Lidarr* action, not as a change to what the
   plain Sync button does.
-- **`FindArtistByName` compares two different things depending on the cache.** The cache-hit branch
-  matches the folder name against `cachedArtist.Artist.Name`; the API branch matches it against
-  `filepath.Base(artist.Path)` (`modules/lidarr.go`). Where an artist's Lidarr *name* and their
-  *folder* differ — `AC/DC` vs `AC_DC`, a disambiguated `Nirvana (2)` — the cache can answer for a
-  file the fresh path would not match, and, more often, misses on every lookup and re-fetches
-  `/api/v1/artist` per file. Folder-to-folder is the intended comparison; the cached branch should
-  use it too.
 - **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
   manual attach. The last unbuilt piece of the native manager. It has no Activity event, and the
   event ships with the feature rather than before it — every other verb has one now, so an import
@@ -60,170 +104,72 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   grace period and leaves its event to be reconciled on the next boot. A per-job context checked
   between files (where the walk already stops cleanly) would close that gap, and would give file
   work the counterpart to the metadata pass's `POST /mirror/cancel`.
-
-## Activity: one row per thing that happened
-
-Shipped. A run used to do six things and report as one row — that row being the *walk's* counters, so
-it read as a tagging event while the other five stages went into `details.*` keys nothing rendered.
-Every activity a run spawns is now its own row in a flat feed, at the time it started, rendered
-exactly like one a user pressed. See [scanning.md](scanning.md#a-run-spawns-activities-each-one-is-a-row)
-and [the feed is flat](scanning.md#the-feed-is-flat).
-
-**What shipped:**
-
-- *The bar no longer lies.* Indeterminate outside the phase that owns the counters, on all four
-  surfaces that draw them. See [scanning.md](scanning.md#the-bar-belongs-to-one-phase) and the
-  Progress component in [style-guide.md](style-guide.md#components).
-- *A metadata pass records what it found.* Per-phase tallies and one `EventItem` per changed / gone
-  / relinked / failed entity, instead of discarding `Result.ChangedReleases` to a `len()`. See
-  [mirror.md](mirror.md#what-a-pass-records-about-itself).
-- *Every stage is its own event, under the run.* `Event.ParentID`, the stage types, the walk's
-  counters moved off the run, the Scan verb emitting at last, and retention counting runs rather than
-  rows.
-- *The detail view renders what an event declares.* `Event.Stats` replaced the branch-per-type chain,
-  counters that name a row status became filter chips over one unified list, and `EventItem.Kind`
-  separates a file row from an entity row. See
-  [scanning.md](scanning.md#an-event-declares-its-own-counters).
-- *The feed is flat, and relation is annotated.* Every activity is a row at its own start time; the
-  run rail joins one cascade in the gutter, the run's name rides each row it spawned, and
-  `?parent=<id>` narrows the feed to one run. Nesting is gone, and so is the modal-inside-a-modal it
-  needed. See the *Run rail* entry in [style-guide.md](style-guide.md#components).
-- *A cascading activity is identical to a pressed one.* One emitter and one type per verb — tagging
-  is `tag_files` whether a run reached it or a user pressed it, a scan goes through
-  `collection.RecordScanUnder` either way — so the same work cannot be reported with two different
-  sets of words depending on what started it.
-- *Tagging is one activity.* The walk and the drift re-tag share an event, phase-tagged in the detail
-  list, which ended a second row whose only content was release IDs the metadata refresh had already
-  listed — and, with `EventItem.Kind` finally set on them, the `<mbid> 0 tags written` lines those
-  rows rendered as.
-- *Counting files is its own activity.* The walk that sizes the bar is a phase and a row, so a cold
-  run's first minutes say what they are doing instead of reporting a metadata pass sitting at 0.
-- *Both long lists page.* One `usePaging` + `Pager` in `browse.tsx` serves Activity (server-paged,
-  `offset` in the query) and the Collection (client-paged, `offset` as an array index), with the
-  page in the URL and any narrowing resetting it. See *Paging* in
-  [style-guide.md](style-guide.md#components).
-- *The feed filters.* Status chips, a type select and title search, all server-side with facet
-  counts so every control states its own result.
-
-**What is left:**
-
-- **A page holds less history now.** 50 rows is 50 activities, not 50 runs, so a screen covers
-  roughly eight nightly runs instead of fifty. `parent` and the type filter carry what the grouping
-  used to; if it starts to bite, the answer is a date jump rather than bringing nesting back.
-- **The Items page still cannot answer "what failed?"** for *files*. Activity answers it for events
-  now, but the rows on the Items page carry `error`, `last_error_at` and `last_error_transient` —
-  exactly the split needed to separate "MusicBrainz was down, this will retry" from "someone has to
-  fix this" — and nothing reads them. The transient flag is also what would keep an outage from
-  reading as hundreds of broken files. The faceted-filter shape the Activity feed now uses is the
-  obvious model.
-- **`EventItem` has no index on `status`.** The detail modal filters rows in the browser, which is
-  right for the ≤500 a single event holds, but any future "every failed file across every run" view
-  would want one.
-- **Where did the four hours go?** The share-of-time bar went with the stage list it lived in — each
-  row now states its own duration, in a column, which answers the same question by scanning down. If
-  that turns out not to carry it, the place for a segmented band is the run's own modal, over the
-  cascade it spawned.
-
-Smaller things this work exposed rather than solved:
-
-- **Retention is still hardcoded** — 200 runs, 500 detail rows per run, 500 entity rows per metadata
-  pass. Now that it counts runs the number means something stable, but it could be configurable, and
-  time-based retention would suit a feed better than a count. Note that a tagging activity can now
-  exceed the per-event limit by design: the drift rows are adopted whole
-  (`DetailCollector.Adopt`) so a big walk cannot starve them.
-- **A credit change still has no affordance.** `collection_scan` now reports the count, but it is
-  still the only identity change with no Migrations row to click through to — the count is the only
-  way to notice one, and there is nothing to open.
 - **`RetagItems` (the interactive attach flow) opens no event**, so its Plex refresh is top-level
   rather than parented. That is the correct reading of the data, but it means one file-writing path
   is still invisible in the feed.
 - **Stage events are not reconciled by name.** `events.ReconcileRunning` marks orphaned `running`
   rows failed at startup, which now includes stages; a crashed run leaves both the run and whatever
   stage was in flight marked failed, which is right, but neither says which stage it died in.
+- **A credit change still has no affordance.** `collection_scan` reports the count, but it is still
+  the only identity change with no Migrations row to click through to — the count is the only way to
+  notice one, and there is nothing to open.
+- **Retention is hardcoded** — 200 runs, 500 detail rows per run, 500 entity rows per metadata pass.
+  Now that it counts runs the number means something stable, but it could be configurable, and
+  time-based retention would suit a feed better than a count. Note that a tagging activity can
+  exceed the per-event limit by design: the drift rows are adopted whole (`DetailCollector.Adopt`)
+  so a big walk cannot starve them.
+- **The three `lidarr_*` keys in `config.json` are seed-only.** Startup now warns when one is set to
+  something the manager row does not use (see
+  [media-manager.md](media-manager.md#one-copy-of-the-credentials-and-one-way-to-check-them)), which
+  closes the trap. Dropping them from the config struct entirely is still open, once the manager UI
+  has been in a release long enough.
 
-## A failed lookup must not erase what a file is
+## Tagging — what is left
 
-Shipped. A MusicBrainz outage mid-scan used to empty whole albums: the failed release fetch made
-`recordItem` discard a correlation the manager had already resolved, the files left the disk view,
-and the album reported `not_indexed` against a manager that could see them fine. Identity, ownership
-and the outcome of the last attempt are now three separate facts — see
-[collection.md](collection.md#the-disk-view-counts-files-not-successes) for the rule and
-[mirror.md](mirror.md#an-expiry-is-not-an-expiry-date) for the stale-cache fallback that stops most
-outages reaching the index at all. What is left:
+Multi-value tags and the four "match what Lidarr writes" flags are both done; the reference lives
+in [tagging.md](tagging.md#several-values-in-one-field). FLAC writes one Vorbis comment per value
+unconditionally, MP3 writes ID3v2.4's null-separated form when the profile's `mp3_multi_value_tags`
+says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. What is still open:
 
-- **The membership queries still filter on `status = OK`.** Seven of them answer "which files belong
-  to this artist/album" that way (`collection/paths.go` ×2, `scan/runner.go` ×3,
-  `routers/scan_items.go` ×2), feeding retag and the per-artist counts. By the same logic as the
-  shipped fix they should follow identity instead: excluding an errored file from a retag is
-  precisely what stops it recovering once the cause is fixed. The re-tag path itself now records
-  outcomes like the pipeline does ([scanning.md](scanning.md#drift-sync)), so this is the last half
-  of that idea — wider diff than the collection fix, so: own pass, own tests.
+- **`UFID` is reachable but not written.** Picard's canonical home for the recording MBID, and
+  `tag.AddUFIDFrame` is right there now that the writer addresses frames directly. Additive, so the
+  cost is one extra frame and a one-time write per file.
+- **The ISRC frame is an artefact.** It lives in a `TXXX` frame *described* `TXXX`, whose value
+  carries its own `ISRC:<value>` packing — the only way the old ffmpeg writer could reach a
+  user-defined frame. `TSRC` is the standard frame for it. Both this and `UFID` are one-time
+  rewrites of every MP3, so they belong in the same pass.
+- **Composer and ASIN are not written at all.** The three dead `FileTags` fields are gone (they were
+  hardcoded to `""` and read by neither tag map), so this is now a feature rather than a cleanup:
+  MusicBrainz can supply composer via work relations and ASIN on the release. That is a fetch and a
+  mapping — a field on `models.FileTags`, a key in both tag maps, and the work-relation include on
+  the release fetch.
+- **AAC/M4A is where the separator choice starts to matter.** ffmpeg never gained multi-value
+  support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
+  setting's reasoning applies, and the format work should reuse it rather than re-litigate the
+  separator.
 
-  **This makes the repair verbs unavailable exactly when they are needed.** `ArtistScope` and
-  `ReleaseGroupScope` resolve their folders through `ArtistTargets`/`ReleaseGroupTargets`, which go
-  via `collection_releases` and then filter `status = OK`. If every file of an album goes unmatched
-  — one stale Lidarr trackfile cache does it, see below — the owned-edition rows are pruned by the
-  next rebuild and both scopes return `ErrNothingToProcess`. Force re-correlate, the verb whose whole
-  job is repairing an artist whose files diverged from what the manager says, then refuses to start,
-  and the only way out is `ForceRecorrelateLibrary` — which is library-wide and discards every
-  Lidarr-governed pin in it. Whatever replaces the status filter has to admit unmatched files here
-  specifically, or the catch-22 survives the fix.
-- **An unmatched file keeps its identity and is dropped from the disk view anyway.** `recordItem`
-  preserves `mb_release_id` through a failure (`components/pipeline.go:381`) — Autotaggerr still
-  knows exactly which release those files are — but `ownedItemRows` excludes on `status`, so a
-  Lidarr hiccup empties the album from the collection regardless. This is deliberate and documented
-  ([collection.md](collection.md#the-disk-view-counts-files-not-successes)): under a manager,
-  "unmatched" means the authority does not know the file, and it should leave the collection. Worth
-  revisiting anyway, because the *transient* Lidarr case has exactly the shape the MusicBrainz fix
-  above was written for — an hour-old cache is not the manager changing its mind. `last_error_transient`
-  already exists to carry that distinction and nothing reads it.
-- **A retry with backoff** inside the fetch (one attempt spaced by the existing `RateLimit()`
-  interval) would absorb most single 503s before any of this matters. Kept separate because it
-  interacts with the in-flight coalescing and the limiter; the shipped work makes an outage
-  *survivable*, which is the part that has to be true regardless.
+## MusicBrainz entity migration — what is left
 
-## Every cache in the database
+The feature has shipped, including release-group pruning, artist identity verification and the
+manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
 
-Shipped. Nothing durable is memory-only, nothing is a JSON file, and the batched flusher is gone —
-see [mirror.md](mirror.md#what-is-cached-and-where) and
-[mirror.md](mirror.md#the-provider-cache). What is left from that audit:
+- **Release-group pruning only runs on a discography sync**, which is per-artist and user-triggered.
+  An artist nobody syncs keeps their orphaned rows. The sweep verifies artist *identity* but does
+  not prune their groups, because that would mean a discography fetch per artist on top of the
+  lookup.
 
-- **The three `lidarr_*` keys in `config.json` are seed-only** and nothing reads them after the
-  manager row exists (`database/seed.go` returns early). That is now stated in the README and in
-  [media-manager.md](media-manager.md#one-copy-of-the-credentials-and-one-way-to-check-them), but a
-  key that silently does nothing is still a trap — someone will edit the cookie there again. Either
-  drop them from the config struct once the manager UI has been in a release long enough, or have
-  `LoadConfig` log when they are set and a manager row already exists.
-- **The legacy JSON files are left on disk** after their one-time import. Harmless, and deliberate —
-  an import that had deleted its own source would be unrecoverable if it went wrong — but `config/`
-  now holds five files nothing reads (`lidarr_{albums,artists,tracks}.json`, `mb_releases.json`,
-  `plex_album_keys.json`). Worth a cleanup pass once the import has been in a release long enough to
-  trust.
+## Known issues / limitations
 
-## Frontend follow-ups
-
-The manager-authority boundary is now honoured end to end (see
-[collection.md](collection.md#the-ui-under-a-manager)), and so is taking that authority back
-([detach](collection.md#detaching-a-manager)). What is left:
-
-- **Re-correlate buttons**, behind a confirm dialog that says it **discards manual pins** and rewrites
-  files from Lidarr: per-artist (`POST /artists/:mbid/recorrelate`), per-album on the release-group
-  page (`POST /release-groups/:mbid/recorrelate`) and per-library on library settings
-  (`POST /libraries/:id/recorrelate`). This is what a user does when Lidarr's answer and the files
-  disagree — the remaining action-half endpoint with no UI. Use the shared `ConfirmDialog`
-  (`ui.tsx`, `danger`: it discards pins) rather than a new one. Confirmed needed in anger: repairing
-  one album after a Lidarr re-import meant hand-rolling the `curl`, and the library-scoped one was
-  the only form that would start (see the `status = OK` catch-22 above). Worth doing together with
-  that fix, since the per-artist and per-album buttons are the ones it unblocks.
-- **A failure filter on the Items page.** The rows carry `error`, `last_error_at` and
-  `last_error_transient` — exactly the split needed to separate "MusicBrainz was down, this will
-  retry" from "someone has to fix this" — and nothing reads them. There is no way to ask *what
-  failed?*, and Activity does not use the transient flag to keep an outage from reading as hundreds
-  of broken files.
-
-The stages a run used to hide — the refresh stage, the collection stage, the unrendered `details.*`
-keys — are all rows of their own now; see
-[Activity: one row per thing that happened](#activity-one-row-per-thing-that-happened).
+- **Worker-count tuning.** Scan events now carry `mb_lookups` (cache hit / coalesced / fetched), so
+  the cost of a run is finally measurable. The default `autotaggerr_process_concurrency` of 4 has
+  never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
+  worth it — FLAC rewrites are more disk-bound.
+- **`FindTrackFileByPath` wants a real multi-disc fixture.** A production soundtrack (Jerry
+  Goldsmith's *Alien*, 30 + 17 tracks over `CD 01`/`CD 02`) carries the same basename on both discs
+  *and* a typographic apostrophe in others. Both resolve correctly today — disc numbers disambiguate
+  the first, `Canon`'s NFC pass the second — but nothing in the suite pins either, and both are one
+  careless change away from silently matching the wrong disc. Better than the synthetic fixture
+  already there, because it is shaped like a real release rather than like the test.
 
 ## Roadmap / ideas
 
@@ -240,78 +186,21 @@ keys — are all rows of their own now; see
   [scanning.md](scanning.md)) on a `scan.Scope` built to extend. A release-group or single-album
   scope needs a new constructor and UI, not new machinery — worth doing once the artist actions have
   been used against a real library.
-- **Folder structure**
-  Mapping to current content, creating folders, renaming and keeping up to date.
-  Configurable structure? 
-  Link to file importing feature?
-- *Does the collection page work with several libraries?*
-  The page seems very one dimensional, with dynamic buttons.
-  What happens if I have multiple libraries, perhaps either Lidarr or Autotaggerr managed?
-  What happens if I have multiple metadata managers? Do the global settings like migrations and such apply correctly?
-- *I can add artists on a collection where Lidarr is the only manager*
-  Or, at least the button is there.
-  Does that make sense?
+- **Folder structure.** Mapping to current content, creating folders, renaming and keeping up to
+  date. Configurable structure? Links to the file-import feature above.
+- *Does the collection page work with several libraries?* The page seems very one-dimensional, with
+  dynamic buttons. What happens with multiple libraries, some Lidarr- and some Autotaggerr-managed?
+  With multiple metadata managers — do the global settings like migrations apply correctly?
+- *I can add artists on a collection where Lidarr is the only manager.* Or, at least, the button is
+  there. Does that make sense?
 - **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
   `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID
   (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still
   unexported-base-URL seams stubbable only inside `modules/`; the same port pattern would make their
   callers testable too.
-- **Multi user support?**
-  Any need?
+- **Multi user support?** Any need?
 - **Password reset over email.** The mailer now exists and is proven by the *Send test message*
   button on Settings → Email (see [settings.md](settings.md#email-and-the-one-action-on-this-page)),
   but nothing sends mail on its own. A reset flow is the obvious first real consumer: a signed,
   single-use, expiring token mailed to the address on the account — which means `User.Email` has to
   start being populated and verified, since today it is stored and never used.
-
-## Tagging — what is left
-
-Multi-value tags and the four "match what Lidarr writes" flags are both done; the reference lives
-in [tagging.md](tagging.md#several-values-in-one-field). FLAC writes one Vorbis comment per value
-unconditionally, MP3 writes ID3v2.4's null-separated form when the profile's `mp3_multi_value_tags`
-says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. What is still open:
-
-- **`UFID` is reachable but not written.** Picard's canonical home for the recording MBID, and
-  `tag.AddUFIDFrame` is right there now that the writer addresses frames directly. Additive, so the
-  cost is one extra frame and a one-time write per file.
-- **The ISRC frame is an artefact.** It lives in a `TXXX` frame *described* `TXXX`, whose value
-  carries its own `ISRC:<value>` packing — the only way the old ffmpeg writer could reach a
-  user-defined frame. `TSRC` is the standard frame for it. Both this and `UFID` are one-time
-  rewrites of every MP3, so they belong in the same pass.
-- **ID3v1 is no longer refreshed.** ffmpeg was passed `-write_id3v1 1` and rewrote the 128-byte
-  trailer on every write; bogem does not manage ID3v1, so an existing trailer is preserved verbatim
-  and goes stale. Nothing that matters here reads it (it cannot hold an MBID, and every consumer in
-  [tagging.md](tagging.md) reads ID3v2), but a file tagged before and after the change disagrees
-  with itself for a v1-only reader. Stripping it outright may be better than leaving it.
-- **Composer and ASIN are not written at all.** The three dead `FileTags` fields are gone (they were
-  hardcoded to `""` and read by neither tag map), so this is now a feature rather than a cleanup:
-  MusicBrainz can supply composer via work relations and ASIN on the release. That is a fetch and a
-  mapping — a field on `models.FileTags`, a key in both tag maps, and the work-relation include on
-  the release fetch.
-- **AAC/M4A is where the separator choice starts to matter.** ffmpeg never gained multi-value
-  support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
-  setting's reasoning applies, and the format work should reuse it rather than re-litigate the
-  separator.
-
-## Known issues / limitations
-
-- **Worker-count tuning.** Scan events now carry `mb_lookups` (cache hit / coalesced / fetched), so
-  the cost of a run is finally measurable. The default `autotaggerr_process_concurrency` of 4 has
-  never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
-  worth it — FLAC rewrites are more disk-bound.
-- **`FindTrackFileByPath` wants a real multi-disc fixture.** A production soundtrack (Jerry
-  Goldsmith's *Alien*, 30 + 17 tracks over `CD 01`/`CD 02`) carries the same basename on both discs
-  *and* a typographic apostrophe in others. Both resolve correctly today — disc numbers disambiguate
-  the first, `Canon`'s NFC pass the second — but nothing in the suite pins either, and both are one
-  careless change away from silently matching the wrong disc. Better than the synthetic fixture
-  already there, because it is shaped like a real release rather than like the test.
-
-## MusicBrainz entity migration — what is left
-
-The feature has shipped, including release-group pruning, artist identity verification and the
-manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
-
-- **Release-group pruning only runs on a discography sync**, which is per-artist and user-triggered.
-  An artist nobody syncs keeps their orphaned rows. The sweep verifies artist *identity* but does
-  not prune their groups, because that would mean a discography fetch per artist on top of the
-  lookup.

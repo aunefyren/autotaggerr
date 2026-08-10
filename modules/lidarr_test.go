@@ -161,6 +161,49 @@ func TestLidarrFindArtistByNameNotFound(t *testing.T) {
 	}
 }
 
+// TestLidarrFindArtistByNameFolderDiffersFromName pins the two branches of
+// FindArtistByName to the same comparison. Lidarr's artist *name* and the folder it
+// stores their files in routinely differ — a slash is not legal in a path, so `AC/DC`
+// lives in `AC_DC` — and the lookup input is always a folder, taken from the file
+// being processed. The cache branch used to match on the name, which made a cached
+// answer and a fresh one disagree: the folder never matched, so every file re-fetched
+// the whole artist list, and the name matched folders that did not exist on disk.
+func TestLidarrFindArtistByNameFolderDiffersFromName(t *testing.T) {
+	resetLidarrCaches()
+	t.Cleanup(resetLidarrCaches)
+
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/artist": []models.LidarrArtist{
+			{ID: 1, Name: "AC/DC", Path: "/data/music/AC_DC"},
+			{ID: 2, Name: "Radiohead", Path: "/data/music/Radiohead"},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	got, err := client.FindArtistByName("AC_DC")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != 1 {
+		t.Fatalf("expected artist id 1, got %+v", got)
+	}
+
+	// The point of the fix: the same folder is now served from the cache the first
+	// call populated, instead of falling through to /api/v1/artist once per file.
+	if _, err := client.FindArtistByName("AC_DC"); err != nil {
+		t.Fatalf("unexpected error on cached call: %v", err)
+	}
+	if n := mock.hitCount("/api/v1/artist"); n != 1 {
+		t.Errorf("/api/v1/artist hit %d times, want 1 (the cached lookup must match on the folder)", n)
+	}
+
+	// And the converse: the artist's name is not a folder any file can be under, so
+	// a cache hit on it would answer for a path that does not exist.
+	if _, err := client.FindArtistByName("AC/DC"); !errors.Is(err, ErrLidarrArtistNotFound) {
+		t.Errorf("lookup by artist name returned %v, want ErrLidarrArtistNotFound", err)
+	}
+}
+
 func TestLidarrFindTrackFileByPath(t *testing.T) {
 	resetLidarrCaches()
 	root := filepath.Join("/", "music")

@@ -23,6 +23,24 @@ byte-for-byte across that change, so no existing file was re-tagged
 Settings come from the library's **tagger profile** (`models.TaggerProfile`), the DB-backed
 successor to the old `autotaggerr_*` config flags.
 
+### ID3v1 is removed, not refreshed
+
+An MP3 write ends by truncating any ID3v1 trailer (`stripID3v1`) — the 128-byte block at the end of
+the file, plus the 227-byte "TAG+" enhanced block in front of it when one is there.
+
+The ffmpeg writer was passed `-write_id3v1 1` and rebuilt that trailer on every pass. `bogem/id3v2`
+does not manage ID3v1 at all, so it copies an existing one through verbatim, and a file tagged
+before and after the engine change would disagree with itself. Refreshing it is not an option worth
+having: a 30-character title and a genre from a fixed list of 80 cannot represent what gets written
+here, and it cannot hold an MBID — the thing every consumer below actually reads. That leaves
+keeping a tag that contradicts the file or removing it, and a v1-only reader has no way to tell
+which half of a contradiction is current.
+
+It is a truncation on a file that was being rewritten anyway, so it costs nothing on the
+skip-unchanged path: a stale trailer is **not** a diff and does not cause a write
+(`TestID3v1DoesNotForceARewrite`). Files converge one at a time, as each is next tagged for a real
+reason.
+
 ## Several values in one field
 
 A tag field can hold several values — genres, ISRCs, the artist MBIDs behind a credit, a

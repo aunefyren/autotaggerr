@@ -166,6 +166,71 @@ func TestProviderCacheImportsLegacyJSONOnce(t *testing.T) {
 	}
 }
 
+// The import takes its source with it. config/ used to accumulate five files nothing
+// read, sitting alongside the one file that is live configuration — and a one-hour
+// provider TTL means there is nothing in them worth keeping once the rows exist.
+func TestProviderCacheRemovesLegacyJSONAfterImport(t *testing.T) {
+	dir := redirectCachePaths(t)
+	dbForCache(t)
+	clearProviderMaps()
+	t.Cleanup(clearProviderMaps)
+
+	path := filepath.Join(dir, "lidarr_artists.json")
+	data, err := json.Marshal(map[string]models.CachedLidarrArtistRelease{
+		"7": {Artist: models.LidarrArtist{ID: 7, Name: "Talk Talk"}, Timestamp: time.Now()},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+
+	if err := LidarrLoadArtistsCache(); err != nil {
+		t.Fatalf("LidarrLoadArtistsCache: %v", err)
+	}
+	if lidarrArtistsCache["7"].Artist.Name != "Talk Talk" {
+		t.Fatal("the legacy JSON cache was not imported")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the legacy file survived a successful import (stat err: %v)", err)
+	}
+
+	// An install that upgraded before this change still has the file, and its import
+	// no-ops on the rows already there — so the skip path has to clean up too, or the
+	// cleanup only ever helps installs that had not upgraded yet.
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("rewrite legacy cache: %v", err)
+	}
+	if err := LidarrLoadArtistsCache(); err != nil {
+		t.Fatalf("second load: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("the legacy file survived a skipped import (stat err: %v)", err)
+	}
+}
+
+// A file that does not decode is the one case the deletion would make unrecoverable,
+// so it stays put — and the import must not claim to have run.
+func TestProviderCacheKeepsUnparseableLegacyJSON(t *testing.T) {
+	dir := redirectCachePaths(t)
+	dbForCache(t)
+	clearProviderMaps()
+	t.Cleanup(clearProviderMaps)
+
+	path := filepath.Join(dir, "lidarr_artists.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o644); err != nil {
+		t.Fatalf("write legacy cache: %v", err)
+	}
+
+	if err := LidarrLoadArtistsCache(); err != nil {
+		t.Fatalf("LidarrLoadArtistsCache: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("an unparseable legacy file was deleted: %v", err)
+	}
+}
+
 // Invalidating by hand has to reach the database too, or the next restart restores
 // exactly what the user asked to discard.
 func TestLidarrInvalidateClearsTheRows(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/bcrypt"
@@ -145,6 +146,7 @@ func seedLidarrManager(db *gorm.DB, cfg models.ConfigStruct) (*uuid.UUID, error)
 	var existing models.Manager
 	err := db.Where("type = ?", models.ManagerTypeLidarr).First(&existing).Error
 	if err == nil {
+		warnLidarrConfigIgnored(cfg, existing)
 		return &existing.ID, nil
 	}
 	if err != gorm.ErrRecordNotFound {
@@ -167,6 +169,38 @@ func seedLidarrManager(db *gorm.DB, cfg models.ConfigStruct) (*uuid.UUID, error)
 		return nil, err
 	}
 	return &manager.ID, nil
+}
+
+// warnLidarrConfigIgnored reports config.json's three lidarr_* keys as ignored once
+// the manager row they seeded exists.
+//
+// They are seed-only: seedLidarrManager returns on the row it finds and never reads
+// them again, so from the second boot onwards the manager's own credentials are the
+// only ones anything uses. That is documented, but a key that silently does nothing
+// is still a trap — editing lidarr_header_cookie there when a session expires looks
+// exactly like fixing it, and the manager keeps using the stale value.
+//
+// Only a *divergence* is worth a line. Values identical to the manager's are the
+// historical seed sitting where it was left, and warning about them every boot would
+// train the user to ignore the message that matters. The key is named but never its
+// value: a cookie or an API key does not belong in a log.
+func warnLidarrConfigIgnored(cfg models.ConfigStruct, manager models.Manager) {
+	ignored := []string{}
+	for _, key := range []struct{ name, configured, active string }{
+		{"lidarr_base_url", cfg.LidarrBaseURL, manager.LidarrBaseURL},
+		{"lidarr_api_key", cfg.LidarrAPIKey, manager.LidarrAPIKey},
+		{"lidarr_header_cookie", cfg.LidarrHeaderCookie, manager.LidarrHeaderCookie},
+	} {
+		if strings.TrimSpace(key.configured) != "" && key.configured != key.active {
+			ignored = append(ignored, key.name)
+		}
+	}
+	if len(ignored) == 0 {
+		return
+	}
+
+	logger.Log.Warnf("config.json sets %s to a value the %q manager does not use — these keys only seed the manager on first run; edit the credentials on the manager itself (Settings → Managers) or they will keep being ignored",
+		strings.Join(ignored, ", "), manager.Name)
 }
 
 func seedLibraries(db *gorm.DB, cfg models.ConfigStruct, managerID, dataSourceID, taggerID *uuid.UUID) error {

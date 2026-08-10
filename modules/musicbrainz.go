@@ -492,12 +492,16 @@ func musicbrainzLoadFromDB() error {
 
 // musicbrainzMigrateJSONIfNeeded imports a legacy config/mb_releases.json into the
 // database once, when the DB cache is still empty. It is a no-op afterwards.
+//
+// The file is removed once its contents are in the database — see
+// removeLegacyCacheFile for why the import no longer leaves its own source behind.
 func musicbrainzMigrateJSONIfNeeded() error {
 	var count int64
 	if err := cacheDB.Model(&models.MusicbrainzReleaseCache{}).Count(&count).Error; err != nil {
 		return err
 	}
 	if count > 0 {
+		removeLegacyCacheFile("musicbrainz release", musicbrainzReleaseCachePath)
 		return nil
 	}
 
@@ -511,6 +515,8 @@ func musicbrainzMigrateJSONIfNeeded() error {
 
 	legacy := map[string]models.CachedMusicBrainzRelease{}
 	if err := json.Unmarshal(data, &legacy); err != nil {
+		// Unparseable: keep the file, since this is the one failure the deletion
+		// would make unrecoverable.
 		return err
 	}
 	for id, entry := range legacy {
@@ -521,5 +527,6 @@ func musicbrainzMigrateJSONIfNeeded() error {
 	if len(legacy) > 0 {
 		logger.Log.Infof("migrated %d MusicBrainz cache entries from JSON into the database", len(legacy))
 	}
+	removeLegacyCacheFile("musicbrainz release", musicbrainzReleaseCachePath)
 	return nil
 }
