@@ -289,8 +289,8 @@ Forcing is now reachable from exactly two buttons — the Metadata page's checkb
 page's *Refresh metadata (ignore cache)* — and both come through the same dialog. A second copy of
 the wording is how the verb drifted in the first place.
 
-Nothing on a schedule forces: the nightly `SyncDrift`, the weekly run's `DueScope` stage and both
-startup runs are all unforced. That property is the one to protect.
+Nothing unattended forces: the nightly `SyncDrift` and the weekly run's `DueScope` stage are both
+unforced. That property is the one to protect.
 
 ## The refresh pass
 
@@ -375,15 +375,15 @@ pass nobody started. See [scanning.md](scanning.md#a-run-spawns-activities-each-
 | --- | --- | --- |
 | `autotaggerr_mirror_disabled` | `false` | Turns the scheduled pass off entirely. |
 | `autotaggerr_mirror_cron_schedule` | `0 0 3 * * *` | When the pass runs (nightly at 03:00). |
-| `autotaggerr_mirror_on_start_up` | `false` | Run a pass at startup too. |
 
 The key is `disabled` rather than `enabled` for the same reason the migration review flags are
 phrased as opt-ins: a bool absent from an existing `config.json` decodes as `false`, and `false`
 has to mean the default behaviour.
 
-Off by default at startup because a first pass over a large collection is hours of rate-limited
-fetching, and tying that to every restart would make restarting something to avoid. The nightly
-cron is what gets a new install mirrored.
+**Nothing runs at startup.** There was an `autotaggerr_mirror_on_start_up` key, from before the UI
+had a button to press; it is gone. A first pass over a large collection is hours of rate-limited
+fetching, and tying that to every restart makes restarting something to avoid. The nightly cron is
+what gets a new install mirrored, and `POST /mirror/sync` is what starts one on demand.
 
 ## API
 

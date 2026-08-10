@@ -214,22 +214,19 @@ func TestKeysAreUnique(t *testing.T) {
 
 // TestEveryConfigKeyHasAHome is the guard behind the promise the page makes: anything
 // Autotaggerr can be told at startup is reachable from the UI. Every JSON key on
-// ConfigStruct must either be a field on the page or be named as managed elsewhere —
-// so adding a config key without a home fails here rather than being discovered by a
-// user editing a file that the UI never mentions.
+// ConfigStruct must be a field on the page — so adding a config key without a home
+// fails here rather than being discovered by a user editing a file the UI never
+// mentions.
 //
-// If a new key genuinely belongs to neither, add it to Managed() with the page that
-// owns it. "Nowhere" is not a valid answer.
+// It used to allow a second answer, a list of keys named as "managed elsewhere". That
+// list is gone with the keys it described: a setting that lives in the database is a
+// row on its own page and no longer has a config.json key at all, so "on the page" is
+// now the only valid home. "Nowhere" still is not one.
 func TestEveryConfigKeyHasAHome(t *testing.T) {
 	homed := map[string]bool{}
 	for _, section := range Sections() {
 		for _, field := range section.Fields {
 			homed[field.Key] = true
-		}
-	}
-	for _, group := range Managed() {
-		for _, key := range group.Keys {
-			homed[key] = true
 		}
 	}
 	// The mirror switch is stored inverted, so the page's key is not the file's.
@@ -254,7 +251,7 @@ func TestEveryConfigKeyHasAHome(t *testing.T) {
 			continue
 		}
 		if !homed[key] {
-			t.Errorf("config key %q has no home on the settings page — add it to Sections() or Managed()", key)
+			t.Errorf("config key %q has no home on the settings page — add it to Sections()", key)
 		}
 	}
 }

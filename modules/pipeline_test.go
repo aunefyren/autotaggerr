@@ -51,7 +51,7 @@ func seedFlac(t *testing.T, path, releaseID, trackID string) {
 		Album:            "Seed Album",
 		Artist:           "Seed Artist",
 	}
-	if _, _, _, err := SetFlacTags(path, seed, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetFlacTags(path, seed, models.TaggerSettings{}); err != nil {
 		t.Fatalf("seed SetFlacTags: %v", err)
 	}
 }
@@ -78,7 +78,7 @@ func TestProcessTrackFileFromFileTags(t *testing.T) {
 	})
 
 	set := NewAlbumRefreshSet(nil)
-	unchanged, written, err := ProcessTrackFile(path, nil, nil, set, root, models.ConfigStruct{})
+	unchanged, written, err := ProcessTrackFile(path, nil, nil, set, root, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("ProcessTrackFile: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestProcessTrackFileFromFileTags(t *testing.T) {
 	}
 
 	// Second pass over an already-tagged file must be a no-op.
-	unchanged2, written2, err := ProcessTrackFile(path, nil, nil, set, root, models.ConfigStruct{})
+	unchanged2, written2, err := ProcessTrackFile(path, nil, nil, set, root, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second ProcessTrackFile: %v", err)
 	}
@@ -123,9 +123,7 @@ func TestScanFolderRecursive(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(testRelease("trk-1", "trk-2"))
 	})
 
-	cfg := models.ConfigStruct{AutotaggerrProcessConcurrency: 2}
-
-	counter, unchanged, tagsWritten, errorFiles, _, err := ScanFolderRecursive(root, nil, nil, nil, cfg)
+	counter, unchanged, tagsWritten, errorFiles, _, err := ScanFolderRecursive(root, nil, nil, nil, 2, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("ScanFolderRecursive: %v", err)
 	}
@@ -143,7 +141,7 @@ func TestScanFolderRecursive(t *testing.T) {
 	}
 
 	// A second scan should find everything already tagged.
-	counter2, unchanged2, tagsWritten2, _, _, err := ScanFolderRecursive(root, nil, nil, nil, cfg)
+	counter2, unchanged2, tagsWritten2, _, _, err := ScanFolderRecursive(root, nil, nil, nil, 2, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second ScanFolderRecursive: %v", err)
 	}

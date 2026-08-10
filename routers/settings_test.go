@@ -97,7 +97,7 @@ func TestSettingsGet(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &view); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if len(view.Sections) == 0 || len(view.Managed) == 0 {
+	if len(view.Sections) == 0 {
 		t.Fatalf("view is empty: %+v", view)
 	}
 	// The response must not carry any secret's value.

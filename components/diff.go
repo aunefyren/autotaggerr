@@ -35,11 +35,11 @@ func ComputeItemDiff(db *gorm.DB, meta metadata.MetadataSource, item models.Libr
 	for _, media := range response.Media {
 		for _, track := range media.Tracks {
 			if track.ID == item.MBReleaseTrackID {
-				desired, err := modules.BuildFileTags(track, media, response, tagger.Config())
+				desired, err := modules.BuildFileTags(track, media, response, tagger.Settings())
 				if err != nil {
 					return nil, err
 				}
-				return modules.DiffFileTags(item.Path, desired, tagger.Config())
+				return modules.DiffFileTags(item.Path, desired, tagger.Settings())
 			}
 		}
 	}

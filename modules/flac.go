@@ -161,7 +161,7 @@ func buildFLACDesiredTags(metadata models.FileTags) map[string][]string {
 // SetFlacTags updates multiple Vorbis comment tags on a FLAC file. The returned
 // changes are the field-level before/after of what was written — the Activity feed's
 // per-file detail; see models.TagChange.
-func SetFlacTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+func SetFlacTags(filePath string, metadata models.FileTags, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	unchanged = false
 	tagsWritten = 0
 
@@ -179,7 +179,7 @@ func SetFlacTags(filePath string, metadata models.FileTags, configFile models.Co
 		return unchanged, tagsWritten, nil, err
 	}
 
-	changes, hasChanges := utilities.DiffFlacTags(existing, desired, configFile)
+	changes, hasChanges := utilities.DiffFlacTags(existing, desired, tagger)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes needed: " + filePath)
 		return true, tagsWritten, nil, nil

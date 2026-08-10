@@ -120,7 +120,10 @@ now means something much cheaper.
 
 ## The processing runner
 
-`process.Runner` is shared by the cron job, the startup run and the API. Every background verb —
+`process.Runner` is shared by the cron job and the API. (It used to have a third caller: an
+`autotaggerr_process_on_start_up` config key that ran a full pass at boot. That key is gone — it
+predates the UI, and a scan is now a button and a schedule, so a restart no longer walks the whole
+library unattended.) Every background verb —
 processing runs, re-tags, and metadata refreshes — is enqueued onto **one serial job queue**
 drained by a single worker (see [the queue](#the-job-queue)), so exactly one runs at a time and the
 rest are shown as pending rather than dropped. `Status()` reports that queue alongside the last

@@ -58,7 +58,7 @@ func TestTagResolvedFileRefusesWrongDisc(t *testing.T) {
 		Source:           models.CorrelationSourceLidarr,
 	}
 
-	_, written, changed, err := TagResolvedFile(path, correlation, nil, NewAlbumRefreshSet(nil), root, models.ConfigStruct{})
+	_, written, changed, err := TagResolvedFile(path, correlation, nil, NewAlbumRefreshSet(nil), root, models.TaggerSettings{})
 	if !errors.Is(err, ErrDiscMismatch) {
 		t.Fatalf("error = %v, want ErrDiscMismatch", err)
 	}
@@ -86,7 +86,7 @@ func TestTagResolvedFileAcceptsMatchingDisc(t *testing.T) {
 
 	// The file does not exist, so tagging fails further down — the point is only that
 	// it got past the disc check.
-	_, _, _, err := TagResolvedFile(path, correlation, nil, NewAlbumRefreshSet(nil), root, models.ConfigStruct{})
+	_, _, _, err := TagResolvedFile(path, correlation, nil, NewAlbumRefreshSet(nil), root, models.TaggerSettings{})
 	if errors.Is(err, ErrDiscMismatch) {
 		t.Fatalf("disc 2 file resolved to the disc 2 track must not be refused: %v", err)
 	}

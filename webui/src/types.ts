@@ -605,17 +605,8 @@ export interface SettingsSection {
   fields: SettingsField[];
 }
 
-/** Config keys that now live in the database and are edited on their own page. */
-export interface ManagedElsewhere {
-  keys: string[];
-  label: string;
-  path: string;
-  note: string;
-}
-
 export interface SettingsView {
   sections: SettingsSection[];
-  managed: ManagedElsewhere[];
 }
 
 /** What a save did: what moved, what took effect now, what waits for a restart. */

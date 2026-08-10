@@ -23,7 +23,7 @@ const id3MultiValueSeparator = "\x00"
 // the *first* value out of one — so a spec-correct MP3 shows a single genre to
 // everything ffmpeg-backed, Plex included, where the joined value shows several. The
 // two forms serve different readers and nothing serves both; see
-// models.ConfigStruct.AutotaggerrMP3MultiValueTags.
+// models.TaggerSettings.MP3MultiValueTags.
 //
 // Whichever form is chosen, what this returns is what GetMP3Tags will read back — the
 // writer encodes and the reader decodes the null separator symmetrically, so flipping
@@ -40,10 +40,10 @@ func renderMP3Values(values []string, multiValue bool) []string {
 }
 
 // renderMP3Tags applies renderMP3Values across a whole desired-tag map.
-func renderMP3Tags(desired map[string][]string, configFile models.ConfigStruct) map[string][]string {
+func renderMP3Tags(desired map[string][]string, tagger models.TaggerSettings) map[string][]string {
 	rendered := make(map[string][]string, len(desired))
 	for key, values := range desired {
-		rendered[key] = renderMP3Values(values, configFile.AutotaggerrMP3MultiValueTags)
+		rendered[key] = renderMP3Values(values, tagger.MP3MultiValueTags)
 	}
 	return rendered
 }
@@ -241,15 +241,15 @@ func isMusicBrainzUFID(owner string) bool {
 // is empty (which the profile's remove_values turns into a change): the reported diff
 // is derived from the change set, so a key reported but not written would be
 // re-reported on every scan forever. An empty value deletes its frame.
-func SetMP3Tags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
-	desired := renderMP3Tags(buildMP3DesiredTags(metadata), configFile)
+func SetMP3Tags(filePath string, metadata models.FileTags, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+	desired := renderMP3Tags(buildMP3DesiredTags(metadata), tagger)
 
 	existing, err := GetMP3Tags(filePath)
 	if err != nil {
 		return false, 0, nil, fmt.Errorf("read mp3 tags failed: %w", err)
 	}
 
-	changes, hasChanges := utilities.DiffID3Tags(existing, desired, configFile)
+	changes, hasChanges := utilities.DiffID3Tags(existing, desired, tagger)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes, returning")
 		return true, 0, nil, nil

@@ -155,14 +155,14 @@ func ExtractTrackTitle(filePath string) (string, error) {
 	}
 }
 
-func SetFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+func SetFileTags(filePath string, metadata models.FileTags, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	switch ext {
 	case ".mp3":
-		return SetMP3Tags(filePath, metadata, configFile)
+		return SetMP3Tags(filePath, metadata, tagger)
 	case ".flac":
-		return SetFlacTags(filePath, metadata, configFile)
+		return SetFlacTags(filePath, metadata, tagger)
 	default:
 		return false, 0, nil, errors.New("unsupported file type")
 	}
@@ -171,12 +171,12 @@ func SetFileTags(filePath string, metadata models.FileTags, configFile models.Co
 // ProcessTrackFile resolves a file's MusicBrainz correlation and writes tags. It
 // is kept as the low-level single-file engine (used by the CLI path and tests);
 // the component pipeline reuses ResolveCorrelation + TagResolvedFile directly.
-func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, err error) {
+func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, err error) {
 	correlation, err := ResolveCorrelation(filePath, lidarrClient, rootDir, true)
 	if err != nil {
 		return false, 0, err
 	}
-	unchanged, tagsWritten, _, err = TagResolvedFile(filePath, correlation, plexClient, refreshSet, rootDir, configFile)
+	unchanged, tagsWritten, _, err = TagResolvedFile(filePath, correlation, plexClient, refreshSet, rootDir, tagger)
 	return unchanged, tagsWritten, err
 }
 
@@ -274,7 +274,7 @@ func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 // the per-file pipeline, shared by ProcessTrackFile and the component pipeline.
 // TagResolvedFile writes tags for an already-correlated file. changed is the
 // field-level diff applied, for the Activity feed's per-file detail.
-func TagResolvedFile(filePath string, correlation models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, configFile models.ConfigStruct) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+func TagResolvedFile(filePath string, correlation models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(correlation.MBReleaseID)
 	if err != nil {
@@ -299,7 +299,7 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 					plexClient,
 					refreshSet,
 					rootDir,
-					configFile,
+					tagger,
 					track,
 					media,
 					response)
@@ -375,7 +375,7 @@ func ProcessTrackFileAfterMatch(
 	lidarrClient *LidarrClient,
 	plexClient *PlexClient,
 	refreshSet *AlbumRefreshSet,
-	rootDir string, configFile models.ConfigStruct,
+	rootDir string, tagger models.TaggerSettings,
 	track models.Track,
 	media models.MusicBrainzMedia,
 	response models.MusicBrainzReleaseResponse,
@@ -385,13 +385,13 @@ func ProcessTrackFileAfterMatch(
 	changed []models.TagChange,
 	err error,
 ) {
-	metadata, err := BuildFileTags(track, media, response, configFile)
+	metadata, err := BuildFileTags(track, media, response, tagger)
 	if err != nil {
 		return false, 0, nil, err
 	}
 
 	// re-tag file with new information
-	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, configFile)
+	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, tagger)
 	if err != nil {
 		logger.Log.Error("failed to set file tags. error: " + err.Error())
 		return unchanged, tagsWritten, changed, errors.New("failed to set FLAC artist tags")
@@ -423,12 +423,12 @@ func BuildFileTags(
 	track models.Track,
 	media models.MusicBrainzMedia,
 	response models.MusicBrainzReleaseResponse,
-	configFile models.ConfigStruct,
+	tagger models.TaggerSettings,
 ) (models.FileTags, error) {
 	// determine release artist
 	releaseArtist := ""
 	if len(response.ArtistCredit) > 0 {
-		if configFile.AutotaggerrUseCurrentArtistName {
+		if tagger.UseCurrentArtistName {
 			// use current artist name if configured
 			releaseArtist = response.ArtistCredit[0].Artist.Name
 		} else {
@@ -439,7 +439,7 @@ func BuildFileTags(
 		return models.FileTags{}, errors.New("failed to determine album artist")
 	}
 
-	trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit, configFile) // change the array into string to be tagged
+	trackArtist := MusicBrainzArtistsArrayToString(track.ArtistCredit, tagger) // change the array into string to be tagged
 	// "Redundant" means the track credit says nothing the album artist does not
 	// already say — so it is decided by comparing the two strings, not by counting
 	// credits. Counting was the old rule, and it read "one credited artist" as
@@ -448,7 +448,7 @@ func BuildFileTags(
 	// whose artist the album artist does not name at all. Loose comparison so
 	// punctuation or accent differences between the two credits do not keep a
 	// genuinely redundant string.
-	if configFile.AutotaggerrIgnoreRedundantContributingArtists && utilities.EqLoose(trackArtist, releaseArtist) {
+	if tagger.IgnoreRedundantContributingArtists && utilities.EqLoose(trackArtist, releaseArtist) {
 		trackArtist = ""
 	}
 	logger.Log.Trace("track artists: " + trackArtist)
@@ -460,7 +460,7 @@ func BuildFileTags(
 	creditedNames := func(credits []models.ArtistCredit) []string {
 		names := make([]string, 0, len(credits))
 		for _, artistCredit := range credits {
-			if configFile.AutotaggerrUseCurrentArtistName {
+			if tagger.UseCurrentArtistName {
 				names = append(names, artistCredit.Artist.Name)
 			} else {
 				names = append(names, artistCredit.Name)
@@ -547,7 +547,7 @@ func BuildFileTags(
 	for _, genre := range response.ReleaseGroup.Genres {
 		genres = append(genres, models.MusicBrainzNamedCount{Name: genre.Name, Count: genre.Count})
 	}
-	metadata.Genres = selectGenres(genres, configFile.AutotaggerrMaxGenres)
+	metadata.Genres = selectGenres(genres, tagger.MaxGenres)
 
 	return metadata, nil
 }
@@ -597,7 +597,7 @@ func selectGenres(genres []models.MusicBrainzNamedCount, limit int) []string {
 // DiffFileTags reports, per tag, the file's current value versus what Autotaggerr
 // would write — without touching the file. It reuses the same desired-tag maps and
 // diff logic as the writer, so "changed" matches exactly what a scan would do.
-func DiffFileTags(filePath string, metadata models.FileTags, configFile models.ConfigStruct) ([]models.TagDiffEntry, error) {
+func DiffFileTags(filePath string, metadata models.FileTags, tagger models.TaggerSettings) ([]models.TagDiffEntry, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))
 
 	var desired map[string][]string
@@ -614,15 +614,15 @@ func DiffFileTags(filePath string, metadata models.FileTags, configFile models.C
 			return nil, err
 		}
 		existing = m
-		changed, _ = utilities.DiffFlacTags(existing, desired, configFile)
+		changed, _ = utilities.DiffFlacTags(existing, desired, tagger)
 	case ".mp3":
-		desired = renderMP3Tags(buildMP3DesiredTags(metadata), configFile)
+		desired = renderMP3Tags(buildMP3DesiredTags(metadata), tagger)
 		m, err := GetMP3Tags(filePath)
 		if err != nil {
 			return nil, err
 		}
 		existing = m
-		changed, _ = utilities.DiffID3Tags(existing, desired, configFile)
+		changed, _ = utilities.DiffID3Tags(existing, desired, tagger)
 	default:
 		return nil, errors.New("unsupported file type")
 	}
@@ -647,7 +647,11 @@ func DiffFileTags(filePath string, metadata models.FileTags, configFile models.C
 	return entries, nil
 }
 
-func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, configFile models.ConfigStruct) (
+// ScanFolderRecursive walks root and processes every audio file under it with
+// concurrency workers. Concurrency is a parameter rather than read from config
+// because tagging takes only the profile's settings now — how hard the walk is
+// pushed is the caller's business, not the tagger's.
+func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, concurrency int, tagger models.TaggerSettings) (
 	counter int,
 	unchangedFiles int,
 	allTagsWritten int,
@@ -657,8 +661,8 @@ func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *Pl
 ) {
 	refreshSet := NewAlbumRefreshSet(albumsWhoNeedMetadataRefreshSoFar)
 
-	counter, unchangedFiles, allTagsWritten, errorFiles, err = WalkAndProcess(root, configFile.AutotaggerrProcessConcurrency, func(path string) (bool, int, error) {
-		return ProcessTrackFile(path, lidarrClient, plexClient, refreshSet, root, configFile)
+	counter, unchangedFiles, allTagsWritten, errorFiles, err = WalkAndProcess(root, concurrency, func(path string) (bool, int, error) {
+		return ProcessTrackFile(path, lidarrClient, plexClient, refreshSet, root, tagger)
 	}, nil)
 
 	return counter, unchangedFiles, allTagsWritten, errorFiles, refreshSet.Snapshot(), err

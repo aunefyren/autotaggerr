@@ -143,7 +143,7 @@ func TestSetMP3TagsStripsTheLegacyID3v1Trailer(t *testing.T) {
 	// Any real change is enough; the strip rides along with a write, it does not
 	// cause one.
 	meta.Title = "A Different Title"
-	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -180,7 +180,7 @@ func TestID3v1DoesNotForceARewrite(t *testing.T) {
 	meta := fullFileTags()
 	writeLegacyMP3Tags(t, path, meta)
 
-	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("settling write: %v", err)
 	}
 
@@ -192,7 +192,7 @@ func TestID3v1DoesNotForceARewrite(t *testing.T) {
 		t.Fatalf("re-add trailer: %v", err)
 	}
 
-	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}

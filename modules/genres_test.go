@@ -121,7 +121,7 @@ func TestBuildFileTagsAppliesGenrePolicy(t *testing.T) {
 		{Count: 12, Name: "jazz rap"},
 	}
 
-	capped, err := BuildFileTags(track, resp.Media[0], resp, models.ConfigStruct{AutotaggerrMaxGenres: 2})
+	capped, err := BuildFileTags(track, resp.Media[0], resp, models.TaggerSettings{MaxGenres: 2})
 	if err != nil {
 		t.Fatalf("BuildFileTags: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestBuildFileTagsAppliesGenrePolicy(t *testing.T) {
 	}
 
 	// An unset cap falls back to the default rather than writing nothing.
-	defaulted, err := BuildFileTags(track, resp.Media[0], resp, models.ConfigStruct{})
+	defaulted, err := BuildFileTags(track, resp.Media[0], resp, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("BuildFileTags (no cap): %v", err)
 	}

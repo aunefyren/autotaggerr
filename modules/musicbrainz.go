@@ -399,25 +399,25 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	return apiResponse, nil
 }
 
-func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit, configFile models.ConfigStruct) string {
+func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit, tagger models.TaggerSettings) string {
 	artistString := ""
 	for index, feature := range artists {
 		logger.Log.Trace("processing featuring artist: " + feature.Artist.Name)
 
 		// choose join phrase based on settings
-		joinPhrase := configFile.AutotaggerrCustomArtistDelimiter
-		if !configFile.AutotaggerrUseCustomArtistDelimiter {
+		joinPhrase := tagger.CustomArtistDelimiter
+		if !tagger.UseCustomArtistDelimiter {
 			joinPhrase = feature.Joinphrase
 		} else if index+1 == len(artists) {
 			joinPhrase = ""
-		} else if len(artists) > 2 && index+1 < len(artists)-1 && configFile.AutotaggerrCustomArtistDelimiterCommas {
+		} else if len(artists) > 2 && index+1 < len(artists)-1 && tagger.CustomArtistDelimiterCommas {
 			joinPhrase = ", "
 		}
 
 		logger.Log.Trace("feature join phrase to use: " + joinPhrase)
 
 		// either use original release artist name or current name
-		if configFile.AutotaggerrUseCurrentArtistName {
+		if tagger.UseCurrentArtistName {
 			artistString += feature.Artist.Name + joinPhrase
 		} else {
 			artistString += feature.Name + joinPhrase

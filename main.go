@@ -92,9 +92,10 @@ func main() {
 	// the database (write-through) instead of a JSON file. Must run before LoadAllCaches.
 	modules.SetDB(db)
 
-	// Seed the DB from config.json on first run so existing (Lidarr) setups keep
-	// working unchanged. Idempotent — safe to run every startup.
-	adminCreds, err := database.Seed(db, files.ConfigFile)
+	// Bring an empty database up to a usable baseline: the metadata and artwork
+	// sources, a default tagger profile, and an admin to sign in as. Idempotent —
+	// safe to run every startup.
+	adminCreds, err := database.Seed(db)
 	if err != nil {
 		logger.Log.Fatal("failed to seed database. error: " + err.Error())
 		os.Exit(1)
@@ -234,15 +235,10 @@ func main() {
 	)
 	settingsRuntime.Schedule(files.ConfigFile)
 
-	if !files.ConfigFile.AutotaggerrMirrorDisabled &&
-		files.ConfigFile.AutotaggerrMirrorOnStartUp && filePath == nil {
-		scanRunner.SyncDrift()
-	}
-
-	// start library process if no file is configured and the feature is enabled
-	if files.ConfigFile.AutotaggerrProcessOnStartUp && filePath == nil {
-		go scanRunner.RunAll()
-	}
+	// Nothing is kicked off here. Both verbs used to have an "on start up" config key,
+	// from before there was a UI to press: a scan and a metadata refresh are now a
+	// button on the Activity page and a schedule that is installed above, so a restart
+	// is a restart rather than an unattended pass over the whole library.
 
 	// process file path
 	if filePath != nil && fileRootPath != nil {

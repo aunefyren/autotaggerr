@@ -57,7 +57,7 @@ func TestFlacSetReadRoundTrip(t *testing.T) {
 		MBRecordingID: "rec-id-456",
 	}
 
-	unchanged, written, _, err := SetFlacTags(path, meta, models.ConfigStruct{})
+	unchanged, written, _, err := SetFlacTags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
@@ -91,10 +91,10 @@ func TestFlacIdempotentWrite(t *testing.T) {
 	path := synthAudio(t, ".flac")
 	meta := models.FileTags{Artist: "Artist", Album: "Album", Title: "Title", Track: "1"}
 
-	if _, _, _, err := SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("first SetFlacTags: %v", err)
 	}
-	unchanged, written, _, err := SetFlacTags(path, meta, models.ConfigStruct{})
+	unchanged, written, _, err := SetFlacTags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second SetFlacTags: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestExtractFLACTag(t *testing.T) {
 	requireTool(t, "metaflac")
 	path := synthAudio(t, ".flac")
 	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", MBAlbumID: "the-album-id"}
-	if _, _, _, err := SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -132,7 +132,7 @@ func TestMP3SetReadRoundTrip(t *testing.T) {
 		Title:  "Intro",
 		Genres: []string{"Hip Hop"},
 	}
-	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -161,10 +161,10 @@ func TestMP3IdempotentWrite(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 	meta := models.FileTags{Artist: "Artist", Album: "Album", Title: "Title"}
 
-	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("first SetMP3Tags: %v", err)
 	}
-	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}
@@ -183,13 +183,13 @@ func TestDiffFileTags(t *testing.T) {
 
 	// Seed the file with an initial set of tags.
 	initial := models.FileTags{Album: "Old Album", Title: "Song", MBAlbumID: "rel-1"}
-	if _, _, _, err := SetFlacTags(path, initial, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetFlacTags(path, initial, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
 	// Desired changes only the album.
 	desired := models.FileTags{Album: "New Album", Title: "Song", MBAlbumID: "rel-1"}
-	entries, err := DiffFileTags(path, desired, models.ConfigStruct{})
+	entries, err := DiffFileTags(path, desired, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("DiffFileTags: %v", err)
 	}
@@ -221,7 +221,7 @@ func TestMP3MultiISRCIdempotent(t *testing.T) {
 		ISRCs:  []string{"USUM72108711", "USUM72108712"},
 	}
 
-	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("first SetMP3Tags: %v", err)
 	}
 
@@ -233,7 +233,7 @@ func TestMP3MultiISRCIdempotent(t *testing.T) {
 		t.Errorf("ISRC did not round-trip: got %q, want %q", firstTag(tags, "ISRC"), want)
 	}
 
-	unchanged, written, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, written, _, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}

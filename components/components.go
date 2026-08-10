@@ -166,17 +166,5 @@ func NewTagger(profile models.TaggerProfile) *Tagger {
 // WriteEnabled reports whether this profile writes tags at all.
 func (t *Tagger) WriteEnabled() bool { return t.profile.WriteTags }
 
-// Config projects the profile onto the ConfigStruct fields the tag writers read,
-// so the existing tagging code can be reused unchanged.
-func (t *Tagger) Config() models.ConfigStruct {
-	return models.ConfigStruct{
-		AutotaggerrUseCurrentArtistName:               t.profile.UseCurrentArtistName,
-		AutotaggerrIgnoreRedundantContributingArtists: t.profile.IgnoreRedundantContributingArtists,
-		AutotaggerrUseCustomArtistDelimiter:           t.profile.UseCustomArtistDelimiter,
-		AutotaggerrCustomArtistDelimiter:              t.profile.CustomArtistDelimiter,
-		AutotaggerrCustomArtistDelimiterCommas:        t.profile.CustomArtistDelimiterCommas,
-		AutotaggerrRemoveValues:                       t.profile.RemoveValues,
-		AutotaggerrMaxGenres:                          t.profile.MaxGenres,
-		AutotaggerrMP3MultiValueTags:                  t.profile.MP3MultiValueTags,
-	}
-}
+// Settings is what the tag writers read: the profile's knobs, and nothing else.
+func (t *Tagger) Settings() models.TaggerSettings { return t.profile.Settings() }

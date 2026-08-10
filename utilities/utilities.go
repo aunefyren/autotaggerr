@@ -253,7 +253,7 @@ func JoinTagValues(values []string) string {
 // The desired values must already be in the representation the writer will produce
 // (see renderFLACValues) — comparing an unrendered value against what comes back off
 // disk is how a file ends up re-tagged on every scan forever.
-func DiffFlacTags(existing map[string][]string, desired map[string][]string, configFile models.ConfigStruct) (map[string][]string, bool) {
+func DiffFlacTags(existing map[string][]string, desired map[string][]string, tagger models.TaggerSettings) (map[string][]string, bool) {
 	changes := make(map[string][]string)
 	hasChanges := false
 
@@ -263,7 +263,7 @@ func DiffFlacTags(existing map[string][]string, desired map[string][]string, con
 
 		// An empty desired value means "Autotaggerr has nothing to say about this
 		// tag", not "clear it" — unless the tagger profile says otherwise.
-		if len(wantValues) == 0 && !configFile.AutotaggerrRemoveValues {
+		if len(wantValues) == 0 && !tagger.RemoveValues {
 			continue
 		}
 
@@ -328,13 +328,13 @@ func sameTagValues(have, want []string) bool {
 // when given an empty value): its reported diff is derived from this change set, so a
 // key that is reported but not written would never converge and the file would be
 // rewritten on every scan.
-func DiffID3Tags(existing map[string][]string, desired map[string][]string, configFile models.ConfigStruct) (map[string][]string, bool) {
+func DiffID3Tags(existing map[string][]string, desired map[string][]string, tagger models.TaggerSettings) (map[string][]string, bool) {
 	changes := make(map[string][]string)
 	has := false
 	for k, want := range desired {
 		key := strings.ToUpper(k)
 		wantValues := cleanTagValues(want)
-		if len(wantValues) == 0 && !configFile.AutotaggerrRemoveValues {
+		if len(wantValues) == 0 && !tagger.RemoveValues {
 			continue
 		}
 		if !sameTagValues(existing[key], wantValues) {

@@ -58,32 +58,26 @@ const (
 // SMTPTLSModes lists the modes in the order they escalate, for the settings page.
 var SMTPTLSModes = []string{SMTPTLSAuto, SMTPTLSNone, SMTPTLSStartTLS, SMTPTLSImplicit}
 
+// ConfigStruct is what config.json holds: how this process starts and how it reaches
+// the outside world. Nothing that describes a *library* belongs here — managers, data
+// sources, tagger profiles and library folders are database rows, edited on their own
+// pages. Keys that once seeded those rows have been removed rather than kept as dead
+// weight: a key nothing reads is worse than a missing one, because editing it looks
+// like it should do something.
 type ConfigStruct struct {
-	Timezone                                      string         `json:"timezone"`
-	Database                                      DatabaseConfig `json:"database"`
-	PrivateKey                                    string         `json:"private_key"`
-	AutotaggerrPort                               int            `json:"autotaggerr_port"`
-	AutotaggerrName                               string         `json:"autotaggerr_name"`
-	AutotaggerrExternalURL                        string         `json:"autotaggerr_external_url"`
-	AutotaggerrVersion                            string         `json:"autotaggerr_version"`
-	AutotaggerrEnvironment                        string         `json:"autotaggerr_environment"`
-	AutotaggerrTestEmail                          string         `json:"autotaggerr_test_email"`
-	AutotaggerrLogLevel                           string         `json:"autotaggerr_log_level"`
-	AutotaggerrLibraries                          []string       `json:"autotaggerr_libraries"`
-	AutotaggerrProcessOnStartUp                   bool           `json:"autotaggerr_process_on_start_up"`
-	AutotaggerrProcessCronSchedule                string         `json:"autotaggerr_process_cron_schedule"`
-	AutotaggerrProcessConcurrency                 int            `json:"autotaggerr_process_concurrency"`
-	AutotaggerrUseCurrentArtistName               bool           `json:"autotaggerr_use_current_artist_name"`
-	AutotaggerrIgnoreRedundantContributingArtists bool           `json:"autotaggerr_ignore_redundant_contributing_artists"`
-	AutotaggerrUseCustomArtistDelimiter           bool           `json:"autotaggerr_use_custom_artist_delimiter"`
-	AutotaggerrCustomArtistDelimiter              string         `json:"autotaggerr_custom_artist_delimiter"`
-	AutotaggerrCustomArtistDelimiterCommas        bool           `json:"autotaggerr_custom_artist_delimiter_commas"`
-	AutotaggerrRemoveValues                       bool           `json:"autotaggerr_remove_values"`
-	// AutotaggerrMaxGenres caps how many of a release group's genres are written.
-	// MusicBrainz returns every folksonomy genre that cleared the vote threshold,
-	// which on a popular release group is dozens — so the cap is what keeps GENRE
-	// readable rather than a wall of near-synonyms. Zero or less means the default.
-	AutotaggerrMaxGenres int `json:"autotaggerr_max_genres"`
+	Timezone               string         `json:"timezone"`
+	Database               DatabaseConfig `json:"database"`
+	PrivateKey             string         `json:"private_key"`
+	AutotaggerrPort        int            `json:"autotaggerr_port"`
+	AutotaggerrName        string         `json:"autotaggerr_name"`
+	AutotaggerrExternalURL string         `json:"autotaggerr_external_url"`
+	AutotaggerrVersion     string         `json:"autotaggerr_version"`
+	AutotaggerrEnvironment string         `json:"autotaggerr_environment"`
+	AutotaggerrTestEmail   string         `json:"autotaggerr_test_email"`
+	AutotaggerrLogLevel    string         `json:"autotaggerr_log_level"`
+
+	AutotaggerrProcessCronSchedule string `json:"autotaggerr_process_cron_schedule"`
+	AutotaggerrProcessConcurrency  int    `json:"autotaggerr_process_concurrency"`
 
 	// AutotaggerrEventRetention and AutotaggerrEventDetailRetention size the Activity
 	// feed: how many runs are kept, and how much per-file detail each one stores.
@@ -93,23 +87,6 @@ type ConfigStruct struct {
 	// Zero or less means the default.
 	AutotaggerrEventRetention       int `json:"autotaggerr_event_retention"`
 	AutotaggerrEventDetailRetention int `json:"autotaggerr_event_detail_retention"`
-	// AutotaggerrMP3MultiValueTags picks how an MP3 says that a field has several
-	// values. Off (the default) joins them into one string with "; "; on writes the
-	// spec-correct ID3v2.4 form, one frame whose values are separated by a null byte.
-	//
-	// It is a setting rather than a fix because the two forms serve different readers
-	// and there is no representation that serves both. Picard, MusicBee, foobar2000
-	// and Navidrome read the null-separated form natively and treat the joined string
-	// as one long genre. ffmpeg reads only the *first* value out of a null-separated
-	// frame, so anything built on it — Plex above all — sees one genre where the
-	// joined string shows several.
-	//
-	// Off is the default because Autotaggerr ships a Plex client and refreshes Plex
-	// after a write: turning this on by surprise would take genres away from the
-	// setup the tool is most often pointed at. FLAC needs no such choice — ffmpeg
-	// joins repeated Vorbis comments on read, so the spec-correct form costs nothing
-	// there and is unconditional (see docs/tagging.md).
-	AutotaggerrMP3MultiValueTags bool `json:"autotaggerr_mp3_multi_value_tags"`
 
 	// MusicBrainz mirror. The mirror refreshes the local copy of every MusicBrainz
 	// entity the collection refers to on a schedule, so browsing reads the database
@@ -120,7 +97,6 @@ type ConfigStruct struct {
 	// config.json decodes as false, and false has to mean the default behaviour.
 	AutotaggerrMirrorDisabled     bool   `json:"autotaggerr_mirror_disabled"`
 	AutotaggerrMirrorCronSchedule string `json:"autotaggerr_mirror_cron_schedule"`
-	AutotaggerrMirrorOnStartUp    bool   `json:"autotaggerr_mirror_on_start_up"`
 
 	// Health-check schedule for the configured Lidarr/Plex connections. Checks are
 	// cheap and only record an Activity event when a service's health changes, so a

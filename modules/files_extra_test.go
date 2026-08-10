@@ -23,10 +23,10 @@ func TestTagDispatchersRejectUnsupportedExtension(t *testing.T) {
 		}
 	}
 
-	if _, _, _, err := SetFileTags(path, models.FileTags{}, models.ConfigStruct{}); err == nil {
+	if _, _, _, err := SetFileTags(path, models.FileTags{}, models.TaggerSettings{}); err == nil {
 		t.Error("SetFileTags accepted an unsupported extension")
 	}
-	if _, err := DiffFileTags(path, models.FileTags{}, models.ConfigStruct{}); err == nil {
+	if _, err := DiffFileTags(path, models.FileTags{}, models.TaggerSettings{}); err == nil {
 		t.Error("DiffFileTags accepted an unsupported extension")
 	}
 }
@@ -68,7 +68,7 @@ func TestBuildFileTags(t *testing.T) {
 	resp.ReleaseGroup.FirstReleaseDate = "1997-05-21"
 
 	// Original names, keeping every contributing artist.
-	tags, err := BuildFileTags(track, resp.Media[0], resp, models.ConfigStruct{})
+	tags, err := BuildFileTags(track, resp.Media[0], resp, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("BuildFileTags: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestBuildFileTags(t *testing.T) {
 
 	// Current artist name selected, and redundant contributing artists dropped for a
 	// single-credit track (here still two credits, so the artist string is kept).
-	currentCfg := models.ConfigStruct{AutotaggerrUseCurrentArtistName: true}
+	currentCfg := models.TaggerSettings{UseCurrentArtistName: true}
 	current, err := BuildFileTags(track, resp.Media[0], resp, currentCfg)
 	if err != nil {
 		t.Fatalf("BuildFileTags (current names): %v", err)
@@ -109,7 +109,7 @@ func TestBuildFileTags(t *testing.T) {
 	noDate := resp
 	noDate.Date = ""
 	noDate.ReleaseGroup.FirstReleaseDate = ""
-	if plain, err := BuildFileTags(track, resp.Media[0], noDate, models.ConfigStruct{}); err != nil {
+	if plain, err := BuildFileTags(track, resp.Media[0], noDate, models.TaggerSettings{}); err != nil {
 		t.Fatalf("BuildFileTags (no date): %v", err)
 	} else if plain.ReleaseYear != "" || plain.OriginalYear != "" {
 		t.Errorf("years should be empty for a blank date: %q/%q", plain.ReleaseYear, plain.OriginalYear)
@@ -118,7 +118,7 @@ func TestBuildFileTags(t *testing.T) {
 	// No album artist credit at all is a refusal — the album artist is not optional.
 	noArtist := resp
 	noArtist.ArtistCredit = nil
-	if _, err := BuildFileTags(track, resp.Media[0], noArtist, models.ConfigStruct{}); err == nil {
+	if _, err := BuildFileTags(track, resp.Media[0], noArtist, models.TaggerSettings{}); err == nil {
 		t.Error("BuildFileTags should refuse a release with no album artist")
 	}
 }
@@ -168,7 +168,7 @@ func TestBuildFileTagsRedundantArtist(t *testing.T) {
 			resp.ReleaseGroup.PrimaryType = "Album"
 
 			tags, err := BuildFileTags(track, resp.Media[0], resp,
-				models.ConfigStruct{AutotaggerrIgnoreRedundantContributingArtists: c.ignore})
+				models.TaggerSettings{IgnoreRedundantContributingArtists: c.ignore})
 			if err != nil {
 				t.Fatalf("BuildFileTags: %v", err)
 			}

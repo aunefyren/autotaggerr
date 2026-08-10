@@ -25,8 +25,8 @@ is currently the only metadata source implemented.
 The distinction that keeps this honest is *policy vs. connection*. "Hold merged releases for my
 approval" is a decision about this library and belongs here, whatever answered the lookup. A base
 URL, a credential or a rate limit is a property of one configured source and belongs on its own row
-under **Data sources** — see [Managed elsewhere](#managed-elsewhere) for the same split applied to
-managers, libraries and tagger profiles.
+under **Data sources** — the same split that moved managers, libraries and tagger profiles off this
+page entirely (see [below](#every-key-on-this-page-is-a-key-the-process-reads)).
 
 Naming a section after the current implementation costs twice: the second source makes the name
 wrong, and someone running none reads a section about a service they do not use as irrelevant when
@@ -105,22 +105,37 @@ re-tagging an album.
 Everything else in the API remains open to any authenticated user. That is deliberate, not an
 oversight, and this doc is where to revisit it if per-role permissions ever grow.
 
-## Managed elsewhere
+## Every key on this page is a key the process reads
 
-Some `config.json` keys are no longer read at runtime: they seeded the database on first start and
-are edited on their own page now — the tag-writing flags (**Tagger profiles**) and the library list
-(**Libraries**). They are listed at the bottom of the page with a link to their owner, rather than
-omitted, because the keys are still in the file and a page that silently drops them invites someone
-to edit the file and wonder why nothing changed.
+The page used to end with a **Managed elsewhere** block: config keys that had moved into the
+database, listed with a link to the page that owned them because the keys were still sitting in
+`config.json` and a page that silently dropped them invited someone to edit the file and wonder why
+nothing changed.
 
-Two things have left this list, in opposite directions. The three `lidarr_*` keys are **gone from
-the config struct**: a key that exists, is documented and does nothing is a trap whether or not the
-page explains it, so Managers is now the only place those credentials exist at all (see
-[media-manager.md](media-manager.md#one-copy-of-the-credentials-and-one-way-to-check-them)).
-`plex_base_url` and `plex_token` went the other way — they were listed here, but Plex is not a
-manager and never had a field on that page, while `main.go` reads them at every start. Being told
+That block is gone, and so are the keys it described — the eight tag-writing flags (now per
+**Tagger profile**) and `autotaggerr_libraries` (now a row per folder on **Libraries**). They went
+the way the three `lidarr_*` keys went before them: a key that exists, is documented and does
+nothing is a trap whether or not a page explains it, and explaining it is strictly worse than not
+having it. `files.SaveConfig` round-trips the struct on every start, so a file written by an older
+version is cleaned of them the first time the new binary boots.
+
+`plex_base_url` and `plex_token` left the same block in the opposite direction. Plex is not a
+manager and never had a field on that page, while `main.go` reads both at every start — being told
 that editing the file "changes nothing" was the opposite of true for them. They are ordinary
-`restart`-tier fields under **Plex** now.
+`restart`-tier fields under **Plex**.
+
+`TestEveryConfigKeyHasAHome` (`settings/schema_test.go`) is what keeps the claim in this heading
+true: it walks `models.ConfigStruct` by reflection and fails for any JSON key that is not a field in
+`Sections()`. There is no second answer to give it now.
+
+## Nothing is started by starting
+
+Two keys used to run a verb at boot — `autotaggerr_process_on_start_up` (a full scan) and
+`autotaggerr_mirror_on_start_up` (a metadata refresh). Both are gone. They date from before there
+was a UI: with no button to press, a restart was the only way to make something happen on demand,
+and an unattended pass on every boot was the price. Both verbs now have a button and a schedule, so
+a restart is a restart — which matters most for the case the keys were worst for, a container that
+restarts on a health check and re-walks the whole library each time.
 
 ## Email, and the one action on this page
 

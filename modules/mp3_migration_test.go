@@ -93,7 +93,7 @@ func TestLegacyFfmpegFilesConvergeAfterOneRewrite(t *testing.T) {
 	meta := fullFileTags()
 	writeLegacyMP3Tags(t, path, meta)
 
-	unchanged, written, changes, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, written, changes, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestLegacyFfmpegFilesConvergeAfterOneRewrite(t *testing.T) {
 	}
 
 	// And it settles: the second write is a no-op.
-	unchanged, written, changes, err = SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, written, changes, err = SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}
@@ -152,7 +152,7 @@ func TestMigratedISRCSurvivesWhenTheReleaseNoLongerSuppliesOne(t *testing.T) {
 	// "delete it" — which is exactly when the value must be carried across.
 	thinned := meta
 	thinned.ISRCs = nil
-	if _, _, _, err := SetMP3Tags(path, thinned, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, thinned, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestForeignUFIDFramesAreLeftAlone(t *testing.T) {
 	// Write twice: the second pass is where a delete-by-ID bug shows up, because by
 	// then our own frame exists too and the foreign one is no longer the only UFID.
 	for i := 0; i < 2; i++ {
-		if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+		if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 			t.Fatalf("SetMP3Tags pass %d: %v", i+1, err)
 		}
 	}
@@ -226,7 +226,7 @@ func TestForeignUFIDFramesAreLeftAlone(t *testing.T) {
 func TestUFIDIsReadBackFromEitherScheme(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 	meta := fullFileTags()
-	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
 
@@ -246,7 +246,7 @@ func TestUFIDIsReadBackFromEitherScheme(t *testing.T) {
 	}
 	_ = tag.Close()
 
-	unchanged, _, changes, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, _, changes, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestNewWriterReproducesTheLegacyFrames(t *testing.T) {
 	writeLegacyMP3Tags(t, legacyPath, meta)
 
 	newPath := synthAudio(t, ".mp3")
-	if _, _, _, err := SetMP3Tags(newPath, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(newPath, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
 
@@ -376,7 +376,7 @@ func TestMP3TagsSurviveWithoutFfmpeg(t *testing.T) {
 
 	t.Setenv("PATH", "")
 
-	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetMP3Tags without ffmpeg on PATH: %v", err)
 	}
 	tags, err := GetMP3Tags(path)
@@ -396,8 +396,8 @@ func TestMP3TagsSurviveWithoutFfmpeg(t *testing.T) {
 // because a representation that does not read back as it was written re-tags the file
 // on every scan forever.
 func TestMP3MultiValueSetting(t *testing.T) {
-	joined := models.ConfigStruct{}
-	multiValue := models.ConfigStruct{AutotaggerrMP3MultiValueTags: true}
+	joined := models.TaggerSettings{}
+	multiValue := models.TaggerSettings{MP3MultiValueTags: true}
 	meta := models.FileTags{
 		Artist: "A", Album: "B", Title: "C",
 		Genres: []string{"hip hop", "rap", "jazz rap"},
@@ -440,8 +440,8 @@ func TestMP3MultiValueSetting(t *testing.T) {
 // lets a half-converted library read correctly in both directions.
 func TestMP3MultiValueSettingConvergesAfterAFlip(t *testing.T) {
 	meta := fullFileTags()
-	joined := models.ConfigStruct{}
-	multiValue := models.ConfigStruct{AutotaggerrMP3MultiValueTags: true}
+	joined := models.TaggerSettings{}
+	multiValue := models.TaggerSettings{MP3MultiValueTags: true}
 
 	path := synthAudio(t, ".mp3")
 	if _, _, _, err := SetMP3Tags(path, meta, joined); err != nil {
@@ -482,11 +482,11 @@ func assertSecondWriteIsNoOpWith(
 	t *testing.T,
 	path string,
 	meta models.FileTags,
-	configFile models.ConfigStruct,
-	write func(string, models.FileTags, models.ConfigStruct) (bool, int, []models.TagChange, error),
+	tagger models.TaggerSettings,
+	write func(string, models.FileTags, models.TaggerSettings) (bool, int, []models.TagChange, error),
 ) {
 	t.Helper()
-	unchanged, written, changes, err := write(path, meta, configFile)
+	unchanged, written, changes, err := write(path, meta, tagger)
 	if err != nil {
 		t.Fatalf("second write: %v", err)
 	}

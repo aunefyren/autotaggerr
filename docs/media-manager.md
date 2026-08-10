@@ -125,10 +125,13 @@ from the manager's — but a key that exists, is documented, and does nothing is
 it is announced. The keys are gone from `models.ConfigStruct` entirely, so a stale copy in an old
 `config.json` is inert and can be deleted.
 
-What remains of the seed is `lidarrManagerID`, which *finds* an existing Lidarr manager so a newly
-seeded library can be linked to it. It never creates one. The cost is that a fresh install starts
-with no manager and the user makes one in the UI; the gain is that there is exactly one place
-credentials live, rather than two where one silently wins.
+Nothing remains of that seed. The last piece to go was `autotaggerr_libraries`, which created a
+library row per configured folder and linked it to whichever Lidarr manager already existed — the
+same read-once-then-ignored shape, one level up. `database.Seed` now takes no config at all: it
+creates the two credential-free data sources, a default tagger profile and the admin user, and
+stops. The cost is that a fresh install starts with no manager and no library, and the user makes
+both in the UI; the gain is that there is exactly one place each of those lives, rather than two
+where one silently wins.
 
 Plex is the exception that proves the shape: it is not a manager (there is no Plex manager type), so
 `plex_base_url` and `plex_token` genuinely are config, read by `main.go` at every start, and they

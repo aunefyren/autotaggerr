@@ -120,32 +120,43 @@ services:
 ---
 
 ## 🐳 Configuring Autotaggerr
-Edit the config.json, found within the config directory. If it isn't there, just start the application first. Example:
+Edit the config.json, found within the config directory. If it isn't there, just start the application first. The keys are written in alphabetical order, and any key this version does not know is dropped the first time it saves the file. Example:
 
 ```json
 {
-	"timezone": "Europe/Paris",
-	"database": {
-		"type": "sqlite",
-		"dsn": "config/autotaggerr.db"
-	},
-	"private_key": "",
-	"autotaggerr_port": 8080,
-	"autotaggerr_name": "Autotaggerr",
-	"autotaggerr_external_url": "",
-	"autotaggerr_version": "v1.0.0",
 	"autotaggerr_environment": "prod",
-	"autotaggerr_test_email": "",
+	"autotaggerr_event_detail_retention": 500,
+	"autotaggerr_event_retention": 200,
+	"autotaggerr_external_url": "",
+	"autotaggerr_health_cron_schedule": "0 */5 * * * *",
 	"autotaggerr_log_level": "info",
-	"autotaggerr_libraries": [
-		"/media/library/music"
-	],
-	"autotaggerr_process_on_start_up": true,
-	"autotaggerr_process_cron_schedule": "0 0 18 * * 7",
-	"autotaggerr_process_concurrency": 4,
+	"autotaggerr_migration_review_artists": false,
+	"autotaggerr_migration_review_deletions": false,
+	"autotaggerr_migration_review_pinned": false,
+	"autotaggerr_migration_review_releases": false,
 	"autotaggerr_mirror_cron_schedule": "0 0 3 * * *",
+	"autotaggerr_mirror_disabled": false,
+	"autotaggerr_name": "Autotaggerr",
+	"autotaggerr_port": 8080,
+	"autotaggerr_process_concurrency": 4,
+	"autotaggerr_process_cron_schedule": "0 0 18 * * 7",
+	"autotaggerr_test_email": "",
+	"autotaggerr_version": "v1.0.0",
+	"database": {
+		"dsn": "config/autotaggerr.db",
+		"type": "sqlite"
+	},
 	"plex_base_url": "https://plex.mycooldomain.com",
-	"plex_token": "XXX"
+	"plex_token": "XXX",
+	"private_key": "",
+	"smtp_enabled": true,
+	"smtp_from": "",
+	"smtp_host": "",
+	"smtp_password": "",
+	"smtp_port": 0,
+	"smtp_tls": "auto",
+	"smtp_username": "",
+	"timezone": "Europe/Paris"
 }
 ```
 
@@ -153,12 +164,16 @@ Edit the config.json, found within the config directory. If it isn't there, just
 
 Every setting can be defined in `config.json`. A subset can also be overridden at runtime with a startup flag or an environment variable (the container `entrypoint.sh` maps env vars onto the flags). Precedence is: **startup flag → environment variable → config file value**. A flag/env only overrides the config when it is explicitly provided.
 
-**You do not have to edit this file by hand.** Signed in as an admin, the **Settings** page edits the
-same keys from the web UI: schedules, log level, processing concurrency and the mirror switch take effect
-immediately, and the rest are saved and picked up at the next start (the page says which is which).
-The keys marked *managed elsewhere* below are the exception — they seeded the database on first start
-and are edited on the Managers, Tagger profiles and Libraries pages now. See
-[docs/settings.md](docs/settings.md).
+**You do not have to edit this file by hand.** Signed in as an admin, the **Settings** page edits
+every key below from the web UI: schedules, log level, processing concurrency and the mirror switch
+take effect immediately, and the rest are saved and picked up at the next start (the page says which
+is which). See [docs/settings.md](docs/settings.md).
+
+Music libraries, metadata managers, data sources and tag-writing settings are **not** in this file —
+they are database rows, added and edited on the Libraries, Managers, Data sources and Tagger
+profiles pages. `config.json` used to carry keys that seeded them on the first boot and were ignored
+on every boot after; those are gone, and an old file is cleaned of them the first time this version
+starts.
 
 | Config file entry | Startup flag | Environment variable | Type | Description |
 |---|---|---|---|---|
@@ -173,21 +188,10 @@ and are edited on the Managers, Tagger profiles and Libraries pages now. See
 | `autotaggerr_environment` | — | — | string | `prod` or `test`. `test` disables Gin release mode and **redirects every outgoing email to `autotaggerr_test_email`**, with no exception. Default `prod`. |
 | `autotaggerr_test_email` | — | — | string | Default recipient for the *Send test message* button on **Settings → Email**, and the sole recipient of every message while `autotaggerr_environment` is `test`. Default empty. |
 | `autotaggerr_log_level` | — | — | string | Logrus level (`trace`, `debug`, `info`, `warn`, `error`, …). Default `info`. |
-| `autotaggerr_libraries` | — | — | string[] | Absolute paths of music libraries to process recursively. Default `[]`. |
-| `autotaggerr_process_on_start_up` | — | — | bool | Run a full processing pass over every library immediately on startup. Default `false`. |
 | `autotaggerr_process_cron_schedule` | — | — | string | 6-field cron for the recurring processing run. Default `0 0 18 * * 7` (Sundays 18:00). |
 | `autotaggerr_process_concurrency` | `-concurrency` | `concurrency` | int | Number of files processed in parallel per library. `1` = serial. Default `4`. |
-| `autotaggerr_use_current_artist_name` | — | — | bool | Prefer the artist's current name over the credited name. Default `true`. |
-| `autotaggerr_ignore_redundant_contributing_artists` | — | — | bool | Drop contributing artists already covered by the album artist. Default `true`. |
-| `autotaggerr_use_custom_artist_delimiter` | — | — | bool | Join multiple artists with a custom delimiter. Default `true`. |
-| `autotaggerr_custom_artist_delimiter` | — | — | string | Delimiter used when joining artists. Default `" & "`. |
-| `autotaggerr_custom_artist_delimiter_commas` | — | — | bool | Use commas between artists, with the custom delimiter before the last. Default `true`. |
-| `autotaggerr_remove_values` | — | — | bool | Remove existing tag values not present in the new metadata. Default `false`. |
-| `autotaggerr_max_genres` | — | — | int | How many of a release group's genres are written to `GENRE`, most-voted first. Default `5`. |
-| `autotaggerr_mp3_multi_value_tags` | — | — | bool | Write ID3v2.4's own multi-value form in MP3s instead of joining values with `; `. Default `false` — Plex reads tags through ffmpeg, which sees only the first value. FLAC always uses the multi-value form. |
 | `autotaggerr_mirror_disabled` | — | — | bool | Turn the scheduled MusicBrainz mirror refresh off entirely. Default `false` (the mirror runs). |
 | `autotaggerr_mirror_cron_schedule` | — | — | string | 6-field cron for the mirror refresh. Default `0 0 3 * * *` (nightly 03:00). |
-| `autotaggerr_mirror_on_start_up` | — | — | bool | Also run a mirror pass on startup. Default `false` — a first pass over a large collection is hours of rate-limited fetching. |
 | `autotaggerr_migration_review_releases` | — | — | bool | Hold merged **releases** for manual approval instead of re-pointing records automatically. Default `false` (apply). |
 | `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |
 | `autotaggerr_migration_review_pinned` | — | — | bool | Hold any migration that would rewrite a **manually attached** file's MB ID, whatever its type. Default `false` (apply). |

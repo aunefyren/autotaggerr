@@ -47,7 +47,7 @@ func fullFileTags() models.FileTags {
 func TestMP3FullFieldRoundTrip(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 
-	unchanged, written, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{})
+	unchanged, written, _, err := SetMP3Tags(path, fullFileTags(), models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestMP3FullFieldRoundTrip(t *testing.T) {
 
 	// A second write with the same metadata must converge to a no-op — this guards
 	// against the totals regressing (they must round-trip so the diff sees no change).
-	unchanged2, written2, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{})
+	unchanged2, written2, _, err := SetMP3Tags(path, fullFileTags(), models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestMP3FullFieldRoundTrip(t *testing.T) {
 func TestMP3RemoveValuesClearsAndConverges(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 
-	removeValues := models.ConfigStruct{AutotaggerrRemoveValues: true}
+	removeValues := models.TaggerSettings{RemoveValues: true}
 	if _, _, _, err := SetMP3Tags(path, fullFileTags(), removeValues); err != nil {
 		t.Fatalf("SetMP3Tags (full): %v", err)
 	}
@@ -166,7 +166,7 @@ func TestMP3ISRCPreservesCase(t *testing.T) {
 	path := synthAudio(t, ".mp3")
 
 	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", ISRCs: []string{"gb-abc-99-12345"}}
-	if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
 
@@ -179,7 +179,7 @@ func TestMP3ISRCPreservesCase(t *testing.T) {
 	}
 
 	// And the mixed-case value must not trigger a rewrite on the second pass.
-	unchanged, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{})
+	unchanged, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second SetMP3Tags: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestMP3ISRCPreservesCase(t *testing.T) {
 
 func TestExtractFromID3v2(t *testing.T) {
 	path := synthAudio(t, ".mp3")
-	if _, _, _, err := SetMP3Tags(path, fullFileTags(), models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetMP3Tags(path, fullFileTags(), models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetMP3Tags: %v", err)
 	}
 
@@ -234,7 +234,7 @@ func TestSetFlacTagsRemoveValues(t *testing.T) {
 
 	// Seed a BARCODE tag.
 	seeded := models.FileTags{Artist: "A", Album: "B", Title: "C", Barcode: "0123456789"}
-	if _, _, _, err := SetFlacTags(path, seeded, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetFlacTags(path, seeded, models.TaggerSettings{}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	tags, err := getFlacTagsMap(path)
@@ -247,7 +247,7 @@ func TestSetFlacTagsRemoveValues(t *testing.T) {
 
 	// Removal disabled: an empty Barcode must NOT change anything.
 	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", Barcode: ""}
-	unchanged, _, _, err := SetFlacTags(path, meta, models.ConfigStruct{AutotaggerrRemoveValues: false})
+	unchanged, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{RemoveValues: false})
 	if err != nil {
 		t.Fatalf("removal-off SetFlacTags: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestSetFlacTagsRemoveValues(t *testing.T) {
 	}
 
 	// Removal enabled: the empty Barcode should now clear the tag.
-	_, _, _, err = SetFlacTags(path, meta, models.ConfigStruct{AutotaggerrRemoveValues: true})
+	_, _, _, err = SetFlacTags(path, meta, models.TaggerSettings{RemoveValues: true})
 	if err != nil {
 		t.Fatalf("removal-on SetFlacTags: %v", err)
 	}

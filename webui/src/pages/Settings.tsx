@@ -1,8 +1,7 @@
 import { ReactNode, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { ManagedElsewhere, SettingsField, SettingsSaveResult, SettingsView } from "../types";
+import { SettingsField, SettingsSaveResult, SettingsView } from "../types";
 import { ErrorNote, Pill } from "../components/ui";
 import { useToast } from "../toast";
 
@@ -110,8 +109,6 @@ export default function Settings() {
           )}
         </section>
       ))}
-
-      {data && data.managed.length > 0 && <ManagedSection managed={data.managed} />}
 
       {dirty && (
         <div className="savebar" role="status">
@@ -360,44 +357,6 @@ function SecretControl({ field, onChange }: { field: SettingsField; onChange: (v
         </span>
       )}
     </div>
-  );
-}
-
-/**
- * Keys that are still in config.json but are no longer read at runtime. Named rather
- * than hidden: the keys are in the file, and a page that omits them invites someone to
- * edit the file and wonder why nothing changed.
- */
-function ManagedSection({ managed }: { managed: ManagedElsewhere[] }) {
-  return (
-    <section className="card stack" style={{ gap: 14 }}>
-      <div>
-        <h2 className="section-title">Managed elsewhere</h2>
-        <p className="muted" style={{ margin: "4px 0 0", fontSize: 12, maxWidth: "76ch" }}>
-          These keys may still be in config.json, but they only seeded the database on the first
-          start. Editing the file changes nothing — change them where they live now.
-        </p>
-      </div>
-      {managed.map((group) => (
-        <div key={group.path} className="setting-row">
-          <div className="setting-label">
-            <span className="setting-name">
-              <Link to={group.path}>{group.label}</Link>
-            </span>
-            <p className="setting-help">{group.note}</p>
-          </div>
-          <div className="setting-control">
-            <div className="row" style={{ flexWrap: "wrap", gap: 4 }}>
-              {group.keys.map((key) => (
-                <code key={key} className="setting-key">
-                  {key}
-                </code>
-              ))}
-            </div>
-          </div>
-        </div>
-      ))}
-    </section>
   );
 }
 

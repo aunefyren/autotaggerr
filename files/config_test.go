@@ -2,8 +2,11 @@ package files
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 )
 
@@ -69,9 +72,6 @@ func TestLoadConfigBackfillsDefaults(t *testing.T) {
 	if ConfigFile.AutotaggerrProcessCronSchedule == "" {
 		t.Error("cron schedule not back-filled")
 	}
-	if ConfigFile.AutotaggerrCustomArtistDelimiter == "" {
-		t.Error("artist delimiter not back-filled")
-	}
 	if ConfigFile.PrivateKey == "" {
 		t.Error("private key not generated")
 	}
@@ -99,6 +99,97 @@ func TestSaveAndReloadConfig(t *testing.T) {
 	}
 	if ConfigFile.AutotaggerrProcessConcurrency != 12 {
 		t.Errorf("concurrency after reload = %d, want 12", ConfigFile.AutotaggerrProcessConcurrency)
+	}
+}
+
+// TestSaveConfigWritesKeysAlphabetically pins the file's shape. Encoding the struct
+// directly would write the keys in declaration order, so moving a field for
+// readability would reshuffle every user's config.json — and hunting for a key by
+// name would mean knowing how the Go struct happens to be grouped.
+func TestSaveConfigWritesKeysAlphabetically(t *testing.T) {
+	redirectConfig(t)
+	if err := LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if err := SaveConfig(); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	raw, err := os.ReadFile(configFilePath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+
+	// Read the keys in the order they appear in the file, not through a map.
+	var written []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !strings.HasPrefix(trimmed, `"`) {
+			continue // a nested object's braces, or the outer ones
+		}
+		key, _, ok := strings.Cut(strings.TrimPrefix(trimmed, `"`), `"`)
+		if ok {
+			written = append(written, key)
+		}
+	}
+	if len(written) < 10 {
+		t.Fatalf("only found %d keys in the written config: %s", len(written), raw)
+	}
+
+	// The nested database object contributes its own leaves, which sort among
+	// themselves; drop them so the top level is compared on its own.
+	var top []string
+	for _, key := range written {
+		if key != "dsn" && key != "type" {
+			top = append(top, key)
+		}
+	}
+	if !sort.StringsAreSorted(top) {
+		t.Errorf("config keys are not alphabetical: %v", top)
+	}
+}
+
+// TestSaveConfigDropsRetiredKeys is the other half of removing a config key: the key
+// has to leave the *file*, not just the struct. A key that lingers is exactly the trap
+// removing it was meant to close — it still looks editable.
+func TestSaveConfigDropsRetiredKeys(t *testing.T) {
+	redirectConfig(t)
+	legacy := `{"autotaggerr_port":7000,"autotaggerr_libraries":["/music"],` +
+		`"autotaggerr_process_on_start_up":true,"autotaggerr_max_genres":9,` +
+		`"lidarr_base_url":"https://lidarr.example.com"}`
+	if err := os.WriteFile(configFilePath, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := LoadConfig(); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+	if err := SaveConfig(); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	raw, err := os.ReadFile(configFilePath)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	var written map[string]any
+	if err := json.Unmarshal(raw, &written); err != nil {
+		t.Fatalf("decode written config: %v", err)
+	}
+
+	for _, retired := range []string{"autotaggerr_libraries", "autotaggerr_process_on_start_up",
+		"autotaggerr_max_genres", "autotaggerr_mirror_on_start_up", "lidarr_base_url"} {
+		if _, present := written[retired]; present {
+			t.Errorf("retired key %q survived the save", retired)
+		}
+	}
+	// The keys that are still real must survive the same round trip, including the
+	// value that was already in the file.
+	if written["autotaggerr_port"] != float64(7000) {
+		t.Errorf("autotaggerr_port = %v, want the 7000 that was in the file", written["autotaggerr_port"])
+	}
+	if _, present := written["smtp_tls"]; !present {
+		t.Error("smtp_tls is missing from the written config")
 	}
 }
 

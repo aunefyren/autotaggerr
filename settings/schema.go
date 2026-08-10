@@ -137,12 +137,6 @@ func Sections() []Section {
 					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrProcessCronSchedule = v }, validCron),
 				},
 				{
-					Key: "autotaggerr_process_on_start_up", Label: "Scan on startup", Type: TypeBool, Tier: TierRestart,
-					Help: "Run a full scan every time the service starts.",
-					get:  func(c models.ConfigStruct) any { return c.AutotaggerrProcessOnStartUp },
-					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrProcessOnStartUp = v }),
-				},
-				{
 					Key: "autotaggerr_process_concurrency", Label: "Files in parallel", Type: TypeInt, Tier: TierLive,
 					Help: "Workers per library scan. FLAC rewrites are disk-bound, so more is not always faster.",
 					get:  func(c models.ConfigStruct) any { return c.AutotaggerrProcessConcurrency },
@@ -210,12 +204,6 @@ func Sections() []Section {
 					Placeholder: "0 0 3 * * *",
 					get:         func(c models.ConfigStruct) any { return c.AutotaggerrMirrorCronSchedule },
 					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrMirrorCronSchedule = v }, validCron),
-				},
-				{
-					Key: "autotaggerr_mirror_on_start_up", Label: "Refresh on startup", Type: TypeBool, Tier: TierRestart,
-					Help: "A first pass over a large collection is hours of rate-limited fetching.",
-					get:  func(c models.ConfigStruct) any { return c.AutotaggerrMirrorOnStartUp },
-					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrMirrorOnStartUp = v }),
 				},
 			},
 		},
@@ -371,42 +359,16 @@ func Sections() []Section {
 	}
 }
 
-// managedElsewhere lists the config keys that are no longer read from config.json at
-// runtime: they seed the database on first start and are edited on their own page
-// from then on. They are named here — rather than dropped — because the keys are
-// still in the file, and a settings page that silently omits them invites someone to
-// edit the file and wonder why nothing changed.
-type ManagedElsewhere struct {
-	Keys  []string `json:"keys"`
-	Label string   `json:"label"`
-	Path  string   `json:"path"`
-	Note  string   `json:"note"`
-}
-
-func Managed() []ManagedElsewhere {
-	return []ManagedElsewhere{
-		{
-			Keys: []string{"autotaggerr_use_current_artist_name", "autotaggerr_ignore_redundant_contributing_artists",
-				"autotaggerr_use_custom_artist_delimiter", "autotaggerr_custom_artist_delimiter",
-				"autotaggerr_custom_artist_delimiter_commas", "autotaggerr_remove_values",
-				"autotaggerr_max_genres", "autotaggerr_mp3_multi_value_tags"},
-			Label: "Tagger profiles",
-			Path:  "/tagger-profiles",
-			Note:  "Tag-writing settings are per profile now, so one library can differ from another.",
-		},
-		{
-			Keys:  []string{"autotaggerr_libraries"},
-			Label: "Libraries",
-			Path:  "/libraries",
-			Note:  "Each folder is a library row with its own manager, data source and tagger profile.",
-		},
-	}
-}
-
 // View is the settings surface plus the current values, as the API returns it.
+//
+// It used to carry a second list — the config keys that had moved into the database
+// and were edited on the Libraries and Tagger profiles pages — because those keys
+// were still sitting in config.json, and a page that silently omitted them invited
+// someone to edit the file and wonder why nothing changed. The keys are gone from the
+// file now, so there is nothing left to explain away: every key config.json holds is
+// a field below.
 type View struct {
-	Sections []ViewSection      `json:"sections"`
-	Managed  []ManagedElsewhere `json:"managed"`
+	Sections []ViewSection `json:"sections"`
 }
 
 type ViewSection struct {
@@ -429,7 +391,7 @@ type ViewField struct {
 // Describe resolves the whole surface against a config.
 func Describe(cfg models.ConfigStruct) View {
 	sections := Sections()
-	out := View{Sections: make([]ViewSection, 0, len(sections)), Managed: Managed()}
+	out := View{Sections: make([]ViewSection, 0, len(sections))}
 
 	for _, section := range sections {
 		viewSection := ViewSection{

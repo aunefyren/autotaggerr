@@ -210,7 +210,7 @@ func TestDiffFlacTags(t *testing.T) {
 	t.Run("unchanged ignores key case and trailing space", func(t *testing.T) {
 		existing := map[string][]string{"TITLE": {"Song "}}
 		desired := map[string][]string{"title": {"Song"}}
-		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{})
+		changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{})
 		if has || len(changes) != 0 {
 			t.Errorf("expected no changes, got %v (has=%v)", changes, has)
 		}
@@ -219,7 +219,7 @@ func TestDiffFlacTags(t *testing.T) {
 	t.Run("detects a changed value", func(t *testing.T) {
 		existing := map[string][]string{"ARTIST": {"Old"}}
 		desired := map[string][]string{"artist": {"New"}}
-		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{})
+		changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{})
 		if !has || !reflect.DeepEqual(changes, map[string][]string{"ARTIST": {"New"}}) {
 			t.Errorf("changes = %v (has=%v), want {ARTIST:New}", changes, has)
 		}
@@ -228,7 +228,7 @@ func TestDiffFlacTags(t *testing.T) {
 	t.Run("empty desired is skipped when RemoveValues is off", func(t *testing.T) {
 		existing := map[string][]string{"COMMENT": {"present"}}
 		desired := map[string][]string{"comment": nil}
-		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{AutotaggerrRemoveValues: false})
+		changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{RemoveValues: false})
 		if has || len(changes) != 0 {
 			t.Errorf("expected empty value to be skipped, got %v", changes)
 		}
@@ -237,7 +237,7 @@ func TestDiffFlacTags(t *testing.T) {
 	t.Run("empty desired removes value when RemoveValues is on", func(t *testing.T) {
 		existing := map[string][]string{"COMMENT": {"present"}}
 		desired := map[string][]string{"comment": nil}
-		changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{AutotaggerrRemoveValues: true})
+		changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{RemoveValues: true})
 		if !has || !reflect.DeepEqual(changes, map[string][]string{"COMMENT": nil}) {
 			t.Errorf("changes = %v (has=%v), want {COMMENT:\"\"}", changes, has)
 		}
@@ -250,7 +250,7 @@ func TestDiffFlacTags(t *testing.T) {
 func TestDiffID3Tags(t *testing.T) {
 	t.Run("empty desired is skipped when RemoveValues is off", func(t *testing.T) {
 		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string][]string{"tit2": nil},
-			models.ConfigStruct{AutotaggerrRemoveValues: false})
+			models.TaggerSettings{RemoveValues: false})
 		if has || len(changes) != 0 {
 			t.Errorf("expected empty desired to be skipped, got %v", changes)
 		}
@@ -258,7 +258,7 @@ func TestDiffID3Tags(t *testing.T) {
 
 	t.Run("empty desired removes value when RemoveValues is on", func(t *testing.T) {
 		changes, has := DiffID3Tags(map[string][]string{"TIT2": {"x"}}, map[string][]string{"tit2": nil},
-			models.ConfigStruct{AutotaggerrRemoveValues: true})
+			models.TaggerSettings{RemoveValues: true})
 		if !has || !reflect.DeepEqual(changes, map[string][]string{"TIT2": nil}) {
 			t.Errorf("changes = %v (has=%v), want {TIT2:\"\"}", changes, has)
 		}
@@ -266,7 +266,7 @@ func TestDiffID3Tags(t *testing.T) {
 
 	t.Run("an already absent tag is not a change", func(t *testing.T) {
 		changes, has := DiffID3Tags(map[string][]string{}, map[string][]string{"tit2": nil},
-			models.ConfigStruct{AutotaggerrRemoveValues: true})
+			models.TaggerSettings{RemoveValues: true})
 		if has || len(changes) != 0 {
 			t.Errorf("removing a tag that is not there is not a change, got %v", changes)
 		}
@@ -274,7 +274,7 @@ func TestDiffID3Tags(t *testing.T) {
 
 	t.Run("detects a changed value", func(t *testing.T) {
 		changes, has := DiffID3Tags(map[string][]string{"TPE1": {"Old"}}, map[string][]string{"tpe1": {"New"}},
-			models.ConfigStruct{})
+			models.TaggerSettings{})
 		if !has || !reflect.DeepEqual(changes, map[string][]string{"TPE1": {"New"}}) {
 			t.Errorf("changes = %v (has=%v), want {TPE1:New}", changes, has)
 		}
@@ -331,10 +331,10 @@ func TestJoinTagValuesRoundTripsThroughTheDiff(t *testing.T) {
 	existing := map[string][]string{"ISRC": {joined}}
 	desired := map[string][]string{"ISRC": {joined}}
 
-	if _, has := DiffFlacTags(existing, desired, models.ConfigStruct{}); has {
+	if _, has := DiffFlacTags(existing, desired, models.TaggerSettings{}); has {
 		t.Error("a joined value must not read back as a change on FLAC")
 	}
-	if _, has := DiffID3Tags(existing, desired, models.ConfigStruct{}); has {
+	if _, has := DiffID3Tags(existing, desired, models.TaggerSettings{}); has {
 		t.Error("a joined value must not read back as a change on MP3")
 	}
 }
@@ -348,7 +348,7 @@ func TestDiffIsOrderSensitive(t *testing.T) {
 	existing := map[string][]string{"GENRE": {"rap", "hip hop"}}
 	desired := map[string][]string{"GENRE": {"hip hop", "rap"}}
 
-	changes, has := DiffFlacTags(existing, desired, models.ConfigStruct{})
+	changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{})
 	if !has {
 		t.Fatal("the same genres in a different order must register as a change")
 	}
@@ -357,7 +357,7 @@ func TestDiffIsOrderSensitive(t *testing.T) {
 	}
 
 	// Same order, no change — the other half of the property.
-	if _, has := DiffFlacTags(desired, desired, models.ConfigStruct{}); has {
+	if _, has := DiffFlacTags(desired, desired, models.TaggerSettings{}); has {
 		t.Error("identical values in identical order must not be a change")
 	}
 }
@@ -369,7 +369,7 @@ func TestDiffDedupsBothSides(t *testing.T) {
 	existing := map[string][]string{"GENRE": {"rock", "Rock"}}
 	desired := map[string][]string{"GENRE": {"rock"}}
 
-	if _, has := DiffFlacTags(existing, desired, models.ConfigStruct{}); has {
+	if _, has := DiffFlacTags(existing, desired, models.TaggerSettings{}); has {
 		t.Error("a duplicated existing value must not read back as a difference")
 	}
 }

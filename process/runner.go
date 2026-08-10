@@ -1871,7 +1871,7 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 	if correlation.MBReleaseID == "" {
 		return 0, nil, nil
 	}
-	unchanged, written, changes, err := modules.TagResolvedFile(item.Path, correlation, r.plex, refreshSet, library.Path, tagger.Config())
+	unchanged, written, changes, err := modules.TagResolvedFile(item.Path, correlation, r.plex, refreshSet, library.Path, tagger.Settings())
 	if err != nil {
 		r.recordRetagFailure(item, err)
 		return 0, nil, err

@@ -26,17 +26,17 @@ func credit(name, joinphrase string) models.ArtistCredit {
 }
 
 func TestMusicBrainzArtistsArrayToString(t *testing.T) {
-	base := models.ConfigStruct{
-		AutotaggerrUseCurrentArtistName:        true,
-		AutotaggerrUseCustomArtistDelimiter:    true,
-		AutotaggerrCustomArtistDelimiter:       " & ",
-		AutotaggerrCustomArtistDelimiterCommas: true,
+	base := models.TaggerSettings{
+		UseCurrentArtistName:        true,
+		UseCustomArtistDelimiter:    true,
+		CustomArtistDelimiter:       " & ",
+		CustomArtistDelimiterCommas: true,
 	}
 
 	tests := []struct {
 		name    string
 		artists []models.ArtistCredit
-		mutate  func(c *models.ConfigStruct)
+		mutate  func(c *models.TaggerSettings)
 		want    string
 	}{
 		{
@@ -64,7 +64,7 @@ func TestMusicBrainzArtistsArrayToString(t *testing.T) {
 				credit("Artist A", " feat. "),
 				credit("Artist B", ""),
 			},
-			mutate: func(c *models.ConfigStruct) { c.AutotaggerrUseCustomArtistDelimiter = false },
+			mutate: func(c *models.TaggerSettings) { c.UseCustomArtistDelimiter = false },
 			want:   "Artist A feat. Artist B",
 		},
 	}

@@ -107,7 +107,7 @@ MusicBrainz calls go through `RateLimit()` — respect it when adding new MusicB
 
 Every background verb (processing runs, re-tags, metadata refreshes) is enqueued onto a **single serial job
 queue** in `process.Runner`, drained by one worker goroutine that holds `jobMu` per job (`process/queue.go`).
-The cron job, the startup run and the API all enqueue; jobs dedup by key and file-writing jobs take
+The cron job and the API enqueue; jobs dedup by key and file-writing jobs take
 priority over pending metadata jobs. Interactive `RetagItems` stays synchronous and `TryLock`s
 `jobMu`. On startup, `events.ReconcileRunning` closes out events left `running` by a crashed process.
 See [docs/scanning.md](docs/scanning.md#the-job-queue).

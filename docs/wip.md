@@ -42,8 +42,11 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   that reports nothing would be the only silent thing in the feed.
 - **The follow cutoff is per artist only.** `follow_from_year` is set on each artist
   ([collection.md](collection.md#following-can-start-at-a-year)); a *global* default — "new artists
-  I follow should start from now" — would layer on top of it without a schema change, as a config
-  key the follow control reads when an artist has no cutoff of its own.
+  I follow should start from now" — would layer on top of it without a schema change, read by the
+  follow control when an artist has no cutoff of its own. It does **not** belong in `config.json`:
+  that file is process config, and a default about what a collection wants is exactly the kind of
+  key that was just removed from it (see [settings.md](settings.md#every-key-on-this-page-is-a-key-the-process-reads)).
+  A row on whatever holds collection-wide policy is the right home.
 - **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
   collection already knows about. Artists reached only by browsing still fall back to the
   on-demand path.

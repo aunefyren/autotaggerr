@@ -10,7 +10,8 @@ feature behind the "notice the featuring artists" result shown in the README dem
 - `models.ArtistCredit` (`models/musicbrainz.go`) — one credited artist: `Name` (name as
   credited on the release), `Artist.Name` (the artist's current canonical name), and
   `Joinphrase` (the text MusicBrainz uses to join this artist to the next, e.g. `" feat. "`).
-- Config knobs in `models.ConfigStruct` (see the README configuration reference for defaults).
+- Tagger-profile knobs in `models.TaggerSettings` (`models/db.go`), projected from the library's
+  `TaggerProfile` row.
 
 ## Input
 
@@ -22,12 +23,15 @@ A MusicBrainz release credits artists as an ordered list, each with a join phras
 
 ## Behavior
 
-For each credited artist the function appends a name followed by a join phrase. Two config
-options decide *which name*, and three decide *which join phrase*.
+For each credited artist the function appends a name followed by a join phrase. The settings that
+decide *which name* and *which join phrase* are fields on the library's **tagger profile**
+(`models.TaggerSettings`, projected from the row by `components.Tagger.Settings()`), not global
+config — one library can join artists differently from another. They were `autotaggerr_*` keys in
+`config.json` before tagger profiles existed; the names below are the profile's.
 
 ### Which name
 
-- `autotaggerr_use_current_artist_name` (default `true`): use `Artist.Name` (the artist's
+- `use_current_artist_name` (default `true`): use `Artist.Name` (the artist's
   current canonical name). When `false`, use `Name` (the name exactly as credited on the
   release, which may be an alias or stylization).
 
@@ -35,18 +39,18 @@ options decide *which name*, and three decide *which join phrase*.
 
 Evaluated per artist, in this order:
 
-1. `autotaggerr_use_custom_artist_delimiter` is `false` → use MusicBrainz's own `Joinphrase`
+1. `use_custom_artist_delimiter` is `false` → use MusicBrainz's own `Joinphrase`
    verbatim (preserves `" feat. "`, `" & "`, etc. as MusicBrainz recorded them).
-2. Otherwise the custom delimiter (`autotaggerr_custom_artist_delimiter`, default `" & "`) is
+2. Otherwise the custom delimiter (`custom_artist_delimiter`, default `" & "`) is
    the base join phrase, with two refinements:
    - The **last** artist gets an empty join phrase (nothing trails the final name).
    - When there are **more than two** artists and this is not the second-to-last, and
-     `autotaggerr_custom_artist_delimiter_commas` is `true`, use `", "` instead — so the list
+     `custom_artist_delimiter_commas` is `true`, use `", "` instead — so the list
      reads `A, B & C` rather than `A & B & C`.
 
 ### Whether it is written at all
 
-`autotaggerr_ignore_redundant_contributing_artists` (default `true`) drops the track artist when
+`ignore_redundant_contributing_artists` (default `true`) drops the track artist when
 it says nothing the album artist does not already say — i.e. when the two strings are equal under
 `utilities.EqLoose` (case, accents and punctuation ignored). A single-artist album then carries
 `ALBUMARTIST` and no `ARTIST`, and players fall back to the album artist for display.

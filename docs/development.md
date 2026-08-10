@@ -205,8 +205,15 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
 - **Config is a process global.** `files.ConfigFile` (type `models.ConfigStruct`) holds parsed
   config; pass it (or the pieces needed) into functions rather than re-reading from disk.
 - **Defaults live in one place.** New config keys get their default in *both*
-  `files.CreateConfigFile` and the back-fill block in `files.LoadConfig`, and a row in the
-  README configuration reference table.
+  `files.CreateConfigFile` and the back-fill block in `files.LoadConfig`, a field in
+  `settings.Sections()` (`TestEveryConfigKeyHasAHome` fails otherwise), and a row in the README
+  configuration reference table.
+- **`config.json` holds process config only.** Anything that describes a *library* — its manager,
+  its data source, its tag-writing settings — is a database row edited on its own page, and does
+  not get a config key that seeds it. A key read once on the first boot and ignored afterwards is a
+  trap: editing it looks like configuring something. Retired keys are simply deleted from
+  `models.ConfigStruct`; `files.SaveConfig` round-trips the struct through a map, so it writes the
+  keys alphabetically and drops any the struct no longer declares the first time it runs.
 - **Flags use the `flag.Visit` pattern.** In `main.parseFlags`, only override a config value
   when the flag was actually provided (tracked via `flag.Visit`). Do not unconditionally assign
   from a flag's value — that clobbers config on every startup. New env-mapped flags also get a

@@ -1,6 +1,7 @@
 package files
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
@@ -140,18 +141,6 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
-	if ConfigFile.AutotaggerrCustomArtistDelimiter == "" {
-		// set new value
-		ConfigFile.AutotaggerrCustomArtistDelimiter = " & "
-		anythingChanged = true
-	}
-
-	if ConfigFile.AutotaggerrMaxGenres < 1 {
-		// set new value (how many genres are written to GENRE)
-		ConfigFile.AutotaggerrMaxGenres = models.DefaultMaxGenres
-		anythingChanged = true
-	}
-
 	if ConfigFile.AutotaggerrEventRetention < 1 {
 		// set new value (how many Activity runs are kept)
 		ConfigFile.AutotaggerrEventRetention = models.DefaultEventRetention
@@ -161,12 +150,6 @@ func LoadConfig() (err error) {
 	if ConfigFile.AutotaggerrEventDetailRetention < 1 {
 		// set new value (per-file detail rows kept per Activity event)
 		ConfigFile.AutotaggerrEventDetailRetention = models.DefaultEventDetailRetention
-		anythingChanged = true
-	}
-
-	if ConfigFile.AutotaggerrLibraries == nil {
-		// Set new value
-		ConfigFile.AutotaggerrLibraries = []string{}
 		anythingChanged = true
 	}
 
@@ -211,25 +194,13 @@ func CreateConfigFile() error {
 	ConfigFile.SMTPEnabled = true
 	ConfigFile.SMTPTLS = models.SMTPTLSAuto
 	ConfigFile.AutotaggerrVersion = autotaggerrVersionParameter
-	ConfigFile.AutotaggerrLibraries = []string{}
 	ConfigFile.AutotaggerrProcessCronSchedule = "0 0 18 * * 7"
 	ConfigFile.AutotaggerrProcessConcurrency = 4
-	ConfigFile.AutotaggerrCustomArtistDelimiter = " & "
-	ConfigFile.AutotaggerrUseCurrentArtistName = true
-	ConfigFile.AutotaggerrUseCustomArtistDelimiter = true
-	ConfigFile.AutotaggerrCustomArtistDelimiterCommas = true
-	ConfigFile.AutotaggerrIgnoreRedundantContributingArtists = true
-	ConfigFile.AutotaggerrRemoveValues = false
-	ConfigFile.AutotaggerrMaxGenres = models.DefaultMaxGenres
 	ConfigFile.AutotaggerrEventRetention = models.DefaultEventRetention
 	ConfigFile.AutotaggerrEventDetailRetention = models.DefaultEventDetailRetention
 
-	// The MusicBrainz mirror runs nightly by default but not on startup: a first
-	// pass over a large collection is hours of rate-limited fetching, and tying that
-	// to every restart would make a restart something to avoid.
 	ConfigFile.AutotaggerrMirrorDisabled = false
 	ConfigFile.AutotaggerrMirrorCronSchedule = "0 0 3 * * *"
-	ConfigFile.AutotaggerrMirrorOnStartUp = false
 
 	ConfigFile.AutotaggerrHealthCronSchedule = "0 */5 * * * *"
 
@@ -260,12 +231,34 @@ func CreateConfigFile() error {
 	return nil
 }
 
-// Saves the given config struct as config.json
+// Saves the given config struct as config.json, with the keys in alphabetical order.
+//
+// Encoding the struct directly would write the keys in *declaration* order, so the
+// file's shape would follow how the Go struct happens to be grouped — and a field
+// moved for readability would reshuffle everyone's config.json on the next save.
+// Alphabetical is the one order a reader can rely on when hunting for a key by name,
+// so the struct is round-tripped through a map, which encoding/json always writes
+// sorted. UseNumber keeps whole numbers from being re-encoded through float64.
+//
+// Keys the struct no longer declares are dropped by the same round trip: decoding
+// ignores what it does not know, so a config.json written by an older version is
+// cleaned of retired keys the first time this runs.
 func SaveConfig() error {
 	err := os.MkdirAll(configDirectoryPath, os.ModePerm)
 	if err != nil {
 		fmt.Println("failed to create directory for config. error: " + err.Error())
 		return errors.New("failed to create directory for config")
+	}
+
+	encoded, err := json.Marshal(ConfigFile)
+	if err != nil {
+		return err
+	}
+	sorter := json.NewDecoder(bytes.NewReader(encoded))
+	sorter.UseNumber()
+	var sorted map[string]any
+	if err := sorter.Decode(&sorted); err != nil {
+		return err
 	}
 
 	file, err := os.OpenFile(configFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -278,7 +271,7 @@ func SaveConfig() error {
 	encoder.SetIndent("", "\t")
 	encoder.SetEscapeHTML(false) // disable &/< > escaping
 
-	return encoder.Encode(ConfigFile)
+	return encoder.Encode(sorted)
 }
 
 func GetPrivateKey(epoch int) []byte {

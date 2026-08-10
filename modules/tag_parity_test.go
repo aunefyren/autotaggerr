@@ -56,7 +56,7 @@ func TestMultiValueTagsSurviveBothEngines(t *testing.T) {
 		requireTool(t, "metaflac")
 		path := synthAudio(t, ".flac")
 
-		if _, _, _, err := SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+		if _, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 			t.Fatalf("first write: %v", err)
 		}
 		tags, err := getFlacTagsMap(path)
@@ -92,7 +92,7 @@ func TestMultiValueTagsSurviveBothEngines(t *testing.T) {
 	t.Run("mp3", func(t *testing.T) {
 		path := synthAudio(t, ".mp3")
 
-		if _, _, _, err := SetMP3Tags(path, meta, models.ConfigStruct{}); err != nil {
+		if _, _, _, err := SetMP3Tags(path, meta, models.TaggerSettings{}); err != nil {
 			t.Fatalf("first write: %v", err)
 		}
 		tags, err := GetMP3Tags(path)
@@ -148,10 +148,10 @@ func assertSecondWriteIsNoOp(
 	t *testing.T,
 	path string,
 	meta models.FileTags,
-	write func(string, models.FileTags, models.ConfigStruct) (bool, int, []models.TagChange, error),
+	write func(string, models.FileTags, models.TaggerSettings) (bool, int, []models.TagChange, error),
 ) {
 	t.Helper()
-	unchanged, written, changed, err := write(path, meta, models.ConfigStruct{})
+	unchanged, written, changed, err := write(path, meta, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second write: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestFFmpegJoinsRepeatedVorbisComments(t *testing.T) {
 
 	path := synthAudio(t, ".flac")
 	meta := models.FileTags{Artist: "A", Album: "B", Title: "C", Genres: []string{"hip hop", "rap"}}
-	if _, _, _, err := SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 

@@ -59,7 +59,7 @@ func testDB(t *testing.T) *gorm.DB {
 	return db
 }
 
-func TestTaggerConfigMapping(t *testing.T) {
+func TestTaggerSettingsMapping(t *testing.T) {
 	profile := models.TaggerProfile{
 		WriteTags:                   true,
 		RemoveValues:                true,
@@ -72,9 +72,9 @@ func TestTaggerConfigMapping(t *testing.T) {
 	if !tagger.WriteEnabled() {
 		t.Fatal("WriteEnabled should be true")
 	}
-	cfg := tagger.Config()
-	if !cfg.AutotaggerrRemoveValues || cfg.AutotaggerrCustomArtistDelimiter != " & " || !cfg.AutotaggerrUseCurrentArtistName {
-		t.Errorf("config projection wrong: %+v", cfg)
+	settings := tagger.Settings()
+	if !settings.RemoveValues || settings.CustomArtistDelimiter != " & " || !settings.UseCurrentArtistName {
+		t.Errorf("settings projection wrong: %+v", settings)
 	}
 
 	if NewTagger(models.TaggerProfile{WriteTags: false}).WriteEnabled() {
@@ -100,7 +100,7 @@ func TestAutotaggerrManagerCorrelateFromTags(t *testing.T) {
 	path := synthFlac(t)
 	// Embed MusicBrainz IDs so the native (tags) manager can read them back.
 	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
-	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -122,7 +122,7 @@ func TestAutotaggerrManagerCorrelateFromTags(t *testing.T) {
 func TestProcessFileRecordsLibraryItem(t *testing.T) {
 	path := synthFlac(t)
 	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
-	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestProcessFileRecordsError(t *testing.T) {
 func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	path := synthFlac(t)
 	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
-	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -257,7 +257,7 @@ func scanFixture(t *testing.T) (*gorm.DB, models.Library, string) {
 	t.Helper()
 	path := synthFlac(t)
 	meta := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Title: "Song"}
-	if _, _, _, err := modules.SetFlacTags(path, meta, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
 
@@ -683,7 +683,7 @@ func TestScanLibraryCollectsTagDiff(t *testing.T) {
 	// Seed the file with MB IDs plus a deliberately wrong artist, so the write has
 	// something real to change.
 	seed := models.FileTags{MBAlbumID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1", Artist: "Wrong Artist"}
-	if _, _, _, err := modules.SetFlacTags(path, seed, models.ConfigStruct{}); err != nil {
+	if _, _, _, err := modules.SetFlacTags(path, seed, models.TaggerSettings{}); err != nil {
 		t.Fatalf("seed SetFlacTags: %v", err)
 	}
 
@@ -692,7 +692,7 @@ func TestScanLibraryCollectsTagDiff(t *testing.T) {
 	// scan here would need a live MusicBrainz release, which this package cannot stub.
 	corrected := seed
 	corrected.Artist = "Right Artist"
-	unchanged, written, changes, err := modules.SetFlacTags(path, corrected, models.ConfigStruct{})
+	unchanged, written, changes, err := modules.SetFlacTags(path, corrected, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("SetFlacTags: %v", err)
 	}
@@ -722,7 +722,7 @@ func TestScanLibraryCollectsTagDiff(t *testing.T) {
 	}
 
 	// Re-writing the same tags is a no-op, so nothing is reported as changed.
-	unchanged, _, changes, err = modules.SetFlacTags(path, corrected, models.ConfigStruct{})
+	unchanged, _, changes, err = modules.SetFlacTags(path, corrected, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second SetFlacTags: %v", err)
 	}

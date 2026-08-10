@@ -236,9 +236,62 @@ type TaggerProfile struct {
 	MaxGenres int `json:"max_genres"`
 	// MP3MultiValueTags writes several values into one ID3 frame the way the format
 	// means it — null-separated, ID3v2.4 — instead of joining them with "; ".
-	// Off by default; see ConfigStruct.AutotaggerrMP3MultiValueTags for why it is a
-	// choice at all rather than simply correct.
+	// Off by default; see TaggerSettings.MP3MultiValueTags for why it is a choice at
+	// all rather than simply correct.
 	MP3MultiValueTags bool `json:"mp3_multi_value_tags"`
+}
+
+// TaggerSettings is the subset of a profile that the tag writers actually read: how
+// artists are joined, how many genres are kept, what happens to a value the new
+// metadata does not supply.
+//
+// It is its own type rather than a ConfigStruct because tagging is *not* process
+// config. These knobs were global keys in config.json before tagger profiles existed,
+// and the tagging code kept taking a ConfigStruct long after the values started coming
+// from a profile row — which meant config.json carried eight keys nothing read and the
+// signatures claimed a scope they did not have. One library can now tag differently
+// from another, and the parameter says so.
+type TaggerSettings struct {
+	RemoveValues                       bool
+	UseCurrentArtistName               bool
+	UseCustomArtistDelimiter           bool
+	CustomArtistDelimiter              string
+	CustomArtistDelimiterCommas        bool
+	IgnoreRedundantContributingArtists bool
+	// MaxGenres caps how many genres reach GENRE. Zero or less means
+	// DefaultMaxGenres.
+	MaxGenres int
+	// MP3MultiValueTags picks how an MP3 says that a field has several values. Off
+	// (the default) joins them into one string with "; "; on writes the spec-correct
+	// ID3v2.4 form, one frame whose values are separated by a null byte.
+	//
+	// It is a setting rather than a fix because the two forms serve different readers
+	// and there is no representation that serves both. Picard, MusicBee, foobar2000
+	// and Navidrome read the null-separated form natively and treat the joined string
+	// as one long genre. ffmpeg reads only the *first* value out of a null-separated
+	// frame, so anything built on it — Plex above all — sees one genre where the
+	// joined string shows several.
+	//
+	// Off is the default because Autotaggerr ships a Plex client and refreshes Plex
+	// after a write: turning this on by surprise would take genres away from the
+	// setup the tool is most often pointed at. FLAC needs no such choice — ffmpeg
+	// joins repeated Vorbis comments on read, so the spec-correct form costs nothing
+	// there and is unconditional (see docs/tagging.md).
+	MP3MultiValueTags bool
+}
+
+// Settings projects the stored profile onto the values the tag writers read.
+func (t TaggerProfile) Settings() TaggerSettings {
+	return TaggerSettings{
+		RemoveValues:                       t.RemoveValues,
+		UseCurrentArtistName:               t.UseCurrentArtistName,
+		UseCustomArtistDelimiter:           t.UseCustomArtistDelimiter,
+		CustomArtistDelimiter:              t.CustomArtistDelimiter,
+		CustomArtistDelimiterCommas:        t.CustomArtistDelimiterCommas,
+		IgnoreRedundantContributingArtists: t.IgnoreRedundantContributingArtists,
+		MaxGenres:                          t.MaxGenres,
+		MP3MultiValueTags:                  t.MP3MultiValueTags,
+	}
 }
 
 // Library is a configured folder plus the components that govern it.
