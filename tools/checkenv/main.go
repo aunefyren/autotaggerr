@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -22,7 +23,10 @@ func main() {
 	// list is complete.
 	report(true, "go", version("go", "version"))
 
-	nodeOK := tool("node", "Install Node 18+ from https://nodejs.org")
+	nodeOK := tool("node", "Install Node "+nodeRequirement+" from https://nodejs.org")
+	if nodeOK {
+		nodeOK = reportNodeVersion()
+	}
 	npmOK := tool("npm", "npm ships with Node — reinstall Node from https://nodejs.org")
 
 	// tsc is a devDependency in webui/node_modules, not a system tool, so it is checked
@@ -38,6 +42,52 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Println("\nAll prerequisites present.")
+}
+
+// nodeRequirement is vite's `engines.node`, in the form npm prints it. Kept as one
+// string so the message and the check below cannot drift apart.
+const nodeRequirement = "^20.19.0 || >=22.12.0"
+
+// reportNodeVersion enforces that requirement. It is checked here rather than left to
+// npm because npm reports it as an `EBADENGINE` warning in the middle of an install
+// that then fails later for a reason that looks unrelated — precisely the raw,
+// easy-to-miss error this program exists to replace.
+//
+// Note that Node 21 does not satisfy it: `^20.19.0` stops at 21.0.0, and the other
+// clause starts at 22.12.0. Odd-numbered Node releases are not LTS, so that is the
+// requirement working as intended rather than an oversight.
+func reportNodeVersion() bool {
+	raw := version("node", "--version") // "v22.12.0"
+	major, minor, ok := parseNodeVersion(raw)
+	if !ok {
+		// Unreadable rather than wrong: say so, but do not fail a build over it.
+		report(true, "node", raw+" (could not read the version; wanted "+nodeRequirement+")")
+		return true
+	}
+
+	if (major == 20 && minor >= 19) || (major == 22 && minor >= 12) || major >= 23 {
+		return true
+	}
+	report(false, "node", raw+" is too old — vite needs "+nodeRequirement)
+	fmt.Println("                 Install Node 22 LTS from https://nodejs.org (or via nvm/fnm).")
+	return false
+}
+
+// parseNodeVersion pulls the major and minor out of `node --version` output.
+func parseNodeVersion(raw string) (major, minor int, ok bool) {
+	parts := strings.SplitN(strings.TrimPrefix(strings.TrimSpace(raw), "v"), ".", 3)
+	if len(parts) < 2 {
+		return 0, 0, false
+	}
+	major, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, false
+	}
+	minor, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 // tool checks a system command is on PATH, reporting its version or a fix.

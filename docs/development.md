@@ -7,6 +7,9 @@ still open) before making changes.
 ## Local setup
 
 - Go 1.25 (the `go.mod` toolchain target). Older toolchains cannot build the module.
+- Node `^20.19.0 || >=22.12.0` — vite 8's engine requirement, and a hard one: npm refuses the
+  install on anything older. CI and the Docker `web` stage both run Node 22. `make check` reports a
+  version that will not work rather than letting npm say it in passing.
 - Runtime binaries must be on `PATH`: `metaflac` (FLAC). Without it, FLAC tag reads/writes fail at
   runtime even though the build succeeds. MP3 needs nothing — ID3 is read and written in-process.
   `ffmpeg` is still needed to *run the tests*, which synthesize their audio fixtures with it.
@@ -68,30 +71,36 @@ them). The fix is `make deps` — or, without make, `cd webui && npm ci --includ
 ### Building the same checkout from Windows and WSL
 
 `webui/node_modules` is **platform-specific**, so a tree installed on one side of the WSL boundary
-cannot build on the other without help. esbuild (via vite) ships its compiler as a native executable
-in a per-platform package — `@esbuild/win32-x64`, `@esbuild/linux-x64` — installed as an
-optionalDependency that npm selects from the host's os/cpu. Build with the wrong one and vite fails
-with a twenty-line "You installed esbuild for another platform" wall.
+cannot build on the other without help. vite bundles with **rolldown** and compiles CSS with
+**lightningcss**, and both ship their compiler as a native executable in a per-platform package —
+`@rolldown/binding-linux-x64-gnu`, `lightningcss-win32-x64-msvc` — installed as an optionalDependency
+that npm selects from the host's os/cpu. Build with the wrong ones and the build dies in a wall of
+napi stack frames. There is no wasm fallback installed to soften it.
 
 This is handled: `npm run build` and `npm run dev` run **`webui/tools/ensure-native.mjs`** first
-(via npm's `prebuild`/`predev`), which installs the current platform's binary if it is absent.
+(via npm's `prebuild`/`predev`), which installs the current platform's binaries if they are absent.
 Alternating between Windows and WSL therefore costs a two-second install on the first build after
 each switch, not a failure. It only ever adds, uses `--no-save --no-package-lock` so neither
 `package.json` nor the lockfile moves, and is a no-op on the happy path — including in CI, where
-`npm ci` already installed the right one. `make ui`/`build`/`run` inherit it, since they all end in
+`npm ci` already installed the right ones. `make ui`/`build`/`run` inherit it, since they all end in
 `npm run build`.
 
-Two caveats worth knowing:
+Three caveats worth knowing:
 
-- **npm evicts the other platform's binary** when it installs one, so the two genuinely alternate
-  rather than coexisting. Installing both is not possible declaratively: npm applies the os/cpu
-  filter to direct dependencies too, silently skipping a foreign optionalDependency and erroring
-  with `EBADPLATFORM` on a foreign regular one. Forcing both in needs `--force` or a second
+- **npm evicts the other platform's binaries** when it installs one set, so the two genuinely
+  alternate rather than coexisting. Installing both is not possible declaratively: npm applies the
+  os/cpu filter to direct dependencies too, silently skipping a foreign optionalDependency and
+  erroring with `EBADPLATFORM` on a foreign regular one. Forcing both in needs `--force` or a second
   `--os`/`--cpu` install, neither of which belongs in a lockfile — hence repairing on demand.
+- **The check is `existsSync`, not `require.resolve`.** `lightningcss` does not export its own
+  `package.json`, so asking the resolver for it fails even when the package is right there — which
+  made an earlier version of the script skip lightningcss silently and *look* like it had worked,
+  because npm re-resolves optional dependencies as a side effect of any other install. The script
+  reads `node_modules` off disk for exactly that reason.
 - **`make check` cannot see this problem.** `checkenv` checks for the platform's `tsc` *launcher*
   (`.bin/tsc.cmd` vs `.bin/tsc`), but npm writes both of those regardless of platform, and the
-  esbuild binary it does not look at. So a cross-platform tree reports "All prerequisites present"
-  and then fails in vite. The `prebuild` guard is what actually fixes it; `make deps` (a full
+  native binaries it does not look at. So a cross-platform tree reports "All prerequisites present"
+  and then fails in the bundler. The `prebuild` guard is what actually fixes it; `make deps` (a full
   `npm ci`) also works, but only for the platform you run it on.
 
 ## CI gates (`.github/workflows/go.yml`)
@@ -149,7 +158,7 @@ index.html fallback for client-side routes — so the whole app ships in one bin
 
 ```bash
 cd webui
-npm ci            # install (Node 18+; Vite 4/React 18 are pinned for older Node too)
+npm ci            # install (needs Node ^20.19 || >=22.12 — vite 8's engine requirement)
 npm run dev       # dev server on :5173, proxies /api to the Go service on :8080
 npm run build     # type-check + bundle into ../web/dist
 ```

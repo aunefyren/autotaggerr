@@ -48,19 +48,32 @@ the write helpers propagate their errors here and the whole pass rolls back. The
 discography syncs keep the older log-and-continue behaviour: one unwritable album must not
 abandon a whole sync.
 
-### A rebuild that loses a write race is retried
+### A rebuild that loses a write race takes the lock first, and is retried second
 
-That transaction **reads before it writes**, which under SQLite's WAL mode means it opens as a read
-snapshot and upgrades when it clears the disk view. If any other writer commits in between, the
-upgrade cannot be granted against a snapshot that is now stale and SQLite answers
-`SQLITE_BUSY_SNAPSHOT` (517) *immediately* — `busy_timeout` does not apply, because there is nothing
-to wait for. The transaction can never succeed and has to be run again from the top.
+That transaction **reads before it writes**. Left to itself under SQLite's WAL mode that means it
+opens as a read snapshot and upgrades when it clears the disk view — and if any other writer commits
+in between, the upgrade cannot be granted against a snapshot that is now stale. SQLite answers
+`SQLITE_BUSY_SNAPSHOT` (517) *immediately*; `busy_timeout` does not apply, because a stale snapshot
+is not something waiting will fix. The transaction can never succeed and has to be run from the top.
 
-`collection.retryBusy` does that, up to four times. The rebuild is safe to re-run by construction:
-it derives the whole disk view from `library_items` and the release cache, so the second attempt
-reads the newer state and produces the answer the first was trying to. Only lock errors are
-retried — re-running a genuinely broken pass would turn one error into four and a longer wait for
-the same message.
+**The fix is to never take that snapshot.** Connections open transactions with `BEGIN IMMEDIATE`
+(`database.sqliteTxLock`, `_txlock=immediate` on the DSN), which takes the write lock up front, so
+there is no upgrade left to refuse. A competing writer now makes this one *wait* on `busy_timeout`,
+which is what that timeout was always for.
+
+It is worth recording why retrying was not enough on its own, because it looks like it should be.
+Each retry takes a *fresh* snapshot, which the competing writer can invalidate again — so against a
+steady stream of writes the rebuild loses indefinitely. That is a livelock, not bad luck, and it
+showed as `TestRebuildSurvivesAConcurrentWriter` failing on essentially every `-race` run while
+passing without it, which reads as flakiness and is not.
+
+`collection.retryBusy` remains, as the second line of defence, up to four times with a
+doubling-plus-jitter backoff. What is left for it is the ordinary `SQLITE_BUSY` (5) — another
+*process* holding the write lock past the timeout, which no locking mode prevents. The rebuild is
+safe to re-run by construction: it derives the whole disk view from `library_items` and the release
+cache, so the second attempt reads the newer state and produces the answer the first was trying to.
+Only lock errors are retried — re-running a genuinely broken pass would turn one error into four and
+a longer wait for the same message.
 
 The symptom was the Rebuilder defeating itself: attach requests a rebuild from `saveCorrelation`
 and then keeps writing — the tags, the Activity event — so the pass was racing the very request

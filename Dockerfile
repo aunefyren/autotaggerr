@@ -12,7 +12,7 @@
 # Debian rather than alpine: this is a discarded build stage, so its size does not
 # reach the final image, and matching CI's glibc removes the one platform variable
 # (musl) that a release pipeline should not discover the hard way.
-FROM --platform=$BUILDPLATFORM node:20-slim AS web
+FROM --platform=$BUILDPLATFORM node:22-slim AS web
 WORKDIR /src/webui
 # Manifests first, so a source-only change reuses the install layer.
 COPY webui/package.json webui/package-lock.json ./

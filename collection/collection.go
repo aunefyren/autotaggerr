@@ -18,6 +18,7 @@ package collection
 import (
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,33 +99,38 @@ func RebuildScoped(db *gorm.DB, scope RebuildScope) (RebuildStats, error) {
 	return stats, nil
 }
 
-// rebuildBusyRetries is how many times a rebuild re-runs its transaction after
-// losing a race with another writer. Four, spaced by a few milliseconds, which is
-// far longer than any of the writes it competes with.
+// rebuildBusyRetries is how many times a rebuild re-runs its transaction after losing
+// a race with another writer. Four, spaced by a doubling-plus-jitter backoff (see
+// busyBackoff) that reaches ~60ms in total — far longer than any of the writes it
+// competes with, and short enough that an interactive caller does not notice.
 const rebuildBusyRetries = 4
 
 // retryBusy re-runs a transaction that SQLite refused because another writer got
 // there first.
 //
-// This exists because of a specific failure, not as a general precaution. Rebuild's
-// transaction *reads before it writes*, so under WAL it starts as a read snapshot and
-// upgrades when it clears the disk view. If any other writer commits in between, that
-// upgrade cannot be granted against a snapshot that is now stale, and SQLite answers
-// SQLITE_BUSY_SNAPSHOT (517) immediately — **`busy_timeout` does not apply**, because
-// there is nothing to wait for: the transaction can never succeed and has to be run
-// again from the top. That is the one lock error the connection settings cannot absorb.
+// It is the **second** line of defence, and no longer the first. The failure it was
+// written for was Rebuild's transaction *reading before it writes*: under WAL that
+// starts as a read snapshot and upgrades when it clears the disk view, and if any other
+// writer commits in between, SQLite refuses the upgrade with SQLITE_BUSY_SNAPSHOT (517)
+// immediately — `busy_timeout` does not apply, because a stale snapshot is not
+// something waiting will fix.
+//
+// Retrying alone could not fix that, and it is worth being precise about why: each
+// retry takes a *fresh* snapshot, which the competing writer can invalidate again, so
+// against a steady stream of writes the rebuild loses indefinitely. That is a livelock,
+// not bad luck, and `TestRebuildSurvivesAConcurrentWriter` duly failed on essentially
+// every `-race` run. The fix is upstream of here — connections open transactions with
+// `BEGIN IMMEDIATE` (`database.sqliteTxLock`), so there is no upgrade left to refuse.
+//
+// What remains for this function is the ordinary `SQLITE_BUSY` (5): another *process*
+// holding the write lock longer than `busy_timeout`, which no locking mode prevents.
+// That is rare, genuinely transient, and worth a few retries.
 //
 // The rebuild is safe to re-run by construction: it derives the whole disk view from
 // `library_items` and the release cache, so a second attempt reads the newer state and
 // produces the answer the first one was trying to. It is the losing writer that must
 // retry, and every caller here is either a background pass or an interactive action
 // that has already committed its real decision.
-//
-// The symptom was a collection that silently stopped updating: attaching a file
-// requests a rebuild and then keeps writing (its tags, its Activity event), so the
-// rebuild it had just asked for was racing the very request that asked for it. It
-// failed, logged a warning nobody reads, and the disk view stayed stale until the next
-// scan — which is exactly the gap the Rebuilder was built to close.
 func retryBusy(run func() error) error {
 	var err error
 	for attempt := 0; ; attempt++ {
@@ -132,8 +138,17 @@ func retryBusy(run func() error) error {
 			return err
 		}
 		logger.Log.Debugf("rebuild lost a write race (%s); retrying", err.Error())
-		time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+		time.Sleep(busyBackoff(attempt))
 	}
+}
+
+// busyBackoff spaces one retry from the next: a doubling base plus jitter of up to the
+// same again. The jitter is the point — two passes that collided once will otherwise
+// wake together and collide again, having waited the identical interval, which turns
+// one lost race into a synchronised series of them.
+func busyBackoff(attempt int) time.Duration {
+	base := time.Duration(1<<attempt) * 2 * time.Millisecond
+	return base + time.Duration(rand.Int64N(int64(base)))
 }
 
 // isBusyError reports whether an error is SQLite refusing a lock. Matched on the

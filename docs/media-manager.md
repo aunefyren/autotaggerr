@@ -179,6 +179,15 @@ met a near-continuous run of commit windows, until one exceeded the driver's own
 Under WAL a reader never waits for a writer at all. The pool cap follows from SQLite serialising
 writers regardless: extra connections buy no write concurrency, only more contenders for one lock.
 
+**Transactions open as `BEGIN IMMEDIATE`** (`_txlock=immediate`, `database.sqliteTxLock`). WAL fixes
+readers-versus-writers; this fixes a writer against itself. A transaction that reads before it writes
+starts as a read snapshot and has to upgrade on its first write, and SQLite refuses that upgrade
+outright — `SQLITE_BUSY_SNAPSHOT`, no waiting, `busy_timeout` inapplicable — if anyone committed in
+between. Taking the write lock at `BEGIN` removes the upgrade, so contention becomes a wait instead
+of a failure. See [collection.md](collection.md#a-rebuild-that-loses-a-write-race-takes-the-lock-first-and-is-retried-second)
+for the failure that produced it. The cost is that a read-only explicit transaction would take a lock
+it does not need; all three in the codebase read then write, and plain reads open no transaction.
+
 Two deliberate details. A DSN that already has a query string is left untouched — it is the escape
 hatch, and appending to it would break it in the one case someone used it. And if opening with WAL
 fails, `Connect` **falls back** to the bare DSN with a warning rather than refusing to start: WAL

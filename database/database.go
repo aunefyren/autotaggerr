@@ -50,6 +50,32 @@ var sqlitePragmas = []string{
 	"synchronous(NORMAL)",
 }
 
+// sqliteTxLock makes every transaction the driver opens a `BEGIN IMMEDIATE`, taking the
+// write lock up front instead of starting as a read snapshot and upgrading on the first
+// write.
+//
+// It is a driver query parameter rather than a pragma, but it belongs beside them for
+// the same reason: it is here for a failure that actually happened. A transaction that
+// reads before it writes — `collection.RebuildScoped` and the two other explicit ones —
+// takes a read snapshot on its first read, and the first write has to upgrade it. If
+// anyone committed in between, SQLite refuses that upgrade with `SQLITE_BUSY_SNAPSHOT`
+// (517) *immediately*: `busy_timeout` cannot help, because a stale snapshot is not
+// something waiting will fix. The transaction is unsatisfiable and can only be re-run.
+//
+// Retrying (`collection.retryBusy`) treats the symptom and cannot win reliably — each
+// retry takes a fresh snapshot that the competing writer can invalidate again, which is
+// a livelock rather than bad luck. `TestRebuildSurvivesAConcurrentWriter` failed on
+// essentially every `-race` run before this. Locking immediately removes the upgrade
+// entirely: a competing writer now makes this one *wait* on busy_timeout, which is what
+// that timeout was always for.
+//
+// The cost is that a read-only explicit transaction would take the write lock it does
+// not need. There are none — all three call sites read then write — and plain reads are
+// unaffected, since GORM opens no transaction for them. GORM's own per-write
+// transactions (SkipDefaultTransaction is left at its default `false`) become immediate
+// too, which is what a write wants regardless.
+const sqliteTxLock = "_txlock=immediate"
+
 // sqliteMaxConns caps the connection pool. SQLite permits exactly one writer at a
 // time whatever the pool says, so an unbounded pool does not buy write concurrency —
 // it manufactures contention for the same lock, and each new connection re-runs the
@@ -153,10 +179,11 @@ func sqliteDSN(cfg models.DatabaseConfig) string {
 	if strings.Contains(dsn, "?") {
 		return dsn
 	}
-	params := make([]string, 0, len(sqlitePragmas))
+	params := make([]string, 0, len(sqlitePragmas)+1)
 	for _, p := range sqlitePragmas {
 		params = append(params, "_pragma="+url.QueryEscape(p))
 	}
+	params = append(params, sqliteTxLock)
 	return dsn + "?" + strings.Join(params, "&")
 }
 
