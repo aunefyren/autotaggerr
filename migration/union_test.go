@@ -31,6 +31,37 @@ func TestUnionCSV(t *testing.T) {
 	}
 }
 
+// TestEarlierCutoff: merging two artists must not lose wants. Every other follow
+// setting merges toward wanting more, and the year cutoff is the one where the
+// inclusive value is *not* the larger number — no cutoff at all is zero, and it has to
+// beat any year rather than losing to it.
+func TestEarlierCutoff(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b int
+		want int
+	}{
+		{"two cutoffs keep the earlier", 2020, 2010, 2010},
+		{"order does not matter", 2010, 2020, 2010},
+		{"identical", 2015, 2015, 2015},
+		// Zero means "no cutoff", the most inclusive setting there is. Treating it as
+		// the smaller number by accident would be right; treating it as "want nothing
+		// before year zero" and picking the other side would silently drop albums.
+		{"no cutoff on one side wins", 2020, 0, 0},
+		{"no cutoff on the other side wins", 0, 2020, 0},
+		{"neither side has one", 0, 0, 0},
+		{"a nonsense negative is treated as no cutoff", -5, 2020, 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := earlierCutoff(tc.a, tc.b); got != tc.want {
+				t.Errorf("earlierCutoff(%d, %d) = %d, want %d", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestUnionStrings(t *testing.T) {
 	cases := []struct {
 		name string

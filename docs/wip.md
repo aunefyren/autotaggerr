@@ -12,17 +12,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 ## Open work
 
-- **A verb that does nothing cannot say why.** On an empty install *Scan* answers
-  `0 artists, 0 albums` and *Sync from Lidarr* records `0 artists synced · 0 albums`, and neither
-  states its cause. The mirror's is the worse one: `SyncLidarrWith` returns before making a single
-  HTTP call when no collection artist is `managed_by` lidarr/mixed, so "there was nothing here to
-  mirror" and "Lidarr was asked and had nothing" render as the same Activity row. Each verb reads the
-  output of the one before it (Process → `library_items` → Scan → collection rows → Sync → catalog
-  columns), so on a cold install only Process has an input, and the other two are honest zeroes that
-  read as duds. The fix is for each to report which input was empty — as the inline result for Scan
-  and as the event summary for the sync — and to disable the buttons with a title saying what is
-  needed first. `no_edition` is the precedent: it exists so "the counts disagree because nobody chose
-  an edition" cannot read as "the manager is stale". Same idea, one level up.
 - **What failed?** cannot be asked about *files*. Activity answers it for events, but the rows on the
   Items page carry `error`, `last_error_at` and `last_error_transient` — exactly the split needed to
   separate "MusicBrainz was down, this will retry" from "someone has to fix this" — and nothing reads
@@ -40,10 +29,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   *collection* half: the transient Lidarr case has exactly the shape the MusicBrainz fix was written
   for, and an hour-old cache is not the manager changing its mind. `last_error_transient` already
   exists to carry that distinction and nothing reads it.
-- **A retry with backoff** inside the MusicBrainz fetch (one attempt spaced by the existing
-  `RateLimit()` interval) would absorb most single 503s before any of the above matters. Kept
-  separate because it interacts with the in-flight coalescing and the limiter; the shipped work makes
-  an outage *survivable*, which is the part that has to be true regardless.
 - **The Lidarr mirror cannot introduce an artist**, so it cannot populate a cold collection — the
   button a Lidarr-first user reaches for first is the one that can do nothing. `CollectionArtist`
   rows do not require files (*Add artist* creates one), so nothing structural forbids it; it is a
@@ -55,9 +40,10 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   manual attach. The last unbuilt piece of the native manager. It has no Activity event, and the
   event ships with the feature rather than before it — every other verb has one now, so an import
   that reports nothing would be the only silent thing in the feed.
-- **Follow has no date cutoff.** "Only future releases" is not implemented, so following always
-  pulls the whole back catalogue of the chosen types. A global follow default could layer on later
-  without a schema change.
+- **The follow cutoff is per artist only.** `follow_from_year` is set on each artist
+  ([collection.md](collection.md#following-can-start-at-a-year)); a *global* default — "new artists
+  I follow should start from now" — would layer on top of it without a schema change, as a config
+  key the follow control reads when an artist has no cutoff of its own.
 - **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
   collection already knows about. Artists reached only by browsing still fall back to the
   on-demand path.
@@ -68,9 +54,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   grace period and leaves its event to be reconciled on the next boot. A per-job context checked
   between files (where the walk already stops cleanly) would close that gap, and would give file
   work the counterpart to the metadata pass's `POST /mirror/cancel`.
-- **`RetagItems` (the interactive attach flow) opens no event**, so its Plex refresh is top-level
-  rather than parented. That is the correct reading of the data, but it means one file-writing path
-  is still invisible in the feed.
 - **A credit change still has no affordance.** `collection_scan` reports the count, but it is still
   the only identity change with no Migrations row to click through to — the count is the only way to
   notice one, and there is nothing to open.
@@ -146,11 +129,6 @@ manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
   With multiple metadata managers — do the global settings like migrations apply correctly?
 - *I can add artists on a collection where Lidarr is the only manager.* Or, at least, the button is
   there. Does that make sense?
-- **Retrofit the metadata port to AcoustID / artwork.** MusicBrainz fetches now route through
-  `metadata.MetadataSource` (see [development.md](development.md#the-coverage-gate)). AcoustID
-  (`acoustidBaseURL`) and cover art / fanart (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still
-  unexported-base-URL seams stubbable only inside `modules/`; the same port pattern would make their
-  callers testable too.
 - **Multi user support?** Any need?
 - **Password reset over email.** The mailer now exists and is proven by the *Send test message*
   button on Settings → Email (see [settings.md](settings.md#email-and-the-one-action-on-this-page)),

@@ -89,6 +89,16 @@ type Summary struct {
 	Done    int    `json:"done,omitempty"`
 	Phase   string `json:"phase,omitempty"`
 	Current string `json:"current,omitempty"`
+
+	// Indexed is how many files are in `library_items` right now. It is not about the
+	// current run at all: it is the precondition the three cheap verbs share, and the
+	// UI reads it to say "run Process first" on a button rather than letting someone
+	// press Scan or Tag files on an empty index and get an honest zero back.
+	//
+	// Counted per call rather than tracked, because a run is not the only writer —
+	// pruning, a library being removed and a manual attach all move it — and a stale
+	// count would disable a button that works.
+	Indexed int `json:"indexed"`
 }
 
 // Runner owns scan execution and status. A single Runner instance is shared by
@@ -212,6 +222,16 @@ func (r *Runner) Status() Summary {
 			p = r.refresh.Progress()
 		}
 		s.Total, s.Done, s.Phase, s.Current = p.Total, p.Done, p.Phase, p.Current
+	}
+	if r.db != nil {
+		var indexed int64
+		if err := r.db.Model(&models.LibraryItem{}).Count(&indexed).Error; err != nil {
+			// Status must always answer; a failed count leaves Indexed at zero, which
+			// the UI reads as "run Process first" — the safe way to be wrong, since it
+			// explains rather than blocks anything that was going to work.
+			logger.Log.Warnf("failed to count indexed files for status: %s", err.Error())
+		}
+		s.Indexed = int(indexed)
 	}
 	return s
 }
@@ -1294,10 +1314,12 @@ func (r *Runner) rebuildCollection(parent *models.Event) collection.RebuildStats
 // to trigger a whole-collection pass.
 func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 	ev := events.BeginChild(r.db, parent, models.EventTypeLidarrSync, "Sync from Lidarr")
-	artists, albums, err := collection.SyncLidarr(r.db)
+	stats, err := collection.SyncLidarr(r.db)
+	artists, albums = stats.ArtistsSynced, stats.Groups
 
 	status := models.EventStatusOK
 	details := map[string]any{"artists": artists, "albums": albums}
+	summary := fmt.Sprintf("%d artists synced · %d albums", artists, albums)
 	if err != nil {
 		logger.Log.Warnf("failed to sync the manager mirror: %s", err.Error())
 		status = models.EventStatusError
@@ -1305,11 +1327,18 @@ func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 	} else if artists > 0 {
 		logger.Log.Infof("mirrored %d album(s) for %d manager-owned artist(s)", albums, artists)
 	}
+	// This stage runs on every full library run, so on a native-only install it is a
+	// zero in the feed nightly. Saying which input was missing is what stops that
+	// reading as a broken Lidarr rather than as a Lidarr nobody uses.
+	if stats.EmptyReason != "" {
+		summary += " — " + stats.EmptyReason
+		details["empty_reason"] = stats.EmptyReason
+	}
 	ev.Stats = []models.EventStat{
 		{Label: "Artists synced", Value: artists},
 		{Label: "Albums", Value: albums},
 	}
-	events.Finish(r.db, ev, status, fmt.Sprintf("%d artists synced · %d albums", artists, albums), details)
+	events.Finish(r.db, ev, status, summary, details)
 	return artists, albums
 }
 
@@ -1934,6 +1963,16 @@ type RetagResult struct {
 // could run for hours. That mutual exclusion is what stops a scan and an attach writing
 // the same file from two goroutines. Libraries and taggers are resolved once and reused
 // across the batch, which makes attaching a 20-track album one unit of work, not 20.
+//
+// The results go back to the caller *and* into an Activity event. Returning them is
+// what the attach flow needs in the moment; the event is what makes the write visible
+// afterwards, which every other file-writing path already is. Without it a hand-attach
+// was the one way to change a file that the feed never mentioned — and its Plex refresh
+// appeared there parentless, describing work nothing in the feed accounted for.
+//
+// The collection is deliberately *not* re-derived here: the attach handler already
+// requests a rebuild when it saves the correlation, so doing it again would re-derive
+// the whole collection once per attached album for no new information.
 func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	if len(itemIDs) == 0 {
 		return nil, nil
@@ -1949,6 +1988,12 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	// shows the last scan's.
 	r.resetProgress()
 
+	// Opened before the first write and finished after the Plex hand-off, so an
+	// interactive re-tag is one run in the feed however many files it touched — the
+	// same shape the queued re-tags have.
+	event := events.Begin(r.db, models.EventTypeTagFiles, retagItemsTitle(len(itemIDs)))
+	detail := components.NewDetailCollector(r.detailRetention)
+
 	libraries := map[uuid.UUID]models.Library{}
 	results := make([]RetagResult, 0, len(itemIDs))
 	// Collect changed albums so Plex is told to refresh them, exactly like the
@@ -1956,17 +2001,67 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	// retagItem's Plex hand-off from dereferencing a nil pointer when a file's
 	// tags actually change and a Plex client is attached.
 	refreshSet := modules.NewAlbumRefreshSet(nil)
+	written, unchanged, failed := 0, 0, 0
 	for _, id := range itemIDs {
 		var item models.LibraryItem
 		if err := r.db.First(&item, "id = ?", id).Error; err != nil {
 			results = append(results, RetagResult{ItemID: id, Err: err})
+			failed++
+			// The row is gone, so there is no path to name it by — the ID is the only
+			// identity left, and a detail row saying nothing is worse than one saying
+			// which file could not be loaded.
+			detail.AddError(id.String(), err)
 			continue
 		}
-		written, _, err := r.retagItem(item, libraries, refreshSet)
-		results = append(results, RetagResult{ItemID: id, Path: item.Path, Written: written, Err: err})
+		tagsWritten, changes, err := r.retagItem(item, libraries, refreshSet)
+		results = append(results, RetagResult{ItemID: id, Path: item.Path, Written: tagsWritten, Err: err})
+		switch {
+		case err != nil:
+			failed++
+			detail.AddError(item.Path, err)
+		case tagsWritten > 0:
+			written++
+			detail.AddChanged(item.Path, tagsWritten, changes)
+		default:
+			// Already correct on disk. Counted but not recorded: an album attached to
+			// the release its files already carried would otherwise fill the event's
+			// detail with rows saying nothing happened.
+			unchanged++
+		}
 	}
-	// No parent: an interactive re-tag opens no event of its own, so its Plex refresh
-	// is top-level rather than orphaned under something it did not belong to.
-	r.flushPlex(refreshSet, nil)
+
+	r.flushPlex(refreshSet, event)
+
+	status := models.EventStatusOK
+	if failed > 0 {
+		status = models.EventStatusError
+	}
+	summary := fmt.Sprintf("%d of %d files re-tagged · %d unchanged · %d errors",
+		written, len(itemIDs), unchanged, failed)
+	event.Stats = []models.EventStat{
+		{Label: "Files re-tagged", Value: written, Kind: models.EventStatNotable, Filter: models.EventItemStatusChanged},
+		{Label: "Already correct", Value: unchanged, Kind: models.EventStatMuted},
+		{Label: "Failed", Value: failed, Kind: models.EventStatBad, Filter: models.EventItemStatusError},
+	}
+	events.Finish(r.db, event, status, summary, map[string]any{
+		"files_in_scope":  len(itemIDs),
+		"files_retagged":  written,
+		"files_unchanged": unchanged,
+		"errors":          failed,
+		"detail":          detailSummary(detail),
+	})
+	events.AddItems(r.db, event, detail.Items())
+	events.Prune(r.db, r.eventRetention)
+
 	return results, nil
+}
+
+// retagItemsTitle names an interactive re-tag by its size. The count is the only thing
+// that distinguishes one of these from another in the feed — they all come from the
+// same action, on files the user has just identified by hand.
+func retagItemsTitle(files int) string {
+	if files == 1 {
+		return "Tag 1 attached file"
+	}
+	return fmt.Sprintf("Tag %d attached files", files)
 }

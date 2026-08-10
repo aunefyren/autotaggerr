@@ -171,6 +171,36 @@ that may fail. A 400 or an unparseable body is still not MusicBrainz saying anyt
 entity, and week-old truth beats dropping an album out of the disk view over a failure mode nobody
 anticipated.
 
+### One retry comes first
+
+A transiently-failed fetch is repeated **once** before any of the above applies (`retryTransient`,
+`modules/musicbrainz_retry.go`). MusicBrainz is a busy public service and a lone 503 or dropped
+connection on one request is its common failure mode; one repeat absorbs most of those, and the
+stale fallback then covers what is left. Ordering them that way matters — the stale copy is the
+answer of last resort, and serving it in place of a retry that would have succeeded means a run
+quietly works from week-old data it did not need.
+
+**The spacing is the rate limiter's.** Every retried fetch begins with `RateLimit()`, and the
+attempt that just failed was itself a request, so the repeat is already spaced by exactly the
+interval the limiter enforces. There is no backoff of its own to tune or to fight with.
+
+Only `ErrTransient` is retried. `ErrEntityGone` is an answer and cannot change by asking twice; a
+400 or an unparseable body is a request this client will keep getting wrong, and repeating it would
+hide the bug rather than survive it.
+
+Where it sits differs by call, and each placement is the cheap one:
+
+| Fetch | Retry wraps | Why there |
+|---|---|---|
+| release (`GetMusicBrainzRelease`) | the fetch **inside** the in-flight map | one leader retries for every waiter on that album; outside it, a cold album's tracks would each retry separately |
+| discography (`GetMusicBrainzArtistReleaseGroups`) | **one page** | restarting the walk would re-spend a request per page already read |
+| artist, search, `musicbrainzGetJSON` | the whole call | everything before the request is a cache read, so a repeat costs two misses |
+
+**One, not more.** A second failure a second later is evidence the service is actually down, and
+past that point the useful behaviours are the ones already here. Every attempt is a rate-limited
+request, so a higher count would multiply both the time a run takes to fail and the load put on a
+service that is already struggling.
+
 ### Artwork
 
 Image bytes stay on disk. The database row carries only what the filesystem cannot express: when

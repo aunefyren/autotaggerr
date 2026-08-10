@@ -28,6 +28,19 @@ func unionCSV(a, b string) string {
 	return strings.Join(out, ",")
 }
 
+// earlierCutoff merges two follow year cutoffs (CollectionArtist.FollowFromYear) the
+// same way: toward wanting more. Zero means "no cutoff", which is the most inclusive
+// value there is, so it wins over any year rather than losing as the smaller number.
+func earlierCutoff(a, b int) int {
+	if a <= 0 || b <= 0 {
+		return 0
+	}
+	if b < a {
+		return b
+	}
+	return a
+}
+
 // unionStrings merges two MBID sets, preserving the first side's order.
 func unionStrings(a, b []string) []string {
 	out := make([]string, 0, len(a)+len(b))

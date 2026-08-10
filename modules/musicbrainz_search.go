@@ -30,7 +30,17 @@ const (
 //
 // The query/page types live in the metadata package so the MetadataSource port can
 // name them without importing modules.
+//
+// A transient failure is retried once. Nothing stands in for a failed search — there
+// is no cache to fall back to — so the alternative is telling someone who is in the
+// middle of identifying a file to press the button again themselves.
 func SearchMusicBrainzReleases(query metadata.ReleaseSearchQuery) (metadata.ReleaseSearchPage, error) {
+	return retryTransient("release search", func() (metadata.ReleaseSearchPage, error) {
+		return searchMusicBrainzReleasesOnce(query)
+	})
+}
+
+func searchMusicBrainzReleasesOnce(query metadata.ReleaseSearchQuery) (metadata.ReleaseSearchPage, error) {
 	if query.Empty() {
 		return metadata.ReleaseSearchPage{}, nil
 	}
@@ -265,10 +275,20 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 	return parsed.Releases, nil
 }
 
-// musicbrainzGetJSON performs a rate-limited, User-Agent'd GET and decodes JSON.
-// Factored out once a third call site appeared; the release fetch keeps its own
-// version because it maps HTTP status codes to specific, actionable errors.
+// musicbrainzGetJSON performs a rate-limited, User-Agent'd GET and decodes JSON,
+// retrying once if the request failed transiently. Factored out once a third call
+// site appeared; the release fetch keeps its own version because it maps HTTP status
+// codes to specific, actionable errors.
 func musicbrainzGetJSON(endpoint string, out any) error {
+	return retryTransientErr("request", func() error {
+		return musicbrainzGetJSONOnce(endpoint, out)
+	})
+}
+
+// musicbrainzGetJSONOnce is one attempt. Decoding into `out` on a retried attempt is
+// safe because a failed attempt never reaches the decode — the transient cases all
+// return before the body is read.
+func musicbrainzGetJSONOnce(endpoint string, out any) error {
 	if err := RateLimit(); err != nil {
 		return err
 	}

@@ -38,8 +38,18 @@ func withMockMB(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	mbEntityCacheMu.Unlock()
 
 	queryMutex.Lock()
+	origRate := rateLimit
 	lastQueryTime = time.Time{} // ensure the next RateLimit() call doesn't sleep
+	// A retried request is spaced by the limiter (see retryTransient), so against the
+	// live 1s interval every transient-failure test would pay a real second per retry.
+	// The interval's *value* is covered by its own test; here it only has to exist.
+	rateLimit = time.Millisecond
 	queryMutex.Unlock()
+	t.Cleanup(func() {
+		queryMutex.Lock()
+		rateLimit = origRate
+		queryMutex.Unlock()
+	})
 
 	return srv
 }
@@ -189,7 +199,15 @@ func TestGetMusicBrainzReleaseCoalescesConcurrent(t *testing.T) {
 // TestGetMusicBrainzReleaseCoalescesError checks waiters receive the leader's error
 // rather than a zero value, and that the failure is not cached — the next call must
 // be free to retry.
+//
+// It also pins where the transient retry sits relative to the coalescing. The mock
+// answers 503, so each fetch costs `mbTransientRetries + 1` requests — and *one*
+// fetch is all two concurrent callers produce between them. If the retry sat outside
+// the in-flight map instead, every waiter would come back from the leader's failure
+// and retry on its own, turning one album's cold miss during a blip into a burst.
 func TestGetMusicBrainzReleaseCoalescesError(t *testing.T) {
+	attempts := int32(mbTransientRetries + 1)
+
 	var hits int32
 	release := make(chan struct{})
 	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
@@ -221,16 +239,16 @@ func TestGetMusicBrainzReleaseCoalescesError(t *testing.T) {
 			t.Errorf("caller %d: expected the leader's error, got nil", i)
 		}
 	}
-	if n := atomic.LoadInt32(&hits); n != 1 {
-		t.Errorf("server hit %d times, want 1", n)
+	if n := atomic.LoadInt32(&hits); n != attempts {
+		t.Errorf("server hit %d times, want %d — two callers must share one fetch, retries and all", n, attempts)
 	}
 
-	// A failed fetch leaves nothing cached, so a later call retries.
+	// A failed fetch leaves nothing cached, so a later call goes back to the server.
 	if _, err := GetMusicBrainzRelease("rel-e"); err == nil {
-		t.Error("expected the retry to hit the server and fail too")
+		t.Error("expected the second call to hit the server and fail too")
 	}
-	if n := atomic.LoadInt32(&hits); n != 2 {
-		t.Errorf("server hit %d times after retry, want 2 — a failure must not be cached", n)
+	if n := atomic.LoadInt32(&hits); n != 2*attempts {
+		t.Errorf("server hit %d times after the second call, want %d — a failure must not be cached", n, 2*attempts)
 	}
 }
 

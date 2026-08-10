@@ -48,6 +48,27 @@ the write helpers propagate their errors here and the whole pass rolls back. The
 discography syncs keep the older log-and-continue behaviour: one unwritable album must not
 abandon a whole sync.
 
+### A rebuild that loses a write race is retried
+
+That transaction **reads before it writes**, which under SQLite's WAL mode means it opens as a read
+snapshot and upgrades when it clears the disk view. If any other writer commits in between, the
+upgrade cannot be granted against a snapshot that is now stale and SQLite answers
+`SQLITE_BUSY_SNAPSHOT` (517) *immediately* — `busy_timeout` does not apply, because there is nothing
+to wait for. The transaction can never succeed and has to be run again from the top.
+
+`collection.retryBusy` does that, up to four times. The rebuild is safe to re-run by construction:
+it derives the whole disk view from `library_items` and the release cache, so the second attempt
+reads the newer state and produces the answer the first was trying to. Only lock errors are
+retried — re-running a genuinely broken pass would turn one error into four and a longer wait for
+the same message.
+
+The symptom was the Rebuilder defeating itself: attach requests a rebuild from `saveCorrelation`
+and then keeps writing — the tags, the Activity event — so the pass was racing the very request
+that asked for it. It failed, logged a warning nobody reads, and the collection stayed stale until
+the next scan, which is precisely the gap the Rebuilder exists to close. It is the *losing* writer
+that must retry, and every caller here is either a background pass or an interactive action whose
+real decision is already committed.
+
 ### Scoping a rebuild
 
 `Rebuild` is the **Scan** verb (see [scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)),
@@ -557,6 +578,36 @@ because including live albums, compilations and remixes buries the missing list 
 when a manager owns the artist, since Lidarr is the authority there. An explicit desire always
 overrides the type filter: the UI must never refuse to keep a single or live album you just asked
 for.
+
+### Following can start at a year
+
+`FollowFromYear` is the back-catalogue half of the same problem the type filter solves. Following an
+artist you already own the old records of lists twenty albums you deliberately have, and buries the
+one new record — which is the thing you followed them for. Zero, the default and what every existing
+row carries, means no cutoff and the behaviour following always had.
+
+**A year, not a date.** MusicBrainz stores `FirstReleaseDate` as `YYYY`, `YYYY-MM` or `YYYY-MM-DD`
+depending on what an editor knew, so a day-precision cutoff would be asking the data a question it
+cannot answer. The year is the prefix of all three, which makes the comparison exact at every
+precision instead of approximate at two of them. It also covers more than the "only future releases"
+toggle this replaced: set it to the current year for that, or to 2010 for "I have the old stuff".
+
+**An undated release-group is excluded once a cutoff is set.** This is a judgement call and the
+other reading is defensible, so: a cutoff is opt-in and its whole purpose is to keep the back
+catalogue out, and a release-group MusicBrainz has no date for cannot be shown to clear it. Anything
+actually being released is dated upstream before it comes out, so an undated row is far more likely
+an obscure old entry than a new record — and including them would let the noise the cutoff exists to
+remove back in through the one gap nobody can see. Clearing the cutoff wants them all again;
+nothing is lost permanently.
+
+It applies at both ends, through the one definition: `SyncArtist` does not record a release-group
+below the cutoff, and `FollowWantsStored` does not label a stored one as wanted. A page that said
+"wanted" about an album the sync would never record is exactly the disagreement `FollowWants` exists
+to prevent.
+
+A **merge** takes the earlier of two cutoffs, and no cutoff on either side wins outright
+(`migration.earlierCutoff`). Every other follow setting merges toward wanting more; this is the one
+where the inclusive value is the smaller number rather than the larger, so it needs saying.
 
 ## Wanted sources
 

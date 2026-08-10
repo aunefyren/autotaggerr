@@ -123,9 +123,13 @@ drops below it. Two things about it are easy to get wrong:
     (nil ⇒ `API.meta()` falls back to the real source), `process.Runner`/`mirror.Runner` carry a
     defaulted `meta` field, and `collection.SyncArtist`/`ReleaseGroupEditions` /
     `components.ComputeItemDiff` take the port as a parameter. See `routers/metadata_source_test.go`
-    (`fakeMeta`) and `collection/sync_artist_test.go` for the pattern. AcoustID (`acoustidBaseURL`)
-    and artwork (`coverArtArchiveBaseURL`, `fanartBaseURL`) are still package-var seams — the same
-    port pattern would retrofit them.
+    (`fakeMeta`) and `collection/sync_artist_test.go` for the pattern.
+- **AcoustID and artwork need no port.** Their base URLs are already values a caller supplies:
+  `LookupAcoustID(apiKey, baseURL, fp)` takes one as a parameter, and cover art / fanart read
+  `ArtworkProviders.CoverArtBaseURL` / `.FanartBaseURL` (exported fields, filled from the data
+  source's config in `routers/artwork.go`). The package-level `acoustidBaseURL`,
+  `coverArtArchiveBaseURL` and `fanartBaseURL` are only the fallbacks used when the caller passes
+  nothing. A test anywhere points them at an `httptest` server — see `modules/artwork_test.go`.
 
 To find the cheapest remaining gaps, sum the uncovered statements per file rather than reading
 percentages — a 40%-covered 300-statement file matters more than a 0%-covered 10-statement one:

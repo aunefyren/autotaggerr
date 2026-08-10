@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,18 +81,71 @@ func RebuildScoped(db *gorm.DB, scope RebuildScope) (RebuildStats, error) {
 		return RebuildStats{}, nil
 	}
 	var stats RebuildStats
-	err := db.Transaction(func(tx *gorm.DB) error {
-		bounds, err := resolveBounds(tx, scope)
-		if err != nil {
+	err := retryBusy(func() error {
+		stats = RebuildStats{}
+		return db.Transaction(func(tx *gorm.DB) error {
+			bounds, err := resolveBounds(tx, scope)
+			if err != nil {
+				return err
+			}
+			stats, err = rebuildTx(tx, bounds)
 			return err
-		}
-		stats, err = rebuildTx(tx, bounds)
-		return err
+		})
 	})
 	if err != nil {
 		return RebuildStats{}, err
 	}
 	return stats, nil
+}
+
+// rebuildBusyRetries is how many times a rebuild re-runs its transaction after
+// losing a race with another writer. Four, spaced by a few milliseconds, which is
+// far longer than any of the writes it competes with.
+const rebuildBusyRetries = 4
+
+// retryBusy re-runs a transaction that SQLite refused because another writer got
+// there first.
+//
+// This exists because of a specific failure, not as a general precaution. Rebuild's
+// transaction *reads before it writes*, so under WAL it starts as a read snapshot and
+// upgrades when it clears the disk view. If any other writer commits in between, that
+// upgrade cannot be granted against a snapshot that is now stale, and SQLite answers
+// SQLITE_BUSY_SNAPSHOT (517) immediately — **`busy_timeout` does not apply**, because
+// there is nothing to wait for: the transaction can never succeed and has to be run
+// again from the top. That is the one lock error the connection settings cannot absorb.
+//
+// The rebuild is safe to re-run by construction: it derives the whole disk view from
+// `library_items` and the release cache, so a second attempt reads the newer state and
+// produces the answer the first one was trying to. It is the losing writer that must
+// retry, and every caller here is either a background pass or an interactive action
+// that has already committed its real decision.
+//
+// The symptom was a collection that silently stopped updating: attaching a file
+// requests a rebuild and then keeps writing (its tags, its Activity event), so the
+// rebuild it had just asked for was racing the very request that asked for it. It
+// failed, logged a warning nobody reads, and the disk view stayed stale until the next
+// scan — which is exactly the gap the Rebuilder was built to close.
+func retryBusy(run func() error) error {
+	var err error
+	for attempt := 0; ; attempt++ {
+		if err = run(); err == nil || attempt >= rebuildBusyRetries || !isBusyError(err) {
+			return err
+		}
+		logger.Log.Debugf("rebuild lost a write race (%s); retrying", err.Error())
+		time.Sleep(time.Duration(attempt+1) * 2 * time.Millisecond)
+	}
+}
+
+// isBusyError reports whether an error is SQLite refusing a lock. Matched on the
+// message rather than a driver error code so it holds across the sqlite drivers this
+// app can be built with, and so a non-SQLite backend (where this cannot happen) simply
+// never matches.
+func isBusyError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "database is locked") || strings.Contains(msg, "database table is locked")
 }
 
 // RebuildArtist re-derives one artist's disk view. It is the *Scan* verb at artist
@@ -136,6 +190,13 @@ func RecordScanUnder(db *gorm.DB, parent *models.Event, title string, scope Rebu
 	summary := fmt.Sprintf("%d artists · %d albums on disk", stats.Artists, stats.Owned)
 	if stats.CreditChanges > 0 {
 		summary += fmt.Sprintf(" · %d credit change(s)", stats.CreditChanges)
+	}
+	// Appended rather than substituted: the counters are still what the pass did, and
+	// a row that showed only the reason would lose the fact that it ran at all. The
+	// status stays OK — nothing failed, there was simply nothing to read.
+	if stats.EmptyReason != "" {
+		summary += " — " + stats.EmptyReason
+		details["empty_reason"] = stats.EmptyReason
 	}
 	if err != nil {
 		status = models.EventStatusError
@@ -288,6 +349,68 @@ type RebuildStats struct {
 	// CreditChanges is release-groups whose primary credit moved plus credit links
 	// dropped because MusicBrainz no longer names the artist.
 	CreditChanges int `json:"credit_changes"`
+	// EmptyReason names the input that was missing when a pass found nothing, and is
+	// blank whenever the pass had something to work from — including when it honestly
+	// found zero.
+	//
+	// Scan re-derives the collection from `library_items`, so on a cold install it
+	// answers "0 artists, 0 albums" and looks like a verb that does not work. It is
+	// telling the truth; what it cannot say is that Process has never run. The four
+	// verbs feed each other (Process → `library_items` → Scan → collection rows →
+	// Sync → catalog columns), so on a fresh install every verb but the first reports
+	// an honest zero that reads as a dud.
+	EmptyReason string `json:"empty_reason,omitempty"`
+}
+
+// The reasons a Scan can have nothing to re-derive. Exported so a caller can render
+// them and a test can assert one without restating the sentence.
+const (
+	// ScanEmptyNoFiles is a cold install: nothing has ever walked a library.
+	ScanEmptyNoFiles = "no files are indexed yet — run Process to walk your libraries"
+	// ScanEmptyNothingMatched is the second state: files are indexed, but none of them
+	// has been resolved to a MusicBrainz release, so there is nothing to own. The
+	// distinction matters because the fix is different — this one is a manager or
+	// MusicBrainz problem, not a "you have not started yet" problem.
+	ScanEmptyNothingMatched = "files are indexed but none is matched to a release yet — check Items for what failed"
+	// ScanEmptyArtistNoFiles is the artist-scoped version of the same thing.
+	ScanEmptyArtistNoFiles = "no matched files for this artist"
+)
+
+// scanEmptyReason works out why a pass re-derived nothing. It runs only when the pass
+// found neither an artist nor an owned album, so the extra count it costs is paid on
+// the empty install and never on a working one.
+//
+// `all` is every matched row in the index, `scoped` the subset this pass covered — the
+// two differ only for an artist-scoped pass, which is exactly when "the collection has
+// files, this artist does not" is the useful answer.
+func scanEmptyReason(db *gorm.DB, scope bounds, all, scoped int) string {
+	if scoped > 0 {
+		// The pass had input and still found nothing. That is a real answer about the
+		// data, not a missing precondition, and inventing a reason for it would be
+		// worse than the bare zero.
+		return ""
+	}
+	if all > 0 {
+		if !scope.all {
+			return ScanEmptyArtistNoFiles
+		}
+		// Unreachable in practice — an unscoped pass covers every matched row — but
+		// falling through to "nothing is matched" here would be a lie.
+		return ""
+	}
+
+	var indexed int64
+	if err := db.Model(&models.LibraryItem{}).Count(&indexed).Error; err != nil {
+		logger.Log.Warnf("failed to count indexed files while explaining an empty scan: %s", err.Error())
+		return ""
+	}
+	if indexed == 0 {
+		return ScanEmptyNoFiles
+	}
+	if scope.all {
+		return ScanEmptyNothingMatched
+	}
+	return ScanEmptyArtistNoFiles
 }
 
 // rebuildTx is the body of Rebuild, run inside the caller's transaction. Every write
@@ -467,7 +590,11 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		return RebuildStats{}, err
 	}
 
-	return RebuildStats{Artists: len(artistManagers), Owned: len(rgBest), CreditChanges: changes.total()}, nil
+	stats := RebuildStats{Artists: len(artistManagers), Owned: len(rgBest), CreditChanges: changes.total()}
+	if stats.Artists == 0 && stats.Owned == 0 {
+		stats.EmptyReason = scanEmptyReason(db, scope, len(all), len(rows))
+	}
+	return stats, nil
 }
 
 // albumArtistCredit returns whose *album* a cached release belongs to: the
@@ -745,7 +872,7 @@ func SyncArtist(db *gorm.DB, meta metadata.MetadataSource, artistMBID string) (w
 	}
 
 	for _, rg := range groups {
-		if !FollowWants(artist, rg.PrimaryType, rg.SecondaryTypes) {
+		if !FollowWants(artist, rg.PrimaryType, rg.SecondaryTypes, rg.FirstReleaseDate) {
 			continue
 		}
 		// The MusicBrainz discography is the native manager's catalog. Track counts
@@ -766,14 +893,21 @@ func SyncArtist(db *gorm.DB, meta metadata.MetadataSource, artistMBID string) (w
 }
 
 // FollowWants reports whether following this artist auto-wants a release-group of
-// the given types. It is the single definition of that rule — the discography
-// sync, the API's "why is this wanted" label, and the UI all go through it, so
-// changing an artist's follow settings changes every view at once.
+// the given types, released on or after the artist's cutoff. It is the single
+// definition of that rule — the discography sync, the API's "why is this wanted"
+// label, and the UI all go through it, so changing an artist's follow settings
+// changes every view at once.
 //
 // Unset FollowTypes means the default (studio albums + EPs), which is what keeps a
 // missing list readable; a discography is mostly singles and reissues.
-func FollowWants(artist models.CollectionArtist, primaryType string, secondaryTypes []string) bool {
+//
+// `date` is the release-group's MusicBrainz first-release date in whatever precision
+// it has (`YYYY`, `YYYY-MM`, `YYYY-MM-DD`, or empty).
+func FollowWants(artist models.CollectionArtist, primaryType string, secondaryTypes []string, date string) bool {
 	if !artist.FollowSecondary && len(secondaryTypes) > 0 {
+		return false
+	}
+	if !followWantsYear(artist.FollowFromYear, date) {
 		return false
 	}
 
@@ -788,6 +922,42 @@ func FollowWants(artist models.CollectionArtist, primaryType string, secondaryTy
 		}
 	}
 	return false
+}
+
+// followWantsYear applies the release-year cutoff. No cutoff (0) wants everything,
+// which is what following meant before the field existed and is still the default.
+//
+// **An undated release-group is excluded once a cutoff is set.** That is the choice
+// worth stating, because the other reading is defensible too. A cutoff is opt-in and
+// its entire purpose is to keep the back catalogue out of the missing list; a
+// release-group MusicBrainz has no date for is far more likely to be an obscure old
+// entry than a new record, since anything actually being released is dated upstream
+// before it comes out. Including them would let the noise the cutoff exists to remove
+// back in through the one gap nobody can see.
+func followWantsYear(cutoff int, date string) bool {
+	if cutoff <= 0 {
+		return true
+	}
+	year, ok := releaseYear(date)
+	if !ok {
+		return false
+	}
+	return year >= cutoff
+}
+
+// releaseYear reads the year off a MusicBrainz date. Every precision MusicBrainz
+// stores — `YYYY`, `YYYY-MM`, `YYYY-MM-DD` — starts with the four-digit year, so the
+// prefix is the whole of what this needs and a partial date costs nothing.
+func releaseYear(date string) (int, bool) {
+	date = strings.TrimSpace(date)
+	if len(date) < 4 {
+		return 0, false
+	}
+	year, err := strconv.Atoi(date[:4])
+	if err != nil || year <= 0 {
+		return 0, false
+	}
+	return year, true
 }
 
 // FollowGoverns reports whether the *native* follow settings decide what is wanted
@@ -851,9 +1021,10 @@ func ArtistIdentityEditable(db *gorm.DB, artistMBID string) (bool, error) {
 }
 
 // FollowWantsStored is FollowWants for a stored CollectionReleaseGroup row, whose
-// secondary types are comma-joined rather than a slice.
-func FollowWantsStored(artist models.CollectionArtist, primary, secondaryCSV string) bool {
-	return FollowWants(artist, primary, splitTypes(secondaryCSV))
+// secondary types are comma-joined rather than a slice and whose date is the column
+// the discography sync wrote.
+func FollowWantsStored(artist models.CollectionArtist, primary, secondaryCSV, date string) bool {
+	return FollowWants(artist, primary, splitTypes(secondaryCSV), date)
 }
 
 func splitTypes(csv string) []string {
@@ -1097,10 +1268,43 @@ type SyncOptions struct {
 	IgnoreCache bool
 }
 
+// SyncStats is what one mirror pass did, and — when it did nothing — why.
+//
+// EmptyReason is the whole reason this is a struct rather than two ints. A pass that
+// returns before its first HTTP call and one that asked Lidarr and got nothing both
+// reported "0 artists synced · 0 albums", so "there was nothing here to mirror" and
+// "Lidarr has nothing for these artists" were the same Activity row. They need
+// different things done about them.
+type SyncStats struct {
+	ArtistsSynced int    `json:"artists_synced"`
+	Groups        int    `json:"albums"`
+	EmptyReason   string `json:"empty_reason,omitempty"`
+}
+
+// The reasons a Lidarr mirror pass can have nothing to mirror. Each one names a
+// different missing precondition, and each has a different fix.
+const (
+	// SyncEmptyNoManager is no enabled Lidarr manager at all. The collection-wide
+	// button is not offered in this state and the API rejects the call with a 400, so
+	// this is reached by the scheduled run.
+	SyncEmptyNoManager = "no enabled Lidarr manager is configured"
+	// SyncEmptyNoManagerCredentials is a manager row that exists but cannot be called.
+	SyncEmptyNoManagerCredentials = "the Lidarr manager has no URL or API key"
+	// SyncEmptyNoArtists is a collection with nothing in it — the cold install, where
+	// Process has not run and no artist has been added by hand.
+	SyncEmptyNoArtists = "the collection has no artists yet — run Process, or add an artist"
+	// SyncEmptyNoneManaged is the interesting one: there are artists, but none of them
+	// is Lidarr's. Mirroring cannot introduce an artist, so this pass has nothing to
+	// ask about however healthy Lidarr is.
+	SyncEmptyNoneManaged = "no artist in the collection is managed by Lidarr"
+	// SyncEmptyArtistNotManaged is the artist-scoped form of the same thing.
+	SyncEmptyArtistNotManaged = "this artist is not managed by Lidarr"
+)
+
 // SyncLidarr mirrors Lidarr's albums for every Lidarr-managed artist in the collection.
 // See SyncLidarrWith for what a pass does; this is the unscoped, cache-preserving form
 // that the nightly run and the collection-wide button use.
-func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
+func SyncLidarr(db *gorm.DB) (SyncStats, error) {
 	return SyncLidarrWith(db, SyncOptions{})
 }
 
@@ -1114,13 +1318,16 @@ func SyncLidarr(db *gorm.DB) (artistsSynced, groups int, err error) {
 // An artist-scoped pass exists because that is the granularity a repair actually needs:
 // one album's counts going stale used to require re-mirroring every Lidarr artist in
 // the collection.
-func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (artistsSynced, groups int, err error) {
+func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
+	var stats SyncStats
+
 	var managers []models.Manager
 	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).Find(&managers).Error; err != nil {
-		return 0, 0, err
+		return stats, err
 	}
 	if len(managers) == 0 {
-		return 0, 0, nil
+		stats.EmptyReason = SyncEmptyNoManager
+		return stats, nil
 	}
 
 	q := db.Where("managed_by IN ?", []string{models.ManagedByLidarr, models.ManagedByMixed})
@@ -1129,14 +1336,33 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (artistsSynced, groups int, e
 	}
 	var artists []models.CollectionArtist
 	if err := q.Find(&artists).Error; err != nil {
-		return 0, 0, err
+		return stats, err
 	}
 	want := map[string]bool{}
 	for _, a := range artists {
 		want[a.MBID] = true
 	}
 	if len(want) == 0 {
-		return 0, 0, nil
+		reason, err := syncEmptyReason(db, opts)
+		if err != nil {
+			return stats, err
+		}
+		stats.EmptyReason = reason
+		return stats, nil
+	}
+
+	// A manager row with no URL or key is skipped below, so a pass whose only manager
+	// is unconfigured would otherwise reach the end having made no request and say
+	// nothing about it.
+	usable := 0
+	for _, m := range managers {
+		if strings.TrimSpace(m.LidarrBaseURL) != "" && strings.TrimSpace(m.LidarrAPIKey) != "" {
+			usable++
+		}
+	}
+	if usable == 0 {
+		stats.EmptyReason = SyncEmptyNoManagerCredentials
+		return stats, nil
 	}
 
 	for _, m := range managers {
@@ -1200,7 +1426,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (artistsSynced, groups int, e
 						releaseMBID: monitoredRelease(al),
 					},
 				})
-				groups++
+				stats.Groups++
 			}
 			// Records that this artist has actually been put to a manager. It is what
 			// CatalogChecked reads, so an album with no catalog row can be reported as
@@ -1210,7 +1436,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (artistsSynced, groups int, e
 				Update("last_synced_at", now).Error; err != nil {
 				logger.Log.Warnf("failed to set last_synced_at for artist %s: %s", la.ForeignArtistID, err.Error())
 			}
-			artistsSynced++
+			stats.ArtistsSynced++
 		}
 	}
 
@@ -1221,7 +1447,30 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (artistsSynced, groups int, e
 	if err := reconcileManagerDesires(db); err != nil {
 		logger.Log.Warnf("failed to reconcile manager-derived wants: %s", err.Error())
 	}
-	return artistsSynced, groups, nil
+	return stats, nil
+}
+
+// syncEmptyReason works out why a mirror pass found no artist to ask Lidarr about.
+// It runs only on that path, so the count it costs is paid when the answer is needed
+// and never during a working pass.
+//
+// The distinction it draws is between an empty collection and one that simply is not
+// Lidarr's. Both produce the same zero, and the fixes are opposite: the first wants
+// Process (or *Add artist*), the second wants the artist's manager changed — or is
+// simply correct, on a native-only install where the nightly pass will report this
+// forever and should not read as a fault.
+func syncEmptyReason(db *gorm.DB, opts SyncOptions) (string, error) {
+	if opts.ArtistMBID != "" {
+		return SyncEmptyArtistNotManaged, nil
+	}
+	var artists int64
+	if err := db.Model(&models.CollectionArtist{}).Count(&artists).Error; err != nil {
+		return "", err
+	}
+	if artists == 0 {
+		return SyncEmptyNoArtists, nil
+	}
+	return SyncEmptyNoneManaged, nil
 }
 
 // monitoredRelease is the edition Lidarr selected for an album: the first release

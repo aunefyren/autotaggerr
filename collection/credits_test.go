@@ -295,7 +295,7 @@ func TestSyncLidarrStampsLastSynced(t *testing.T) {
 		t.Fatalf("artist: %v", err)
 	}
 
-	if _, _, err := SyncLidarr(db); err != nil {
+	if _, err := SyncLidarr(db); err != nil {
 		t.Fatalf("SyncLidarr: %v", err)
 	}
 

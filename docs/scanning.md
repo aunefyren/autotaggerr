@@ -56,6 +56,48 @@ is no "scheduled runs do more" mode to explain after the fact when reading the A
 
 See [mirror.md](mirror.md) for the refresh verb and the drift stage.
 
+### A verb that does nothing says why
+
+The verbs feed each other — Process → `library_items` → Scan → collection rows → *Sync from Lidarr*
+→ catalog columns — so on a cold install only Process has an input and every other verb reports an
+honest zero that reads as a dud. `0 artists, 0 albums` is true and tells nobody anything.
+
+Each of the two that can find nothing now names **which input was missing**, and only when it found
+nothing: `RebuildStats.EmptyReason` and `SyncStats.EmptyReason`, both blank whenever the pass had
+something to work from. A reason on a working pass would be worse than none, because it would be
+wrong.
+
+| Verb | Reason | Means |
+| --- | --- | --- |
+| Scan | `ScanEmptyNoFiles` | nothing is indexed — Process has never run |
+| Scan | `ScanEmptyNothingMatched` | files are indexed, none resolved to a release |
+| Scan | `ScanEmptyArtistNoFiles` | the artist-scoped version of either |
+| Sync | `SyncEmptyNoManager` | no enabled Lidarr manager |
+| Sync | `SyncEmptyNoManagerCredentials` | a manager row with no URL or key |
+| Sync | `SyncEmptyNoArtists` | the collection is empty |
+| Sync | `SyncEmptyNoneManaged` | there are artists, but none is Lidarr's |
+
+The mirror's was the worse case, because `SyncLidarrWith` returns before making a single HTTP call
+when nothing is `managed_by` lidarr/mixed — so "there was nothing here to mirror" and "Lidarr was
+asked and had nothing" were the same Activity row, with opposite fixes. The last two are worth
+separating for the same reason: one wants Process, the other wants the artist's manager changed, or
+is simply correct forever on a native-only install and should stop reading as a fault.
+
+The reason is **appended to the summary, not substituted for it**, and the status stays `ok`.
+Nothing failed; there was nothing to read. Scan answers inline, so its reason reaches the page as
+`empty_reason` on the response and is shown in place of the zero-count toast.
+
+Ahead of all that, the Collection page **disables a button whose only outcome is that zero**, with
+a title saying what is needed first: *Scan* and *Tag files* when `Summary.Indexed` is 0, and *Sync
+from Lidarr* when no artist in the collection is Lidarr-managed. `Indexed` is counted per
+`Status()` call rather than tracked, because a run is not its only writer — pruning, a library being
+removed and a manual attach all move it, and a stale count would disable a button that works. An
+unfetched status disables nothing: only a fetched zero does.
+
+`no_edition` is the precedent ([collection.md](collection.md#an-album-with-no-edition-selected)):
+it exists so "the counts disagree because nobody chose an edition" cannot read as "the manager is
+stale". This is the same idea one level up.
+
 ### Where the buttons are
 
 Every scope offers its full set, so the same four words mean the same four things wherever they
@@ -444,6 +486,31 @@ rather than per pass also means a settings edit applies from the next run, so th
 3120" pair stays true for rows already collected. A non-positive value falls back to the default
 rather than meaning "keep nothing", which would silently empty the feed after one run.
 
+### An interactive re-tag is its own run
+
+`RetagItems` — the write half of [manual attach](attach.md) — records a top-level `tag_files` event,
+titled by how many files were in the batch (*Tag 1 attached file*, *Tag 12 attached files*). It is
+not parented, because nothing spawned it: someone pressed *Attach* and this is what that did.
+
+It reports three figures, and the middle one is the reason they are three rather than two: files
+re-tagged, files **already correct**, and failures. Attaching an album to the release its files
+already carried writes nothing at all, and a summary that could only say "0 re-tagged" would read as
+a failure of the thing that just succeeded. Only the first and last get [detail
+rows](#per-file-detail) — a row per unchanged file would be a list of things that did not happen.
+
+Two things it deliberately does not do:
+
+- **It does not re-derive the collection.** `finishRefresh` does, for the queued re-tags, but the
+  attach handler already calls `Rebuilder.Request()` when it saves the correlation
+  (`routers.saveCorrelation`), so doing it here too would re-derive the whole collection a second
+  time per attached album to learn nothing new.
+- **It does not open an event for an empty selection or a refused lock.** Both return before writing
+  anything, and a run in the feed that touched no file is worse than no run at all.
+
+Its Plex refresh is parented under it, like every other run's. That is the point of the event as much
+as the summary is: the refresh already had a row, and without a parent it appeared in the feed beside
+work the feed did not otherwise contain.
+
 ### The feed is flat
 
 `GET /events` lists **every activity**, newest first: one row per thing that happened, at the time it
@@ -703,6 +770,8 @@ which is what left a user's second run silently vanishing and, after a crash, ev
 - **Interactive re-tags stay synchronous.** `RetagItems` (the attach flow) must return per-file
   results to its HTTP caller, so it is not queued; it `TryLock`s `jobMu` and refuses immediately if a
   background job holds it, rather than blocking the request behind a job that could run for hours.
+  Synchronous does not mean invisible: it records a `tag_files` event of its own like every other
+  path that writes to a file (see [below](#an-interactive-re-tag-is-its-own-run)).
 - **API.** Trigger endpoints no longer 409 on "already running" — they enqueue and return `202`
   (`processing queued`, etc.). The remaining 409s are "nothing to process / no indexed files" refusals, which
   are unchanged. `Status()` carries `current_job` and `queue`, which the Activity page renders as a

@@ -408,6 +408,11 @@ func applyArtistRedirect(tx *gorm.DB, m models.MusicbrainzMigration) (applyCount
 		target.Monitored = target.Monitored || source.Monitored
 		target.FollowSecondary = target.FollowSecondary || source.FollowSecondary
 		target.FollowTypes = unionCSV(target.FollowTypes, source.FollowTypes)
+		// Every other follow setting merges toward wanting *more*, and the year cutoff
+		// has to follow the same rule or a merge would silently drop albums the user
+		// was already being told about. No cutoff on either side wins outright; two
+		// cutoffs merge to the earlier one.
+		target.FollowFromYear = earlierCutoff(target.FollowFromYear, source.FollowFromYear)
 		// A manually added artist outranks a library-derived one: it records that
 		// someone wanted this artist before owning any of them, which rebuilding
 		// from disk cannot reconstruct.

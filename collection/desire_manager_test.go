@@ -67,7 +67,7 @@ func lidarrCollection(t *testing.T, albums *[]models.LidarrAlbum) *gorm.DB {
 
 func syncLidarr(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	if _, _, err := SyncLidarr(db); err != nil {
+	if _, err := SyncLidarr(db); err != nil {
 		t.Fatalf("SyncLidarr: %v", err)
 	}
 }

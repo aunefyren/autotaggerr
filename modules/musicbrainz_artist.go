@@ -52,46 +52,16 @@ func GetMusicBrainzArtistReleaseGroups(artistID string) ([]models.MusicBrainzArt
 	complete := false
 
 	for page := 0; page < maxArtistReleaseGroupPages; page++ {
-		if err := RateLimit(); err != nil {
-			return all, false, err
-		}
-
 		offset := page * artistReleaseGroupPageSize
-		url := fmt.Sprintf("%s/release-group?artist=%s&limit=%d&offset=%d&fmt=json",
-			musicbrainzBaseURL, artistID, artistReleaseGroupPageSize, offset)
 
-		req, err := http.NewRequest("GET", url, nil)
+		// Retried per *page*, not per discography: restarting a five-page artist from
+		// page one over a blip on page four would spend four more rate-limited requests
+		// re-reading what the caller already has in `all`.
+		parsed, err := retryTransient("discography for artist "+artistID, func() (models.MusicBrainzArtistReleaseGroups, error) {
+			return fetchArtistReleaseGroupPage(artistID, offset)
+		})
 		if err != nil {
 			return all, false, err
-		}
-		req.Header.Set("User-Agent", "Autotaggerr/"+files.ConfigFile.AutotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
-
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return all, false, newTransientError(err, "MusicBrainz request failed for artist %q", artistID)
-		}
-		if resp.StatusCode != http.StatusOK {
-			snippet := readBodySnippet(resp.Body)
-			resp.Body.Close()
-			if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-				RecordDeletion(models.MigrationEntityArtist, artistID)
-				return all, false, newGoneError(models.MigrationEntityArtist, artistID, resp.StatusCode, snippet)
-			}
-			if transientStatus(resp.StatusCode) {
-				return all, false, newTransientError(nil, "MusicBrainz unavailable for artist %q (HTTP %d, retry later): %s", artistID, resp.StatusCode, snippet)
-			}
-			return all, false, fmt.Errorf("MusicBrainz returned HTTP %d for artist %q: %s", resp.StatusCode, artistID, snippet)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return all, false, err
-		}
-
-		var parsed models.MusicBrainzArtistReleaseGroups
-		if err := json.Unmarshal(body, &parsed); err != nil {
-			return all, false, fmt.Errorf("failed to parse artist release-groups for %q: %w", artistID, err)
 		}
 
 		all = append(all, parsed.ReleaseGroups...)
@@ -104,13 +74,74 @@ func GetMusicBrainzArtistReleaseGroups(artistID string) ([]models.MusicBrainzArt
 	return all, complete, nil
 }
 
+// fetchArtistReleaseGroupPage fetches one page of an artist's discography. Split out
+// so a page can be retried on its own; it holds no state, so a repeat is just the
+// same request again.
+func fetchArtistReleaseGroupPage(artistID string, offset int) (models.MusicBrainzArtistReleaseGroups, error) {
+	var parsed models.MusicBrainzArtistReleaseGroups
+
+	if err := RateLimit(); err != nil {
+		return parsed, err
+	}
+
+	url := fmt.Sprintf("%s/release-group?artist=%s&limit=%d&offset=%d&fmt=json",
+		musicbrainzBaseURL, artistID, artistReleaseGroupPageSize, offset)
+
+	req, err := http.NewRequest("GET", url, nil)
+	if err != nil {
+		return parsed, err
+	}
+	req.Header.Set("User-Agent", "Autotaggerr/"+files.ConfigFile.AutotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return parsed, newTransientError(err, "MusicBrainz request failed for artist %q", artistID)
+	}
+	if resp.StatusCode != http.StatusOK {
+		snippet := readBodySnippet(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
+			RecordDeletion(models.MigrationEntityArtist, artistID)
+			return parsed, newGoneError(models.MigrationEntityArtist, artistID, resp.StatusCode, snippet)
+		}
+		if transientStatus(resp.StatusCode) {
+			return parsed, newTransientError(nil, "MusicBrainz unavailable for artist %q (HTTP %d, retry later): %s", artistID, resp.StatusCode, snippet)
+		}
+		return parsed, fmt.Errorf("MusicBrainz returned HTTP %d for artist %q: %s", resp.StatusCode, artistID, snippet)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if err != nil {
+		return parsed, err
+	}
+
+	if err := json.Unmarshal(body, &parsed); err != nil {
+		return models.MusicBrainzArtistReleaseGroups{}, fmt.Errorf("failed to parse artist release-groups for %q: %w", artistID, err)
+	}
+	return parsed, nil
+}
+
 // GetMusicBrainzArtist fetches who an artist is — kind, origin, active years,
 // genres. Rate limited like every other MusicBrainz call, and cached in the
 // persistent entity cache (see musicbrainz_cache.go).
 //
 // Failure is not fatal to anything: the artist page renders from the database
 // without it, so callers log and carry on rather than surfacing an error.
+//
+// The retry wraps the whole lookup rather than the request inside it, which is safe
+// because everything before the request is a cache read: an attempt that returns
+// ErrTransient is by construction one where both the fresh and the stale lookup
+// missed, so the repeat re-reads two empty caches and issues the request again. It
+// also only ever fires for an artist nothing is cached for — with a stale copy in
+// hand this returns *that*, not an error, and there is nothing to retry.
 func GetMusicBrainzArtist(artistID string) (models.MusicBrainzArtistLookup, error) {
+	return retryTransient("artist "+artistID, func() (models.MusicBrainzArtistLookup, error) {
+		return getMusicBrainzArtistOnce(artistID)
+	})
+}
+
+func getMusicBrainzArtistOnce(artistID string) (models.MusicBrainzArtistLookup, error) {
 	var fresh models.MusicBrainzArtistLookup
 	if mbCacheGet(models.MBEntityArtist, artistID, &fresh) {
 		return fresh, nil

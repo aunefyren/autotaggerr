@@ -3,8 +3,10 @@ package modules
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -13,6 +15,7 @@ import (
 	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
+	"golang.org/x/text/unicode/norm"
 )
 
 // resetLidarrCaches clears the package-global Lidarr cache maps so each test
@@ -342,6 +345,177 @@ func TestLidarrFindTrackFileByPathAmbiguous(t *testing.T) {
 	}
 	if tf != nil {
 		t.Fatalf("expected no match for an ambiguous pair, got trackfile %d", tf.ID)
+	}
+}
+
+// alienDiscs is the cue list of the two-CD expanded release of Jerry Goldsmith's
+// score for Alien — 30 tracks of score on the first disc, 17 of album programme and
+// alternates on the second. It is here rather than a synthetic pair because a real
+// release is shaped in the two ways that break path resolution at once: the second
+// disc reprises cues from the first at the *same* track number, so the basenames
+// collide outright, and several titles carry a typographic apostrophe (U+2019) that
+// only survives if nothing along the way rewrites it.
+var alienDiscs = [][]string{
+	{
+		"Main Title", "Hyper Sleep", "The Landing", "The Craft", "The Terrain",
+		"The Passage", "Hanging On", "Drop Out", "The Skeleton", "A New Face",
+		"Here Kitty", "Nothing to Say", "The Shaft", "It’s a Droid", "Parker’s Death",
+		"The Lab", "Sleepy Alien", "Cat Nip", "The Cupboard", "The Recovery",
+		"The Alien Planet", "To Sleep", "The Wreckage", "The Egg", "The Bracelet",
+		"Ash's Trap", "The Escape", "To the Shuttle", "End Title", "End Title (alternate)",
+	},
+	{
+		"Main Title", "Hyper Sleep", "Acid Test", "The Craft", "The Landing (alternate)",
+		"The Terrain (revised)", "The Passage (alternate)", "Hanging On (alternate)",
+		"The Skeleton (revised)", "A New Face (alternate)", "Here Kitty (alternate)",
+		"The Shaft (revised)", "Parker’s Death (alternate)", "It’s a Droid",
+		"The Cupboard (alternate)", "End Title (album version)", "Closing Title",
+	},
+}
+
+// alienTrackName is the on-disk basename of one cue: the track number, the title,
+// and the extension, exactly as both sides of the comparison spell it.
+func alienTrackName(position int, title string) string {
+	return fmt.Sprintf("%02d %s.flac", position, title)
+}
+
+// alienTrackFiles builds Lidarr's view of the release. Lidarr stores its paths under
+// a different root than ours (a container mapping) and may spell the disc folders its
+// own way, so both are parameters — the file *names* are the only thing the two sides
+// are guaranteed to share.
+func alienTrackFiles(lidarrRoot string, discFolder func(disc int) string) []models.LidarrTrackFile {
+	files := make([]models.LidarrTrackFile, 0, 47)
+	for d, titles := range alienDiscs {
+		for i, title := range titles {
+			files = append(files, models.LidarrTrackFile{
+				ID:       int64(1000 + len(files)),
+				AlbumID:  42,
+				ArtistID: 7,
+				Path: path.Join(lidarrRoot, "Jerry Goldsmith", "Alien (1979)",
+					discFolder(d+1), alienTrackName(i+1, title)),
+			})
+		}
+	}
+	return files
+}
+
+// TestLidarrFindTrackFileByPathRealMultiDisc drives every file of a real two-disc
+// release through the lookup and requires each one to resolve to *its own disc's*
+// trackfile. The existing multi-disc tests pin one hand-picked collision; this one
+// cannot be satisfied by a matcher that happens to get the chosen case right, since
+// a wrong-disc answer anywhere in 47 files fails it.
+func TestLidarrFindTrackFileByPathRealMultiDisc(t *testing.T) {
+	// A fixture that lost its collisions would still pass while proving nothing, so
+	// assert the shape before relying on it.
+	shared := 0
+	for i, title := range alienDiscs[1] {
+		if i < len(alienDiscs[0]) && alienTrackName(i+1, alienDiscs[0][i]) == alienTrackName(i+1, title) {
+			shared++
+		}
+	}
+	if shared < 3 {
+		t.Fatalf("fixture has %d basenames repeated across discs, want at least 3 — "+
+			"without them this test no longer covers disc disambiguation", shared)
+	}
+
+	cases := []struct {
+		name         string
+		diskFolder   func(disc int) string
+		lidarrFolder func(disc int) string
+	}{
+		{
+			// Both sides agree on the folder name: the disc must be told apart on the
+			// folder alone, since the basenames do not distinguish it.
+			name:         "same disc folder spelling",
+			diskFolder:   func(disc int) string { return fmt.Sprintf("CD %02d", disc) },
+			lidarrFolder: func(disc int) string { return fmt.Sprintf("CD %02d", disc) },
+		},
+		{
+			// Lidarr renamed the folders on import. The disc number is then the only
+			// evidence left, and it still has to be enough.
+			name:         "lidarr spells the disc folders differently",
+			diskFolder:   func(disc int) string { return fmt.Sprintf("CD %02d", disc) },
+			lidarrFolder: func(disc int) string { return fmt.Sprintf("Disc %d", disc) },
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetLidarrCaches()
+			t.Cleanup(resetLidarrCaches)
+
+			trackFiles := alienTrackFiles("/data/music", tc.lidarrFolder)
+			mock := newLidarrMock(t, map[string]any{"/api/v1/trackfile": trackFiles})
+			client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+			root := filepath.Join("/", "music")
+			index := 0
+			for d, titles := range alienDiscs {
+				for i, title := range titles {
+					want := trackFiles[index]
+					index++
+
+					trackPath := filepath.Join(root, "Jerry Goldsmith", "Alien (1979)",
+						tc.diskFolder(d+1), alienTrackName(i+1, title))
+
+					tf, err := client.FindTrackFileByPath(7, trackPath, root)
+					if err != nil {
+						t.Fatalf("%s: unexpected error: %v", trackPath, err)
+					}
+					if tf == nil {
+						t.Errorf("disc %d track %d (%q): no match; want trackfile %d (%s)",
+							d+1, i+1, title, want.ID, want.Path)
+						continue
+					}
+					if tf.ID != want.ID {
+						t.Errorf("disc %d track %d (%q): resolved to trackfile %d (%s), want %d (%s)",
+							d+1, i+1, title, tf.ID, tf.Path, want.ID, want.Path)
+					}
+				}
+			}
+		})
+	}
+}
+
+// TestLidarrFindTrackFileByPathDecomposedUnicode pins the other half of what Canon
+// buys: the filesystem may hand back a name in NFD (macOS stores it that way) while
+// Lidarr holds the NFC form of the same string. They are different bytes for the same
+// title, so without the NFC pass on both sides every accented album in the library
+// resolves to nothing and its files sit unmatched forever.
+func TestLidarrFindTrackFileByPathDecomposedUnicode(t *testing.T) {
+	resetLidarrCaches()
+	t.Cleanup(resetLidarrCaches)
+
+	const (
+		artist = "Sigur Rós"
+		album  = "Ágætis byrjun (1999)"
+		file   = "03 Ný batterí.flac"
+	)
+
+	root := filepath.Join("/", "music")
+	// The walker's side, decomposed.
+	trackPath := filepath.Join(root, norm.NFD.String(artist), norm.NFD.String(album), norm.NFD.String(file))
+	// Lidarr's side, composed.
+	lidarrPath := path.Join("/data/music", norm.NFC.String(artist), norm.NFC.String(album), norm.NFC.String(file))
+
+	if trackPath == filepath.Join(root, artist, album, file) {
+		t.Fatal("NFD and NFC forms are identical — the fixture no longer exercises normalization")
+	}
+
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/trackfile": []models.LidarrTrackFile{
+			{ID: 300, AlbumID: 42, ArtistID: 2, Path: lidarrPath},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	tf, err := client.FindTrackFileByPath(2, trackPath, root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if tf == nil || tf.ID != 300 {
+		t.Fatalf("decomposed path resolved to %+v, want trackfile 300 — "+
+			"the two spellings are the same name and must compare equal", tf)
 	}
 }
 

@@ -284,6 +284,13 @@ func TestRetagItemsEmptyAndUnknown(t *testing.T) {
 	if results, err := r.RetagItems(nil); err != nil || results != nil {
 		t.Errorf("RetagItems(nil) = %v, %v; want nil, nil", results, err)
 	}
+	// An empty selection does nothing, so it must not leave a run in the feed saying
+	// it did.
+	var count int64
+	db.Model(&models.Event{}).Count(&count)
+	if count != 0 {
+		t.Errorf("RetagItems(nil) recorded %d events, want 0", count)
+	}
 
 	id := uuid.New()
 	results, err := r.RetagItems([]uuid.UUID{id})
@@ -292,6 +299,17 @@ func TestRetagItemsEmptyAndUnknown(t *testing.T) {
 	}
 	if len(results) != 1 || results[0].Err == nil {
 		t.Errorf("unknown item should yield a per-item error: %#v", results)
+	}
+
+	// A file that could not even be loaded is still a failed re-tag, and the event
+	// has to report it as one — the caller sees the error in its results, but the
+	// feed is the only place anyone looks afterwards.
+	var ev models.Event
+	if err := db.Where("type = ?", models.EventTypeTagFiles).First(&ev).Error; err != nil {
+		t.Fatalf("no tag_files event recorded for an interactive re-tag: %v", err)
+	}
+	if ev.Status != models.EventStatusError {
+		t.Errorf("event status = %q, want %q", ev.Status, models.EventStatusError)
 	}
 
 	if _, err := r.RetagItem(id); err == nil {

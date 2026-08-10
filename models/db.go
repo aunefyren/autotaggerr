@@ -806,6 +806,16 @@ type CollectionArtist struct {
 	// FollowSecondary lets live albums, compilations, remixes and soundtracks count.
 	// Off by default: including them buries the missing list under reissues.
 	FollowSecondary bool `json:"follow_secondary"`
+	// FollowFromYear is the earliest release year a follow wants, or 0 for no cutoff
+	// (the whole back catalogue, which is what following meant before this existed).
+	//
+	// A *year* rather than a date, because that is the granularity MusicBrainz release
+	// dates actually have: FirstReleaseDate is `YYYY`, `YYYY-MM` or `YYYY-MM-DD`
+	// depending on what an editor knew, so a day-precision cutoff would be answering a
+	// question the data cannot be asked. Setting it to the current year is the "only
+	// releases from here on" case that following a new artist usually means; setting it
+	// to 2010 is "I have the old stuff already", which the same field expresses for free.
+	FollowFromYear int `json:"follow_from_year"`
 
 	LastSyncedAt *time.Time `json:"last_synced_at"`
 }

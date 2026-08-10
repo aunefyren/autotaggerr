@@ -51,7 +51,7 @@ func TestFollowWantsDefaults(t *testing.T) {
 		{"Broadcast", nil, false},
 	}
 	for _, c := range cases {
-		if got := FollowWants(artist, c.primary, c.secondary); got != c.want {
+		if got := FollowWants(artist, c.primary, c.secondary, ""); got != c.want {
 			t.Errorf("FollowWants(default, %q,%v) = %v, want %v", c.primary, c.secondary, got, c.want)
 		}
 	}
@@ -61,36 +61,36 @@ func TestFollowWantsDefaults(t *testing.T) {
 // follows an artist for their singles must get singles.
 func TestFollowWantsConfigured(t *testing.T) {
 	singles := models.CollectionArtist{FollowTypes: "Single"}
-	if !FollowWants(singles, "Single", nil) {
+	if !FollowWants(singles, "Single", nil, "") {
 		t.Error("configured Single should be wanted")
 	}
-	if FollowWants(singles, "Album", nil) {
+	if FollowWants(singles, "Album", nil, "") {
 		t.Error("Album should not be wanted when only Single is followed")
 	}
 
 	// Secondary types stay excluded until explicitly allowed.
 	live := models.CollectionArtist{FollowTypes: "Album"}
-	if FollowWants(live, "Album", []string{"Live"}) {
+	if FollowWants(live, "Album", []string{"Live"}, "") {
 		t.Error("live album should be excluded by default")
 	}
 	live.FollowSecondary = true
-	if !FollowWants(live, "Album", []string{"Live"}) {
+	if !FollowWants(live, "Album", []string{"Live"}, "") {
 		t.Error("live album should be included once secondary types are allowed")
 	}
 
 	// Case and spacing in the stored CSV must not matter.
 	messy := models.CollectionArtist{FollowTypes: " album , ep "}
-	if !FollowWants(messy, "Album", nil) || !FollowWants(messy, "EP", nil) {
+	if !FollowWants(messy, "Album", nil, "") || !FollowWants(messy, "EP", nil, "") {
 		t.Error("follow types should be matched case- and space-insensitively")
 	}
 }
 
 func TestFollowWantsStored(t *testing.T) {
 	artist := models.CollectionArtist{}
-	if FollowWantsStored(artist, "Album", "Live") {
+	if FollowWantsStored(artist, "Album", "Live", "") {
 		t.Error("stored secondary types should exclude by default")
 	}
-	if !FollowWantsStored(artist, "Album", "") {
+	if !FollowWantsStored(artist, "Album", "", "") {
 		t.Error("stored album with no secondary types should be wanted")
 	}
 }
@@ -232,12 +232,15 @@ func TestSyncLidarr(t *testing.T) {
 		t.Fatalf("artist: %v", err)
 	}
 
-	artists, groups, err := SyncLidarr(db)
+	stats, err := SyncLidarr(db)
 	if err != nil {
 		t.Fatalf("SyncLidarr: %v", err)
 	}
-	if artists != 1 || groups != 3 {
-		t.Fatalf("SyncLidarr = %d artists, %d groups; want 1, 3", artists, groups)
+	if stats.ArtistsSynced != 1 || stats.Groups != 3 {
+		t.Fatalf("SyncLidarr = %d artists, %d groups; want 1, 3", stats.ArtistsSynced, stats.Groups)
+	}
+	if stats.EmptyReason != "" {
+		t.Errorf("a pass that mirrored 3 albums reported %q as its reason for doing nothing", stats.EmptyReason)
 	}
 
 	get := func(mbid string) models.CollectionReleaseGroup {
@@ -296,12 +299,12 @@ func TestSyncLidarrScopedToArtist(t *testing.T) {
 		}
 	}
 
-	artists, groups, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: "art-1"})
+	stats, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: "art-1"})
 	if err != nil {
 		t.Fatalf("SyncLidarrWith: %v", err)
 	}
-	if artists != 1 || groups != 1 {
-		t.Fatalf("scoped sync = %d artists, %d groups; want 1, 1", artists, groups)
+	if stats.ArtistsSynced != 1 || stats.Groups != 1 {
+		t.Fatalf("scoped sync = %d artists, %d groups; want 1, 1", stats.ArtistsSynced, stats.Groups)
 	}
 
 	var rg models.CollectionReleaseGroup
@@ -315,8 +318,14 @@ func TestSyncLidarrScopedToArtist(t *testing.T) {
 	// An artist the mirror does not govern syncs nothing rather than everything: a
 	// scope that silently widened to the whole collection would be the worst failure
 	// this option could have.
-	if a, g, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: "art-native"}); err != nil || a != 0 || g != 0 {
-		t.Errorf("unknown artist = (%d, %d, %v), want (0, 0, nil)", a, g, err)
+	native, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: "art-native"})
+	if err != nil || native.ArtistsSynced != 0 || native.Groups != 0 {
+		t.Errorf("unknown artist = (%d, %d, %v), want (0, 0, nil)", native.ArtistsSynced, native.Groups, err)
+	}
+	// ...and says why, rather than reporting the same zero a healthy pass over an
+	// artist Lidarr happens to have nothing for would report.
+	if native.EmptyReason != SyncEmptyArtistNotManaged {
+		t.Errorf("empty reason = %q, want %q", native.EmptyReason, SyncEmptyArtistNotManaged)
 	}
 }
 
@@ -490,7 +499,7 @@ func TestSyncLidarrDropsRemovedAlbums(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 
-	if _, _, err := SyncLidarr(db); err != nil {
+	if _, err := SyncLidarr(db); err != nil {
 		t.Fatalf("SyncLidarr: %v", err)
 	}
 

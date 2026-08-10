@@ -153,8 +153,15 @@ func GetMusicBrainzRelease(mbID string) (models.MusicBrainzReleaseResponse, erro
 
 	statFetches.Add(1)
 	// propagate the real cause (HTTP status / transport / parse) instead of a
-	// generic message, so the file-level log can tell them apart
-	release, err := QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
+	// generic message, so the file-level log can tell them apart.
+	//
+	// The retry belongs here rather than inside QueryMusicBrainzReleaseData for the
+	// same reason the stale fallback does: this is the point where one album's worth
+	// of waiting workers are represented by a single request, so one leader retrying
+	// is one extra request — not one per track.
+	release, err := retryTransient("release "+mbID, func() (models.MusicBrainzReleaseResponse, error) {
+		return QueryMusicBrainzReleaseData(mbID, files.ConfigFile.AutotaggerrVersion)
+	})
 	if err != nil {
 		// Standing in for the failure *here* rather than at the call site is what makes
 		// it worth anything: the fallback lands before the result is handed to the

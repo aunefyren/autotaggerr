@@ -213,6 +213,10 @@ export interface ScanStatus {
   done?: number;
   phase?: string;
   current?: string;
+  /** Files in the index right now — the precondition Scan and Tag files share. Zero
+   *  means nothing has walked a library yet, which is what those buttons say instead
+   *  of running and reporting an honest zero. */
+  indexed: number;
 }
 
 /**
@@ -387,6 +391,13 @@ export interface CollectionArtist {
   follow_types: string;
   /** Whether live albums, compilations and remixes count when following. */
   follow_secondary: boolean;
+  /**
+   * Earliest release year a follow wants; 0 means no cutoff (the whole back
+   * catalogue). A year rather than a date because that is the precision MusicBrainz
+   * release dates have. Releases MusicBrainz has no date for are excluded once a
+   * cutoff is set.
+   */
+  follow_from_year: number;
   last_synced_at: string | null;
   owned_count?: number;
   complete_count?: number;

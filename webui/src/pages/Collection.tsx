@@ -80,14 +80,33 @@ export default function Collection() {
   const status = useFetch<ScanStatus>(() => api.get("/process/status"));
   const running = status.data?.running ?? false;
 
+  // Every verb but Process reads the output of the one before it, so on a cold install
+  // they answer honest zeroes that read as duds. Rather than let someone press a button
+  // whose only possible outcome is "0 · 0", say what is needed first. The status is
+  // fetched once on mount, so `undefined` means "not known yet" and must not disable
+  // anything — only a fetched zero does.
+  const indexed = status.data?.indexed;
+  const noFiles = indexed === 0;
+  const needsProcess = "Nothing is indexed yet — run Process to walk your libraries first.";
+
   // Scan answers inline (it only reads the index), so it reports its own result
-  // rather than sending the user to the Activity feed for it.
+  // rather than sending the user to the Activity feed for it. An empty pass comes back
+  // with the reason it found nothing, which is the part worth showing.
   const scan = async () => {
     setScanning(true);
     try {
-      const r = await api.post<{ artists: number; owned_release_groups: number }>("/scan");
-      toast("ok", `Scanned — ${r.artists} artists, ${r.owned_release_groups} albums`);
+      const r = await api.post<{
+        artists: number;
+        owned_release_groups: number;
+        empty_reason?: string;
+      }>("/scan");
+      if (r.empty_reason) {
+        toast("info", `Nothing to scan — ${r.empty_reason}`);
+      } else {
+        toast("ok", `Scanned — ${r.artists} artists, ${r.owned_release_groups} albums`);
+      }
       reload();
+      status.reload();
     } catch (e) {
       toast("err", errMsg(e));
     } finally {
@@ -119,6 +138,13 @@ export default function Collection() {
   };
 
   const artists = data ?? [];
+  // Mirroring cannot introduce an artist — it reads the catalogue of artists the
+  // collection already has and says are Lidarr's. With none of those, the pass returns
+  // before its first HTTP call, so the button's only outcome is a zero in the feed.
+  const lidarrArtists = artists.filter(
+    (ar) => ar.managed_by === "lidarr" || ar.managed_by === "mixed"
+  ).length;
+  const syncBlocked = !loading && lidarrArtists === 0;
   // A missing count only means something when something decides what is wanted:
   // the manager, or a follow that actually governs.
   const hasWanted = (ar: CollectionArtist) =>
@@ -149,7 +175,14 @@ export default function Collection() {
             <button
               className="btn btn-secondary btn-sm"
               onClick={() => setSyncAsk(true)}
-              title="Mirror what Lidarr says should exist for Lidarr-managed artists. Reads Lidarr, not MusicBrainz; writes no files."
+              disabled={syncBlocked}
+              title={
+                syncBlocked
+                  ? artists.length === 0
+                    ? "Nothing to mirror — the collection has no artists yet. Run Process, or add an artist."
+                    : "Nothing to mirror — no artist in the collection is managed by Lidarr. Mirroring reads Lidarr for artists you already have; it cannot introduce one."
+                  : "Mirror what Lidarr says should exist for Lidarr-managed artists. Reads Lidarr, not MusicBrainz; writes no files."
+              }
             >
               Sync from Lidarr
             </button>
@@ -160,16 +193,24 @@ export default function Collection() {
           <button
             className="btn btn-secondary btn-sm"
             onClick={scan}
-            disabled={scanning}
-            title="Re-derive what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
+            disabled={scanning || noFiles}
+            title={
+              noFiles
+                ? `Nothing to re-derive — ${needsProcess}`
+                : "Re-derive what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
+            }
           >
             {scanning ? "Scanning…" : "Scan"}
           </button>
           <button
             className="btn btn-secondary btn-sm"
             onClick={start("/retag", "Tagging started — see Activity")}
-            disabled={running}
-            title="Rewrite the tags of every indexed file from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
+            disabled={running || noFiles}
+            title={
+              noFiles
+                ? `Nothing to tag — ${needsProcess}`
+                : "Rewrite the tags of every indexed file from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
+            }
           >
             Tag files
           </button>

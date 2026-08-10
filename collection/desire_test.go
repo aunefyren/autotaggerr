@@ -60,7 +60,7 @@ func TestSetDesireBypassesTypeFilter(t *testing.T) {
 	db := testDB(t)
 
 	// A live album — the default follow filter would reject this outright.
-	if FollowWants(models.CollectionArtist{}, "Album", []string{"Live"}) {
+	if FollowWants(models.CollectionArtist{}, "Album", []string{"Live"}, "") {
 		t.Fatal("precondition: the default follow filter should reject a live album")
 	}
 

@@ -1015,6 +1015,7 @@ function FollowSettings({
   manager: string;
 }) {
   const types = (artist.follow_types || "Album,EP").split(",").map((t) => t.trim()).filter(Boolean);
+  const cutoff = artist.follow_from_year || 0;
 
   // When a manager owns the artist it decides what is wanted, so these controls are
   // frozen rather than hidden: the settings are still real and still shown, they
@@ -1038,7 +1039,7 @@ function FollowSettings({
         {frozen
           ? `${manager} decides what is wanted for this artist; Autotaggerr mirrors it. These settings are kept but do not apply.`
           : artist.monitored
-            ? `Following wants ${types.join(", ") || "nothing"}${artist.follow_secondary ? ", including live albums, compilations and remixes" : ""}, as they are released.`
+            ? `Following wants ${types.join(", ") || "nothing"}${artist.follow_secondary ? ", including live albums, compilations and remixes" : ""}${cutoff > 0 ? ` released in ${cutoff} or later` : ""}, as they are released.`
             : "Not following. These are what a follow would want."}
       </div>
       <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
@@ -1065,6 +1066,52 @@ function FollowSettings({
       </label>
       <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
         Off by default: a full discography is mostly reissues, which buries what you actually lack.
+      </div>
+      {/* The back catalogue is the other half of the same problem the type filter
+          solves. Following an artist you already own the old records of otherwise
+          lists twenty albums you deliberately have — and the ones you actually want
+          to hear about are the new ones. */}
+      <div className="field" style={{ marginTop: 12 }}>
+        <label className="flabel" htmlFor="follow-from-year">Only from year</label>
+        <div className="row" style={{ gap: 8 }}>
+          <input
+            id="follow-from-year"
+            className="input"
+            type="number"
+            min={1900}
+            max={2200}
+            style={{ maxWidth: 120 }}
+            value={cutoff || ""}
+            disabled={busy || frozen}
+            placeholder="Any"
+            onChange={(e) => {
+              const next = e.target.value === "" ? 0 : Number(e.target.value);
+              if (Number.isNaN(next)) return;
+              onChange({ follow_from_year: next });
+            }}
+          />
+          {cutoff > 0 && (
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={busy || frozen}
+              onClick={() => onChange({ follow_from_year: 0 })}
+            >
+              Clear
+            </button>
+          )}
+          <button
+            className="btn btn-secondary btn-sm"
+            disabled={busy || frozen}
+            onClick={() => onChange({ follow_from_year: new Date().getFullYear() })}
+          >
+            From now on
+          </button>
+        </div>
+        <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
+          {cutoff > 0
+            ? `Albums first released before ${cutoff} are not wanted. Releases MusicBrainz has no date for are left out too — it cannot show they clear the cutoff.`
+            : "Blank wants the whole back catalogue. Set a year to be told only about what came after it."}
+        </div>
       </div>
     </div>
   );

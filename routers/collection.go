@@ -224,7 +224,7 @@ func newReleaseGroupView(
 		if rg.InCatalog && rg.CatalogMonitored {
 			source = wantedSourceManager
 		}
-	case artist.Monitored && collection.FollowWantsStored(artist, rg.PrimaryType, rg.SecondaryTypes):
+	case artist.Monitored && collection.FollowWantsStored(artist, rg.PrimaryType, rg.SecondaryTypes, rg.FirstReleaseDate):
 		source = wantedSourceAuto
 	}
 	return releaseGroupView{
@@ -451,6 +451,9 @@ func (a *API) scanCollection(c *gin.Context) {
 		"artists":              stats.Artists,
 		"owned_release_groups": stats.Owned,
 		"credit_changes":       stats.CreditChanges,
+		// Present only when the pass had nothing to read. The page shows it instead of
+		// "Scanned — 0 artists, 0 albums", which is true and tells nobody anything.
+		"empty_reason": stats.EmptyReason,
 	})
 }
 
@@ -524,25 +527,33 @@ func ignoreCacheRequested(c *gin.Context) bool {
 func (a *API) startLidarrSync(opts collection.SyncOptions, title string) {
 	go func() {
 		ev := events.Begin(a.DB, models.EventTypeLidarrSync, title)
-		artists, groups, err := collection.SyncLidarrWith(a.DB, opts)
+		stats, err := collection.SyncLidarrWith(a.DB, opts)
 		status := models.EventStatusOK
 		if err != nil {
 			status = models.EventStatusError
 		}
-		summary := fmt.Sprintf("%d artists synced · %d albums", artists, groups)
+		summary := fmt.Sprintf("%d artists synced · %d albums", stats.ArtistsSynced, stats.Groups)
 		if opts.IgnoreCache {
 			summary += " · cache dropped"
 		}
-		details := map[string]any{"artists": artists, "albums": groups, "ignore_cache": opts.IgnoreCache}
+		details := map[string]any{"artists": stats.ArtistsSynced, "albums": stats.Groups, "ignore_cache": opts.IgnoreCache}
 		if opts.ArtistMBID != "" {
 			details["artist_mb_id"] = opts.ArtistMBID
+		}
+		// A pass that returned before its first HTTP call says so. Without it this row
+		// is indistinguishable from one where Lidarr was asked and had nothing — the
+		// same counters, and no way to tell a missing precondition from an answer.
+		// The status stays OK: nothing failed.
+		if stats.EmptyReason != "" {
+			summary += " — " + stats.EmptyReason
+			details["empty_reason"] = stats.EmptyReason
 		}
 		if err != nil {
 			details["error"] = err.Error()
 		}
 		ev.Stats = []models.EventStat{
-			{Label: "Artists synced", Value: artists},
-			{Label: "Albums", Value: groups},
+			{Label: "Artists synced", Value: stats.ArtistsSynced},
+			{Label: "Albums", Value: stats.Groups},
 		}
 		events.Finish(a.DB, ev, status, summary, details)
 	}()
@@ -871,6 +882,14 @@ func (a *API) discography(c *gin.Context) {
 	c.JSON(http.StatusOK, out)
 }
 
+// The range a follow cutoff may name. The lower bound is roughly the start of
+// commercial recording, the upper one leaves room for an announced release; both exist
+// only to catch a typo before it silently empties or fills the missing list.
+const (
+	minFollowFromYear = 1900
+	maxFollowFromYear = 2200
+)
+
 // updateFollow changes what following this artist auto-wants, then re-syncs so the
 // missing list matches the new settings immediately.
 func (a *API) updateFollow(c *gin.Context) {
@@ -879,10 +898,23 @@ func (a *API) updateFollow(c *gin.Context) {
 		Monitored       *bool   `json:"monitored"`
 		FollowTypes     *string `json:"follow_types"`
 		FollowSecondary *bool   `json:"follow_secondary"`
+		FollowFromYear  *int    `json:"follow_from_year"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
+	}
+	// A cutoff outside the range MusicBrainz dates can occupy is a typo, and storing it
+	// would quietly want nothing (or everything) forever. Zero stays valid: it is how
+	// the cutoff is cleared.
+	if body.FollowFromYear != nil {
+		if year := *body.FollowFromYear; year != 0 && (year < minFollowFromYear || year > maxFollowFromYear) {
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error": fmt.Sprintf("follow_from_year must be 0 (no cutoff) or between %d and %d",
+					minFollowFromYear, maxFollowFromYear),
+			})
+			return
+		}
 	}
 
 	var artist models.CollectionArtist
@@ -900,6 +932,9 @@ func (a *API) updateFollow(c *gin.Context) {
 	}
 	if body.FollowSecondary != nil {
 		updates["follow_secondary"] = *body.FollowSecondary
+	}
+	if body.FollowFromYear != nil {
+		updates["follow_from_year"] = *body.FollowFromYear
 	}
 	if len(updates) > 0 {
 		if err := a.DB.Model(&artist).Updates(updates).Error; err != nil {

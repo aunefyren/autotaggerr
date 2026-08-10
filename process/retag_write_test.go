@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/google/uuid"
@@ -164,6 +166,106 @@ func retagFixture(t *testing.T, mutate func(*models.LibraryItem)) (*gorm.DB, mod
 		t.Fatalf("create item: %v", err)
 	}
 	return db, item
+}
+
+// TestRetagItemsRecordsEvent pins the interactive re-tag's Activity event. Every other
+// path that writes tags appears in the feed; this one did not, so a hand-attach was the
+// only way to change a file that left no record of having done so — and the Plex refresh
+// it triggered showed up parentless, describing work the feed did not otherwise contain.
+func TestRetagItemsRecordsEvent(t *testing.T) {
+	db, item := retagFixture(t, nil)
+
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	results, err := r.RetagItems([]uuid.UUID{item.ID})
+	if err != nil {
+		t.Fatalf("RetagItems: %v", err)
+	}
+	if len(results) != 1 || results[0].Err != nil || results[0].Written == 0 {
+		t.Fatalf("result = %#v, want one file written", results)
+	}
+
+	var ev models.Event
+	if err := db.Where("type = ?", models.EventTypeTagFiles).First(&ev).Error; err != nil {
+		t.Fatalf("no tag_files event recorded: %v", err)
+	}
+	if ev.Status != models.EventStatusOK {
+		t.Errorf("event status = %q, want %q (summary: %q)", ev.Status, models.EventStatusOK, ev.Summary)
+	}
+	if ev.ParentID != nil {
+		t.Error("an interactive re-tag is its own run and must not be parented")
+	}
+	if ev.FinishedAt == nil {
+		t.Error("event left running — it would be reconciled as a crash on the next boot")
+	}
+	if !strings.Contains(ev.Summary, "1 of 1 files re-tagged") {
+		t.Errorf("summary = %q, want it to report 1 of 1 re-tagged", ev.Summary)
+	}
+	if ev.Title != "Tag 1 attached file" {
+		t.Errorf("title = %q, want the singular form", ev.Title)
+	}
+
+	// The detail row is what makes the event answer "which file?" rather than only
+	// "how many?".
+	items, err := events.Items(db, ev.ID)
+	if err != nil {
+		t.Fatalf("event items: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("recorded %d detail rows, want 1", len(items))
+	}
+	if items[0].Path != item.Path || items[0].Status != models.EventItemStatusChanged {
+		t.Errorf("detail row = %+v, want %s recorded as changed", items[0], item.Path)
+	}
+	if len(items[0].Changes) == 0 {
+		t.Error("detail row carries no field diff — the row cannot show what was written")
+	}
+}
+
+// TestRetagItemsUnchangedFileRecordsNoDetail covers the second run: the file already
+// carries the tags the correlation implies, so nothing is written. The event still
+// reports the file as in scope, but records no detail row for it — an album re-attached
+// to the release it already had would otherwise fill the feed with rows saying nothing
+// happened.
+func TestRetagItemsUnchangedFileRecordsNoDetail(t *testing.T) {
+	db, item := retagFixture(t, nil)
+
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	if _, err := r.RetagItems([]uuid.UUID{item.ID}); err != nil {
+		t.Fatalf("first RetagItems: %v", err)
+	}
+	results, err := r.RetagItems([]uuid.UUID{item.ID})
+	if err != nil {
+		t.Fatalf("second RetagItems: %v", err)
+	}
+	if len(results) != 1 || results[0].Err != nil {
+		t.Fatalf("result = %#v, want one success", results)
+	}
+	if results[0].Written != 0 {
+		t.Fatalf("second re-tag wrote %d tags, want 0 — the write is not idempotent", results[0].Written)
+	}
+
+	var evs []models.Event
+	if err := db.Where("type = ?", models.EventTypeTagFiles).Order("started_at").Find(&evs).Error; err != nil {
+		t.Fatalf("load events: %v", err)
+	}
+	if len(evs) != 2 {
+		t.Fatalf("recorded %d tag_files events, want 2 (one per re-tag)", len(evs))
+	}
+	second := evs[1]
+	if second.Status != models.EventStatusOK {
+		t.Errorf("event status = %q, want %q", second.Status, models.EventStatusOK)
+	}
+	if !strings.Contains(second.Summary, "0 of 1 files re-tagged") ||
+		!strings.Contains(second.Summary, "1 unchanged") {
+		t.Errorf("summary = %q, want it to report nothing written and one unchanged", second.Summary)
+	}
+	items, err := events.Items(db, second.ID)
+	if err != nil {
+		t.Fatalf("event items: %v", err)
+	}
+	if len(items) != 0 {
+		t.Errorf("recorded %d detail rows for an unchanged file, want 0: %+v", len(items), items)
+	}
 }
 
 // TestRetagClearsStaleError covers the repair case: a file that failed during a scan
