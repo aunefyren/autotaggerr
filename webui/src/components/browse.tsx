@@ -140,6 +140,12 @@ export function usePaging(browse: Browse, total: number, pageSize = 50): Paging 
  * It renders nothing at all when everything fits on one page. A pager that cannot go
  * anywhere is furniture, and the range it would state ("1–12 of 12") is already the
  * toolbar's job.
+ *
+ * Three zones: the two directions pinned to the edges they travel towards, and the
+ * position between them as **one** sentence. The earlier version flexed both buttons
+ * and the range into the left corner and pushed the page number alone to the right,
+ * which read as cramped for the reason it was: the two halves of one fact sat at
+ * opposite ends of the bar while the controls crowded each other.
  */
 export function Pager({ paging, unit = "rows" }: { paging: Paging; unit?: string }) {
   if (paging.pageCount <= 1) return null;
@@ -147,25 +153,31 @@ export function Pager({ paging, unit = "rows" }: { paging: Paging; unit?: string
   return (
     <nav className="pager" aria-label={`${unit} pages`}>
       <button
-        className="btn btn-secondary btn-sm"
+        className="btn btn-secondary btn-sm pager-prev"
         onClick={() => paging.setPage(paging.page - 1)}
         disabled={paging.page <= 1}
       >
+        <span className="pager-arrow" aria-hidden="true">‹</span>
         Previous
       </button>
-      <span className="dim mono" style={{ fontSize: 11 }}>
-        {paging.from}–{paging.to} of {paging.total}
+      <span className="pager-pos dim">
+        <span className="mono">
+          {paging.from}–{paging.to}
+        </span>{" "}
+        of <span className="mono">{paging.total}</span>
+        <span className="sep" aria-hidden="true">
+          ·
+        </span>
+        page <span className="mono">{paging.page}</span> of <span className="mono">{paging.pageCount}</span>
       </span>
       <button
-        className="btn btn-secondary btn-sm"
+        className="btn btn-secondary btn-sm pager-next"
         onClick={() => paging.setPage(paging.page + 1)}
         disabled={paging.page >= paging.pageCount}
       >
         Next
+        <span className="pager-arrow" aria-hidden="true">›</span>
       </button>
-      <span className="dim" style={{ fontSize: 11 }}>
-        Page {paging.page} of {paging.pageCount}
-      </span>
     </nav>
   );
 }

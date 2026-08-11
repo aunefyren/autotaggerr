@@ -832,6 +832,17 @@ toolbar, grouped sections).
 
 - `/collection` — artist list: avatar, provenance badge, coverage meter, missing/mismatch counts,
   wanted summary. Sortable by name, missing and mismatch; filterable by text and by "mismatched".
+  The page head holds only the two actions that change *what the collection holds* — **Add artist**
+  and **Sync from Lidarr**, neither of which queues anything — and the four verbs sit below in the
+  **run bar** with the single status they share (see
+  [style-guide.md](style-guide.md#components)). The split is by whether an action queues a job, not
+  by which manager a user runs, which is the same line the artist page draws.
+  The bar's state is polled while a job is in flight, and the artist list reloads once one
+  finishes: a status fetched once at mount leaves four buttons disabled or enabled by a snapshot,
+  and a run started from this page changes the ownership the whole table is drawn from.
+  Its coverage meters are the **proportional** form on every row whatever the album count, because
+  one shape down a column of artists reads better than a cell count on the short rows; the mono
+  `8/12` beside each answers "how many".
 - `/collection/:mbid` — the artist page: an entity header (portrait, backdrop, kind/origin/years/
   genres from `/info`, album coverage, Following toggle with the follow types behind a **Settings**
   disclosure), a chip row that doubles as the counts and the filters, then the catalogue split into

@@ -11,8 +11,16 @@
  * "how many" as well as "how much" — 9 of 12 albums reads differently from 75%.
  * Above the cap it collapses to a proportional bar, since 200 two-pixel slivers
  * are noise.
+ *
+ * The cap is the smaller of 30 and **what the given width can hold**. A count-only
+ * cap has no idea how much room it was given: cells are `flex: none`, so 20 of them
+ * in a 90px box did not shrink or wrap, they simply drew 118px of meter and slid out
+ * from under the number beside them. The shape follows the count *and* the space.
  */
 const MAX_CELLS = 30;
+/** `.coverage-cell` width and `.coverage` gap in theme.css — kept in step by hand. */
+const CELL_PX = 4;
+const GAP_PX = 2;
 
 export function CoverageBar({
   total,
@@ -20,6 +28,7 @@ export function CoverageBar({
   partial = 0,
   label,
   width,
+  proportional = false,
 }: {
   total: number;
   /** Items fully on disk. */
@@ -29,6 +38,12 @@ export function CoverageBar({
   /** Read out to assistive tech and shown on hover. Say what the items are. */
   label: string;
   width?: number | string;
+  /**
+   * Force the proportional track, whatever the count. For a *column* of meters, where
+   * one shape all the way down is worth more than the cell count on the short rows —
+   * the mono `8/12` beside it already answers "how many".
+   */
+  proportional?: boolean;
 }) {
   if (total <= 0) {
     return <span className="dim mono" style={{ fontSize: 11 }}>—</span>;
@@ -46,7 +61,12 @@ export function CoverageBar({
     title,
   };
 
-  if (total > MAX_CELLS) {
+  // A non-numeric width (a percentage, or none at all) cannot be budgeted, so it keeps
+  // the plain count cap — those call sites size themselves to their content.
+  const fits =
+    typeof width === "number" ? Math.max(1, Math.floor((width + GAP_PX) / (CELL_PX + GAP_PX))) : MAX_CELLS;
+
+  if (proportional || total > Math.min(MAX_CELLS, fits)) {
     const pct = (n: number) => `${(n / total) * 100}%`;
     return (
       <span {...common}>

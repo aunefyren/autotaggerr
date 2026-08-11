@@ -29,6 +29,15 @@
   --diff-add-bg: rgba(63, 185, 80, 0.14); --diff-add-text: #56d364;
   --diff-remove-bg: rgba(248, 81, 73, 0.12); --diff-remove-text: #f0776f;
 
+  /* 4px base scale. Declared here because an undeclared custom property does not
+     fall back — `gap: var(--space-4)` on a missing token is not 8px and not an error,
+     it is `gap: normal`, and `padding: var(--space-6)` is no padding at all. The
+     scale was canonical in the style guide and absent from this file, so every rule
+     that reached for it silently laid out at zero. */
+  --space-1: 2px; --space-2: 4px; --space-3: 6px; --space-4: 8px; --space-5: 12px;
+  --space-6: 16px; --space-7: 20px; --space-8: 24px; --space-9: 32px;
+  --space-10: 40px; --space-11: 48px;
+
   --radius-sm: 4px; --radius: 6px; --radius-lg: 10px; --radius-pill: 999px;
   --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
   --shadow-2: 0 8px 28px rgba(0, 0, 0, 0.55);
@@ -433,12 +442,54 @@ table.data tbody tr.group-row:hover td { background: var(--surface-2); }
 .statpill .statpill-n { font-family: var(--font-mono); font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* Pager — sits under the table it pages. Quiet: it is navigation, not the data, and
-   it is not rendered at all when everything fits on one page. */
+   it is not rendered at all when everything fits on one page.
+
+   Three zones, not a flex row: each direction is pinned to the edge it travels
+   towards and the position sits centred between them. Flexing them all left put two
+   buttons and a number within 12px of each other, under the bottom edge of the table
+   — which is the crowding, and no amount of gap fixes it while both controls share
+   one corner. */
 .pager {
-  display: flex; align-items: center; gap: var(--space-5);
-  padding: var(--space-3) 0;
+  display: grid; grid-template-columns: 1fr auto 1fr; align-items: center;
+  gap: var(--space-6); padding: var(--space-5) var(--space-2) var(--space-3);
 }
-.pager > :last-child { margin-left: auto; }
+.pager .pager-prev { justify-self: start; }
+.pager .pager-next { justify-self: end; }
+.pager .pager-pos { font-size: 11px; text-align: center; }
+.pager .pager-pos .sep { color: var(--border-strong); margin: 0 var(--space-3); }
+/* The arrow points the way the button travels; it is decoration on a labelled
+   control, so it is hidden from assistive tech rather than read out. */
+.pager .pager-arrow { color: var(--text-dim); font-size: 13px; line-height: 1; }
+/* Narrow: the two directions keep the edges, the position drops to its own row
+   rather than squeezing between them. */
+@media (max-width: 560px) {
+  .pager { grid-template-columns: 1fr 1fr; gap: var(--space-4) var(--space-5); }
+  .pager .pager-pos { grid-row: 2; grid-column: 1 / -1; }
+}
+
+/* Run bar — the verbs at collection scope, and the one status they share.
+   All four are drained by a single serial job queue, so a single bar is the honest
+   shape for them: one row of controls with one state, rather than four buttons that
+   dim together for a reason stated in none of their labels. It carries what the
+   disabled state means (working, or nothing indexed yet), which is the thing the
+   page previously left to a tooltip. */
+.runbar {
+  display: flex; align-items: center; gap: var(--space-6); flex-wrap: wrap;
+  padding: var(--space-4) var(--space-6);
+  background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg);
+}
+/* The bar's label, not part of the sentence beside it — spaced further than the
+   status's own parts so "Run" reads as what this strip is, not as a word in it. */
+.runbar .eyebrow { margin-right: var(--space-2); }
+.runbar .runbar-state {
+  display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+  min-width: 0; flex: 1 1 220px;
+}
+.runbar .runbar-status { font-size: 12px; color: var(--text-muted); }
+/* Qualified on .runbar too: `a.runbar-status` alone loses to the line above, and a
+   link that has to be found by hovering is not a link. */
+.runbar a.runbar-status { color: var(--accent-text); }
+.runbar .runbar-verbs { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 
 /* Empty state */
 .empty { text-align: center; padding: 48px 16px; color: var(--text-muted); display: flex; flex-direction: column; gap: 10px; align-items: center; }

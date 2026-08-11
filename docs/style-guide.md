@@ -137,6 +137,12 @@ Line-height: 1.35 data/UI, 1.55 prose. Eyebrows/section labels: `--text-xs`, upp
 
 ## Spacing, radius, elevation, motion
 
+**An undeclared token does not fall back.** `gap: var(--space-4)` against a missing property is not
+8px and not an error — it is `gap: normal`, i.e. zero; `padding: var(--space-6)` is no padding at
+all. This scale was canonical here and absent from `theme.css` for a long time, so the three rules
+that used it (`.entity-head`, `.pager`, `.runbar`) laid out flush against their own borders and read
+as "cramped" with no rule to blame. Check a token exists in `:root` before reaching for it.
+
 ```css
 /* 4px base scale */
 --space-1:2px; --space-2:4px; --space-3:6px; --space-4:8px; --space-5:12px;
@@ -231,6 +237,26 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   mandatory `::after` scrim so header text keeps its contrast whatever the image is, a
   `mask-image` fade so it never reads as a photo with a caption, and **nothing rendered at all** when
   there is no image (never an empty tinted band). Do not reuse this treatment elsewhere.
+- **Run bar** (`.runbar`, `Collection.tsx`) — the four verbs at a collection-wide scope, plus the
+  one status they share. A single serial job queue drains all four, so a single bar is their honest
+  shape: one row of controls with one state, rather than four buttons that dim together for a reason
+  stated in none of their labels. The state is the left half — the running job's **own title and
+  stage**, in the words the Activity banner uses, with the progress meter (indeterminate outside the
+  counted phase, per *Progress*); otherwise `Idle · 1,284 files indexed`, or `Nothing indexed yet`.
+  It is a **link to Activity** while a job runs, since that is where the work is reported. Naming
+  the job is the point: controls here dim for two different reasons — a job holds them, or nothing
+  is indexed yet — and a disabled button looks identical either way. **Process is the only primary**; the other three are ghosts, in the
+  documented cheapest-first order so the bar and the artist page's four read the same. Process keeps
+  its label through a run (the bar says "Working", the button does not become it) — an action keeps
+  its name through the flow.
+  **What belongs beside it and what does not:** a verb that queues goes in the bar; an action that
+  changes *what the surface holds* and queues nothing (Add artist, Sync from Lidarr) stays in the
+  page head. That is the same line the artist header draws when it puts Sync from Lidarr outside its
+  group of four, and it is a fact about the actions rather than about which manager a user happens
+  to run.
+  It replaced six buttons and a `·` in the page head, with two competing primaries and every
+  explanation in a `title`. A page-level toolbar earns a container when it has a state to state;
+  without one, it is a row of buttons and belongs in the head.
 - **Sortable header** (`.sortbtn`, `SortHeader`) — a `<button>` inside the `<th>`, with `aria-sort` on
   the `th` and a caret carrying direction visually (`•` when inactive). Clicking the active column
   flips direction; a new column starts at its own sensible default (year → descending). Numeric and
@@ -268,6 +294,13 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   `from–to of total`, and **renders nothing when everything fits on one page**: a control that
   cannot go anywhere is furniture, and the toolbar already says the count. Page one stays out of the
   URL, so a shared link never carries state meaning "nothing was changed".
+  **Three zones, not a flex row** — `1fr auto 1fr`, each direction pinned to the edge it travels
+  towards (with a `‹`/`›` arrow, `aria-hidden`, carrying that direction visually) and the position
+  centred between them as one sentence. Flexing all of it left put both controls and a number within
+  12px of each other under the table's bottom edge, and split one fact — the range and the page
+  number — across opposite ends of the bar. No amount of gap fixes crowding while both controls
+  share a corner. Below 560px the position drops to its own row and the two directions keep the
+  edges.
   **Any narrowing resets to page one.** `useBrowse` drops `page` on every update except `setPage`,
   because filtering a list to twelve rows while on page four shows an empty table with no
   indication why — the rows are not missing, you are past the end of them.
@@ -482,6 +515,17 @@ Tracks   ██████████▓▓░░           10/12 tracks on di
 - Below 30 items it is **segmented**, because a cell count answers "how many" as well as "how much":
   9 of 12 albums reads differently from 75%. Above 30 it collapses to a proportional bar
   (`.coverage-track`), since 200 two-pixel slivers are noise.
+- **The cap is 30 *or* what the given width holds, whichever is smaller.** Cells are `flex: none`,
+  so a count-only cap does not shrink or wrap when it runs out of room — it draws 118px of meter
+  inside a 90px box and slides out from under the number beside it. `CoverageBar` budgets
+  `floor((width + gap) / (cell + gap))` from a numeric `width` and collapses above it; a percentage
+  or absent width keeps the plain count cap, since those call sites size to their content. The shape
+  follows the count **and** the space.
+- **A column of meters may force the proportional form** (`proportional`), whatever the count. One
+  shape all the way down a page of artists is worth more than the cell count on the short rows,
+  and the mono `8/12` beside it already answers "how many". Reserve this for repeated rows — a
+  header showing one thing's coverage keeps the segmented form, which is where the cell count is
+  actually read.
 - Always paired with the numbers in `--font-mono` (`32 of 41`, `10/12`) and an `aria-label` saying
   what the items are. The bar is never the only carrier of the count.
 - It replaces columns of bare counts. Four numeric columns were being read as one question — how much

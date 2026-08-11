@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
@@ -9,6 +9,8 @@ import { MBLink } from "../components/MBLink";
 import { AddArtistModal } from "../components/AddArtistModal";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
+import { ProgressBar } from "../components/ProgressBar";
+import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { FilterChip, Pager, SortHeader, TableToolbar, matches, useBrowse, usePaging, useSorted } from "../components/browse";
 
@@ -80,6 +82,25 @@ export default function Collection() {
   const status = useFetch<ScanStatus>(() => api.get("/process/status"));
   const running = status.data?.running ?? false;
 
+  // Fetched once, the status is a snapshot from page load: four buttons would keep
+  // whatever disabled state the mount happened to see, and the run bar would go on
+  // claiming "Idle" through a run someone started from here. Polled only while a job
+  // is in flight — the same pattern, and the same interval, as the artist page.
+  useEffect(() => {
+    if (!running) return;
+    const t = setInterval(() => status.reload(), 3000);
+    return () => clearInterval(t);
+  }, [running, status.reload]);
+
+  // Reload the artists once a run ends rather than on every poll: processing and
+  // re-tagging change the ownership and coverage this whole table is drawn from.
+  const wasRunning = useRef(false);
+  useEffect(() => {
+    if (wasRunning.current && !running) reload();
+    wasRunning.current = running;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
   // Every verb but Process reads the output of the one before it, so on a cold install
   // they answer honest zeroes that read as duds. Rather than let someone press a button
   // whose only possible outcome is "0 · 0", say what is needed first. The status is
@@ -88,6 +109,11 @@ export default function Collection() {
   const indexed = status.data?.indexed;
   const noFiles = indexed === 0;
   const needsProcess = "Nothing is indexed yet — run Process to walk your libraries first.";
+
+  // Whether the running job's counters describe the stage it is actually in. A run
+  // counts files, and only its walk moves that number, so the bar goes striped rather
+  // than sitting frozen at 0% through minutes of rate-limited metadata work.
+  const counted = phaseDrivesProgress(status.data?.phase);
 
   // Scan answers inline (it only reads the index), so it reports its own result
   // rather than sending the user to the Activity feed for it. An empty pass comes back
@@ -167,10 +193,15 @@ export default function Collection() {
 
   return (
     <div className="stack">
+      {/* The head carries the two actions that change *what the collection holds*.
+          Neither queues a job, and neither is one of the four verbs — the same line
+          the artist page draws when it puts Sync from Lidarr outside the group of
+          four. The verbs live in the run bar below, where their shared state can be
+          stated once. */}
       <div className="page-head">
         <h1>Collection</h1>
         <div className="row">
-          <button className="btn btn-primary btn-sm" onClick={() => setAdding(true)}>Add artist</button>
+          <button className="btn btn-secondary btn-sm" onClick={() => setAdding(true)}>Add artist</button>
           {hasLidarr && (
             <button
               className="btn btn-secondary btn-sm"
@@ -187,11 +218,66 @@ export default function Collection() {
               Sync from Lidarr
             </button>
           )}
-          {/* The four verbs at collection scope, the same four the artist page
-              offers for one artist, in the same cheapest-first order. */}
-          <span className="sep">·</span>
+        </div>
+      </div>
+
+      {/* The four verbs at collection scope, the same four the artist page offers for
+          one artist, in the same cheapest-first order — and the one status all four
+          share, because one serial job queue drains them. Buttons here dim for two
+          different reasons (a job is running, or nothing is indexed yet) and the two
+          are indistinguishable in a disabled button, so the bar says which it is in
+          words instead of leaving it to four tooltips. */}
+      <div className="runbar">
+        <div className="runbar-state">
+          <span className="eyebrow">Run</span>
+          {running ? (
+            <>
+              {/* The job's own title and stage, in the same words the Activity banner
+                  uses — a run reads the same wherever it is reported. Naming the job
+                  rather than saying "working" is what makes the dimmed buttons legible:
+                  it is *that* run holding them. */}
+              <Link to="/activity" className="runbar-status" title="A job is running — open Activity">
+                {status.data?.current_job?.title ?? "Working…"}
+              </Link>
+              {status.data?.phase && (
+                <span className="dim" style={{ fontSize: 11 }}>
+                  {PHASE_LABELS[status.data.phase] ?? status.data.phase}
+                </span>
+              )}
+              {/* Indeterminate outside the walk: these counters are files, and the
+                  stages either side of it count something else entirely. */}
+              {(!counted || (status.data?.total ?? 0) > 0) && (
+                <ProgressBar
+                  done={status.data?.done ?? 0}
+                  total={status.data?.total ?? 0}
+                  width={120}
+                  showPercent={false}
+                  indeterminate={!counted}
+                />
+              )}
+              {counted && (status.data?.total ?? 0) > 0 && (
+                <span className="mono dim" style={{ fontSize: 11 }}>
+                  {status.data?.done ?? 0} / {status.data?.total}
+                </span>
+              )}
+            </>
+          ) : noFiles ? (
+            <span className="runbar-status">Nothing indexed yet — Process walks your libraries first.</span>
+          ) : (
+            <span className="runbar-status">
+              Idle
+              {indexed !== undefined && (
+                <>
+                  {" · "}
+                  <span className="mono">{indexed.toLocaleString()}</span> files indexed
+                </>
+              )}
+            </span>
+          )}
+        </div>
+        <div className="runbar-verbs">
           <button
-            className="btn btn-secondary btn-sm"
+            className="btn btn-ghost btn-sm"
             onClick={scan}
             disabled={scanning || noFiles}
             title={
@@ -203,7 +289,7 @@ export default function Collection() {
             {scanning ? "Scanning…" : "Scan"}
           </button>
           <button
-            className="btn btn-secondary btn-sm"
+            className="btn btn-ghost btn-sm"
             onClick={start("/retag", "Tagging started — see Activity")}
             disabled={running || noFiles}
             title={
@@ -215,23 +301,27 @@ export default function Collection() {
             Tag files
           </button>
           <button
-            className="btn btn-secondary btn-sm"
+            className="btn btn-ghost btn-sm"
             onClick={start("/refresh", "Metadata refresh started — see Activity")}
             disabled={running}
             title="Re-read MusicBrainz for everything that is due a check. Reads only: no files are written. What changed upstream is reported, and Tag files (or the next Process) applies it."
           >
             Refresh metadata
           </button>
+          {/* The one primary on the page: the full pipeline, and the only verb that
+              reads the disk. Its label does not change while a job runs — the bar's
+              own state says that, and an action keeps its name through the flow. */}
           <button
             className="btn btn-primary btn-sm"
             onClick={start("/process", "Processing started — see Activity")}
             disabled={running}
             title="Walk every enabled library, resolve metadata and write tags — the full pipeline. This is what finds files added, moved or changed on disk."
           >
-            {running ? "Working…" : "Process"}
+            Process
           </button>
         </div>
       </div>
+
       <p className="muted" style={{ margin: 0, maxWidth: "70ch" }}>
         The bar is what Autotaggerr found on disk. <strong>Wanted</strong> is what you asked
         for but do not have yet — either by following an artist, or by picking individual albums.
@@ -316,12 +406,17 @@ export default function Collection() {
                         <td><ManagedBy managed_by={ar.managed_by} /></td>
                         <td>
                           <div className="row" style={{ gap: 8 }}>
+                            {/* Proportional down the whole column, whatever the count:
+                                one shape all the way down a page of artists is worth
+                                more than the cell count on the short rows, and the
+                                number beside it already answers "how many". */}
                             <CoverageBar
                               total={total}
                               owned={complete}
                               partial={partial}
                               label={`${ar.name} albums`}
-                              width={90}
+                              width={120}
+                              proportional
                             />
                             <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
                               {owned}
