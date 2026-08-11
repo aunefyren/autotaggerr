@@ -416,10 +416,36 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   (`models.EventStat`), and the UI renders what it finds rather than knowing each type's keys.
   A counter naming an `EventItem` status becomes a **`FilterChip`** over the detail list below it,
   by the same rule as everywhere else: a count is read as a prelude to "show me which ones". One
-  with no rows behind it stays a plain figure — making a dead number look pressable is worse than
-  leaving it alone. **Zero-valued counters are dropped**, because an emitter declares the same set
+  with no rows behind it stays a **`.statpill`** — a chip's size and rhythm, deliberately without
+  its affordances (no hover, no pointer, no `aria-pressed`), because making a dead number look
+  pressable is worse than leaving it alone. **One row, one size.** The static half used to be a
+  22px hero figure, which put two scales of counter side by side: the one chip among them read as a
+  stray control rather than as the one counter you can act on, and the row read as a dashboard
+  header instead of facts about one activity. Same size means the difference between them is the
+  affordance, which is the difference that is actually there.
+  **Zero-valued counters are dropped**, because an emitter declares the same set
   every time so its events stay comparable, which means most events carry several that did not
   happen; "0 gone upstream · 0 re-linked · 0 failed" is noise in front of the two that did.
+- **Identifier row** (`EntityItemRow` in `Activity.tsx`) — how a MusicBrainz ID is shown when it is
+  the subject of a row rather than a field on one. A UUID is not a subject: a page of forty that
+  returned 404 says something is wrong and nothing about what. So the ID chip is followed by **what
+  kind of identifier it is, as the link to musicbrainz.org** (one element, one job — "open this
+  release there"; the type has to be on the row because a release and a release-group are both
+  UUIDs and the fix for a bad one differs), then the outcome pill, then a second line with **what
+  the app calls it**, linked to its own page, and **how many files depend on it**. The file count is
+  a control that expands the paths, fetched on demand — a count is read as a prelude to "show me
+  which ones", and only the row being looked at is worth its paths.
+  **MusicBrainz's vocabulary here, not the collection's** (*release*, not *edition*): the row
+  reports what MusicBrainz said about a MusicBrainz identifier and the label opens that page, so
+  translating the type would make the label disagree with its destination. This is the documented
+  exception to *Collection vocabulary*, and it is fenced to rows whose subject is an upstream
+  identifier.
+- **Outcome legend** (`OutcomeLegend`) — one sentence per outcome present in a detail list, under
+  it. For when a pill's label is honest but incomplete: "Changed upstream" reads as *a particular
+  edit was made* when what it records is that a re-fetched payload no longer matches the cached one.
+  Only the outcomes actually in the list, by the same rule that drops zero-valued counters — a
+  glossary of five states in front of a list holding one of them is noise. Prefer fixing the label;
+  reach for this only when the fix would make the label a sentence.
 - **Empty state** — centered, muted icon, one-line explanation, and a primary action. An empty
   screen is an invitation to act ("No libraries yet — add your first music folder").
 - **Modal** — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop `rgba(13,11,20,.7)`; focus-trapped.
@@ -474,6 +500,20 @@ MUSICBRAINZ_ALBUMID   e28e29e0-…-a6beffd99aad   ← current (mono, --text-mute
 - Changed tag: current value on `--diff-remove-bg` with strike-through `--diff-remove-text`; new value
   on `--diff-add-bg` in `--diff-add-text`. This is also the color language for scan summaries
   ("N changed") and library-item status.
+- Absent side of a diff — "(empty)", "(removed)" — is `.diffv.none`, `--text-dim`, italic. **Not
+  `.empty`**: that is the empty-state component, declared later in `theme.css` at the same
+  specificity, so it won and every absent value inherited a 48px-padded, centred empty state. A
+  field a file did *not* have rendered eight times the height of one it did. A modifier class on a
+  shared prefix is not namespaced by that prefix — check the whole file before naming one.
+
+- **File group** (`.filegroup` / `.filehead`) — one file's diff, collapsed to its heading. The path,
+  its outcome and its tag count stay visible; only the fields under them collapse, so this is a
+  group disclosure and not the *list* collapse the Activity feed was told off for. Open by default
+  only below `EXPANDED_FILE_LIMIT` (10) changed files, with an expand/collapse-all beside the
+  section label once there is more than one: a handful of diffs is what the modal was opened to
+  read, fifty is a wall to scroll past on the way to anything else. The threshold is the same kind
+  of rule as the coverage meter's segmented-below-30 — the shape follows the count because the
+  reading does.
 
 ---
 

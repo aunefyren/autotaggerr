@@ -59,7 +59,23 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   work the counterpart to the metadata pass's `POST /mirror/cancel`.
 - **A credit change still has no affordance.** `collection_scan` reports the count, but it is still
   the only identity change with no Migrations row to click through to — the count is the only way to
-  notice one, and there is nothing to open.
+  notice one, and there is nothing to open. The four movement counters beside it
+  ([collection.md](collection.md#what-a-pass-moved-not-just-where-it-ended-up)) have the same
+  shape of gap: *3 albums gone* names no albums, because the pass compares MBID sets and keeps only
+  the sizes. Keeping the two sets would make them `EventItem` rows like every other finding, and
+  those rows already resolve to names and links.
+- **`Related` resolution stops at the Activity modal.** `events.ResolveRefs` and
+  `GET /mb/:mbid/files` answer "what is this identifier, and which files depend on it"
+  ([scanning.md](scanning.md#an-identifier-is-not-a-subject)), but only a detail row asks. The
+  Migrations page lists bare MBIDs for exactly the same reason and would read the same way with the
+  same call. So would an Items filter by release — which is the other half of the *what failed?*
+  entry above, since "show me the files behind this MBID" and "show me the files that failed" are
+  one query with different predicates.
+- **A per-artist Lidarr lookup failure has no row.** `SyncStats.Failures` carries the sentence and
+  the count, rendered as a plain list, because a manager-level failure is not *about* an entity. But
+  the per-artist half of it is — the artist MBID is in hand at the point of the error — so those
+  could be `unknown`-shaped entity rows with the failure on them, leaving the plain list for the
+  genuinely entity-less case.
 - **Retention is a count, not a duration.** The two figures are configurable now
   (`autotaggerr_event_retention` / `autotaggerr_event_detail_retention`, see
   [scanning.md](scanning.md#a-run-spawns-activities-each-one-is-a-row)), but time-based retention

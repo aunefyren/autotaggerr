@@ -690,20 +690,58 @@ interesting file within an event — path, outcome, tags written, error, and the
   a changed `DISCNUMBER` rewrites its paired `DISCTOTAL`.
 - `GET /events/:id` attaches the rows as `items`; the feed never loads them.
 
-**A row says what it describes.** `EventItem.Kind` is `""` (a file) or `entity` (an MBID), because
-the two render as different things and one of them would otherwise lie: a file row reports how many
-tags were written to it, and a release did not have tags written *to it* — "0 tags written" beside a
-release MBID reads as a claim about the user's audio. That is not hypothetical: the run's own
-release rows were written without the kind for a while, so a tagging activity listed ten or twenty
-`<mbid> 0 tags written` lines and nothing else. Making it a field on the row rather than a component
-boundary is what lets one list render an event that carries both kinds, grouped by `Phase`.
+**A row says what it describes.** `EventItem.Kind` is `""` (a file), `entity` (an MBID) or `album`
+(a Plex refresh target), because they render as different things and two of them would otherwise
+lie: a file row reports how many tags were written to it, and a release did not have tags written
+*to it* — "0 tags written" beside a release MBID reads as a claim about the user's audio. That is
+not hypothetical: the run's own release rows were written without the kind for a while, so a tagging
+activity listed ten or twenty `<mbid> 0 tags written` lines and nothing else. Making it a field on
+the row rather than a component boundary is what lets one list render an event that carries several
+kinds, grouped by `Phase`.
 
 `Phase` is what keeps a tagging activity's two halves apart — `""` for a file the walk found changed
 on disk, `drift` for one rewritten because its release changed upstream, `refresh` for the release
 rows themselves — so one event's detail list reads as sections rather than as an interleaving.
 
-The UI renders every kind with the same old → new diff language as the file-tags view
-(`.diff` / `.diffrow`), so it is learned once.
+The UI renders a file's changes with the same old → new diff language as the file-tags view
+(`.diff` / `.diffrow`), so it is learned once. Each file is a `.filegroup`: the path, its outcome
+and its tag count stay visible and the fields under it collapse, open by default only while the
+activity holds ten or fewer changed files (`EXPANDED_FILE_LIMIT`). A handful of diffs is what the
+modal was opened to read; fifty is a wall to scroll past on the way to anything else.
+
+#### An identifier is not a subject
+
+A metadata pass records outcomes against MBIDs because that is what it read, and a page of forty
+UUIDs that returned 404 says something is wrong and nothing about what. Three things close that gap,
+all of them on the entity row:
+
+- **What kind of identifier it is**, from `related.kind` where the collection resolved the row and
+  from the pass's `Phase` where it could not — which is the 404 case, so the inference is the half
+  that matters. The label doubles as the link to musicbrainz.org, because a 404 is answered by
+  looking at MusicBrainz and retyping a UUID into a search box is the step worth removing. It uses
+  MusicBrainz's vocabulary (*release*, *release group*) rather than the collection's (*edition*,
+  *album*): the row reports what MusicBrainz said about a MusicBrainz identifier, and translating
+  the type would make the label disagree with the page it opens.
+- **What Autotaggerr calls it.** `events.ResolveRefs` batch-fills `EventItem.Related` on
+  `GET /events/:id` — four queries for a whole event, against the three collection tables and a
+  grouped count over `library_items`. **Resolved, never stored**: the row says what happened
+  upstream at the time, `Related` says what the collection holds *now*, and freezing one against
+  the other would report a file moved a week later as the state during a run that predates it.
+  A row with files and no name is not a gap but the finding — an identifier the library depends on
+  that the collection cannot name.
+- **Which files depend on it**, lazily. The file count is the control (a count is read as a prelude
+  to *show me which ones*), and `GET /mb/:mbid/files` answers for any of the three kinds — files
+  hang off releases, so an artist or release-group resolves through the collection's editions
+  first. Per row rather than up front, because an event holds hundreds of identifiers and only the
+  one being looked at is worth its paths. An MBID nothing points at returns an empty list, not a
+  404: "nothing points at it" is the answer.
+
+**The outcomes explain themselves.** `ENTITY_OUTCOMES` carries a sentence per outcome, rendered as a
+legend under the detail list and only for the outcomes present — the same rule that drops
+zero-valued counters. It exists for *Changed upstream*, which reads as *a particular edit was made*
+when what it records is that the re-fetched payload no longer matches the cached copy. There is no
+field-level comparison anywhere in the refresh, so the note says so rather than letting the label
+imply one.
 
 ## Caching and rate limits
 
@@ -833,6 +871,15 @@ that crashed between stages, which genuinely has nothing to name.
 Changed albums are collected during a run (album name → Plex key) and `plexClient.RefreshAlbum` is
 called for each afterwards. The Plex client is only constructed when its URL + token config is
 present and may be `nil` — always nil-check.
+
+One event per run, not per album, which would flood the feed — but **one detail row per album**
+(`EventItemKindAlbum`), refreshed or failed with its reason. The stage used to report two numbers
+over nothing, so *which albums?* — the only question a Plex refresh provokes — had no answer
+anywhere in the app, and both of its counters were chips selecting an empty list. Rows are written
+in sorted order so two runs over the same set read the same way rather than reshuffling with the
+map's iteration order. The rating keys stay in `details.album_keys` rather than on the rows: a key
+is what you need when a refresh went to the wrong album, which is what the raw-details escape hatch
+is for.
 
 ## Related
 

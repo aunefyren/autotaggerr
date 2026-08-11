@@ -198,11 +198,21 @@ func RecordScanUnder(db *gorm.DB, parent *models.Event, title string, scope Rebu
 		"artists":              stats.Artists,
 		"owned_release_groups": stats.Owned,
 		"credit_changes":       stats.CreditChanges,
+		"artists_added":        stats.ArtistsAdded,
+		"artists_removed":      stats.ArtistsRemoved,
+		"albums_added":         stats.AlbumsAdded,
+		"albums_removed":       stats.AlbumsRemoved,
 	}
 	for k, v := range detail {
 		details[k] = v
 	}
 	summary := fmt.Sprintf("%d artists · %d albums on disk", stats.Artists, stats.Owned)
+	// The deltas lead the optional half of the line, because they are the part that
+	// differs between one night's row and the next. A pass that moved nothing says so
+	// by leaving them out — the totals are then the whole story, which is the truth.
+	if change := changeClause(stats); change != "" {
+		summary += " · " + change
+	}
 	if stats.CreditChanges > 0 {
 		summary += fmt.Sprintf(" · %d credit change(s)", stats.CreditChanges)
 	}
@@ -223,16 +233,48 @@ func RecordScanUnder(db *gorm.DB, parent *models.Event, title string, scope Rebu
 	return stats, err
 }
 
+// changeClause states what a pass moved, in the same units as the totals it follows.
+// Empty when nothing moved, which is the common case and reads better as silence than
+// as four zeroes.
+func changeClause(stats RebuildStats) string {
+	parts := make([]string, 0, 4)
+	for _, c := range []struct {
+		n     int
+		label string
+	}{
+		{stats.ArtistsAdded, "artist(s) added"},
+		{stats.ArtistsRemoved, "artist(s) gone"},
+		{stats.AlbumsAdded, "album(s) added"},
+		{stats.AlbumsRemoved, "album(s) gone"},
+	} {
+		if c.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c.n, c.label))
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
 // ScanStats is the counter set a Scan puts on its event, shared by the standalone verb
 // and by the stage a run performs — the same pass, so it must not read as two.
 //
+// The totals come first because they are what the collection *is*; the four deltas
+// follow because they are what this pass *did*, and a feed of identical totals is how
+// a nightly Scan became something nobody reads. Zero-valued counters are dropped by
+// the detail view, so a quiet night still shows only the two figures that matter.
+//
 // A credit change is the notable one: it is an album moving between artists, the only
 // identity change with no Migrations row to click through to, so the count is the only
-// way to notice one happened.
+// way to notice one happened. Albums gone is the other one worth colouring — an album
+// leaving the disk view means files moved or a correlation broke, and neither is
+// something a Scan can fix on its own.
 func ScanStats(stats RebuildStats) []models.EventStat {
 	return []models.EventStat{
 		{Label: "Artists", Value: stats.Artists},
 		{Label: "Albums on disk", Value: stats.Owned},
+		{Label: "Artists added", Value: stats.ArtistsAdded, Kind: models.EventStatNotable},
+		{Label: "Artists gone", Value: stats.ArtistsRemoved, Kind: models.EventStatNotable},
+		{Label: "Albums added", Value: stats.AlbumsAdded, Kind: models.EventStatNotable},
+		{Label: "Albums gone", Value: stats.AlbumsRemoved, Kind: models.EventStatBad},
 		{Label: "Credit changes", Value: stats.CreditChanges, Kind: models.EventStatNotable},
 	}
 }
@@ -364,6 +406,18 @@ type RebuildStats struct {
 	// CreditChanges is release-groups whose primary credit moved plus credit links
 	// dropped because MusicBrainz no longer names the artist.
 	CreditChanges int `json:"credit_changes"`
+
+	// What this pass moved, against the collection as it stood when the pass began.
+	//
+	// The totals above are a *state*, and a state repeated nightly is unreadable: 42
+	// artists, 42 artists, 42 artists says nothing about the night one album left and
+	// another arrived. These say which nights were the interesting ones — and a
+	// removal especially, since an album leaving the disk view is either a file that
+	// moved or a correlation that broke, and both are things to go and look at.
+	ArtistsAdded   int `json:"artists_added"`
+	ArtistsRemoved int `json:"artists_removed"`
+	AlbumsAdded    int `json:"albums_added"`
+	AlbumsRemoved  int `json:"albums_removed"`
 	// EmptyReason names the input that was missing when a pass found nothing, and is
 	// blank whenever the pass had something to work from — including when it honestly
 	// found zero.
@@ -434,6 +488,14 @@ func scanEmptyReason(db *gorm.DB, scope bounds, all, scoped int) string {
 func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 	// library -> manager type (for the per-artist "managed by" provenance)
 	libraryManager, err := libraryManagerTypes(db)
+	if err != nil {
+		return RebuildStats{}, err
+	}
+
+	// What the collection held before this pass, read inside the transaction and
+	// before the clear below — the only point at which the previous answer still
+	// exists. Everything after this line is the new one.
+	before, err := snapshotCollection(db, scope)
 	if err != nil {
 		return RebuildStats{}, err
 	}
@@ -606,10 +668,83 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 	}
 
 	stats := RebuildStats{Artists: len(artistManagers), Owned: len(rgBest), CreditChanges: changes.total()}
+	// What moved. The totals above describe the collection; these describe the pass,
+	// and they are the difference between "the Scan ran" and "the Scan did something".
+	after := collectionSnapshot{artists: setOf(artistManagers), groups: setOf(rgBest)}
+	stats.ArtistsAdded, stats.ArtistsRemoved = countDiff(before.artists, after.artists)
+	stats.AlbumsAdded, stats.AlbumsRemoved = countDiff(before.groups, after.groups)
 	if stats.Artists == 0 && stats.Owned == 0 {
 		stats.EmptyReason = scanEmptyReason(db, scope, len(all), len(rows))
 	}
 	return stats, nil
+}
+
+// collectionSnapshot is the set of things the collection held at one moment: which
+// artists it knows, and which release-groups it says are on disk.
+//
+// Sets rather than counts, because the counts cannot answer the question. A pass that
+// drops one album and finds another reports the same total either way, and "42 albums
+// on disk" three nights running says nothing about whether those are the same 42.
+type collectionSnapshot struct {
+	artists map[string]bool
+	groups  map[string]bool
+}
+
+// snapshotCollection reads the pass's own scope as it currently stands. A scoped pass
+// compares against its scope only: an artist-scoped Scan that reported the rest of the
+// collection as "removed" would be describing rows it never touched.
+func snapshotCollection(db *gorm.DB, scope bounds) (collectionSnapshot, error) {
+	snap := collectionSnapshot{artists: map[string]bool{}, groups: map[string]bool{}}
+
+	artistQ := db.Model(&models.CollectionArtist{})
+	if !scope.all {
+		artistQ = artistQ.Where("mb_id = ?", scope.artist)
+	}
+	var artistIDs []string
+	if err := artistQ.Pluck("mb_id", &artistIDs).Error; err != nil {
+		return snap, err
+	}
+	for _, id := range artistIDs {
+		snap.artists[id] = true
+	}
+
+	groupQ := db.Model(&models.CollectionReleaseGroup{}).Where("owned = ?", true)
+	if !scope.all {
+		groupQ = groupQ.Where("mb_id IN ?", keys(scope.groups))
+	}
+	var groupIDs []string
+	if err := groupQ.Pluck("mb_id", &groupIDs).Error; err != nil {
+		return snap, err
+	}
+	for _, id := range groupIDs {
+		snap.groups[id] = true
+	}
+	return snap, nil
+}
+
+// setOf is the key set of any map, so a pass's working maps can be compared against a
+// snapshot without being copied into a second shape first.
+func setOf[V any](m map[string]V) map[string]bool {
+	out := make(map[string]bool, len(m))
+	for k := range m {
+		out[k] = true
+	}
+	return out
+}
+
+// countDiff is how many keys appeared and how many went away.
+func countDiff(before, after map[string]bool) (added, removed int) {
+	for k := range after {
+		if !before[k] {
+			added++
+		}
+	}
+	for k := range before {
+		if !after[k] {
+			removed++
+		}
+	}
+	return added, removed
 }
 
 // albumArtistCredit returns whose *album* a cached release belongs to: the
@@ -1294,6 +1429,87 @@ type SyncStats struct {
 	ArtistsSynced int    `json:"artists_synced"`
 	Groups        int    `json:"albums"`
 	EmptyReason   string `json:"empty_reason,omitempty"`
+
+	// Unknown is the MBIDs of collection artists this pass expected Lidarr to have and
+	// Lidarr did not list. It is the pass's one real finding: those artists are marked
+	// as managed by Lidarr, so every "wanted" answer on their page comes from a catalog
+	// that is not there. A pass reporting only what it mirrored cannot say this — the
+	// artists it means are precisely the ones absent from its own counters.
+	//
+	// Identifiers rather than names, because they become detail rows and the row is
+	// resolved to a name (and a link to the artist's page) where every other entity row
+	// is.
+	Unknown []string `json:"unknown,omitempty"`
+
+	// Failures are the lookups that errored, one line each. Every one of these used to
+	// be a `continue` with a log line: Lidarr going down mid-pass produced an Activity
+	// row identical to a healthy one, just with smaller numbers.
+	Failures []string `json:"failures,omitempty"`
+}
+
+// SyncEventStats is the counter set a Lidarr mirror pass puts on its event, shared by
+// the collection-wide verb, the per-artist one and the stage a run performs.
+//
+// One function for all three, for the reason ScanStats exists: the pass is one verb at
+// three scopes, and three emitters is how the same work ends up reported with three
+// different vocabularies. The two findings are the ones that were missing — a pass
+// used to report only what it managed to mirror, so a Lidarr that was down and a
+// Lidarr with nothing to say produced the same row.
+func SyncEventStats(stats SyncStats) []models.EventStat {
+	return []models.EventStat{
+		{Label: "Artists synced", Value: stats.ArtistsSynced},
+		{Label: "Albums", Value: stats.Groups},
+		{Label: "Not in Lidarr", Value: len(stats.Unknown), Kind: models.EventStatNotable, Filter: models.EventItemStatusUnknown},
+		{Label: "Lookups failed", Value: len(stats.Failures), Kind: models.EventStatBad},
+	}
+}
+
+// SyncEventItems is the per-artist detail behind the "Not in Lidarr" counter: one row
+// per artist the collection files under Lidarr that no Lidarr listed.
+//
+// Entity rows carrying the MBID, so they resolve to a name and a link to the artist's
+// page like every other entity row in the feed — the point of the counter is going and
+// looking at the artists it counted.
+func SyncEventItems(stats SyncStats) []models.EventItem {
+	items := make([]models.EventItem, 0, len(stats.Unknown))
+	for _, mbid := range stats.Unknown {
+		items = append(items, models.EventItem{
+			Path:   mbid,
+			Kind:   models.EventItemKindEntity,
+			Status: models.EventItemStatusUnknown,
+		})
+	}
+	return items
+}
+
+// SyncEventDetails is the payload half of the same three-way share: the counters, the
+// two findings in full, and whatever the caller's scope adds.
+func SyncEventDetails(stats SyncStats) map[string]any {
+	details := map[string]any{
+		"artists": stats.ArtistsSynced,
+		"albums":  stats.Groups,
+	}
+	if len(stats.Unknown) > 0 {
+		details["unknown_artists"] = stats.Unknown
+	}
+	if len(stats.Failures) > 0 {
+		details["failures"] = stats.Failures
+	}
+	return details
+}
+
+// SyncSummaryLine is the one-line summary a mirror pass stores. The two findings are
+// appended only when they happened, so an ordinary pass reads exactly as it always
+// did rather than trailing "· 0 not in Lidarr · 0 failed".
+func SyncSummaryLine(stats SyncStats) string {
+	line := fmt.Sprintf("%d artists synced · %d albums", stats.ArtistsSynced, stats.Groups)
+	if n := len(stats.Unknown); n > 0 {
+		line += fmt.Sprintf(" · %d not in Lidarr", n)
+	}
+	if n := len(stats.Failures); n > 0 {
+		line += fmt.Sprintf(" · %d lookup(s) failed", n)
+	}
+	return line
 }
 
 // The reasons a Lidarr mirror pass can have nothing to mirror. Each one names a
@@ -1357,6 +1573,9 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 	for _, a := range artists {
 		want[a.MBID] = true
 	}
+	// Which of them a manager turned out to hold. What is wanted and never seen is the
+	// pass's finding, and it can only be computed at the end.
+	seen := map[string]bool{}
 	if len(want) == 0 {
 		reason, err := syncEmptyReason(db, opts)
 		if err != nil {
@@ -1390,15 +1609,21 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 		lidarrArtists, err := client.GetArtists()
 		if err != nil {
 			logger.Log.Warnf("failed to list Lidarr artists: %s", err.Error())
+			stats.Failures = append(stats.Failures, fmt.Sprintf("%s: %s", m.Name, err.Error()))
 			continue
 		}
 		for _, la := range lidarrArtists {
 			if la.ForeignArtistID == "" || !want[la.ForeignArtistID] {
 				continue
 			}
+			// Reached by some manager, so not missing. Tracked apart from `want`
+			// rather than removed from it: an artist both managers hold must still be
+			// offered to the second one, exactly as before.
+			seen[la.ForeignArtistID] = true
 			albums, err := client.GetArtistAlbums(la.ID)
 			if err != nil {
 				logger.Log.Warnf("failed to list Lidarr albums for %s: %s", la.Name, err.Error())
+				stats.Failures = append(stats.Failures, fmt.Sprintf("%s: %s", la.Name, err.Error()))
 				continue
 			}
 
@@ -1455,12 +1680,29 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 		}
 	}
 
+	// Artists the collection files under Lidarr that no Lidarr listed.
+	//
+	// Suppressed entirely when a manager listing failed, and the reason is the same
+	// one that keeps a MusicBrainz 404 apart from a MusicBrainz timeout: an artist
+	// missing from a list that was never fetched is not missing, it is unlooked-at,
+	// and reporting the whole collection as unknown because Lidarr was restarting
+	// would be the most alarming way possible to say "try again".
+	if len(stats.Failures) == 0 {
+		for mbid := range want {
+			if !seen[mbid] {
+				stats.Unknown = append(stats.Unknown, mbid)
+			}
+		}
+		sort.Strings(stats.Unknown)
+	}
+
 	// The catalog block is now current, so the wants derived from it can be. Failing
 	// here is logged rather than returned: the mirror itself landed, and a sync that
 	// reports failure after writing everything it fetched is the more confusing
 	// outcome. The next sync reconciles again.
 	if err := reconcileManagerDesires(db); err != nil {
 		logger.Log.Warnf("failed to reconcile manager-derived wants: %s", err.Error())
+		stats.Failures = append(stats.Failures, "reconciling wants: "+err.Error())
 	}
 	return stats, nil
 }

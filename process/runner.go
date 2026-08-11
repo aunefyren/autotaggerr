@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -881,7 +882,7 @@ func (r *Runner) runScope(scope Scope) {
 	// walk's counters beside a row whose only content was a list of release MBIDs the
 	// metadata stage had already listed. One activity, two phases in its detail.
 	r.setPhase(PhaseScanning)
-	tagEvent := events.BeginChild(r.db, event, models.EventTypeTagFiles, taggingTitle(scope))
+	tagEvent := events.BeginChild(r.db, event, models.EventTypeTagFiles, taggingActivityTitle)
 	for _, target := range scope.Targets {
 		library := target.Library
 		libraryNames = append(libraryNames, library.Name)
@@ -1126,14 +1127,18 @@ func plural(n int, one, many string) string {
 	return many
 }
 
-// taggingTitle names a run's tagging activity. It carries the scope so the row still
-// says what it covered when the feed is read flat, away from the run it belongs to.
-func taggingTitle(scope Scope) string {
-	if scope.Title == "" {
-		return "Tagging"
-	}
-	return "Tagging — " + scope.Title
-}
+// taggingActivityTitle names a run's tagging stage.
+//
+// Just "Tagging". It used to append the run's scope — "Tagging — Processing music" —
+// on the reasoning that a flat feed should say what a stage covered; but the row
+// already prints `↳ Processing music` directly underneath it, so the scope was stated
+// twice on the same row while the title grew long enough to wrap. The run reference
+// carries it, and carries it in the one place that also links to the rest of the
+// cascade.
+//
+// The verb invoked on its own keeps its own scoped titles ("Tag files in every
+// library"): those have no parent to name them.
+const taggingActivityTitle = "Tagging"
 
 // taggingResult is everything one tagging pass wrote, from both of the ways a run
 // reaches a file: the walk that found it changed on disk, and the drift pass that
@@ -1326,8 +1331,8 @@ func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 	artists, albums = stats.ArtistsSynced, stats.Groups
 
 	status := models.EventStatusOK
-	details := map[string]any{"artists": artists, "albums": albums}
-	summary := fmt.Sprintf("%d artists synced · %d albums", artists, albums)
+	details := collection.SyncEventDetails(stats)
+	summary := collection.SyncSummaryLine(stats)
 	if err != nil {
 		logger.Log.Warnf("failed to sync the manager mirror: %s", err.Error())
 		status = models.EventStatusError
@@ -1342,11 +1347,9 @@ func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 		summary += " — " + stats.EmptyReason
 		details["empty_reason"] = stats.EmptyReason
 	}
-	ev.Stats = []models.EventStat{
-		{Label: "Artists synced", Value: artists},
-		{Label: "Albums", Value: albums},
-	}
+	ev.Stats = collection.SyncEventStats(stats)
 	events.Finish(r.db, ev, status, summary, details)
+	events.AddItems(r.db, ev, collection.SyncEventItems(stats))
 	return artists, albums
 }
 
@@ -1774,13 +1777,30 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 	event := events.BeginChild(r.db, parent, models.EventTypePlexRefresh, "Plex refresh")
 	refreshed := 0
 	failed := make([]string, 0)
-	for albumName, albumKey := range albums {
+
+	// One row per album, in a stable order so two runs over the same set read the
+	// same way — a map's iteration order would reshuffle the list on every run and
+	// make "did this one work last night?" a search rather than a glance.
+	names := make([]string, 0, len(albums))
+	for albumName := range albums {
+		names = append(names, albumName)
+	}
+	sort.Strings(names)
+
+	items := make([]models.EventItem, 0, len(names))
+	for _, albumName := range names {
+		albumKey := albums[albumName]
+		item := models.EventItem{Path: albumName, Kind: models.EventItemKindAlbum, Status: models.EventItemStatusRefreshed}
 		if err := r.plex.RefreshAlbum(albumKey); err != nil {
 			logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
 			failed = append(failed, albumName)
+			item.Status = models.EventItemStatusError
+			item.Error = err.Error()
+			items = append(items, item)
 			continue
 		}
 		refreshed++
+		items = append(items, item)
 		logger.Log.Info("triggered Plex refresh for album: " + albumName)
 	}
 
@@ -1789,15 +1809,23 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 		status = models.EventStatusError
 	}
 	summary := fmt.Sprintf("%d album(s) refreshed · %d failed", refreshed, len(failed))
+	// Both counters select rows now, which is the whole reason the rows exist: this
+	// stage used to report two numbers over nothing, so "which albums?" — the only
+	// question a Plex refresh provokes — had no answer anywhere in the app.
 	event.Stats = []models.EventStat{
-		{Label: "Albums refreshed", Value: refreshed},
-		{Label: "Failed", Value: len(failed), Kind: models.EventStatBad},
+		{Label: "Albums refreshed", Value: refreshed, Filter: models.EventItemStatusRefreshed},
+		{Label: "Failed", Value: len(failed), Kind: models.EventStatBad, Filter: models.EventItemStatusError},
 	}
 	events.Finish(r.db, event, status, summary, map[string]any{
 		"albums_refreshed": refreshed,
 		"albums_failed":    len(failed),
 		"failed_albums":    failed,
+		// The Plex rating keys, which the rows deliberately do not carry: a key is
+		// what you need when the refresh went to the wrong album, and that is what
+		// the raw-details escape hatch is for.
+		"album_keys": albums,
 	})
+	events.AddItems(r.db, event, items)
 	events.Prune(r.db, r.eventRetention)
 }
 

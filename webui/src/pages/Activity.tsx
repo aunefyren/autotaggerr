@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useDebounced, useFetch } from "../hooks";
-import { Event, EventItem, EventStat, EventsPage, JobView, ScanStatus } from "../types";
+import { EntityRef, Event, EventItem, EventStat, EventsPage, JobView, MBFilesPage, ScanStatus } from "../types";
 import { EmptyState, ErrorNote, IdChip, Modal, Pill } from "../components/ui";
 import { ProgressBar } from "../components/ProgressBar";
 import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
@@ -49,15 +50,17 @@ const TYPE_LABELS: Record<string, string> = {
  */
 const TYPE_NOTES: Record<string, string> = {
   mb_mirror:
-    "A metadata refresh writes no files. Releases that changed upstream are re-tagged by the next processing run, or immediately with Tag files.",
+    "A metadata refresh re-reads MusicBrainz and writes no files. Releases that changed upstream are re-tagged by the next processing run, or immediately with Tag files.",
   count_files:
     "Sizes the run before it starts: every folder walked once to count the files it will visit. It reads no tags and changes nothing.",
   collection_scan:
     "Re-derives the collection from the files already indexed — no disk walk, no network, no file writes. It runs after tagging on purpose: it can only describe what this run has already recorded.",
   lidarr_sync:
-    "Mirrors the manager's catalogue over the collection. It runs after the collection scan on purpose: the mirror only covers artists the collection already knows about, including any this run just discovered.",
+    "Mirrors the manager's catalogue over the collection. It runs after the collection scan on purpose: the mirror only covers artists the collection already knows about, including any this run just discovered. Artists Lidarr did not list are reported rather than assumed away — their wanted view has nothing behind it until they are matched or detached.",
   plex_refresh:
-    "Tells Plex to re-read the albums this run touched. One event per run rather than per album, which would flood the feed.",
+    "Tells Plex to re-read the albums this run touched. One event per run rather than per album, which would flood the feed — the albums themselves are listed below.",
+  tag_files:
+    "Everything this pass wrote to disk. The walk finds files whose tags no longer match what Autotaggerr knows; the drift half rewrites files whose release changed upstream, which the walk cannot see because the file itself has not moved.",
 };
 
 // What a group of detail rows is, when an activity recorded more than one kind.
@@ -149,6 +152,16 @@ function EventStatus({ status }: { status: string }) {
 }
 
 const PAGE_SIZE = 50;
+
+/**
+ * How many changed files an activity may hold before their diffs start collapsed.
+ *
+ * A handful of diffs is what the modal was opened to read; fifty is a wall to scroll
+ * past on the way to anything else. The threshold is the same kind of rule as the
+ * coverage meter's segmented-below-30: the shape follows the count because the reading
+ * does.
+ */
+const EXPANDED_FILE_LIMIT = 10;
 
 export default function Activity() {
   const toast = useToast();
@@ -737,6 +750,7 @@ function EventDetail({
   const stats = full.data?.stats ?? event.stats ?? [];
   const errorFiles = Array.isArray(d?.error_files) ? (d!.error_files as string[]) : [];
   const libraries = Array.isArray(d?.libraries) ? (d!.libraries as string[]) : [];
+  const failures = Array.isArray(d?.failures) ? (d!.failures as string[]) : [];
 
   return (
     <Modal title={event.title || TYPE_LABELS[event.type] || event.type} onClose={onClose} wide>
@@ -785,6 +799,22 @@ function EventDetail({
           </div>
         )}
 
+        {/* Lookups that did not complete. They have no detail rows because they are
+            not *about* an entity — the manager was unreachable, or one artist's albums
+            could not be read — and every one of them used to be a log line and nothing
+            else, so a Lidarr that was half down produced a row identical to a healthy
+            one with smaller numbers in it. */}
+        {failures.length > 0 && (
+          <div>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Lookups that failed</div>
+            <div className="scroll stack" style={{ gap: 2 }}>
+              {failures.map((f, i) => (
+                <div key={i} className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-word" }}>{f}</div>
+              ))}
+            </div>
+          </div>
+        )}
+
         <ItemList
           items={items}
           details={d}
@@ -809,13 +839,74 @@ function EventDetail({
   );
 }
 
-// What each per-entity outcome is called, and the status colour it carries. "Changed
-// upstream" rather than "Changed": nothing here changed the entity, MusicBrainz did.
-const ENTITY_OUTCOMES: Record<string, { label: string; kind: string }> = {
-  refreshed: { label: "Changed upstream", kind: "scan" },
-  gone: { label: "Gone upstream", kind: "warn" },
-  relinked: { label: "Re-linked", kind: "off" },
-  error: { label: "Failed", kind: "err" },
+/**
+ * What each per-entity outcome is called, the status colour it carries, and — the part
+ * a pill cannot hold — what it actually means.
+ *
+ * "Changed upstream" rather than "Changed": nothing here changed the entity,
+ * MusicBrainz did. But that phrasing still leaves the question it was written to
+ * answer only half-answered, because "changed" reads as *some specific edit was made*
+ * when what happened is coarser: the payload was re-fetched and no longer matches the
+ * copy the cache held. No field-level comparison exists, so the note says so rather
+ * than letting the label imply one.
+ *
+ * The notes are rendered as a legend under the detail list, and only for the outcomes
+ * an event actually recorded — the same rule that drops zero-valued counters. A
+ * glossary of four states in front of a list containing one of them is noise.
+ */
+const ENTITY_OUTCOMES: Record<string, { label: string; kind: string; note: string }> = {
+  refreshed: {
+    label: "Changed upstream",
+    kind: "scan",
+    note: "MusicBrainz's copy no longer matches the one Autotaggerr had cached. The payload is compared whole, not field by field — what differs is not known here, only that something does. The files using it are re-tagged by the drift stage of a processing run, or by Tag files.",
+  },
+  gone: {
+    label: "Gone upstream",
+    kind: "warn",
+    note: "MusicBrainz answered 404. Usually a merge — the entity moved into another one — which is recorded as an identity change on the Migrations page rather than treated as a failure. Files still pointing at it keep their tags until the merge is applied.",
+  },
+  relinked: {
+    label: "Re-linked",
+    kind: "off",
+    note: "The release moved to a different release-group upstream. Its own content may be unchanged; what moved is where it belongs, so a row was rewritten and no file was touched.",
+  },
+  unknown: {
+    label: "Not in Lidarr",
+    kind: "warn",
+    note: "The collection files this artist under Lidarr, and Lidarr did not list them. Nothing fills their catalogue until they are matched in Lidarr or detached from the manager, so their wanted view is empty rather than accurate.",
+  },
+  error: {
+    label: "Failed",
+    kind: "err",
+    note: "The lookup itself did not complete — a timeout, a rate-limit rejection, or a malformed response. Nothing is known about the entity either way, and the next pass tries again.",
+  },
+};
+
+/**
+ * What kind of MusicBrainz identifier a detail row is about, from the phase that
+ * produced it.
+ *
+ * The phase is the honest source, and the only one that survives a 404: the pass read
+ * artists in the artist phase and release-groups in the editions phase, so it knows
+ * what the ID *is* even when nothing local can name it — which is exactly the case
+ * where the label is most needed. `related.kind` is preferred when the collection did
+ * resolve the row, since that is the answer rather than an inference.
+ *
+ * The value doubles as musicbrainz.org's own path segment, which is what makes the
+ * row's identifier openable rather than only copyable.
+ */
+const PHASE_ENTITY_KIND: Record<string, string> = {
+  artists: "artist",
+  discographies: "artist",
+  editions: "release-group",
+  releases: "release",
+  refresh: "release",
+};
+
+const ENTITY_KIND_LABELS: Record<string, string> = {
+  artist: "Artist",
+  "release-group": "Release group",
+  release: "Release",
 };
 
 /**
@@ -843,6 +934,16 @@ function ItemList({
   filter: string | null;
   fallbackErrors: string[];
 }) {
+  // Which files are showing their diff. Ahead of every early return, because the
+  // list's own loading and empty states are exits and a hook after one of them runs a
+  // different number of times per render — the modal's first paint has no rows and its
+  // second does, which is precisely the transition that breaks.
+  //
+  // Null means "nobody has clicked anything", which is not the same as "everything is
+  // closed": the default is derived from how many files there are, and a map seeded
+  // with it would have to be rebuilt whenever the filter changed the count.
+  const [openFiles, setOpenFiles] = useState<Record<string, boolean> | null>(null);
+
   if (loading) return <div className="muted" style={{ fontSize: 12 }}>Loading detail…</div>;
 
   // Nothing recorded: either an older event, or one where nothing interesting happened.
@@ -875,6 +976,20 @@ function ItemList({
   const phases = Array.from(new Set(shown.map((it) => it.phase ?? "")));
   const grouped = phases.length > 1;
 
+  // A file row's diff is a group of its own, and every group in the app collapses.
+  // Whether they *start* collapsed is a property of how many there are: a handful is
+  // the diff you opened the activity to read, fifty is a wall you scroll past to reach
+  // anything else. Same reasoning as the coverage meter's segmented/proportional
+  // switch — the shape follows the count because the reading does.
+  const fileRows = shown.filter((it) => (it.kind ?? "") === "" && (it.changes?.length ?? 0) > 0);
+  const openByDefault = fileRows.length > 0 && fileRows.length <= EXPANDED_FILE_LIMIT;
+  const isOpen = (id: string) => openFiles?.[id] ?? openByDefault;
+  const toggleFile = (id: string) =>
+    setOpenFiles((prev) => ({ ...(prev ?? {}), [id]: !(prev?.[id] ?? openByDefault) }));
+  const setAll = (open: boolean) =>
+    setOpenFiles(Object.fromEntries(fileRows.map((it) => [it.id, open])));
+  const anyOpen = fileRows.some((it) => isOpen(it.id));
+
   return (
     <div>
       <div className="row" style={{ marginBottom: 6, gap: 10, alignItems: "baseline" }}>
@@ -882,6 +997,17 @@ function ItemList({
         <span className="dim" style={{ fontSize: 11 }}>
           {filter ? `${shown.length} of ${items.length} shown` : truncated ? `showing ${recorded} of ${total}` : ""}
         </span>
+        {/* Only where there is more than one diff to act on: a control that collapses
+            a single file is a button that does what clicking the file does. */}
+        {fileRows.length > 1 && (
+          <button
+            className="railref"
+            style={{ marginLeft: "auto" }}
+            onClick={() => setAll(!anyOpen)}
+          >
+            <span>{anyOpen ? "Collapse all" : "Expand all"}</span>
+          </button>
+        )}
       </div>
       <div className="scroll stack" style={{ gap: grouped ? 14 : 10 }}>
         {phases.map((phase) => {
@@ -894,7 +1020,14 @@ function ItemList({
                   {ITEM_PHASE_LABELS[phase] ?? PHASE_LABELS[phase] ?? phase}
                 </div>
               )}
-              {rows.map((item) => <ItemRow key={item.id} item={item} />)}
+              {rows.map((item) => (
+                <ItemRow
+                  key={item.id}
+                  item={item}
+                  open={isOpen(item.id)}
+                  onToggle={() => toggleFile(item.id)}
+                />
+              ))}
             </div>
           );
         })}
@@ -902,88 +1035,335 @@ function ItemList({
           <div className="muted" style={{ fontSize: 12 }}>Nothing matches that filter.</div>
         )}
       </div>
+
+      {/* What the outcomes in this list mean. Only the ones present, by the same rule
+          that drops zero-valued counters: a glossary of five states in front of a list
+          holding one of them is noise. */}
+      <OutcomeLegend items={shown} />
     </div>
   );
 }
 
 /**
- * One recorded row. An entity row leads with a copyable MBID and an outcome pill; a file
- * row leads with its path and the diff of what was written to it.
+ * One recorded row, in one of three shapes: an entity (a MusicBrainz identifier), an
+ * album (a Plex refresh target), or a file.
  *
  * The split is not cosmetic: a file row reports how many tags were written, and a
  * metadata refresh writes none — "0 tags written" beside a release MBID would be a
  * claim about the user's audio from the one verb that promises not to touch it.
  */
-function ItemRow({ item }: { item: EventItem }) {
-  if (item.kind === "entity") {
-    const outcome = ENTITY_OUTCOMES[item.status] ?? { label: item.status, kind: "off" };
+function ItemRow({ item, open, onToggle }: { item: EventItem; open: boolean; onToggle: () => void }) {
+  if (item.kind === "entity") return <EntityItemRow item={item} />;
+  if (item.kind === "album") return <AlbumItemRow item={item} />;
+
+  const changes = item.changes ?? [];
+  // A file with no diff — a failure, or a write the emitter counted without recording
+  // fields — has nothing to collapse, so it stays a plain row rather than gaining a
+  // caret that opens onto nothing.
+  if (changes.length === 0) {
     return (
-      <div className="stack" style={{ gap: 4 }}>
-        <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-          <IdChip value={item.path} />
-          <Pill kind={outcome.kind}>{outcome.label}</Pill>
-          {item.tags_written > 0 && (
-            <span className="dim" style={{ fontSize: 11 }}>
-              {item.tags_written} file{item.tags_written === 1 ? "" : "s"} re-tagged
-            </span>
-          )}
+      <div className="stack" style={{ gap: 5 }}>
+        <div className="row" style={{ gap: 8, alignItems: "baseline" }}>
+          <FileHeading item={item} />
         </div>
         {item.error && (
-          <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>
-            {item.error}
-          </div>
+          <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>{item.error}</div>
         )}
       </div>
     );
   }
 
   return (
-    <div className="stack" style={{ gap: 5 }}>
+    <div className="filegroup">
+      <button className="filehead" aria-expanded={open} onClick={onToggle}>
+        <i className="twisty">{open ? "▼" : "▶"}</i>
+        <FileHeading item={item} />
+      </button>
+      {open && (
+        <>
+          {item.error && (
+            <div className="stack">
+              <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>{item.error}</div>
+            </div>
+          )}
+          {/* Same old → new language as the file-tags view, so it is learned once. */}
+          <div className="diff">
+            {changes.map((c) => (
+              <div className="diffrow" key={c.field}>
+                <span className="diffkey">{c.field}</span>
+                <div className="diffvals">
+                  {c.old ? <span className="diffv rem">{c.old}</span> : <span className="diffv none">(empty)</span>}
+                  {c.new ? <span className="diffv add">{c.new}</span> : <span className="diffv none">(removed)</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// The line that identifies a file row: its path and what happened to it. Shared by the
+// collapsible and the plain shape so a file reads the same either way — the caret is
+// the only difference between them, which is the only difference there is.
+function FileHeading({ item }: { item: EventItem }) {
+  return (
+    <>
+      <span
+        className="filepath"
+        style={{ color: item.status === "error" ? "var(--danger-text)" : "var(--text)" }}
+      >
+        {item.path}
+      </span>
+      {item.status === "error" ? (
+        <Pill kind="err">Failed</Pill>
+      ) : (
+        <span className="dim" style={{ fontSize: 11, whiteSpace: "nowrap" }}>
+          {item.tags_written} tag{item.tags_written === 1 ? "" : "s"} written
+        </span>
+      )}
+    </>
+  );
+}
+
+/**
+ * One album a Plex refresh was asked for.
+ *
+ * The identifier is a title Plex knows, not a path and not an MBID, so it is set in
+ * the UI face rather than in mono — the mono rule is for identifiers, and treating an
+ * album title as one would say it is something to copy and look up.
+ */
+function AlbumItemRow({ item }: { item: EventItem }) {
+  return (
+    <div className="stack" style={{ gap: 4 }}>
       <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
-        <span
-          className="mono"
-          style={{ fontSize: 11, wordBreak: "break-all", color: item.status === "error" ? "var(--danger-text)" : "var(--text)" }}
-        >
+        <span style={{ fontSize: 12, color: item.status === "error" ? "var(--danger-text)" : "var(--text)" }}>
           {item.path}
         </span>
-        {item.status === "error" ? (
-          <Pill kind="err">Failed</Pill>
-        ) : (
-          <span className="dim" style={{ fontSize: 11 }}>
-            {item.tags_written} tag{item.tags_written === 1 ? "" : "s"} written
-          </span>
-        )}
+        {item.status === "error" ? <Pill kind="err">Failed</Pill> : <Pill kind="ok">Refreshed</Pill>}
       </div>
-
       {item.error && (
-        <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>{item.error}</div>
-      )}
-
-      {/* Same old → new language as the file-tags view, so it is learned once. */}
-      {item.changes && item.changes.length > 0 && (
-        <div className="diff">
-          {item.changes.map((c) => (
-            <div className="diffrow" key={c.field}>
-              <span className="diffkey">{c.field}</span>
-              <div className="diffvals">
-                {c.old ? <span className="diffv rem">{c.old}</span> : <span className="diffv empty">(empty)</span>}
-                {c.new ? <span className="diffv add">{c.new}</span> : <span className="diffv empty">(removed)</span>}
-              </div>
-            </div>
-          ))}
+        <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>
+          {item.error}
         </div>
       )}
     </div>
   );
 }
 
+/**
+ * One MusicBrainz identifier and what happened to it.
+ *
+ * Three things a bare MBID could not say, in the order they answer "what am I looking
+ * at": **what kind** of identifier it is (a release and a release-group are both
+ * UUIDs, and the fix for a bad one differs), **what Autotaggerr calls it** and, behind
+ * a click, **which of your files depend on it**. A page of forty UUIDs that returned
+ * 404 says something is wrong and nothing about what; the same page saying "OK
+ * Computer — Radiohead · 12 files" is a list of albums to go and look at.
+ */
+function EntityItemRow({ item }: { item: EventItem }) {
+  const outcome = ENTITY_OUTCOMES[item.status] ?? { label: item.status, kind: "off", note: "" };
+  const ref = item.related;
+  // Resolved beats inferred, but the phase still answers when the collection cannot —
+  // which is exactly the 404 case.
+  const kind = ref?.kind || PHASE_ENTITY_KIND[item.phase ?? ""] || "";
+  const [showFiles, setShowFiles] = useState(false);
+
+  return (
+    <div className="stack" style={{ gap: 4 }}>
+      <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+        <IdChip value={item.path} />
+        {/* What kind of identifier it is, and — the same fact, so the same element —
+            where it lives. A release and a release-group are both UUIDs and the fix
+            for a bad one differs, so the type has to be on the row; and a 404 is
+            answered by looking at MusicBrainz, which otherwise means retyping a UUID
+            into a search box.
+
+            MusicBrainz's own vocabulary here, not the collection's ("edition",
+            "album"): this row is a report of what MusicBrainz said about a MusicBrainz
+            identifier, and the link goes there. Translating the type would make the
+            label disagree with the page it opens. */}
+        {kind ? (
+          <a
+            className="railref"
+            href={`https://musicbrainz.org/${kind}/${item.path}`}
+            target="_blank"
+            rel="noreferrer noopener"
+            title={`Open this ${kind} on musicbrainz.org`}
+          >
+            <span>{ENTITY_KIND_LABELS[kind] ?? kind} ↗</span>
+          </a>
+        ) : null}
+        <Pill kind={outcome.kind}>{outcome.label}</Pill>
+        {item.tags_written > 0 && (
+          <span className="dim" style={{ fontSize: 11 }}>
+            {item.tags_written} file{item.tags_written === 1 ? "" : "s"} re-tagged
+          </span>
+        )}
+      </div>
+
+      {ref && (
+        <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap", paddingLeft: 12 }}>
+          <EntityName entity={ref} mbid={item.path} />
+          {/* The count is the control, by the same rule as every other count in the
+              app: it is only ever read as a prelude to "show me which ones". */}
+          {ref.files > 0 ? (
+            <button className="railref" onClick={() => setShowFiles((v) => !v)}>
+              <span>{showFiles ? "▼" : "▶"} {ref.files} file{ref.files === 1 ? "" : "s"} on disk</span>
+            </button>
+          ) : (
+            <span className="dim" style={{ fontSize: 11 }}>no files on disk</span>
+          )}
+        </div>
+      )}
+
+      {showFiles && <EntityFiles mbid={item.path} />}
+
+      {item.error && (
+        <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-all" }}>
+          {item.error}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the collection calls an identifier, linked to the page that shows it.
+ *
+ * A name with nowhere to go is half an answer: the reason to know an MBID is *Kid A*
+ * is to open Kid A. Which link is possible depends on what resolved — an album page
+ * needs its artist too, since that is how the route is shaped — so the link degrades
+ * to plain text rather than disappearing.
+ *
+ * A row with a file count and no name is not a gap in this component: it is the
+ * finding. Files point at an identifier the collection cannot name, which is a broken
+ * collection row rather than a broken lookup.
+ *
+ * The prop is `entity`, not `ref`. **`ref` is reserved**: React strips it from the
+ * props of a function component and routes it to the ref machinery instead, so the
+ * parameter arrives `undefined` and the first property read throws — taking the whole
+ * tree down, which renders as a blank page rather than as a broken row. TypeScript
+ * does not catch it, because the prop type is perfectly valid; only the runtime knows
+ * the name is spoken for. It only fired on rows the collection could resolve, so
+ * events whose identifiers were all unresolvable opened normally and the crash looked
+ * like it belonged to certain activity types.
+ */
+function EntityName({ entity, mbid }: { entity: EntityRef; mbid: string }) {
+  if (!entity.name) {
+    return <span className="dim" style={{ fontSize: 12 }}>not in the collection</span>;
+  }
+
+  const artistLink = entity.kind === "artist" ? mbid : entity.artist_mb_id;
+  const to =
+    entity.kind === "artist"
+      ? `/collection/${mbid}`
+      : entity.artist_mb_id && entity.group_mb_id
+        ? `/collection/${entity.artist_mb_id}/${entity.group_mb_id}`
+        : artistLink
+          ? `/collection/${artistLink}`
+          : null;
+
+  const name = <span style={{ fontSize: 12, color: "var(--text)" }}>{entity.name}</span>;
+  return (
+    <span className="row" style={{ gap: 6, alignItems: "baseline" }}>
+      {to ? <Link to={to} style={{ color: "var(--accent-text)" }}>{name}</Link> : name}
+      {entity.artist && entity.kind !== "artist" && (
+        <span className="dim" style={{ fontSize: 11 }}>— {entity.artist}</span>
+      )}
+    </span>
+  );
+}
+
+/**
+ * The files behind one identifier, fetched when asked for.
+ *
+ * Lazily, per row: a metadata pass records hundreds of identifiers and only the one
+ * being looked at is worth its paths — the same rule the master/detail split follows
+ * everywhere else. The library is named beside each path because "which of my two
+ * copies is this" is the next question whenever there are two.
+ */
+function EntityFiles({ mbid }: { mbid: string }) {
+  const files = useFetch<MBFilesPage>(() => api.get(`/mb/${mbid}/files`), [mbid]);
+
+  if (files.loading) return <div className="dim" style={{ fontSize: 11 }}>Loading files…</div>;
+  if (files.err) return <ErrorNote message={files.err} />;
+
+  const rows = files.data?.files ?? [];
+  if (rows.length === 0) {
+    return <div className="dim" style={{ fontSize: 11 }}>No indexed file points at this identifier.</div>;
+  }
+
+  const total = files.data?.total ?? rows.length;
+  return (
+    <div className="stack" style={{ gap: 2, paddingLeft: 12, borderLeft: "1px solid var(--border)" }}>
+      {rows.map((f) => (
+        <div key={f.path} className="row" style={{ gap: 8, alignItems: "baseline" }}>
+          <span
+            className="mono"
+            style={{ fontSize: 11, wordBreak: "break-all", color: f.status === "error" ? "var(--danger-text)" : "var(--text-muted)" }}
+          >
+            {f.path}
+          </span>
+          {f.library && <span className="dim" style={{ fontSize: 11, whiteSpace: "nowrap" }}>{f.library}</span>}
+        </div>
+      ))}
+      {total > rows.length && (
+        <div className="dim" style={{ fontSize: 11 }}>showing {rows.length} of {total}</div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * What the outcomes in this list mean — the sentence a pill has no room for.
+ *
+ * "Changed upstream" is the one this exists for: it reads as *a particular edit was
+ * made*, when what it records is that the whole payload no longer matches the cached
+ * copy. The label cannot be made to carry that without becoming a sentence, so the
+ * sentence goes here.
+ *
+ * Only outcomes present in the list, and only when the list has entity rows at all —
+ * the same rule that drops zero-valued counters, for the same reason.
+ */
+function OutcomeLegend({ items }: { items: EventItem[] }) {
+  const present = Array.from(
+    new Set(items.filter((it) => it.kind === "entity").map((it) => it.status)),
+  ).filter((s) => ENTITY_OUTCOMES[s]);
+  if (present.length === 0) return null;
+
+  return (
+    <div className="stack" style={{ gap: 6, marginTop: 12 }}>
+      <div className="eyebrow">What these mean</div>
+      {present.map((status) => {
+        const outcome = ENTITY_OUTCOMES[status];
+        return (
+          <div key={status} className="row" style={{ gap: 8, alignItems: "baseline" }}>
+            <span style={{ flex: "none" }}><Pill kind={outcome.kind}>{outcome.label}</Pill></span>
+            <span className="dim" style={{ fontSize: 12, maxWidth: "70ch" }}>{outcome.note}</span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
+ * A counter with no rows behind it.
+ *
+ * Shaped like a FilterChip and deliberately inert — no hover, no pointer, no
+ * aria-pressed. It used to be a 22px hero figure, which put two sizes of counter in
+ * one row: the one chip among them looked like a stray control rather than the one
+ * counter you can act on, and the row read as a dashboard header instead of a set of
+ * facts about one activity. Same size means the difference between them is the
+ * affordance, which is the difference that is actually there.
+ */
 function Stat({ label, value, color, muted }: { label: string; value: number; color?: string; muted?: boolean }) {
   return (
-    <div>
-      <div className="tabnum" style={{ fontSize: 22, fontWeight: 600, color: color ?? (muted ? "var(--text-muted)" : undefined) }}>
-        {value}
-      </div>
-      <div className="l">{label}</div>
-    </div>
+    <span className="statpill" style={muted ? { opacity: 0.7 } : undefined}>
+      {label}
+      <span className="statpill-n" style={color ? { color } : undefined}>{value}</span>
+    </span>
   );
 }

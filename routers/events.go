@@ -215,6 +215,70 @@ func (a *API) annotateFeed(rows []models.Event) {
 	}
 }
 
+// maxMBFiles bounds one lookup's file list. A release holds a dozen files, but an
+// artist MBID reaches every file of every edition of theirs, and a detail row asking
+// "which files" does not want a thousand of them — it wants to recognise the album.
+const maxMBFiles = 200
+
+// mbFiles answers "which of my files does this MusicBrainz identifier stand for?".
+//
+// It is the question an Activity row cannot answer on its own. A metadata pass reports
+// a 404 against a UUID, and the useful next thought is always *what have I got that
+// points at it* — until now that meant copying the ID and searching Items by hand, if
+// you could work out which field to search.
+//
+// It accepts any of the three kinds, because the question is the same for all of them
+// and the caller is a detail row that knows only what a pass told it. Files hang off
+// releases, so an artist or a release-group resolves through the collection's editions
+// first; an MBID nothing knows returns an empty list rather than a 404, since "nothing
+// points at it" is the answer, not a missing page.
+func (a *API) mbFiles(c *gin.Context) {
+	mbid := strings.TrimSpace(c.Param("mbid"))
+	if mbid == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "an identifier is required"})
+		return
+	}
+
+	// Which releases to look under. The identifier itself is always one candidate —
+	// a release whose collection row was pruned still has files pointing at it, and
+	// that is exactly the case worth surfacing.
+	releaseIDs := []string{mbid}
+	var related []string
+	if err := a.DB.Model(&models.CollectionRelease{}).
+		Where("release_group_mb_id = ? OR artist_mb_id = ?", mbid, mbid).
+		Distinct().Pluck("mb_id", &related).Error; err != nil {
+		logger.Log.Warnf("failed to resolve editions for %s: %s", mbid, err.Error())
+	}
+	releaseIDs = append(releaseIDs, related...)
+
+	type fileRow struct {
+		Path        string `json:"path"`
+		Library     string `json:"library"`
+		Status      string `json:"status"`
+		Error       string `json:"error,omitempty"`
+		MBReleaseID string `json:"mb_release_id"`
+	}
+
+	q := a.DB.Model(&models.LibraryItem{}).
+		Select("library_items.path, library_items.status, library_items.error, library_items.mb_release_id, libraries.name as library").
+		Joins("LEFT JOIN libraries ON libraries.id = library_items.library_id").
+		Where("library_items.mb_release_id IN ?", releaseIDs)
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count files"})
+		return
+	}
+
+	var rows []fileRow
+	if err := q.Order("library_items.path").Limit(maxMBFiles).Scan(&rows).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list files"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"mb_id": mbid, "total": total, "files": rows})
+}
+
 func (a *API) getEvent(c *gin.Context) {
 	id, ok := a.idParam(c)
 	if !ok {
@@ -234,6 +298,11 @@ func (a *API) getEvent(c *gin.Context) {
 	if err != nil {
 		logger.Log.Warnf("failed to load detail rows for event %s: %s", ev.ID, err.Error())
 	}
+	// What the collection calls the MBIDs those rows are about. A metadata pass reports
+	// against identifiers because that is what it read, and a page of UUIDs cannot be
+	// acted on — this is what makes "these forty 404s are one artist's discography"
+	// readable from the row rather than from four searches.
+	events.ResolveRefs(a.DB, items)
 	ev.Items = items
 
 	// The stages this run performed, in the order they happened. Attached here rather

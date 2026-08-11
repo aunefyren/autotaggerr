@@ -1,0 +1,16 @@
+name: "Autotaggerr CodeQL config"
+
+# What the analysis must not read.
+#
+# web/dist is the *output* of the webui/ build, committed only so `go build` works
+# without a Node toolchain (see docs/development.md). Analysing it would mean running
+# the JavaScript queries over a 300 kB minified, bundled artifact: slow, and every
+# finding either duplicates one already reported against the real source in webui/src
+# or is an artifact of minification that cannot be fixed where it is reported. The
+# TypeScript sources it is generated from are analysed instead.
+#
+# webui/node_modules is third-party code that is not ours to fix, and is not installed
+# for the javascript-typescript leg anyway.
+paths-ignore:
+  - web/dist
+  - webui/node_modules

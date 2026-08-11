@@ -5,8 +5,52 @@ on:
     types: [published]
 
 jobs:
+  # The binary embeds web/dist (package web, `//go:embed all:dist`), and that directory
+  # is committed only so `go build` works without a Node toolchain — nothing guarantees
+  # the commit's copy matches webui/. Building it here is what stops a release binary
+  # shipping a stale UI; the Docker images get the same guarantee from the Dockerfile's
+  # own web stage.
+  #
+  # Its own job rather than a step inside the matrix, for the same reason the Dockerfile
+  # pins its web stage to $BUILDPLATFORM: the bundle is byte-identical for every os/arch,
+  # so building it per matrix leg would run the same npm install and vite build six times
+  # to produce six identical directories. Building it once also guarantees every released
+  # binary embeds the *same* bundle.
+  #
+  # Node 22 — matching CI and the Dockerfile's node:22-slim. vite 8 requires
+  # ^20.19.0 || >=22.12.0 and npm refuses the install below that.
+  web:
+    name: Build web UI
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Setup Node
+        uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Build web UI
+        run: |
+          cd webui
+          npm ci
+          npm run build
+
+      # if-no-files-found: error, so a build that silently produced nothing fails here
+      # rather than six legs later as a confusing go:embed error.
+      - name: Upload bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: web/dist
+          if-no-files-found: error
+          retention-days: 1
+
   releases-matrix:
     name: Release Go Binary
+    needs: web
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -19,28 +63,23 @@ jobs:
           - goos: windows
             goarch: arm
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
 
-    # The binary embeds web/dist (package web, `//go:embed all:dist`), and that
-    # directory is committed only so `go build` works without a Node toolchain —
-    # nothing guarantees the commit's copy matches webui/. Building it here is what
-    # stops a release binary shipping a stale UI; the Docker images get the same
-    # guarantee from the Dockerfile's own web stage.
-    #
-    # A step rather than the action's `pre_command`: that runs inside the action's Go
-    # container, which has no Node in it.
-    - name: Setup Node
-      uses: actions/setup-node@v4
+    # The checkout carries the committed web/dist, which may be stale. Clear it before
+    # restoring the freshly built one: `npm run build` gets this for free from vite's
+    # emptyOutDir, but download-artifact only overwrites the files it brings, so a hashed
+    # asset that no longer exists would otherwise linger beside the new bundle and be
+    # embedded and shipped.
+    - name: Drop the committed bundle
+      run: rm -rf web/dist
+
+    # go-release-action builds from $GITHUB_WORKSPACE — it does not check out again — so
+    # what lands here is what gets embedded. It must land before the action runs.
+    - name: Restore web UI bundle
+      uses: actions/download-artifact@v8
       with:
-        node-version: '20'
-        cache: 'npm'
-        cache-dependency-path: webui/package-lock.json
-
-    - name: Build web UI
-      run: |
-        cd webui
-        npm ci
-        npm run build
+        name: web-dist
+        path: web/dist
 
     - uses: wangyoucao577/go-release-action@v1.53
       with:

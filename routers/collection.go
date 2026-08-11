@@ -532,11 +532,12 @@ func (a *API) startLidarrSync(opts collection.SyncOptions, title string) {
 		if err != nil {
 			status = models.EventStatusError
 		}
-		summary := fmt.Sprintf("%d artists synced · %d albums", stats.ArtistsSynced, stats.Groups)
+		summary := collection.SyncSummaryLine(stats)
 		if opts.IgnoreCache {
 			summary += " · cache dropped"
 		}
-		details := map[string]any{"artists": stats.ArtistsSynced, "albums": stats.Groups, "ignore_cache": opts.IgnoreCache}
+		details := collection.SyncEventDetails(stats)
+		details["ignore_cache"] = opts.IgnoreCache
 		if opts.ArtistMBID != "" {
 			details["artist_mb_id"] = opts.ArtistMBID
 		}
@@ -551,11 +552,9 @@ func (a *API) startLidarrSync(opts collection.SyncOptions, title string) {
 		if err != nil {
 			details["error"] = err.Error()
 		}
-		ev.Stats = []models.EventStat{
-			{Label: "Artists synced", Value: stats.ArtistsSynced},
-			{Label: "Albums", Value: stats.Groups},
-		}
+		ev.Stats = collection.SyncEventStats(stats)
 		events.Finish(a.DB, ev, status, summary, details)
+		events.AddItems(a.DB, ev, collection.SyncEventItems(stats))
 	}()
 }
 

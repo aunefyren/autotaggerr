@@ -167,29 +167,67 @@ npm run build     # type-check + bundle into ../web/dist
 rebuild and commit it when the UI changes. `webui/node_modules` is ignored. After changing the UI,
 run `npm run build` (or `make ui` / `make build`) before building/running the Go binary, or the
 embedded assets will be stale — a rebuilt binary serving an old bundle is the classic "my UI change
-didn't show up". `git status` will show `web/dist` as changed after every build; that is expected.
+didn't show up".
+
+**The build is deterministic**, so a rebuild that changes nothing leaves `git status` clean. Vite
+derives each asset's filename from a hash of its contents, so identical sources produce
+byte-identical output under the same filenames. If `web/dist` shows up as modified, the UI genuinely
+changed and the diff belongs in the commit with the source that caused it — it is not build noise to
+be discarded. (`git checkout -- web/dist` after a real UI change is how you get a binary that serves
+the previous UI.)
+
+### Why it is not gitignored
+
+Every CI producer builds the bundle itself, so the obvious next step is to stop committing it. Don't
+— it is load-bearing for the local build in a way that is easy to miss:
+
+- **`//go:embed all:dist` is a compile-time pattern.** With no `web/dist` at all, package `web` fails
+  with `pattern all:dist: no matching files found`, and that is not just `go build` — `go vet`,
+  `go test ./...` and gopls all stop working on a fresh clone. A committed placeholder
+  (`web/dist/.gitkeep`, which `all:` would match) fixes the compile...
+- **...but not the tests.** `TestRouterFallsBackToTheSPA`, `TestRouterFallbackIgnoresQueryStrings`
+  and `TestRouterServesFavicon` in [`router_test.go`](../router_test.go) assert against a real
+  `index.html` and a real `favicon.svg`. Against a placeholder they fail, so `go test ./...` would
+  require npm — and teaching them to skip would silence them in exactly the case they exist for.
+
+The cost of committing it is review noise, and that is handled in
+[`.gitattributes`](../.gitattributes) instead: `web/dist/**` is `linguist-generated=true` so GitHub
+collapses it, and `web/dist/assets/**` is `-diff` so `git diff` does not print a minified bundle over
+the change you are trying to read.
 
 ### Who builds the SPA, and what the committed copy is still for
 
-**Nothing that ships depends on the committed bundle.** Every artifact-producing workflow builds the
-UI itself:
+**Nothing that ships depends on the committed bundle.** Every workflow that compiles Go builds the
+UI itself first — there are no exceptions left:
 
-| Producer | Builds the SPA | How |
+| Workflow | Builds the SPA | How |
 |---|---|---|
 | Docker images (`docker-image.yml`, `docker-image-beta.yml`) | yes | the `web` stage in [`Dockerfile`](../Dockerfile) |
-| Release binaries (`release.yaml`) | yes | a `setup-node` + `npm run build` step before the release action |
+| Release binaries (`release.yaml`) | yes | a dedicated `web` job, shared with the build matrix as an artifact |
 | CI (`go.yml`) | yes | into its own workspace, then discarded |
-| CodeQL (`codeql-analysis.yml`) | **no** | autobuild compiles Go against the committed copy |
+| CodeQL (`codeql-analysis.yml`) | yes | a `setup-node` + `npm run build` step before `init`, so autobuild traces a current tree |
 
 This used to be untrue of the first two, and the failure was quiet: CI rebuilt the UI into a
 workspace it threw away, so a green run said nothing about the bundle in the commit, and the image —
 which had no Node in it — embedded whatever `web/dist` the commit carried. A stale committed bundle
 shipped a stale UI from a passing build.
 
-The committed copy therefore now serves exactly two purposes: `go build` / `go run .` without a Node
-toolchain, and CodeQL's autobuild. Both are development conveniences — but the first is the one that
-still bites, because **a stale `web/dist` will still make your local `go run .` serve an old UI**.
-That is what `make build` and `make run` exist to prevent.
+**`release.yaml` builds the bundle once, not once per binary.** The matrix is six legs
+(linux × 386/amd64/arm64/arm, windows × 386/amd64) and the bundle is byte-identical for all of them,
+so a build step inside the matrix would run the same `npm ci` and vite build six times for six
+identical directories — the same waste the Dockerfile's `--platform=$BUILDPLATFORM` pin exists to
+avoid. A `web` job builds it and uploads it; each leg deletes the committed `web/dist` and restores
+the artifact in its place. **The delete matters:** vite's `emptyOutDir` clears the directory on a
+real build, but `download-artifact` only overwrites the files it brings, so without the `rm -rf` a
+hashed asset that no longer exists would linger beside the new bundle and be embedded. That the
+restore has to happen in the matrix leg at all is because `go-release-action` compiles from
+`$GITHUB_WORKSPACE` rather than checking out again.
+
+The committed copy therefore now serves exactly one purpose: `go build` / `go run .` without a Node
+toolchain. That is a development convenience, and it is the one that still bites, because **a stale
+`web/dist` will still make your local `go run .` serve an old UI**. That is what `make build` and
+`make run` exist to prevent. Nothing in CI fails when the committed bundle is out of date — by
+design, since every producer rebuilds it — so keep rebuilding and committing it when the UI changes.
 
 `web/dist` is in [`.dockerignore`](../.dockerignore) so the committed copy cannot reach an image even
 by accident: the `web` stage is the only thing that supplies it, and if that stage ever fails to,

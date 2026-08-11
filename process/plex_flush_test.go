@@ -80,3 +80,81 @@ func TestFlushPlexSkipsAnEmptySet(t *testing.T) {
 		t.Errorf("recorded %d plex_refresh events for an empty set, want 0", count)
 	}
 }
+
+// TestFlushPlexRecordsEachAlbum: a Plex refresh provokes exactly one question — which
+// albums? — and this stage used to answer it with two numbers over nothing. The rows
+// are what the counters filter, so a stage with counters and no rows has chips that
+// select an empty list.
+func TestFlushPlexRecordsEachAlbum(t *testing.T) {
+	db := newTestDB(t)
+	var hits int32
+	r := NewRunner(db, plexRefreshMock(t, &hits), models.ConfigStruct{AutotaggerrVersion: "test"})
+
+	parent := events.Begin(db, models.EventTypeProcess, "Processing music")
+	r.flushPlex(modules.NewAlbumRefreshSet(map[string]string{
+		"Spirit of Eden": "/library/metadata/1",
+		"Laughing Stock": "/library/metadata/2",
+	}), parent)
+
+	var ev models.Event
+	if err := db.Where("type = ?", models.EventTypePlexRefresh).First(&ev).Error; err != nil {
+		t.Fatalf("no plex_refresh event: %v", err)
+	}
+	items, err := events.Items(db, ev.ID)
+	if err != nil {
+		t.Fatalf("Items: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("recorded %d album row(s), want 2", len(items))
+	}
+	// Sorted, so two runs over the same set read the same way rather than reshuffling
+	// with the map's iteration order.
+	if items[0].Path != "Laughing Stock" || items[1].Path != "Spirit of Eden" {
+		t.Errorf("album rows out of order: %q, %q", items[0].Path, items[1].Path)
+	}
+	for _, it := range items {
+		if it.Kind != models.EventItemKindAlbum {
+			t.Errorf("%q recorded as kind %q, want %q — a file row would claim tags were written", it.Path, it.Kind, models.EventItemKindAlbum)
+		}
+		if it.Status != models.EventItemStatusRefreshed {
+			t.Errorf("%q status = %q, want refreshed", it.Path, it.Status)
+		}
+	}
+
+	// Both counters have to select something, or the chips are dead controls.
+	for _, stat := range ev.Stats {
+		if stat.Filter == "" {
+			t.Errorf("counter %q selects nothing; the rows exist to be filtered", stat.Label)
+		}
+	}
+}
+
+// TestFlushPlexRecordsAFailure: an album Plex refused is the row worth having. It used
+// to reach the feed as a name in a details blob nothing rendered, so "which one failed,
+// and why" was unanswerable from the UI.
+func TestFlushPlexRecordsAFailure(t *testing.T) {
+	db := newTestDB(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+	r := NewRunner(db, modules.NewPlexClient(server.URL, "token"), models.ConfigStruct{AutotaggerrVersion: "test"})
+
+	parent := events.Begin(db, models.EventTypeProcess, "Processing music")
+	r.flushPlex(modules.NewAlbumRefreshSet(map[string]string{"Spirit of Eden": "/library/metadata/1"}), parent)
+
+	var ev models.Event
+	if err := db.Where("type = ?", models.EventTypePlexRefresh).First(&ev).Error; err != nil {
+		t.Fatalf("no plex_refresh event: %v", err)
+	}
+	if ev.Status != models.EventStatusError {
+		t.Errorf("status = %q, want error", ev.Status)
+	}
+	items, _ := events.Items(db, ev.ID)
+	if len(items) != 1 {
+		t.Fatalf("recorded %d row(s), want 1", len(items))
+	}
+	if items[0].Status != models.EventItemStatusError || items[0].Error == "" {
+		t.Errorf("failed album row = %+v, want an error status and a reason", items[0])
+	}
+}

@@ -1,14 +1,3 @@
-# For most projects, this workflow file will not need changing; you simply need
-# to commit it to your repository.
-#
-# You may wish to alter this file to override the set of languages analyzed,
-# or to provide custom queries or build logic.
-#
-# ******** NOTE ********
-# We have attempted to detect the languages in your repository. Please check
-# the `language` matrix defined below to confirm you have the correct set of
-# supported CodeQL languages.
-#
 name: "CodeQL"
 
 on:
@@ -22,7 +11,7 @@ on:
 
 jobs:
   analyze:
-    name: Analyze
+    name: Analyze (${{ matrix.language }})
     runs-on: ubuntu-latest
     permissions:
       actions: read
@@ -32,41 +21,59 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ 'go' ]
-        # CodeQL supports [ 'cpp', 'csharp', 'go', 'java', 'javascript', 'python', 'ruby' ]
-        # Learn more about CodeQL language support at https://aka.ms/codeql-docs/language-support
+        # Both halves of the codebase: the Go service and the React/TypeScript SPA in
+        # webui/. `include` rather than a bare list because the two need different build
+        # modes — Go has to be compiled for CodeQL to see it, JavaScript/TypeScript is
+        # analysed from source and must NOT be built.
+        #
+        # What each leg reads is bounded by .github/codeql/codeql-config.yml, which keeps
+        # the javascript-typescript leg off the minified bundle in web/dist.
+        include:
+          - language: go
+            build-mode: autobuild
+          - language: javascript-typescript
+            build-mode: none
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v7
 
-    # Initializes the CodeQL tools for scanning.
+    # Go only. Autobuild runs `go build`, which compiles package web and embeds web/dist
+    # via `//go:embed all:dist`. The committed copy of that directory is a convenience for
+    # building without a Node toolchain and carries no guarantee of being current, so build
+    # it here as every other workflow does — the analysis then covers the same tree a
+    # release would ship. Runs before init so the npm work stays outside the traced build.
+    #
+    # The javascript-typescript leg deliberately skips this: it reads webui/src, and
+    # installing node_modules or generating a bundle would only give it more to ignore.
+    - name: Setup Node
+      if: matrix.language == 'go'
+      uses: actions/setup-node@v7
+      with:
+        node-version: '22'
+        cache: 'npm'
+        cache-dependency-path: webui/package-lock.json
+
+    - name: Build web UI
+      if: matrix.language == 'go'
+      run: |
+        cd webui
+        npm ci
+        npm run build
+
+    # Initializes the CodeQL tools for scanning. `build-mode` replaces the separate
+    # Autobuild step this workflow used to run: init performs the autobuild for the Go
+    # leg, and does nothing to build the JavaScript one.
     - name: Initialize CodeQL
       uses: github/codeql-action/init@v4
       with:
         languages: ${{ matrix.language }}
-        # If you wish to specify custom queries, you can do so here or in a config file.
-        # By default, queries listed here will override any specified in a config file.
-        # Prefix the list here with "+" to use these queries and those in the config file.
-        
-        # Details on CodeQL's query packs refer to : https://docs.github.com/en/code-security/code-scanning/automatically-scanning-your-code-for-vulnerabilities-and-errors/configuring-code-scanning#using-queries-in-ql-packs
-        # queries: security-extended,security-and-quality
-
-        
-    # Autobuild attempts to build any compiled languages  (C/C++, C#, or Java).
-    # If this step fails, then you should remove it and run the build manually (see below)
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v4
-
-    # ℹ️ Command-line programs to run using the OS shell.
-    # 📚 See https://docs.github.com/en/actions/using-workflows/workflow-syntax-for-github-actions#jobsjob_idstepsrun
-
-    #   If the Autobuild fails above, remove it and uncomment the following three lines. 
-    #   modify them (or add more) to build your code if your project, please refer to the EXAMPLE below for guidance.
-
-    # - run: |
-    #   echo "Run, Build Application using script"
-    #   ./location_of_script_within_repo/buildscript.sh
+        build-mode: ${{ matrix.build-mode }}
+        config-file: ./.github/codeql/codeql-config.yml
+        # To widen the query set beyond the default, prefix with "+" to keep the
+        # defaults as well: queries: +security-extended,security-and-quality
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v4
+      with:
+        category: "/language:${{ matrix.language }}"

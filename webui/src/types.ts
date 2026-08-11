@@ -287,20 +287,55 @@ export interface EventStat {
   filter?: string;
 }
 
+/**
+ * What Autotaggerr knows about the MBID on an entity row — the local side of an
+ * identifier the event only knows as a UUID.
+ *
+ * Resolved per request, never stored: the row records what MusicBrainz said at the
+ * time, this says what the collection holds now.
+ */
+export interface EntityRef {
+  /** "artist" | "release-group" | "release" — also the path segment on musicbrainz.org. */
+  kind: string;
+  name?: string;
+  artist?: string;
+  artist_mb_id?: string;
+  group_mb_id?: string;
+  /** How many indexed files point at this identifier. */
+  files: number;
+}
+
 export interface EventItem {
   id: string;
   event_id: string;
-  /** A file path, or — when kind is "entity" — the MBID of the thing this row is about. */
+  /** A file path, the MBID of an entity, or an album title — see `kind`. */
   path: string;
-  /** "" (a file) | "entity". Says which shape the row renders as. */
+  /** "" (a file) | "entity" (an MBID) | "album" (a Plex refresh target). */
   kind?: string;
-  /** "changed" | "error" | "refreshed" | "gone" | "relinked" */
+  /** "changed" | "error" | "refreshed" | "gone" | "relinked" | "unknown" */
   status: string;
   /** Which stage of the event produced this row; groups release rows apart from files. */
   phase?: string;
   tags_written: number;
   error?: string;
   changes?: TagChange[];
+  /** Present on an entity row the collection can name. */
+  related?: EntityRef;
+}
+
+/** One indexed file behind a MusicBrainz identifier (GET /mb/:mbid/files). */
+export interface MBFile {
+  path: string;
+  library: string;
+  status: string;
+  error?: string;
+  mb_release_id: string;
+}
+
+export interface MBFilesPage {
+  mb_id: string;
+  total: number;
+  files: MBFile[];
 }
 
 export interface Event {

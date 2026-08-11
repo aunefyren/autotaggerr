@@ -258,6 +258,26 @@ nobody reads:
 - **A settled move.** The run that makes the change reports it; the next rebuild over the same data
   reports nothing.
 
+### What a pass moved, not just where it ended up
+
+`RebuildStats.Artists` and `.Owned` describe the collection; four more counters describe the *pass*
+— `ArtistsAdded` / `ArtistsRemoved` / `AlbumsAdded` / `AlbumsRemoved`. A total is a state, and a
+nightly feed of identical states is unreadable: *42 artists · 39 albums on disk* three nights running
+says nothing about the night one album left and another arrived. Credit changes were the only delta
+the Scan reported, which meant the one identity change with no migration row was better instrumented
+than the ordinary ones.
+
+They come from a set comparison, not from arithmetic on the totals: `snapshotCollection` reads the
+in-scope artist and owned release-group MBIDs inside the transaction and **before the clear**, which
+is the only moment the previous answer still exists. A pass that drops one album and finds another
+reports the same total either way. A scoped pass compares against its own scope, or an artist-scoped
+Scan would report the rest of the collection as removed.
+
+Nothing is appended to the summary when nothing moved (`changeClause`), and the detail view drops
+zero-valued counters, so a quiet night still reads as the two totals. *Albums gone* is the one
+coloured `bad`: an album leaving the disk view means files moved or a correlation broke, and neither
+is something a Scan can fix on its own.
+
 ## The disk/catalog split
 
 `CollectionReleaseGroup` carries two independently written blocks:
@@ -293,6 +313,35 @@ reported differently would read as a different verb in the feed.
 The per-artist endpoint refuses an artist the mirror does not govern (`managed_by` neither `lidarr`
 nor `mixed`) rather than syncing nothing. A pass that reported *0 artists synced* would read as
 Lidarr having failed, when the truth is that this artist is not Lidarr's to answer for.
+
+Three shared emitters keep the three call sites — the collection verb, the artist verb and the run's
+own stage — reporting identically: `SyncEventStats`, `SyncEventItems`, `SyncEventDetails` and
+`SyncSummaryLine`. They existed as three copies of the same four lines, which is how one verb ends
+up with three vocabularies.
+
+#### A pass reports what it could not account for
+
+`SyncStats` carries two findings beyond the counts, and both were previously log lines and nothing
+else — so a Lidarr that was half down produced an Activity row identical to a healthy one with
+smaller numbers in it.
+
+- **`Unknown`** is the artists the collection files under Lidarr that no Lidarr listed. It is the
+  pass's one real finding and the one its counters structurally could not carry, since the artists
+  it means are precisely the ones missing from *artists synced*. Their wanted view has nothing
+  behind it until they are matched in Lidarr or detached from the manager. Stored as MBIDs, so the
+  rows resolve to a name and a link like every other entity row (see
+  [scanning.md](scanning.md#an-identifier-is-not-a-subject)), under
+  `EventItemStatusUnknown` — a complete answer that happens to be "no", distinct from *gone* (the
+  source used to have it) and *error* (we could not ask).
+- **`Failures`** is the lookups that errored: a manager listing that failed, one artist's albums
+  that could not be read, a want reconciliation that did not commit. They have no detail rows
+  because they are not *about* an entity, so they ride `details.failures` and render as their own
+  list.
+
+**A failed listing suppresses the unknowns entirely.** An artist missing from a list that was never
+fetched is not missing, it is unlooked-at — the same distinction the MusicBrainz path draws between
+a 404 and a timeout. Reporting a whole collection as unknown because Lidarr was restarting would be
+the most alarming possible way to say "try again".
 
 **`IgnoreCache` is opt-in, and it does not change what the pass fetches.** `GetArtists` and
 `GetArtistAlbums` — the only two calls a mirror makes — are the only *uncached* Lidarr calls there

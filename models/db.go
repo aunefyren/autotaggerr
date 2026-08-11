@@ -781,7 +781,50 @@ type EventItem struct {
 	// Changes is the field-level diff, empty for a failure that never got as far as
 	// writing.
 	Changes []TagChange `gorm:"serializer:json" json:"changes,omitempty"`
+
+	// Related is what Autotaggerr itself knows about the MBID on an entity row: the
+	// name it goes by, the artist it belongs to, and how many indexed files point at
+	// it. Resolved on the single-event fetch, never stored — the row records what
+	// happened at MusicBrainz, and what the collection holds is a fact about *now*
+	// that would go stale the moment a file moved.
+	//
+	// It exists because the row's own identifier is a UUID. "404 on
+	// 019fa765-…-c389e527ed21" is not a thing anyone can act on; "404 on OK Computer,
+	// 12 files on disk" is.
+	Related *EntityRef `gorm:"-" json:"related,omitempty"`
 }
+
+// EntityRef is the local side of a MusicBrainz identifier: what the collection calls
+// it, where it sits, and how much of the library depends on it.
+//
+// ArtistMBID and GroupMBID are the SPA's own route parameters, so a row can link
+// through to the artist or album page rather than only out to musicbrainz.org — the
+// point of naming the entity is being able to go and look at it.
+type EntityRef struct {
+	// Kind is the MusicBrainz entity type (EntityKind*), which also names the path
+	// segment on musicbrainz.org.
+	Kind string `json:"kind"`
+	// Name is the title of a release or release-group, or an artist's name. Empty when
+	// the collection has no row for the MBID at all — which is itself an answer, and
+	// the reason this is a pointer on the item rather than a bare string.
+	Name string `json:"name,omitempty"`
+	// Artist is who it is by, blank on an artist row where Name already says so.
+	Artist     string `json:"artist,omitempty"`
+	ArtistMBID string `json:"artist_mb_id,omitempty"`
+	GroupMBID  string `json:"group_mb_id,omitempty"`
+	// Files is how many indexed files point at this MBID. Only ever non-zero for a
+	// release: a file is correlated to a release, and everything above that is reached
+	// through it.
+	Files int `json:"files"`
+}
+
+// MusicBrainz entity kinds, as both a label key and the path segment an MBID sits
+// under on musicbrainz.org.
+const (
+	EntityKindArtist       = "artist"
+	EntityKindReleaseGroup = "release-group"
+	EntityKindRelease      = "release"
+)
 
 // Per-file outcomes inside an event.
 const (
@@ -791,6 +834,10 @@ const (
 	// changed upstream during a scan's refresh stage. It is not a file outcome, so it
 	// carries no tag diff — its TagsWritten is the count of the release's files the
 	// drift stage re-tagged in response.
+	//
+	// It is also the success outcome of an EventItemKindAlbum row: Plex accepted the
+	// refresh. One word for "this thing was re-read from its source" rather than a
+	// second status meaning the same thing on a different kind of row.
 	EventItemStatusRefreshed = "refreshed"
 	// EventItemStatusGone is an entity MusicBrainz no longer has. It is an answer
 	// rather than a failure — the migration row was recorded at the point of the 404 —
@@ -799,6 +846,11 @@ const (
 	// EventItemStatusRelinked is a release that moved to a different release-group
 	// upstream. Its own content may be unchanged; what moved is where it belongs.
 	EventItemStatusRelinked = "relinked"
+	// EventItemStatusUnknown is a thing the authority does not have: an artist the
+	// collection files under Lidarr that Lidarr never listed. Distinct from Gone (the
+	// source used to have it and says so) and from Error (we could not ask) — this is
+	// a complete answer that happens to be "no".
+	EventItemStatusUnknown = "unknown"
 )
 
 // What an EventItem describes. Empty (EventItemKindFile) is the default and covers
@@ -806,6 +858,11 @@ const (
 const (
 	EventItemKindFile   = ""
 	EventItemKindEntity = "entity"
+	// EventItemKindAlbum is an album a Plex refresh was asked for. Neither a file nor
+	// a MusicBrainz entity: the identifier is the album title Plex knows it by, and
+	// the outcome is whether Plex accepted the request — no tags were written and no
+	// MBID was read, so both of the other renderings would say something untrue.
+	EventItemKindAlbum = "album"
 )
 
 // Stage of a run a detail row belongs to. Empty means the ordinary scan-walk file row.

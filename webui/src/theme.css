@@ -224,7 +224,7 @@ table.data tbody tr.lit .rail i { background: var(--accent); }
 .railref {
   display: inline-flex; align-items: center; gap: 4px; margin-left: 2px; padding: 0;
   background: none; border: none; color: var(--text-dim); font: inherit; font-size: 11px;
-  cursor: pointer; max-width: 340px;
+  cursor: pointer; max-width: 340px; text-decoration: none;
 }
 .railref span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .railref:hover { color: var(--accent-text); }
@@ -391,7 +391,46 @@ table.data tbody tr.group-row:hover td { background: var(--surface-2); }
 .diffv.same { color: var(--text-muted); }
 .diffv.rem { background: var(--diff-remove-bg); color: var(--diff-remove-text); text-decoration: line-through; text-decoration-color: rgba(240, 119, 111, 0.6); }
 .diffv.add { background: var(--diff-add-bg); color: var(--diff-add-text); }
-.diffv.empty { color: var(--text-dim); font-style: italic; }
+/* "(empty)" / "(removed)" — the absent side of a diff. Named `.none`, not `.empty`:
+   `.empty` is the empty-state component further down this file, and at equal
+   specificity the later rule won, so every absent value inherited a 48px-padded,
+   centred empty state. A field the file did not have rendered eight times the height
+   of one it did. */
+.diffv.none { color: var(--text-dim); font-style: italic; }
+
+/* One file's tag diff, collapsed to its heading. The row itself is a group — a path
+   and the tags written to it — so it collapses like one; the file is never hidden,
+   only the fields under it. */
+.filegroup { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); }
+.filegroup + .filegroup { margin-top: 6px; }
+.filehead {
+  display: flex; align-items: baseline; gap: 8px; width: 100%;
+  padding: 6px 10px; background: none; border: none;
+  color: inherit; font: inherit; text-align: left; cursor: pointer;
+}
+.filehead:hover { background: var(--surface-2); border-radius: var(--radius); }
+.filehead:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent-ring); border-radius: var(--radius); }
+/* Only the size; width, centring and the 28px target come from the shared .twisty. */
+.filehead .twisty { font-size: 9px; }
+/* Standalone, not scoped to .filehead: a file with no diff to collapse renders the
+   same heading outside a button, and a descendant selector would silently drop the
+   mono face on exactly the failure rows where the path matters most. */
+.filepath { font-family: var(--font-mono); font-size: 11px; word-break: break-all; min-width: 0; flex: 1; }
+/* Indented to where the path starts (10px padding + 16px twisty + 8px gap), so the
+   fields read as belonging to the file above them rather than as a new list. */
+.filegroup > .diff, .filegroup > .stack { padding: 0 10px 8px 34px; }
+
+/* A counter with nothing behind it. Same size and rhythm as `.chip`, deliberately
+   without its affordances — no hover, no pointer, no aria-pressed — because a number
+   that cannot filter anything must not look like one that can. It replaced a 22px
+   hero figure, which put two sizes of counter in one row and made the chip among
+   them read as a stray control. */
+.statpill {
+  display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 10px;
+  background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-pill);
+  color: var(--text-muted); font-size: 12px; font-weight: 500;
+}
+.statpill .statpill-n { font-family: var(--font-mono); font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; }
 
 /* Pager — sits under the table it pages. Quiet: it is navigation, not the data, and
    it is not rendered at all when everything fits on one page. */

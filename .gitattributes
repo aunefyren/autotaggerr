@@ -17,3 +17,17 @@
 *.jpg   binary
 *.jpeg  binary
 *.ico   binary
+*.woff  binary
+*.woff2 binary
+
+# web/dist is the built SPA (webui/ -> web/dist). It is committed on purpose — the Go
+# binary embeds it and `go build` must work without a Node toolchain — but it is
+# generated output, not source, and it should never be read as a change someone wrote.
+#
+# linguist-generated collapses it by default in GitHub diffs and keeps it out of the
+# language stats; -diff on assets/ stops `git diff` printing a 300 kB minified bundle
+# over the change that actually needs reviewing. web/dist/index.html keeps its normal
+# diff: it is four readable lines, and the hashed filenames it points at are the quickest
+# confirmation that the bundle was rebuilt.
+web/dist/**             linguist-generated=true
+web/dist/assets/**      -diff

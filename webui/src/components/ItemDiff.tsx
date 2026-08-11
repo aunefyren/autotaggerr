@@ -32,8 +32,8 @@ export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: (
               <div className="diffvals">
                 {t.changed ? (
                   <>
-                    {t.current ? <span className="diffv rem">{t.current}</span> : <span className="diffv empty">(empty)</span>}
-                    {t.desired ? <span className="diffv add">{t.desired}</span> : <span className="diffv empty">(removed)</span>}
+                    {t.current ? <span className="diffv rem">{t.current}</span> : <span className="diffv none">(empty)</span>}
+                    {t.desired ? <span className="diffv add">{t.desired}</span> : <span className="diffv none">(removed)</span>}
                   </>
                 ) : (
                   <span className="diffv same">{t.current || t.desired || "—"}</span>

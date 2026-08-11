@@ -165,6 +165,11 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// Activity events
 		protected.GET("/events", a.listEvents)
 		protected.GET("/events/:id", a.getEvent)
+		// The files behind one MusicBrainz identifier — which local audio an Activity
+		// row's MBID actually stands for. Fetched on demand, per row, because a detail
+		// list holds hundreds of identifiers and only the one you are looking at is
+		// worth its file paths.
+		protected.GET("/mb/:mbid/files", a.mbFiles)
 
 		// MusicBrainz identity migrations (merges and deletions upstream).
 		protected.GET("/migrations", a.listMigrations)
