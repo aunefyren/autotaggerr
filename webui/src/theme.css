@@ -467,6 +467,19 @@ table.data tbody tr.group-row:hover td { background: var(--surface-2); }
   .pager .pager-pos { grid-row: 2; grid-column: 1 / -1; }
 }
 
+/* The foot of one section of a grouped table — the section's own pager. Sections are
+   the structure of a discography, so paging is per section: a single pager across all
+   four would put a page boundary in the middle of Singles, and each group header's
+   count and coverage meter would then describe a set that is not on screen. Styled
+   like the group header it closes, so a section reads as bracketed by its own chrome
+   rather than as rows that ran out. */
+table.data tbody tr.group-foot td {
+  padding: 0 var(--space-5); height: auto; background: var(--surface-2);
+}
+table.data tbody tr.group-foot:hover td { background: var(--surface-2); }
+.pager-compact { padding: var(--space-3) 0; gap: var(--space-5); }
+.pager-compact .btn { height: 24px; padding: 0 var(--space-4); font-size: 11px; }
+
 /* Run bar — the verbs at collection scope, and the one status they share.
    All four are drained by a single serial job queue, so a single bar is the honest
    shape for them: one row of controls with one state, rather than four buttons that

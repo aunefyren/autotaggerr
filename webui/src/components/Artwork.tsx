@@ -96,10 +96,23 @@ export function Artwork({
   const supported = entity === "artist" ? caps.artist : caps.cover;
 
   if (!mbid || failed || !supported) {
+    // Why there is no picture, at the one size where somebody asks. Artist images have
+    // a single source and it needs a personal key, so an install without one shows
+    // monograms forever with nothing on the page to say what is missing — but this
+    // stays a hint on the header tile rather than a notice, because a keyless install
+    // is a normal install, not a broken one. Not on the 24px row avatars: the same
+    // sentence under fifty tiles is a nag, and nobody asks the question there.
+    const hint =
+      entity === "artist" && !caps.artist && px >= 64
+        ? "No artist images configured — add a fanart.tv key under Data sources to show portraits and backdrops."
+        : undefined;
     return (
       <span
         className={`artwork artwork-fallback ${className}`}
         style={{ width: px, height: px, fontSize: Math.max(10, Math.round(px * 0.36)) }}
+        title={hint}
+        // Still decoration to assistive tech: two initials read aloud are noise, and
+        // the same fact is stated in prose on the Data sources page.
         aria-hidden="true"
       >
         {monogram(name)}

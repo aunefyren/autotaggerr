@@ -845,11 +845,14 @@ toolbar, grouped sections).
   `8/12` beside each answers "how many".
 - `/collection/:mbid` — the artist page: an entity header (portrait, backdrop, kind/origin/years/
   genres from `/info`, album coverage, Following toggle with the follow types behind a **Settings**
-  disclosure), a chip row that doubles as the counts and the filters, then the catalogue split into
+  disclosure), then the **run bar** with the four verbs and Re-correlate, a chip row that doubles as
+  the counts and the filters, then the catalogue split into
   **Albums / EPs / Singles / Other** collapsible sections. Anything carrying a secondary type (live,
   compilation, remix, soundtrack) lands in *Other* — the same rule following already uses for what
   counts as an album, and what keeps a reissue-heavy catalogue from burying the six records a person
-  thinks of as the discography. Singles and Other start closed.
+  thinks of as the discography. Singles and Other start closed, and **each section pages on its own**
+  (50 rows, keyed `page-<section>` in the URL) — a prolific artist has six albums and three hundred
+  singles, so the one long section pages while the rest render whole.
 - `/collection/:mbid/:rgid` — the release-group page: an entity header (cover, type/year/artist, track
   coverage, the derived want summary, Wanted/Pin), then a `.rg-split` master/detail with editions on
   the left and the selected edition's tracklist on the right.
@@ -874,9 +877,10 @@ fetches, it changes what the **next scan** matches files against (see
 [above](#mirroring-lidarr-at-two-scopes)). That needs a sentence, and a sentence needs somewhere to
 live. The box starts unticked.
 
-On the artist page the button sits **outside** the group of four verbs and is not disabled while a
-job runs. Those four are Autotaggerr acting on this artist's files and metadata and they share the
-one job queue; this one only re-reads what the manager says, and queues nothing.
+On the artist page the button sits in the **header**, outside the run bar's four verbs, and is not
+disabled while a job runs. Those four are Autotaggerr acting on this artist's files and metadata and
+they share the one job queue; this one only re-reads what the manager says, and queues nothing —
+the same reason it stays in the collection page's head rather than its run bar.
 
 ## Artwork
 

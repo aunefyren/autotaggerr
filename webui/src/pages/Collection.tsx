@@ -9,8 +9,7 @@ import { MBLink } from "../components/MBLink";
 import { AddArtistModal } from "../components/AddArtistModal";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
-import { ProgressBar } from "../components/ProgressBar";
-import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
+import { RunBar } from "../components/RunBar";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { FilterChip, Pager, SortHeader, TableToolbar, matches, useBrowse, usePaging, useSorted } from "../components/browse";
 
@@ -109,11 +108,6 @@ export default function Collection() {
   const indexed = status.data?.indexed;
   const noFiles = indexed === 0;
   const needsProcess = "Nothing is indexed yet — run Process to walk your libraries first.";
-
-  // Whether the running job's counters describe the stage it is actually in. A run
-  // counts files, and only its walk moves that number, so the bar goes striped rather
-  // than sitting frozen at 0% through minutes of rate-limited metadata work.
-  const counted = phaseDrivesProgress(status.data?.phase);
 
   // Scan answers inline (it only reads the index), so it reports its own result
   // rather than sending the user to the Activity feed for it. An empty pass comes back
@@ -222,49 +216,14 @@ export default function Collection() {
       </div>
 
       {/* The four verbs at collection scope, the same four the artist page offers for
-          one artist, in the same cheapest-first order — and the one status all four
-          share, because one serial job queue drains them. Buttons here dim for two
-          different reasons (a job is running, or nothing is indexed yet) and the two
-          are indistinguishable in a disabled button, so the bar says which it is in
-          words instead of leaving it to four tooltips. */}
-      <div className="runbar">
-        <div className="runbar-state">
-          <span className="eyebrow">Run</span>
-          {running ? (
-            <>
-              {/* The job's own title and stage, in the same words the Activity banner
-                  uses — a run reads the same wherever it is reported. Naming the job
-                  rather than saying "working" is what makes the dimmed buttons legible:
-                  it is *that* run holding them. */}
-              <Link to="/activity" className="runbar-status" title="A job is running — open Activity">
-                {status.data?.current_job?.title ?? "Working…"}
-              </Link>
-              {status.data?.phase && (
-                <span className="dim" style={{ fontSize: 11 }}>
-                  {PHASE_LABELS[status.data.phase] ?? status.data.phase}
-                </span>
-              )}
-              {/* Indeterminate outside the walk: these counters are files, and the
-                  stages either side of it count something else entirely. */}
-              {(!counted || (status.data?.total ?? 0) > 0) && (
-                <ProgressBar
-                  done={status.data?.done ?? 0}
-                  total={status.data?.total ?? 0}
-                  width={120}
-                  showPercent={false}
-                  indeterminate={!counted}
-                />
-              )}
-              {counted && (status.data?.total ?? 0) > 0 && (
-                <span className="mono dim" style={{ fontSize: 11 }}>
-                  {status.data?.done ?? 0} / {status.data?.total}
-                </span>
-              )}
-            </>
-          ) : noFiles ? (
-            <span className="runbar-status">Nothing indexed yet — Process walks your libraries first.</span>
+          one artist, in the same cheapest-first order. */}
+      <RunBar
+        status={status.data}
+        idle={
+          noFiles ? (
+            "Nothing indexed yet — Process walks your libraries first."
           ) : (
-            <span className="runbar-status">
+            <>
               Idle
               {indexed !== undefined && (
                 <>
@@ -272,55 +231,54 @@ export default function Collection() {
                   <span className="mono">{indexed.toLocaleString()}</span> files indexed
                 </>
               )}
-            </span>
-          )}
-        </div>
-        <div className="runbar-verbs">
-          <button
-            className="btn btn-ghost btn-sm"
-            onClick={scan}
-            disabled={scanning || noFiles}
-            title={
-              noFiles
-                ? `Nothing to re-derive — ${needsProcess}`
-                : "Re-derive what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
-            }
-          >
-            {scanning ? "Scanning…" : "Scan"}
-          </button>
-          <button
-            className="btn btn-ghost btn-sm"
-            onClick={start("/retag", "Tagging started — see Activity")}
-            disabled={running || noFiles}
-            title={
-              noFiles
-                ? `Nothing to tag — ${needsProcess}`
-                : "Rewrite the tags of every indexed file from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
-            }
-          >
-            Tag files
-          </button>
-          <button
-            className="btn btn-ghost btn-sm"
-            onClick={start("/refresh", "Metadata refresh started — see Activity")}
-            disabled={running}
-            title="Re-read MusicBrainz for everything that is due a check. Reads only: no files are written. What changed upstream is reported, and Tag files (or the next Process) applies it."
-          >
-            Refresh metadata
-          </button>
-          {/* The one primary on the page: the full pipeline, and the only verb that
-              reads the disk. Its label does not change while a job runs — the bar's
-              own state says that, and an action keeps its name through the flow. */}
-          <button
-            className="btn btn-primary btn-sm"
-            onClick={start("/process", "Processing started — see Activity")}
-            disabled={running}
-            title="Walk every enabled library, resolve metadata and write tags — the full pipeline. This is what finds files added, moved or changed on disk."
-          >
-            Process
-          </button>
-        </div>
-      </div>
+            </>
+          )
+        }
+      >
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={scan}
+          disabled={scanning || noFiles}
+          title={
+            noFiles
+              ? `Nothing to re-derive — ${needsProcess}`
+              : "Re-derive what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
+          }
+        >
+          {scanning ? "Scanning…" : "Scan"}
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={start("/retag", "Tagging started — see Activity")}
+          disabled={running || noFiles}
+          title={
+            noFiles
+              ? `Nothing to tag — ${needsProcess}`
+              : "Rewrite the tags of every indexed file from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
+          }
+        >
+          Tag files
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          onClick={start("/refresh", "Metadata refresh started — see Activity")}
+          disabled={running}
+          title="Re-read MusicBrainz for everything that is due a check. Reads only: no files are written. What changed upstream is reported, and Tag files (or the next Process) applies it."
+        >
+          Refresh metadata
+        </button>
+        {/* The one primary on the page: the full pipeline, and the only verb that
+            reads the disk. Its label does not change while a job runs — the bar's
+            own state says that, and an action keeps its name through the flow. */}
+        <button
+          className="btn btn-primary btn-sm"
+          onClick={start("/process", "Processing started — see Activity")}
+          disabled={running}
+          title="Walk every enabled library, resolve metadata and write tags — the full pipeline. This is what finds files added, moved or changed on disk."
+        >
+          Process
+        </button>
+      </RunBar>
 
       <p className="muted" style={{ margin: 0, maxWidth: "70ch" }}>
         The bar is what Autotaggerr found on disk. <strong>Wanted</strong> is what you asked

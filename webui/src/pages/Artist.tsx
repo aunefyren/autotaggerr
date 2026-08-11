@@ -10,15 +10,17 @@ import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
-import { ProgressBar } from "../components/ProgressBar";
-import { phaseDrivesProgress } from "../components/phases";
+import { RunBar } from "../components/RunBar";
 import {
+  Browse,
   FilterChip,
+  Pager,
   SortHeader,
   TableToolbar,
   matches,
   sortRows,
   useBrowse,
+  usePaging,
 } from "../components/browse";
 
 function ManagedBy({ artist }: { artist: CollectionArtist }) {
@@ -405,68 +407,12 @@ export default function Artist() {
             >
               {settingsOpen ? "Hide settings" : "Settings"}
             </button>
-
-            {/* The four verbs, scoped to this artist so none of them costs a
-                collection-wide pass. Ordered cheapest first by what they touch: the
-                database, then the files, then MusicBrainz, then the disk.
-
-                None of them cascades into another. Each does exactly what its label
-                says and stops, because two of the four rewrite the user's audio
-                files and a button that quietly does more than it claims is the wrong
-                place to be clever. Refresh metadata reports what changed upstream;
-                acting on it is Tag files, or the next Process. */}
-            <span className="sep">·</span>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={running}
-              title="Re-derive this artist's albums from the files already indexed. No disk walk, no MusicBrainz, no file writes — press this when the albums shown here look out of date."
-              onClick={scan}
-            >
-              Scan
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={running}
-              title="Rewrite the tags of this artist's indexed files from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
-              onClick={action("retag", "Tagging started")}
-            >
-              Tag files
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={running}
-              title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release — ignoring the cache. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
-              onClick={action("refresh", "Metadata refresh started")}
-            >
-              Refresh metadata
-            </button>
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={running}
-              title="Walk this artist's folders, resolve their metadata and write tags — the full pipeline, narrowed to this artist. Finds files that were added, moved or changed on disk. Writes tags."
-              onClick={action("process", "Processing started")}
-            >
-              Process
-            </button>
-            {/* A repair, not a routine verb, so it sits outside the four and carries
-                danger colouring: it is Process with the unchanged-file skip switched
-                off, which is the only thing that fixes files whose identity drifted
-                without a byte changing on disk. Confirmed rather than immediate,
-                because it rewrites tags and — under Lidarr — discards manual pins. */}
-            <span className="sep">·</span>
-            <button
-              className="btn btn-ghost btn-sm"
-              style={{ color: "var(--danger-text)" }}
-              disabled={running}
-              title="Ask the manager what every one of this artist's files is, ignoring both the cached answers and the unchanged-file skip, and rewrite the tags to match. This is the repair for files that disagree with the manager — an edition changed in Lidarr, or an album was re-imported — which an ordinary Process cannot fix because nothing on disk changed. Writes tags."
-              onClick={() => setRecorrelateAsk(true)}
-            >
-              Re-correlate
-            </button>
-            {/* Outside the group of four on purpose: those four are Autotaggerr acting
-                on this artist's files and metadata, and this one only re-reads what the
-                manager says. It is also the only action here that does not queue, so it
-                stays available while a job runs. */}
+            {/* Kept here rather than in the run bar below, and for a reason about the
+                action rather than about Lidarr: the verbs down there queue a job and
+                act on this artist's files, while this one only re-reads what the
+                manager says and queues nothing — which is why it also stays available
+                while a job runs. Same line the collection page draws by keeping it in
+                the head. */}
             {canSyncLidarr && (
               <>
                 <span className="sep">·</span>
@@ -478,23 +424,6 @@ export default function Artist() {
                   Sync from Lidarr
                 </button>
               </>
-            )}
-            {running && (
-              <span className="row" style={{ gap: 8, alignItems: "center" }}>
-                <Link to="/activity" className="dim mono" style={{ fontSize: 11 }} title="A job is running">
-                  Working…
-                </Link>
-                {/* Indeterminate outside the walk: these counters are files, and the
-                    stages either side of it count something else. */}
-                {(!phaseDrivesProgress(status.data?.phase) || (status.data?.total ?? 0) > 0) && (
-                  <ProgressBar
-                    done={status.data?.done ?? 0}
-                    total={status.data?.total ?? 0}
-                    width={100}
-                    indeterminate={!phaseDrivesProgress(status.data?.phase)}
-                  />
-                )}
-              </span>
             )}
           </div>
         )}
@@ -517,6 +446,70 @@ export default function Artist() {
           />
         </>
       )}
+
+      {/* The four verbs, scoped to this artist so none of them costs a collection-wide
+          pass. Ordered cheapest first by what they touch: the database, then the files,
+          then MusicBrainz, then the disk.
+
+          None of them cascades into another. Each does exactly what its label says and
+          stops, because two of the four rewrite the user's audio files and a button
+          that quietly does more than it claims is the wrong place to be clever. Refresh
+          metadata reports what changed upstream; acting on it is Tag files, or the next
+          Process.
+
+          They sit below the header rather than in it: they act on files and metadata,
+          while the header's controls are this artist's *state* — who manages it, whether
+          it is followed, what following means. Eight controls in one wrapping row made
+          those two kinds of thing indistinguishable. */}
+      <RunBar status={status.data} idle="Idle">
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={running}
+          title="Re-derive this artist's albums from the files already indexed. No disk walk, no MusicBrainz, no file writes — press this when the albums shown here look out of date."
+          onClick={scan}
+        >
+          Scan
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={running}
+          title="Rewrite the tags of this artist's indexed files from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
+          onClick={action("retag", "Tagging started")}
+        >
+          Tag files
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
+          disabled={running}
+          title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release — ignoring the cache. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
+          onClick={action("refresh", "Metadata refresh started")}
+        >
+          Refresh metadata
+        </button>
+        <button
+          className="btn btn-primary btn-sm"
+          disabled={running}
+          title="Walk this artist's folders, resolve their metadata and write tags — the full pipeline, narrowed to this artist. Finds files that were added, moved or changed on disk. Writes tags."
+          onClick={action("process", "Processing started")}
+        >
+          Process
+        </button>
+        {/* A repair, not a routine verb, so it sits outside the four and carries
+            danger colouring: it is Process with the unchanged-file skip switched off,
+            which is the only thing that fixes files whose identity drifted without a
+            byte changing on disk. Confirmed rather than immediate, because it rewrites
+            tags and — under Lidarr — discards manual pins. */}
+        <span className="sep">·</span>
+        <button
+          className="btn btn-ghost btn-sm"
+          style={{ color: "var(--danger-text)" }}
+          disabled={running}
+          title="Ask the manager what every one of this artist's files is, ignoring both the cached answers and the unchanged-file skip, and rewrite the tags to match. This is the repair for files that disagree with the manager — an edition changed in Lidarr, or an album was re-imported — which an ordinary Process cannot fix because nothing on disk changed. Writes tags."
+          onClick={() => setRecorrelateAsk(true)}
+        >
+          Re-correlate
+        </button>
+      </RunBar>
 
       {authorityAsk === "detach" && (
         <ConfirmDialog
@@ -645,51 +638,119 @@ export default function Artist() {
             {CATEGORIES.map(({ id, label, hint }) => {
               const rows = sortRows(shown.filter((g) => category(g) === id), SORT[browse.sort] ?? SORT.year, browse.dir);
               if (rows.length === 0) return null;
-              const isClosed = closed.has(id);
-              const owned = rows.filter((g) => g.owned);
               return (
-                <tbody key={id}>
-                  <tr className="group-row">
-                    <td colSpan={8}>
-                      <button
-                        type="button"
-                        className="group-head"
-                        aria-expanded={!isClosed}
-                        title={hint}
-                        onClick={() => toggleSection(id)}
-                      >
-                        <span className="twisty">{isClosed ? "▶" : "▼"}</span>
-                        {label}
-                        <span className="group-n">{rows.length}</span>
-                        <span className="group-cov">
-                          <CoverageBar
-                            total={rows.length}
-                            owned={owned.filter((g) => g.complete).length}
-                            partial={owned.filter((g) => !g.complete).length}
-                            label={label}
-                          />
-                        </span>
-                      </button>
-                    </td>
-                  </tr>
-                  {!isClosed &&
-                    rows.map((g) => (
-                      <ReleaseGroupRow
-                        key={g.mb_id}
-                        g={g}
-                        manager={managerLabel}
-                        managerGoverns={isLidarr}
-                        artistMbid={mbid}
-                        onChanged={refresh}
-                      />
-                    ))}
-                </tbody>
+                <CatalogSection
+                  key={id}
+                  id={id}
+                  label={label}
+                  hint={hint}
+                  rows={rows}
+                  closed={closed.has(id)}
+                  onToggle={() => toggleSection(id)}
+                  browse={browse}
+                  manager={managerLabel}
+                  managerGoverns={isLidarr}
+                  artistMbid={mbid}
+                  onChanged={refresh}
+                />
               );
             })}
           </table>
         </div>
       )}
     </div>
+  );
+}
+
+/** How many releases one section shows before it pages. */
+const SECTION_PAGE_SIZE = 50;
+
+/**
+ * One category of the catalogue: its header, its rows, and its own paging.
+ *
+ * **Paged per section, not per table.** The sections are the structure — a discography
+ * is not one list — so a single pager across all four would put a page boundary in the
+ * middle of Singles and leave each header's count describing rows that are not there.
+ * A prolific artist has a handful of albums and three hundred singles, and it is only
+ * ever the one section that is long.
+ *
+ * Its own component so the paging arithmetic sits at a component's top level rather
+ * than inside a `map`, and so a section that fits on one page renders no pager at all —
+ * which is most of them, on most artists.
+ */
+function CatalogSection({
+  id,
+  label,
+  hint,
+  rows,
+  closed,
+  onToggle,
+  browse,
+  manager,
+  managerGoverns,
+  artistMbid,
+  onChanged,
+}: {
+  id: Category;
+  label: string;
+  hint: string;
+  /** Already filtered and sorted: the section slices, it does not decide the order. */
+  rows: CollectionReleaseGroup[];
+  closed: boolean;
+  onToggle: () => void;
+  browse: Browse;
+  manager: string;
+  managerGoverns: boolean;
+  artistMbid: string;
+  onChanged: () => void;
+}) {
+  // Keyed by category, so paging Singles does not move Albums — and so the page
+  // survives in the URL like every other piece of browsing state.
+  const paging = usePaging(browse, rows.length, SECTION_PAGE_SIZE, id);
+  const page = rows.slice(paging.offset, paging.offset + paging.pageSize);
+  const owned = rows.filter((g) => g.owned);
+
+  return (
+    <tbody>
+      <tr className="group-row">
+        <td colSpan={8}>
+          <button type="button" className="group-head" aria-expanded={!closed} title={hint} onClick={onToggle}>
+            <span className="twisty">{closed ? "▶" : "▼"}</span>
+            {label}
+            {/* The count is the section's, not the page's. The pager below states what
+                is on screen; a header that counted only the slice would make the
+                coverage meter beside it describe a different set. */}
+            <span className="group-n">{rows.length}</span>
+            <span className="group-cov">
+              <CoverageBar
+                total={rows.length}
+                owned={owned.filter((g) => g.complete).length}
+                partial={owned.filter((g) => !g.complete).length}
+                label={label}
+              />
+            </span>
+          </button>
+        </td>
+      </tr>
+      {!closed &&
+        page.map((g) => (
+          <ReleaseGroupRow
+            key={g.mb_id}
+            g={g}
+            manager={manager}
+            managerGoverns={managerGoverns}
+            artistMbid={artistMbid}
+            onChanged={onChanged}
+          />
+        ))}
+      {!closed && paging.pageCount > 1 && (
+        <tr className="group-foot">
+          <td colSpan={8}>
+            <Pager paging={paging} unit={label.toLowerCase()} compact />
+          </td>
+        </tr>
+      )}
+    </tbody>
   );
 }
 

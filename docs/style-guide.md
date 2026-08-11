@@ -221,7 +221,12 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   `loading="lazy"`, fixed width/height always set. A missing image falls back to a **monogram tile**
   (`.artwork-fallback`): one or two initials, `--font-mono`, `--text-dim`, `--surface-2`, hairline
   border. The monogram is deliberately **neutral** — a per-artist hue would break the one-accent rule
-  and turn a browsing aid into confetti. Sources: Cover Art Archive for covers (no credential),
+  and turn a browsing aid into confetti. On a **header-sized artist tile** (≥64px) with no artist
+  provider configured, the fallback carries a `title` saying so and where to fix it: artist images
+  have one source and it needs a personal key, so a keyless install shows monograms forever with
+  nothing on the page to explain them. It stays a hint on that one tile — never a notice, and never
+  on the 24px row avatars, where the same sentence under fifty tiles is a nag and nobody is asking
+  the question. Sources: Cover Art Archive for covers (no credential),
   fanart.tv for artist images (needs a key; absent means monograms, never an error state). Both are
   proxied and cached by the app, never hot-linked. Nothing waits on artwork.
 - **Coverage meter** (`.coverage`, `CoverageBar.tsx`) — see *Signature* below.
@@ -237,7 +242,7 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   mandatory `::after` scrim so header text keeps its contrast whatever the image is, a
   `mask-image` fade so it never reads as a photo with a caption, and **nothing rendered at all** when
   there is no image (never an empty tinted band). Do not reuse this treatment elsewhere.
-- **Run bar** (`.runbar`, `Collection.tsx`) — the four verbs at a collection-wide scope, plus the
+- **Run bar** (`.runbar`, `RunBar.tsx`) — the four verbs at whatever scope the surface has, plus the
   one status they share. A single serial job queue drains all four, so a single bar is their honest
   shape: one row of controls with one state, rather than four buttons that dim together for a reason
   stated in none of their labels. The state is the left half — the running job's **own title and
@@ -250,11 +255,19 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   its label through a run (the bar says "Working", the button does not become it) — an action keeps
   its name through the flow.
   **What belongs beside it and what does not:** a verb that queues goes in the bar; an action that
-  changes *what the surface holds* and queues nothing (Add artist, Sync from Lidarr) stays in the
-  page head. That is the same line the artist header draws when it puts Sync from Lidarr outside its
-  group of four, and it is a fact about the actions rather than about which manager a user happens
-  to run.
-  It replaced six buttons and a `·` in the page head, with two competing primaries and every
+  changes *what the surface holds* or only re-reads a manager, and queues nothing (Add artist, Sync
+  from Lidarr) stays in the page head. That is a fact about the actions rather than about which
+  manager a user happens to run, which is why it holds at both scopes.
+  **Shared by the collection and one artist**, because the verbs are the same four at both scopes
+  and the queue behind them is literally the same queue. Only `idle` differs — what there is to say
+  when nothing is running is scope-specific (`1,284 files indexed` means nothing on one artist's
+  page), so the caller owns that sentence and nothing else.
+  On an artist, the bar also takes **Re-correlate** (after a `·`, ghost + `--danger-text`): it
+  queues and rewrites tags, so it is a verb, and it stays *outside* the four because it is a repair.
+  What is left in the header there is the artist's **state** — who manages it, whether it is
+  followed, what following means — which is a different kind of thing from a verb and stopped being
+  legible as one when eight controls shared a wrapping row.
+  It replaced six buttons and a `·` in the collection head, with two competing primaries and every
   explanation in a `title`. A page-level toolbar earns a container when it has a state to state;
   without one, it is a row of buttons and belongs in the head.
 - **Sortable header** (`.sortbtn`, `SortHeader`) — a `<button>` inside the `<th>`, with `aria-sort` on
@@ -282,7 +295,11 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Grouped table sections** (`.group-section` / `.group-head`) — a collapsible section per real
   category, with its count and its own coverage meter in the header. Grouping must encode data (the
   MusicBrainz primary type), never visual chunking. Sections that are numerous and rarely the reason
-  you opened the page start closed. One sort and one filter apply across every section. The header's
+  you opened the page start closed. One sort and one filter apply across every section, and each
+  section **pages on its own** (`.group-foot`, see *Paging*) — a prolific artist has a handful of
+  albums and three hundred singles, and it is only ever the one section that is long. The header's
+  count stays the section's, never the page's: the pager below states what is on screen, and a count
+  that followed the slice would disagree with the coverage meter beside it. The header's
   caret is `.twisty`; a *list* is never collapsed this way — the Activity feed tried it and the rows
   it hid were the ones worth reading (see *Run rail*).
 - **Browse state lives in the URL** (`useBrowse`) — query, sort key, direction, active filter, open
@@ -304,6 +321,14 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   **Any narrowing resets to page one.** `useBrowse` drops `page` on every update except `setPage`,
   because filtering a list to twelve rows while on page four shows an empty table with no
   indication why — the rows are not missing, you are past the end of them.
+  **Several lists on one surface page apart** (`usePaging(browse, total, size, key)`), keyed as
+  `page-<key>` in the URL. The artist page's catalogue is four sections under one table header, and
+  a single pager across them would put a page boundary in the middle of Singles while every group
+  header's count and coverage meter went on describing a set that is not on screen. The reset rule
+  applies to **every** list's page, not just the unkeyed one: one filter narrows all four sections
+  at once, so a surviving `page-single=3` would strand one section past its own end. The in-section
+  form is `compact` — same three zones, tighter, styled like the group header it closes, so a
+  section reads as bracketed by its own chrome rather than as rows that ran out.
   **The hook is shared; the fetching deliberately is not.** A client-paged list (Collection: it
   holds every artist and sorts them in the browser) slices what it already has, because server
   paging would sort one page instead of the list. A server-paged one (Activity: it never holds the

@@ -30,7 +30,18 @@ export interface Browse {
   page: number;
   /** The one update that does *not* reset paging, because it is the paging. */
   setPage: (page: number) => void;
+  /**
+   * The same, for one of several independent lists on a surface — the artist page's
+   * catalogue sections, which are four lists under one table header and page apart
+   * from each other. Keyed as `page-<key>` in the URL; an absent key is the surface's
+   * single list, i.e. {@link Browse.page}.
+   */
+  pageFor: (key?: string) => number;
+  setPageFor: (page: number, key?: string) => void;
 }
+
+/** The URL parameter holding a list's page. Keyed lists get one each. */
+const pageParam = (key?: string) => (key ? `page-${key}` : "page");
 
 export function useBrowse(defaultSort: string, defaultDir: SortDir = "asc"): Browse {
   const [params, setParams] = useSearchParams();
@@ -42,7 +53,15 @@ export function useBrowse(defaultSort: string, defaultDir: SortDir = "asc"): Bro
     // Filtering a list down to twelve rows while sitting on page four shows an empty
     // table and no indication why — the rows are not missing, you are past the end of
     // them. Only setPage itself opts out.
-    if (!keepPage) next.delete("page");
+    //
+    // Every list's page, not just the unkeyed one: a filter narrows all four of the
+    // artist page's sections at once, so leaving `page-single=3` behind would strand
+    // one section past its own end while the others reset.
+    if (!keepPage) {
+      for (const name of [...next.keys()]) {
+        if (name === "page" || name.startsWith("page-")) next.delete(name);
+      }
+    }
     // Replace rather than push: sorting a table is not a place in history to go
     // back to, and it would take a dozen Back presses to leave the page.
     setParams(next, { replace: true });
@@ -50,6 +69,16 @@ export function useBrowse(defaultSort: string, defaultDir: SortDir = "asc"): Bro
 
   const sort = params.get("sort") || defaultSort;
   const dir = (params.get("dir") as SortDir) || defaultDir;
+
+  const pageFor = (key?: string) =>
+    Math.max(1, parseInt(params.get(pageParam(key)) ?? "1", 10) || 1);
+  const setPageFor = (page: number, key?: string) =>
+    update((next) => {
+      // Page one is the default, so it stays out of the URL — a shared link should
+      // not carry state that means "nothing was changed".
+      if (page <= 1) next.delete(pageParam(key));
+      else next.set(pageParam(key), String(page));
+    }, true);
 
   return {
     query: params.get("q") ?? "",
@@ -80,14 +109,10 @@ export function useBrowse(defaultSort: string, defaultDir: SortDir = "asc"): Bro
         if (value === null) next.delete(name);
         else next.set(name, value);
       }),
-    page: Math.max(1, parseInt(params.get("page") ?? "1", 10) || 1),
-    setPage: (page) =>
-      update((next) => {
-        // Page one is the default, so it stays out of the URL — a shared link should
-        // not carry state that means "nothing was changed".
-        if (page <= 1) next.delete("page");
-        else next.set("page", String(page));
-      }, true),
+    page: pageFor(),
+    setPage: (page) => setPageFor(page),
+    pageFor,
+    setPageFor,
   };
 }
 
@@ -118,9 +143,9 @@ export interface Paging {
   setPage: (page: number) => void;
 }
 
-export function usePaging(browse: Browse, total: number, pageSize = 50): Paging {
+export function usePaging(browse: Browse, total: number, pageSize = 50, key?: string): Paging {
   const pageCount = Math.max(1, Math.ceil(total / pageSize));
-  const page = Math.min(Math.max(1, browse.page), pageCount);
+  const page = Math.min(Math.max(1, browse.pageFor(key)), pageCount);
   const offset = (page - 1) * pageSize;
   return {
     page,
@@ -130,7 +155,7 @@ export function usePaging(browse: Browse, total: number, pageSize = 50): Paging 
     total,
     from: total === 0 ? 0 : offset + 1,
     to: Math.min(offset + pageSize, total),
-    setPage: browse.setPage,
+    setPage: (next) => browse.setPageFor(next, key),
   };
 }
 
@@ -147,11 +172,24 @@ export function usePaging(browse: Browse, total: number, pageSize = 50): Paging 
  * which read as cramped for the reason it was: the two halves of one fact sat at
  * opposite ends of the bar while the controls crowded each other.
  */
-export function Pager({ paging, unit = "rows" }: { paging: Paging; unit?: string }) {
+export function Pager({
+  paging,
+  unit = "rows",
+  compact = false,
+}: {
+  paging: Paging;
+  unit?: string;
+  /**
+   * The form for a pager that sits *inside* something rather than under it — one
+   * section of a grouped table. Same three zones, quieter and tighter, because it is
+   * the foot of a section rather than the foot of the page.
+   */
+  compact?: boolean;
+}) {
   if (paging.pageCount <= 1) return null;
 
   return (
-    <nav className="pager" aria-label={`${unit} pages`}>
+    <nav className={`pager${compact ? " pager-compact" : ""}`} aria-label={`${unit} pages`}>
       <button
         className="btn btn-secondary btn-sm pager-prev"
         onClick={() => paging.setPage(paging.page - 1)}
