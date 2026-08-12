@@ -339,7 +339,9 @@ Constraints, all of which are the point rather than caution for its own sake:
   outcome. Without it, an album absent everywhere triggers a manager refresh on every run forever. A
   newly discovered ghost on an already-asked artist ignores the cooldown, since the refresh covers
   the whole artist anyway.
-- **Full runs only.** A one-artist button must not set the whole collection refreshing in Lidarr.
+- **Full runs only** *for the unattended pass*. A one-artist button must not set the whole collection
+  refreshing in Lidarr. Approving a blocked album is the one scoped entry point — see
+  [Approving a blocked album](#approving-a-blocked-album).
 - **Opt-out per manager** (`Manager.LidarrSkipArtistRefresh`), for a deliberately read-only API key
   or where something else owns refresh scheduling. Phrased negatively so the zero value is "allowed"
   — see the field comment for why a `default:true` tag would not have worked.
@@ -357,6 +359,54 @@ the manager can state — and badly: on these rows the correct matches scored 78
 sensible confidence floor, with titles differing by Unicode punctuation and case (`Alien (M‐22
 remix)` with U+2010 against `Alien (M-22 Remix)`).
 
+### Approving a blocked album
+
+`POST /migrations/:id/approve` on a release-group deletion the manager still lists **does not apply
+anything**. It queues `process.Runner.RepairArtistAlbums` for that album's artist and answers **202**.
+
+That is the only reading of the press that makes sense. The refusal it replaced — *the manager still
+lists this album; refresh the artist there first* — stated the fix and then made the user go and
+perform it by hand in Lidarr, which is the one step Autotaggerr can do for them and the only step
+that can settle the question. Approve means "deal with this"; the thing that deals with it is the
+manager.
+
+The scoped repair differs from the nightly pass in exactly two ways, both because a person asked:
+
+- **One artist** (`collection.RepairOptions.ArtistMBID`), narrowing both the ghost list and the
+  artist list. `Repaired` is derived by re-reading the ghost set afterwards, so leaving other
+  artists' ghosts in the candidate list would credit this pass with albums another run fixed.
+- **The cooldown is ignored.** It exists to stop an unattended pass re-asking every run; a button
+  press is not an unattended pass, and "come back in seven days" is not an answer to it.
+
+The job then drains the queue and rebuilds, in the same order a full run uses, so the album is
+retired in the same pass if the manager stopped listing it — and the row stays `pending`, untouched,
+until the manager has actually answered. It is **queued rather than inline** because
+`WaitForCommand` blocks for up to three minutes, far longer than an HTTP request should be held
+open; the queue's dedup makes a second press a no-op, and the whole thing reports as one parent
+event in Activity.
+
+## What the review queue shows
+
+`migration.Review` decorates each row at read time, because the stored row cannot describe itself.
+For a release-group deletion — the commonest row on a manager-fed install — every stored field reads
+as a zero: no `new_mb_id` (a deletion has none), no `affected_files` (files are keyed by release,
+never by release-group), usually no desires. Rendered literally that is *"Album · ID does not
+resolve"* with nothing under it, which states the symptom and answers none of the three questions
+the reader actually has.
+
+| Field | Answers |
+|-------|---------|
+| `files_on_disk`, `editions` | **Do I have files for this?** Counted through the album's editions, since that is the only route from a release-group to a file. Deliberately *not* `affected_files`: a retirement rewrites no file, so "what this would touch" and "what you own" are different numbers and conflating them is what reported zero for an album sitting on disk |
+| `owned`, `in_catalog` | the two authorities that can object to a retirement |
+| `blocker` | why approving would not complete, read *before* the press instead of after the failure. Asked of `collection.ReleaseGroupRetirable`, not re-derived, so the queue and the apply path cannot disagree |
+| `needs_manager_refresh` | the one blocker that is not final, and therefore the one where approve asks rather than applies |
+| `artist_mbid`, `artist_name` | who a refresh would target — a bare album title does not tell the user where the fix lives |
+| `problem`, `effect` | the same facts as sentences, safe to render verbatim |
+
+Computed at read time rather than stored, because every one of these moves independently of the
+migration: files arrive, a manager stops listing an album, a repair is attempted. A snapshot taken
+at detection would be confidently wrong by the time anybody looked at it.
+
 ## Where it runs
 
 `process.Runner.applyMigrations` drains the queue at the end of a scan and of a drift sync — both fetch
@@ -372,9 +422,9 @@ file to change.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /migrations` | all migrations, newest first (`?status=pending` for the queue) |
+| `GET /migrations` | all migrations, newest first (`?status=pending` for the queue), each decorated with its [review context](#what-the-review-queue-shows) |
 | `GET /migrations/policy` | which categories are currently held for review |
-| `POST /migrations/:id/approve` | apply one, then rebuild the collection |
+| `POST /migrations/:id/approve` | apply one, then rebuild the collection — **202** instead when the album needs a manager refresh first ([above](#approving-a-blocked-album)) |
 | `POST /migrations/:id/dismiss` | record it as deliberately not applied |
 | `POST /migrations/verify` | sweep every stored MBID now (202; runs in the background) |
 

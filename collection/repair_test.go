@@ -159,3 +159,37 @@ func TestMarkRepairAttemptedStampsOnlyThisArtist(t *testing.T) {
 		t.Error("another artist's ghost must not be stamped")
 	}
 }
+
+// TestRepairScopedToOneArtist: the approve button repairs the album in front of the
+// user, and only that. Counting another artist's ghosts as candidates would credit a
+// one-artist pass with albums it never asked about — and, since Repaired is derived by
+// re-reading the ghost set afterwards, would report albums a concurrent run fixed as
+// this pass's work.
+func TestRepairScopedToOneArtist(t *testing.T) {
+	db := testDB(t)
+	ghostRow(t, db, "rg-mine", "artist-1", nil)
+	ghostRow(t, db, "rg-theirs", "artist-2", nil)
+
+	stats, err := RepairGhostReleaseGroupsWith(db, RepairOptions{ArtistMBID: "artist-1"})
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if stats.Candidates != 1 {
+		t.Errorf("Candidates = %d, want 1 — only this artist's ghost", stats.Candidates)
+	}
+}
+
+// TestRepairScopedToArtistWithoutGhosts: an artist holding nothing unresolvable must
+// not cause a refresh. The scope narrows the work; it does not invent any.
+func TestRepairScopedToArtistWithoutGhosts(t *testing.T) {
+	db := testDB(t)
+	ghostRow(t, db, "rg-theirs", "artist-2", nil)
+
+	stats, err := RepairGhostReleaseGroupsWith(db, RepairOptions{ArtistMBID: "artist-1"})
+	if err != nil {
+		t.Fatalf("repair: %v", err)
+	}
+	if stats.Candidates != 0 || stats.Artists != 0 {
+		t.Errorf("want an inert pass for an artist with no ghosts, got %+v", stats)
+	}
+}

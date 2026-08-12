@@ -157,3 +157,106 @@ func TestMigrationPolicyEndpoint(t *testing.T) {
 		}
 	}
 }
+
+// TestApproveBlockedAlbumAsksTheManager: the case a live Lidarr install runs into.
+//
+// A release-group whose ID no longer resolves but which the manager still lists cannot
+// simply be retired — the next sync would put it straight back. Approving used to
+// return the reason as a 400 and tell the user to go and press refresh in Lidarr
+// themselves, which is the one step Autotaggerr can do for them. It now queues that
+// refresh and answers 202, because the manager's command is waited on for minutes.
+func TestApproveBlockedAlbumAsksTheManager(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Some Band"}).Error; err != nil {
+		t.Fatalf("create artist: %v", err)
+	}
+	if err := api.DB.Create(&models.CollectionReleaseGroup{
+		MBID: "rg-ghost", ArtistMBID: "artist-1", Title: "Heatstroke", InCatalog: true,
+	}).Error; err != nil {
+		t.Fatalf("create release-group: %v", err)
+	}
+	m := models.MusicbrainzMigration{
+		EntityType: models.MigrationEntityReleaseGroup,
+		OldMBID:    "rg-ghost",
+		Kind:       models.MigrationKindDeleted,
+		Status:     models.MigrationStatusPending,
+		Name:       "Heatstroke",
+	}
+	if err := api.DB.Create(&m).Error; err != nil {
+		t.Fatalf("create migration: %v", err)
+	}
+
+	w := do(r, "POST", "/api/v1/migrations/"+m.ID.String()+"/approve", token, nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("code = %d, want 202; body %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["artist_mbid"] != "artist-1" {
+		t.Errorf("artist_mbid = %v, want the artist to be refreshed", body["artist_mbid"])
+	}
+
+	// The row is left alone: nothing has been decided yet, and marking it applied or
+	// failed here would report an outcome the manager has not given.
+	var row models.MusicbrainzMigration
+	if err := api.DB.First(&row, "id = ?", m.ID).Error; err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if row.Status != models.MigrationStatusPending {
+		t.Errorf("status = %q, want it still pending until the manager answers", row.Status)
+	}
+}
+
+// TestListMigrationsExplainsItself: a review queue of bare IDs and zeroes is not a
+// review queue. Every pending row must arrive with what is wrong and what approving
+// does, so the UI can render a decision rather than a symptom.
+func TestListMigrationsExplainsItself(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	if err := api.DB.Create(&models.CollectionReleaseGroup{
+		MBID: "rg-ghost", ArtistMBID: "artist-1", Title: "Heatstroke", InCatalog: true,
+	}).Error; err != nil {
+		t.Fatalf("create release-group: %v", err)
+	}
+	if err := api.DB.Create(&models.MusicbrainzMigration{
+		EntityType: models.MigrationEntityReleaseGroup,
+		OldMBID:    "rg-ghost",
+		Kind:       models.MigrationKindDeleted,
+		Status:     models.MigrationStatusPending,
+		Name:       "Heatstroke",
+	}).Error; err != nil {
+		t.Fatalf("create migration: %v", err)
+	}
+
+	w := do(r, "GET", "/api/v1/migrations?status=pending", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, body %s", w.Code, w.Body.String())
+	}
+	var body struct {
+		Migrations []struct {
+			Problem             string `json:"problem"`
+			Effect              string `json:"effect"`
+			Blocker             string `json:"blocker"`
+			FilesOnDisk         int    `json:"files_on_disk"`
+			NeedsManagerRefresh bool   `json:"needs_manager_refresh"`
+		} `json:"migrations"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Migrations) != 1 {
+		t.Fatalf("migrations = %d, want 1", len(body.Migrations))
+	}
+	row := body.Migrations[0]
+	if row.Problem == "" || row.Effect == "" {
+		t.Errorf("a pending row must say what is wrong and what approving does, got %+v", row)
+	}
+	if !row.NeedsManagerRefresh || row.Blocker == "" {
+		t.Errorf("the manager's claim on this album must be visible before approving, got %+v", row)
+	}
+}

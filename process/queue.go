@@ -31,6 +31,7 @@ const (
 	jobRefreshVerify    jobKind = "refresh_verify"
 	jobRefreshArtist    jobKind = "refresh_artist"
 	jobRefreshLibrary   jobKind = "refresh_library"
+	jobRepairArtist     jobKind = "repair_artist"
 )
 
 // fileWriting reports whether a kind rewrites audio files. File-writing jobs are

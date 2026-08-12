@@ -65,14 +65,33 @@ type RepairStats struct {
 	Failures []string `json:"failures,omitempty"`
 }
 
+// RepairOptions narrows a repair pass. The zero value is the nightly pass: every
+// artist holding a ghost album, each one subject to the cooldown.
+type RepairOptions struct {
+	// ArtistMBID limits the pass to one artist. Empty means every artist holding a
+	// ghost album.
+	ArtistMBID string
+
+	// IgnoreCooldown asks the manager again even if it was asked recently. The
+	// cooldown exists to stop an unattended pass re-asking on every run; a person
+	// pressing approve is not an unattended pass, and telling them to come back in
+	// seven days would be refusing the one signal worth acting on.
+	IgnoreCooldown bool
+}
+
 // RepairGhostReleaseGroups asks each manager to refresh the artists holding albums
 // whose MusicBrainz ID no longer resolves, then re-mirrors those artists.
+func RepairGhostReleaseGroups(db *gorm.DB) (RepairStats, error) {
+	return RepairGhostReleaseGroupsWith(db, RepairOptions{})
+}
+
+// RepairGhostReleaseGroupsWith is RepairGhostReleaseGroups with the scope spelled out.
 //
 // The sequence is the point and the order is not negotiable: refresh, wait for the
 // command to finish, re-sync. Re-syncing before the refresh lands mirrors the same
 // stale catalog back and the pass concludes nothing changed; retiring before either
 // deletes the row that was about to be corrected.
-func RepairGhostReleaseGroups(db *gorm.DB) (RepairStats, error) {
+func RepairGhostReleaseGroupsWith(db *gorm.DB, opts RepairOptions) (RepairStats, error) {
 	var stats RepairStats
 	if db == nil {
 		return stats, nil
@@ -82,10 +101,6 @@ func RepairGhostReleaseGroups(db *gorm.DB) (RepairStats, error) {
 	if err != nil {
 		return stats, err
 	}
-	stats.Candidates = len(ghosts)
-	if len(ghosts) == 0 {
-		return stats, nil
-	}
 
 	// One refresh per artist, not per album. A single artist held eight dead IDs on the
 	// instance this was built against; asking eight times would be eight times the load
@@ -93,6 +108,22 @@ func RepairGhostReleaseGroups(db *gorm.DB) (RepairStats, error) {
 	artists, err := artistsHoldingGhosts(db, ghosts)
 	if err != nil {
 		return stats, err
+	}
+
+	if opts.ArtistMBID != "" {
+		// Narrowed on both lists, not just the artist one: Repaired is counted by
+		// re-reading the ghost set afterwards, so leaving other artists' ghosts in
+		// `ghosts` would credit this pass with albums a concurrent run repaired.
+		ghosts, err = ghostsForArtist(db, ghosts, opts.ArtistMBID)
+		if err != nil {
+			return stats, err
+		}
+		artists = intersect(artists, opts.ArtistMBID)
+	}
+
+	stats.Candidates = len(ghosts)
+	if len(ghosts) == 0 {
+		return stats, nil
 	}
 
 	var managers []models.Manager
@@ -129,7 +160,7 @@ func RepairGhostReleaseGroups(db *gorm.DB) (RepairStats, error) {
 			if !ok {
 				continue
 			}
-			if inCooldown(db, artistMBID) {
+			if !opts.IgnoreCooldown && inCooldown(db, artistMBID) {
 				stats.Skipped++
 				continue
 			}
@@ -210,6 +241,30 @@ func artistsHoldingGhosts(db *gorm.DB, ghosts []string) ([]string, error) {
 	}
 	sort.Strings(out)
 	return out, nil
+}
+
+// ghostsForArtist narrows a ghost list to the albums credited to one artist, so a
+// scoped pass reports only what it could have acted on.
+func ghostsForArtist(db *gorm.DB, ghosts []string, artistMBID string) ([]string, error) {
+	if len(ghosts) == 0 {
+		return nil, nil
+	}
+	var mbids []string
+	err := db.Model(&models.CollectionReleaseGroup{}).
+		Where("mb_id IN ? AND artist_mb_id = ?", ghosts, artistMBID).
+		Order("mb_id").Distinct().Pluck("mb_id", &mbids).Error
+	return mbids, err
+}
+
+// intersect keeps `want` only if it is in the list — a scoped pass must not refresh an
+// artist that holds no ghost album at all.
+func intersect(artists []string, want string) []string {
+	for _, a := range artists {
+		if a == want {
+			return []string{want}
+		}
+	}
+	return nil
 }
 
 // inCooldown reports whether this artist's ghosts were all attempted recently. Keyed on

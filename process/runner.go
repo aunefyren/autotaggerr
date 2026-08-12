@@ -1371,11 +1371,18 @@ func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 // fixed something. Failures are logged and reported on the event, never returned — a
 // manager being unreachable must not stop the run that found the problem.
 func (r *Runner) repairGhostAlbums(parent *models.Event) collection.RepairStats {
+	return r.repairGhostAlbumsWith(parent, collection.RepairOptions{})
+}
+
+// repairGhostAlbumsWith is repairGhostAlbums with the scope spelled out, so the
+// approve button can repair one artist now without waiting for the artist's cooldown
+// or setting the whole collection refreshing in the manager.
+func (r *Runner) repairGhostAlbumsWith(parent *models.Event, opts collection.RepairOptions) collection.RepairStats {
 	if r.db == nil {
 		return collection.RepairStats{}
 	}
 
-	stats, err := collection.RepairGhostReleaseGroups(r.db)
+	stats, err := collection.RepairGhostReleaseGroupsWith(r.db, opts)
 	if err != nil {
 		logger.Log.Warnf("failed to repair albums with unresolvable MusicBrainz IDs: %s", err.Error())
 		return stats
@@ -1402,6 +1409,62 @@ func (r *Runner) repairGhostAlbums(parent *models.Event) collection.RepairStats 
 	}
 	events.Finish(r.db, ev, status, summary, map[string]any{"repair": stats})
 	return stats
+}
+
+// RepairArtistAlbums asks the manager to re-read one artist whose albums hold
+// MusicBrainz IDs that no longer resolve, then drains the migration queue.
+//
+// This is what the approve button does when a retirement is blocked by the manager
+// still listing the album. Approving is the user saying "deal with this", and the only
+// thing that can deal with it is the manager: a refresh either re-keys the album to a
+// live ID (nothing to retire — the entry fixes itself) or drops it (retirable, which
+// the drain below then does). Refusing with an instruction to go and press refresh in
+// Lidarr made the user do by hand the one step Autotaggerr can do for them.
+//
+// It is queued rather than run inline because the manager's refresh command is waited
+// on for up to three minutes, which is far longer than an HTTP request should be held
+// open. The cooldown is ignored: it exists to keep an unattended nightly pass from
+// re-asking, and a person pressing a button is not that.
+//
+// Run via `go` for background execution.
+func (r *Runner) RepairArtistAlbums(artistMBID string) {
+	r.enqueue(job{jobRepairArtist, "repair_artist:" + artistMBID, "Repair albums via the manager", func() {
+		r.repairArtistAlbumsNow(artistMBID)
+	}})
+}
+
+func (r *Runner) repairArtistAlbumsNow(artistMBID string) {
+	if r.db == nil {
+		return
+	}
+
+	// A parent event, so the refresh, the drain and the rebuild read as one action in
+	// the feed rather than as three unrelated rows appearing at the same second.
+	ev := events.Begin(r.db, models.EventTypeMigration, "Repair albums via the manager")
+
+	stats := r.repairGhostAlbumsWith(ev, collection.RepairOptions{ArtistMBID: artistMBID, IgnoreCooldown: true})
+
+	// Same order as a full run: repair, then drain. A release-group deletion stops
+	// being held for review once the manager has been asked (see Policy.heldForReview),
+	// so this drain is what actually retires the album — or fails it with the reason
+	// the manager's answer produced.
+	res := r.applyMigrations(ev)
+	r.rebuildCollection(ev)
+
+	status := models.EventStatusOK
+	if len(stats.Failures) > 0 {
+		status = models.EventStatusError
+	}
+	summary := fmt.Sprintf("%s refreshed · %d album(s) repaired · %d retired",
+		plural(stats.Artists, "artist", "artists"), stats.Repaired, res.Retired)
+	if stats.Candidates == 0 {
+		summary = "nothing left to repair for this artist"
+	}
+	events.Finish(r.db, ev, status, summary, map[string]any{
+		"repair":     stats,
+		"artist":     artistMBID,
+		"migrations": res,
+	})
 }
 
 // applyMigrations drains the pending MusicBrainz migration queue at a run boundary.

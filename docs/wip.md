@@ -197,9 +197,27 @@ Residual open work on what has shipped:
     and title) is a far stronger basis for a `MigrationKindRedirect` than any search would be.
     Deferred because no desire in the collection measured pointed at a ghost — build it when one
     does.
-  - **The repair stage has no button.** It runs on a full pass only. An artist page showing "3
-    albums here have IDs that do not resolve — refresh in Lidarr" would let a user fix one artist
-    without waiting for the nightly run.
+  - **The repair stage has no button of its own.** Approving a blocked album now triggers a scoped
+    repair (see [mb-migration.md](mb-migration.md#approving-a-blocked-album)), so the only gap left
+    is the *artist-page* entry point: "3 albums here have IDs that do not resolve — ask Lidarr", for
+    a user who has not opened the Migrations page. `Runner.RepairArtistAlbums` is the verb; it needs
+    an endpoint and a button, not new machinery.
+
+### Frontend follow-ups — Migrations page (separate repo)
+
+The backend for both of these has shipped and is tested; the built bundle in `web/dist` has to catch
+up. See [mb-migration.md](mb-migration.md#what-the-review-queue-shows).
+
+- **Render the review context.** Each row in `GET /migrations` now carries `problem` and `effect`
+  (ready-to-show sentences), plus `files_on_disk`, `editions`, `owned`, `in_catalog`, `blocker`,
+  `needs_manager_refresh` and `artist_mbid` / `artist_name`. The current card shows the entity type
+  and kind only, which for a release-group deletion is "Album · ID does not resolve" over a row of
+  zeroes. At minimum: print `problem` and `effect`; better, show the file/edition count and the
+  blocker as their own affordances.
+- **Handle 202 from approve.** When `needs_manager_refresh` is true, approve returns **202** with
+  `{artist_mbid, artist_name, message}` and the row stays `pending` — it is asking the manager, not
+  applying. Label the button accordingly for that case (*"Ask Lidarr to re-read <artist>"* rather
+  than *Approve*), show `message`, and link to Activity rather than expecting the row to disappear.
 
 ## Known issues / limitations
 
