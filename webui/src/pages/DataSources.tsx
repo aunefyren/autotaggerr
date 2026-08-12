@@ -1,4 +1,4 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, ReactNode, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { DataSource, DATA_SOURCE_LABEL, dataSourceCategory } from "../types";
@@ -128,11 +128,10 @@ export default function DataSources() {
         onConfigure={setEditing}
         onSetUp={setAddingType}
         onRemoveDuplicate={removeDuplicate}
+        // The one action these two providers are for, so it lives in their card
+        // rather than as a section beneath it.
+        footer={<ArtworkRefresh />}
       />
-
-      {/* Directly under the artwork panel, because it is the one action those two
-          providers are for and the trigger belongs next to what it configures. */}
-      <ArtworkRefresh />
 
       {(addingType || editing) && (
         <DataSourceForm
@@ -150,6 +149,11 @@ export default function DataSources() {
  * One panel per non-metadata role. Each provider is a singleton, so a row is either
  * configured (state + Configure) or absent (Set up) — there is no list to grow, which
  * is exactly why these do not belong in the metadata table.
+ *
+ * `footer` is for an action that operates on these providers. It sits *inside* the
+ * card, below a divider, because an action on the panel's contents is not a peer
+ * section of it — given its own eyebrow and its own button row it reads as a second
+ * page heading, which is what the artwork refresh looked like before it moved in here.
  */
 function ProviderPanel({
   title,
@@ -160,6 +164,7 @@ function ProviderPanel({
   onConfigure,
   onSetUp,
   onRemoveDuplicate,
+  footer,
 }: {
   title: string;
   note: string;
@@ -169,6 +174,7 @@ function ProviderPanel({
   onConfigure: (d: DataSource) => void;
   onSetUp: (type: string) => void;
   onRemoveDuplicate: (d: DataSource) => void;
+  footer?: ReactNode;
 }) {
   return (
     <section className="stack" style={{ gap: 8 }}>
@@ -219,6 +225,12 @@ function ProviderPanel({
             </div>
           );
         })}
+        {footer && (
+          <>
+            <div className="panel-rule" />
+            {footer}
+          </>
+        )}
       </div>
       <span className="dim" style={{ fontSize: 11 }}>{note}</span>
     </section>

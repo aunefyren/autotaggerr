@@ -155,16 +155,22 @@ Expiring rather than deleting (`modules.ArtworkExpire`), so the stale copy stays
 fallback if the re-fetch then fails — a forced pass during a provider outage must not empty a page
 that had covers on it yesterday.
 
-**Forcing is reachable from exactly one place**: the button on /data-sources, behind
-`ForceArtworkDialog`. Nothing scheduled and nothing automatic forces — the same rule
-[mirror.md](mirror.md#forcing-is-always-deliberate) holds for metadata. The two rules that make it
-deliberate carry over: a forced pass confirms and an ordinary one does not, and the checkbox resets
-once a pass starts so one considered decision does not become a setting.
+**Forcing is reachable from exactly one place**: the *Refresh artwork* button on /data-sources.
+Nothing scheduled and nothing automatic forces — the same rule
+[mirror.md](mirror.md#forcing-is-always-deliberate) holds for metadata.
 
-`ForceArtworkDialog` is a sibling of `ForceRefreshDialog` rather than a reuse of it. The metadata
-dialog measures itself in rate-limited *requests*, which is honest for JSON lookups and useless here;
-a dialog that said "requests" for a few hundred megabytes of transfer would understate the cost by
-orders of magnitude, which is the one failure a confirm step cannot have.
+**The choice is made in the dialog, not on the page.** Pressing the button opens
+`RefreshArtworkDialog`, which offers both readings as two buttons. There is no *Ignore cached
+images* tick box beside the button, and deliberately so: on a settings surface a persistent checkbox
+sits among controls that genuinely are stored preferences and reads as one — which is exactly the
+misreading the "reset it after a pass starts" rule used to guard against. A choice made in a dialog
+leaves nothing ticked, so the rule is unnecessary rather than enforced. See the style guide's
+*Choice dialog*.
+
+`RefreshArtworkDialog` is a sibling of `RefreshMetadataDialog` rather than a reuse of it. The
+metadata dialog measures itself in rate-limited *requests*, which is honest for JSON lookups and
+useless here; copy that said "requests" for a few hundred megabytes of transfer would understate the
+cost by orders of magnitude, which is the one failure a dialog like this cannot have.
 
 ## What a pass records
 
@@ -225,12 +231,18 @@ because no provider is configured"* — opposite situations that look identical 
 
 ## UI
 
-The control lives in the **artwork section of /data-sources**, next to the providers it uses, rather
-than on a page of its own. It is genuinely niche — new rows fetch their own images and the schedule
-covers expiry — so it is for filling a cold cache on an existing install, which is why it is a
-secondary button and a quiet status strip rather than a page.
+The control is the **footer of the artwork providers card on /data-sources** — inside the card, under
+a full-bleed hairline, because it is an action *on* those two providers rather than a peer section of
+them. As a sibling section with its own eyebrow and its own top-right button it read as a second page
+heading, and the loudest things on the page were two cache counts nobody came there to read.
 
-The strip states the two cache figures (*images cached*, *with no artwork*) between passes, because
-those are meaningful when nothing is running; a progress bar replaces them while a pass is in flight.
-The button is disabled with an explanation when no provider can serve an image, since a pass would
-otherwise start and fetch nothing.
+It is deliberately quiet: one sentence, one summary line, one secondary button. The figures sit at
+`--text-xs` with the numbers in mono, the way every other count in the app is set, rather than as
+display numerals — settings is a working surface, and the style guide keeps the loud treatment for
+browsing ones.
+
+The summary line states *images cached*, *with no artwork* and the last run between passes; a
+progress meter replaces it while one is in flight. **"With no artwork" earns its place**: it is what
+explains a page of monogram tiles, and without it "no image" is indistinguishable from "not fetched
+yet". The button is disabled with an explanation when no provider can serve an image, since a pass
+would otherwise start and fetch nothing.

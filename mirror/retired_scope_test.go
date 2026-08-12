@@ -109,7 +109,7 @@ func TestArtistScopeSkipsRetiredGroups(t *testing.T) {
 	seedGroup(t, db, "rg-live", "artist-1")
 	seedGroupDeletion(t, db, "rg-dead", models.MigrationStatusPending)
 
-	scope, err := ArtistScope(db, "artist-1")
+	scope, err := ArtistScope(db, "artist-1", false)
 	if err != nil {
 		t.Fatalf("scope: %v", err)
 	}

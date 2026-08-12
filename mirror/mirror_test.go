@@ -85,7 +85,7 @@ func TestArtistScopeCoversEditions(t *testing.T) {
 		t.Fatalf("seed release: %v", err)
 	}
 
-	scope, err := ArtistScope(db, "a1")
+	scope, err := ArtistScope(db, "a1", false)
 	if err != nil {
 		t.Fatalf("ArtistScope: %v", err)
 	}
@@ -98,15 +98,22 @@ func TestArtistScopeCoversEditions(t *testing.T) {
 }
 
 // TestOnlyAnExplicitForceIgnoresTheCache is the invariant behind "ignoring the cache
-// is deliberate and rare": forcing is reachable through exactly one argument, on one
-// constructor, and no scope builds itself that way.
+// is deliberate and rare": **no scope forces unless its caller passed an argument
+// saying so**, and the scopes that take no such argument can never force at all.
+//
+// It used to say something narrower — one argument, on one constructor — which stopped
+// being true when forcing became available per artist. That is a widening of where the
+// choice can be made, not of when it happens by itself, and the second is what this
+// test exists to protect. Both constructors that accept a force argument are checked
+// in both positions below, so adding a third scope with a defaulted-on force still
+// fails here.
 //
 // It is worth a test rather than a comment because the failure is silent and
 // expensive. A scope that forces re-reads every entity it covers at one rate-limited
 // request each — hours, for a collection-sized scope — and nothing about a running
 // pass says which reading it is. Every scheduled entry point (the nightly refresh,
-// the scan's DueScope stage, both startup runs) builds one of the scopes below, so
-// this is what stops a schedule from ever silently becoming a full re-read.
+// the scan's DueScope stage, both startup runs) builds one of the unforced scopes
+// below, so this is what stops a schedule from ever silently becoming a full re-read.
 func TestOnlyAnExplicitForceIgnoresTheCache(t *testing.T) {
 	db := testDB(t)
 	if err := db.Create(&models.CollectionArtist{MBID: "a1", Name: "Talk Talk"}).Error; err != nil {
@@ -117,7 +124,7 @@ func TestOnlyAnExplicitForceIgnoresTheCache(t *testing.T) {
 		t.Fatalf("seed library: %v", err)
 	}
 
-	artist, err := ArtistScope(db, "a1")
+	artist, err := ArtistScope(db, "a1", false)
 	if err != nil {
 		t.Fatalf("ArtistScope: %v", err)
 	}
@@ -131,22 +138,37 @@ func TestOnlyAnExplicitForceIgnoresTheCache(t *testing.T) {
 	}
 
 	for name, scope := range map[string]Scope{
-		"ArtistScope":            artist,
+		"ArtistScope(false)":     artist,
 		"LibraryScope":           library,
 		"CollectionScope(false)": collection,
 		"DueScope":               DueScope([]string{"rel-1"}),
 	} {
 		if scope.Force {
-			t.Errorf("%s ignores the cache; only CollectionScope(db, true) may", name)
+			t.Errorf("%s ignores the cache without being asked to", name)
 		}
 	}
 
+	// The two that can force must actually do it when asked — an argument that is
+	// accepted and dropped would fail silently in the direction of doing too little,
+	// which is the harder half to notice.
 	forced, err := CollectionScope(db, true)
 	if err != nil {
 		t.Fatalf("CollectionScope(force): %v", err)
 	}
 	if !forced.Force {
-		t.Error("CollectionScope(db, true) must ignore the cache — it is the one way to ask")
+		t.Error("CollectionScope(db, true) must ignore the cache — it is how the collection is asked")
+	}
+	forcedArtist, err := ArtistScope(db, "a1", true)
+	if err != nil {
+		t.Fatalf("ArtistScope(force): %v", err)
+	}
+	if !forcedArtist.Force {
+		t.Error("ArtistScope(db, mbid, true) must ignore the cache — it is how one artist is asked")
+	}
+	// A forced pass says so in its title, so a queue entry and an event row are not
+	// indistinguishable from the cheap reading.
+	if !strings.Contains(forcedArtist.Title, "Full metadata refresh") {
+		t.Errorf("forced artist title = %q, want it to name the reading", forcedArtist.Title)
 	}
 	// The title is how a user tells the two apart after the fact, so it moves with the
 	// flag rather than being set alongside it.

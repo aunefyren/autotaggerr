@@ -10,7 +10,7 @@ import { ConfirmDialog } from "./ui";
  *
  * It is one component rather than three because the wording is the warning. The three
  * scopes differ only in *how much* they touch, and a copy per page is how a verb ends
- * up meaning three things — the same drift the ForceRefreshDialog exists to prevent.
+ * up meaning three things — the same drift RefreshMetadataDialog exists to prevent.
  *
  * **`discardsPins` is not decoration.** The runner clears manual pins only for
  * libraries a *Lidarr* manager governs (prepareForceRecorrelate skips every other

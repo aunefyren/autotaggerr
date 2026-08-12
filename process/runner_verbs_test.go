@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/models"
@@ -386,7 +387,10 @@ func TestRefreshVerbsUnknownScope(t *testing.T) {
 	db := newTestDB(t)
 	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 
-	r.RefreshArtist("no-such-artist")
+	r.RefreshArtist("no-such-artist", false)
+	r.waitIdle(t)
+	// The forced reading must be as safe on an unknown artist as the cheap one.
+	r.RefreshArtist("no-such-artist", true)
 	r.waitIdle(t)
 	r.RefreshLibrary(uuid.New())
 	r.waitIdle(t)
@@ -425,4 +429,59 @@ func TestScopeIsFull(t *testing.T) {
 			t.Errorf("%s: scopeIsFull = %v, want %v", c.name, got, c.want)
 		}
 	}
+}
+
+// A forced artist refresh must not be deduped onto a cheap one already pending.
+//
+// The queue collapses jobs by key, so sharing one between the two readings would have
+// the pending unforced pass silently satisfy the forced request: the API answers
+// "queued", the user waits, and the full re-read never happens. That is the failure
+// this verb's naming discipline exists to prevent, and it would be invisible — both
+// readings look identical while running.
+func TestForcedArtistRefreshIsNotDedupedOntoTheCheapOne(t *testing.T) {
+	db := newTestDB(t)
+	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+
+	// Occupy the worker so the refreshes queue instead of draining as they arrive;
+	// without this there is nothing to observe.
+	release := make(chan struct{})
+	r.enqueue(job{jobRefreshArtist, "blocker", "blocker", func() { <-release }})
+	waitFor(t, func() bool {
+		r.queueMu.Lock()
+		defer r.queueMu.Unlock()
+		return r.current != nil && r.current.key == "blocker"
+	}, "the blocking job never started")
+
+	r.RefreshArtist("a1", false)
+	r.RefreshArtist("a1", true)
+	// The same reading twice still collapses — that is what dedup is for.
+	r.RefreshArtist("a1", true)
+
+	r.queueMu.Lock()
+	keys := make([]string, 0, len(r.queue))
+	for _, q := range r.queue {
+		keys = append(keys, q.key)
+	}
+	r.queueMu.Unlock()
+	close(release)
+
+	if len(keys) != 2 {
+		t.Fatalf("queued keys = %v, want two: one per reading, with the repeat collapsed", keys)
+	}
+	if keys[0] == keys[1] {
+		t.Errorf("both readings queued under %q — a force would be swallowed by a pending refresh", keys[0])
+	}
+}
+
+// waitFor polls until cond holds, failing rather than hanging if it never does.
+func waitFor(t *testing.T, cond func() bool, msg string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal(msg)
 }

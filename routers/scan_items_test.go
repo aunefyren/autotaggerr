@@ -1,10 +1,12 @@
 package routers
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/google/uuid"
@@ -424,6 +426,55 @@ func TestLibraryScopedActionsRequireAuth(t *testing.T) {
 	for _, verb := range []string{"refresh", "retag"} {
 		if w := do(r, "POST", "/api/v1/libraries/"+uuid.New().String()+"/"+verb, "", nil); w.Code != http.StatusUnauthorized {
 			t.Errorf("%s without a token = %d, want 401", verb, w.Code)
+		}
+	}
+}
+
+// The per-artist refresh honours the cache by default and forces only when asked, the
+// same way the collection-scoped one does. The response echoes which reading it parsed,
+// because the two are otherwise indistinguishable from outside — and a force that
+// silently downgraded to the cheap reading is the failure worth catching.
+//
+// The runner is shut down first, so nothing is actually queued. That is deliberate:
+// refreshing an artist that *exists* starts a real MusicBrainz pass on a background
+// goroutine, which would reach the network from the test suite and outlive the test
+// that started it. What this asserts is the handler's reading of the request, which is
+// the part that can regress silently; the work behind it is covered where it can be
+// driven without a network — process.TestForcedArtistRefreshIsNotDedupedOntoTheCheapOne
+// and mirror.TestOnlyAnExplicitForceIgnoresTheCache.
+func TestArtistRefreshForcesOnlyWhenAsked(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Talk Talk"}).Error; err != nil {
+		t.Fatalf("create artist: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := api.Scan.Shutdown(ctx); err != nil {
+		t.Fatalf("shutdown runner: %v", err)
+	}
+
+	for path, want := range map[string]bool{
+		"/api/v1/artists/artist-1/refresh":            false,
+		"/api/v1/artists/artist-1/refresh?force=true": true,
+		// Anything that is not the exact opt-in is the cheap reading: a typo must not
+		// cost hours, and "force" is spelled one way.
+		"/api/v1/artists/artist-1/refresh?force=1":     false,
+		"/api/v1/artists/artist-1/refresh?force=false": false,
+	} {
+		w := do(r, "POST", path, token, nil)
+		if w.Code != http.StatusAccepted {
+			t.Errorf("POST %s = %d, want 202: %s", path, w.Code, w.Body.String())
+			continue
+		}
+		var body struct {
+			Force bool `json:"force"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		if body.Force != want {
+			t.Errorf("POST %s reported force=%v, want %v", path, body.Force, want)
 		}
 	}
 }

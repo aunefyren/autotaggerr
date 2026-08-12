@@ -7,6 +7,7 @@ import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
+import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
@@ -164,6 +165,7 @@ export default function Artist() {
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
   const canSyncLidarr = isLidarr && (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
   const [syncAsk, setSyncAsk] = useState(false);
+  const [choosingRefresh, setChoosingRefresh] = useState(false);
 
   const refresh = () => { detail.reload(); disco.reload(); };
 
@@ -187,6 +189,15 @@ export default function Artist() {
     wasRunning.current = running;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
+
+  // Which reading of the refresh verb was chosen is an argument, never page state.
+  const startRefresh = (force: boolean) => async () => {
+    setChoosingRefresh(false);
+    await action(
+      `refresh${force ? "?force=true" : ""}`,
+      force ? "Full metadata refresh started — cached copies ignored" : "Metadata refresh started",
+    )();
+  };
 
   const action = (path: string, started: string) => async () => {
     try {
@@ -481,8 +492,11 @@ export default function Artist() {
         <button
           className="btn btn-ghost btn-sm"
           disabled={running}
-          title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release — ignoring the cache. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
-          onClick={action("refresh", "Metadata refresh started")}
+          title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
+          // The same verb as the collection's, so it opens the same dialog. Forcing is
+          // offered here because one artist is minutes rather than hours — but it is
+          // still a choice, never what the button means on its own.
+          onClick={() => setChoosingRefresh(true)}
         >
           Refresh metadata
         </button>
@@ -560,6 +574,15 @@ export default function Artist() {
               </p>
             </>
           }
+        />
+      )}
+
+      {choosingRefresh && (
+        <RefreshMetadataDialog
+          artist={artist?.name ?? "this artist"}
+          onCancel={() => setChoosingRefresh(false)}
+          onRefresh={startRefresh(false)}
+          onForce={startRefresh(true)}
         />
       )}
 

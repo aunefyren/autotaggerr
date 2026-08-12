@@ -276,21 +276,33 @@ func CollectionScope(db *gorm.DB, force bool) (Scope, error) {
 // after refreshing its artist still blocked on the rate limiter — the exact stall
 // the refresh was pressed to avoid.
 //
-// It honours the cache. This scope used to force, on the reading that asking by hand
-// means "check now" — but forcing is what makes a refresh expensive, and a button
-// whose words match the cheap collection-wide one should not be the costly reading of
-// them. What a user wants from this button is the artist's metadata brought up to
-// date, which is what an unforced pass does; ignoring cached copies is a deliberate
-// choice offered in exactly one place (see CollectionScope's force).
-func ArtistScope(db *gorm.DB, artistMBID string) (Scope, error) {
+// **force is off unless asked for.** This scope once forced unconditionally, on the
+// reading that asking by hand means "check now" — which made the narrow button the
+// expensive reading of words that mean the cheap thing everywhere else. What a user
+// wants from pressing it is the artist brought up to date, and an unforced pass
+// delivers that. So the default is unchanged; force is a separate, deliberate choice
+// made in the same dialog every other surface uses.
+//
+// Forcing here is cheap in a way forcing the collection is not: one artist is their
+// entity, their discography, the editions of their release-groups and their own
+// releases — a few hundred rate-limited requests at worst, against hours for the
+// collection. That is why it can be offered per artist at all.
+func ArtistScope(db *gorm.DB, artistMBID string, force bool) (Scope, error) {
 	var artist models.CollectionArtist
 	if err := db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
 		return Scope{}, err
 	}
 
+	title := "Metadata refresh for " + artist.Name
+	if force {
+		// Named the way a forced collection pass is, so a queue entry and an event row
+		// say which reading ran rather than leaving the two indistinguishable.
+		title = "Full metadata refresh for " + artist.Name
+	}
 	scope := Scope{
-		Title:   "Metadata refresh for " + artist.Name,
+		Title:   title,
 		Artists: []string{artistMBID},
+		Force:   force,
 		Detail:  map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID},
 	}
 

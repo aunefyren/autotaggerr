@@ -145,6 +145,14 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   background: var(--surface-1); border: 1px solid var(--border);
   border-radius: var(--radius-lg); padding: 16px;
 }
+/* Divides a card's contents from an action that operates on them. Full-bleed —
+   pulled out to the card's padding on both sides — so it reads as a rule across the
+   panel rather than a border around the footer, which is the difference between "this
+   belongs to the card" and "this is a second box inside it". */
+.panel-rule {
+  height: 1px; background: var(--border);
+  margin: 2px -16px 0;
+}
 
 /* Table */
 .tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface-1); }

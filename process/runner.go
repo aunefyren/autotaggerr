@@ -1532,14 +1532,28 @@ func (r *Runner) verifyIdentitiesNow() {
 // scan re-tags them, or the user presses Tag files to do it immediately.
 //
 // Run via `go` for background execution.
-func (r *Runner) RefreshArtist(artistMBID string) {
-	r.enqueue(job{jobRefreshArtist, "refresh_artist:" + artistMBID, "Metadata refresh", func() {
-		r.refreshArtistNow(artistMBID)
+// force ignores cached copies for this artist, which is a deliberate choice made in
+// the refresh dialog and never a default.
+//
+// The queue key carries the reading, so a forced request is **not** deduped onto an
+// unforced one already pending. Sharing a key would mean the cheap pass silently
+// satisfying the expensive request — a force that reported as queued and then did not
+// happen, which is the one failure mode this verb's naming rules exist to prevent.
+// Two presses of the same reading still collapse, which is what dedup is for.
+func (r *Runner) RefreshArtist(artistMBID string, force bool) {
+	key := "refresh_artist:" + artistMBID
+	title := "Metadata refresh"
+	if force {
+		key = "refresh_artist_force:" + artistMBID
+		title = "Full metadata refresh"
+	}
+	r.enqueue(job{jobRefreshArtist, key, title, func() {
+		r.refreshArtistNow(artistMBID, force)
 	}})
 }
 
-func (r *Runner) refreshArtistNow(artistMBID string) {
-	scope, err := mirror.ArtistScope(r.db, artistMBID)
+func (r *Runner) refreshArtistNow(artistMBID string, force bool) {
+	scope, err := mirror.ArtistScope(r.db, artistMBID, force)
 	if err != nil {
 		logger.Log.Warnf("metadata refresh skipped for artist %s: %s", artistMBID, err.Error())
 		return
@@ -1551,8 +1565,11 @@ func (r *Runner) refreshArtistNow(artistMBID string) {
 	// nobody.
 	//
 	// Doing both used to mean paging the discography twice over the network, since
-	// this sync bypassed the cache and the scope below forced. Now the sync fills the
-	// cache and the pass finds it fresh, so the second read costs nothing.
+	// this sync bypassed the cache and the scope below forced. On the ordinary reading
+	// the sync now fills the cache and the pass finds it fresh, so the second read
+	// costs nothing. A *forced* pass re-reads it anyway, by definition — a handful of
+	// pages against the hundreds of requests forcing already costs, and the alternative
+	// is a force that trusts a copy fetched moments earlier.
 	if _, err := collection.SyncArtist(r.db, r.meta, artistMBID); err != nil {
 		logger.Log.Warnf("failed to sync discography for %s: %s", artistMBID, err.Error())
 	}

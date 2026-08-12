@@ -249,7 +249,8 @@ pressed to avoid.
 | --- | --- | --- |
 | `CollectionScope(db, false)` | everything the collection refers to | no |
 | `CollectionScope(db, true)` | the same, re-read from scratch | **yes** |
-| `ArtistScope` | one artist, their discography, editions and releases | no |
+| `ArtistScope(db, mbid, false)` | one artist, their discography, editions and releases | no |
+| `ArtistScope(db, mbid, true)` | the same, re-read from scratch | **yes** |
 | `LibraryScope` | everything one library's files point at | no |
 | `DueScope` | only releases whose TTL has elapsed | no |
 
@@ -257,37 +258,50 @@ pressed to avoid.
 with the owned-editions table. Reading only `collection_releases` is what made a collection
 refresh quietly skip releases that files on disk actually point at.
 
-**One argument, on one constructor, is the only way to ignore the cache.** `CollectionScope`'s
-`force` sets `Scope.Force`; nothing else sets it, and `TestOnlyAnExplicitForceIgnoresTheCache`
-holds that line. The failure it guards against is silent and expensive — a forced scope re-reads
-every entity it covers at one rate-limited request each, and a running pass looks the same either
-way.
+**No scope forces unless its caller passed an argument saying so.** Two constructors accept one —
+`CollectionScope` and `ArtistScope` — and `TestOnlyAnExplicitForceIgnoresTheCache` holds the line
+for every scope in both directions: none forces by default, and the two that take the argument
+honour it. The failure it guards against is silent and expensive: a forced scope re-reads every
+entity it covers at one rate-limited request each, and a running pass looks the same either way.
 
-`ArtistScope` and `LibraryScope` used to force, on the reading that asking by hand means "check
-now". That is a fair description of the intent and a poor description of the cost: it made the
-per-artist button the expensive reading of words that mean the cheap thing everywhere else, and the
-per-library one — a library being collection-sized — as expensive as re-reading everything. What a
-user wants from either is *up to date*, which is what an unforced pass delivers. Distrusting every
-cached copy is a different request, and it is asked in one place.
+`ArtistScope` and `LibraryScope` used to force **unconditionally**, on the reading that asking by
+hand means "check now". That is a fair description of the intent and a poor description of the cost:
+it made the per-artist button the expensive reading of words that mean the cheap thing everywhere
+else, and the per-library one — a library being collection-sized — as expensive as re-reading
+everything. What a user wants from pressing either is *up to date*, which an unforced pass delivers.
+
+So the **default** did not come back; what came back is the **choice**. Forcing one artist is a few
+hundred rate-limited requests — minutes — against hours for the collection, which is what makes it
+reasonable to offer at that scope and not at library scope, where the cost is collection-sized with
+none of the deliberation a collection-wide button carries.
 
 ### Forcing is always deliberate
 
 One place is necessary but not sufficient: the argument still had to be *chosen* rather than
-carried in. Two rules complete it, both in the UI (`components/ForceRefreshDialog.tsx`):
+carried in. That choice is made in the dialog (`components/RefreshMetadataDialog.tsx`), which offers
+both readings of the verb as two buttons — *Refresh* and *Ignore cache and refresh* — and states
+what separates them: one rate-limited request per entity, an estimate in hours derived from the
+cached-entity count, and *reads only, no files written*, which is what makes the wait acceptable
+rather than alarming.
 
-- **A forced pass confirms; an ordinary one does not.** The dialog states the cost in the terms that
-  decide it — one rate-limited request per entity, an estimate in hours derived from the cached-entity
-  count, and *reads only, no files written*, which is what makes the wait acceptable rather than
-  alarming. Confirming the ordinary pass too would train people to click through the dialog that
-  matters.
-- **The checkbox resets to off once a pass starts.** *Ignore cached copies* is a modifier on a button
-  that gets pressed again later, so leaving it ticked turns one considered decision into a setting,
-  and the next press — days later, possibly by someone who did not tick it — silently costs hours. It
-  resets whether or not the request succeeded: what must not persist is the intent, not the outcome.
+**The choice is not a control on the page.** It used to be a persistent *Ignore cached copies*
+checkbox that changed what the button did, which needed a rule of its own — the box resets once a
+pass starts — because otherwise one considered decision became a setting, and the next press days
+later, by someone who did not tick it, silently cost hours. Making it a choice in the dialog deletes
+that rule rather than enforcing it: there is nothing left ticked afterwards. See the style guide's
+*Choice dialog*.
 
-Forcing is now reachable from exactly two buttons — the Metadata page's checkbox and the Migrations
-page's *Refresh metadata (ignore cache)* — and both come through the same dialog. A second copy of
-the wording is how the verb drifted in the first place.
+**Every control that offers forcing offers it the same way**: pressing *Refresh metadata* opens the
+dialog, and the dialog offers both readings. That is what makes three surfaces — Metadata, the
+collection and one artist — consistent rather than three doors with three meanings. The Migrations
+page used to carry a *Refresh metadata (ignore cache)* of its own, on the reasoning that finding
+merges is why forcing exists; what that produced was the same two words meaning the expensive thing
+on one page and the cheap thing on every other. It now links to Metadata in prose instead. The
+merge-finding argument is a reason the *option* exists, not a reason for a door with different
+words on it.
+
+The per-artist dialog states its own cost rather than the collection's — minutes, not hours — since
+a dialog whose whole job is stating the cost cannot describe both in one sentence.
 
 Nothing unattended forces: the nightly `SyncDrift` and the weekly run's `DueScope` stage are both
 unforced. That property is the one to protect.
@@ -462,18 +476,19 @@ The **Metadata** page (`/mirror`) is built around making a long job legible rath
 starting one: the phase, a progress meter, and the fetched / already-cached / failed / changed-
 upstream counters, with per-entity cache coverage below. It polls every three seconds while a pass
 runs. The trigger is a secondary action — the nightly schedule is what normally does this — and
-"Stop" needs no confirmation, because stopping costs nothing.
+"Stop" needs no confirmation, because stopping costs nothing. Pressing *Refresh metadata* opens the
+choice dialog rather than starting a pass directly; there is no cache option on the page itself.
 
 The **no-writes contract is stated on the page**, not left to this document. It is the difference
 between this verb and processing, and someone deciding whether to press a button needs to know it
 without reading `docs/`. The artist page's three buttons carry the same information in their
 tooltips: which of them write tags, and what *Refresh metadata* hands off to.
 
-The Migrations page offers the forced pass as **Refresh metadata (ignore cache)**. The
-parenthetical is not decoration: everywhere else those two words honour the cache, and a button
-that quietly means the expensive reading of a shared verb is the trap this naming exists to avoid.
-Finding merges is *why* forcing exists, so that page keeps a way in — it routes through the shared
-confirm dialog rather than duplicating the verb with semantics of its own (see
+The Migrations page **starts nothing**. It used to carry a *Refresh metadata (ignore cache)* button,
+and the parenthetical was load-bearing precisely because those two words honour the cache on every
+other page — a button that quietly meant the expensive reading of a shared verb is the trap this
+naming exists to avoid, and labelling around the trap is weaker than not building it. That page now
+links to Metadata in prose (see
 [forcing is always deliberate](#forcing-is-always-deliberate)).
 
 ## Interaction with migrations

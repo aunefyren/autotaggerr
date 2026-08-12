@@ -3,26 +3,30 @@ import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { ArtworkStatus } from "../types";
 import { CoverageBar } from "./CoverageBar";
-import { Pill } from "./ui";
-import { ForceArtworkDialog } from "./ForceArtworkDialog";
+import { RefreshArtworkDialog } from "./RefreshArtworkDialog";
 import { useToast } from "../toast";
 
 /**
- * The *Refresh artwork* control, and how the current pass is going.
+ * The *Refresh artwork* control, as the footer of the artwork providers card.
  *
- * It lives on Data sources rather than on a page of its own because the trigger
- * belongs next to the thing it configures — artwork providers are set up here, and
- * this is the one action that uses them. It is also genuinely niche: new artists and
- * albums fetch their own images as they arrive, and the schedule covers expiry, so
- * this is for kicking off the first pass on an existing install rather than something
- * to press regularly. Hence a secondary button and a quiet strip, not a page.
+ * It is a footer rather than a section because it is an action *on* those two
+ * providers, not a peer of them. Given its own eyebrow and its own top-right button —
+ * which is the page-head convention — it read as a second page heading, and the loudest
+ * things on a settings page were two cache counts nobody came here to read.
+ *
+ * So it is deliberately quiet: one sentence, one summary line, one button. The style
+ * guide's rule for this surface is that covers and their machinery earn their place on
+ * browsing surfaces and stay off working ones, and settings is a working surface. The
+ * numbers stay at --text-xs with the figures in mono, the way every other count in the
+ * app is set, rather than as display numerals.
  */
 export function ArtworkRefresh() {
   const toast = useToast();
   const status = useFetch<ArtworkStatus>(() => api.get("/artwork/status"));
   const running = status.data?.running ?? false;
-  const [force, setForce] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  // No page state for which reading is meant: the dialog asks, and nothing is left
+  // ticked afterwards.
+  const [choosing, setChoosing] = useState(false);
 
   // Poll while a pass runs. Three seconds matches the Metadata page; the unit of work
   // is a throttled request either way.
@@ -34,28 +38,18 @@ export function ArtworkRefresh() {
 
   const s = status.data;
   // Nothing to offer when no provider can serve an image: the button would start a
-  // pass that is certain to fetch nothing. Saying why beats a disabled control with
-  // no explanation, and the panels above are where the fix is.
+  // pass certain to fetch nothing. Saying why beats a disabled control with no
+  // explanation, and the rows above are where the fix is.
   const capable = (s?.covers_enabled ?? false) || (s?.artist_enabled ?? false);
 
-  /**
-   * Starts a pass, and puts the forced one behind the confirm dialog.
-   *
-   * The reset afterwards is the other half of making forcing deliberate — the
-   * checkbox is a modifier on a button pressed again later, so leaving it ticked
-   * turns one considered decision into a setting. It resets whether or not the
-   * request succeeded, because what must not persist is the intent.
-   */
-  const start = async () => {
-    setConfirming(false);
+  const start = (force: boolean) => async () => {
+    setChoosing(false);
     try {
       await api.post(`/artwork/refresh${force ? "?force=true" : ""}`);
       toast("info", force ? "Full artwork refresh started — cached images ignored" : "Artwork refresh started");
       setTimeout(() => status.reload(), 400);
     } catch (e) {
       toast("err", errMsg(e));
-    } finally {
-      setForce(false);
     }
   };
 
@@ -72,10 +66,18 @@ export function ArtworkRefresh() {
   if (!s) return null;
 
   return (
-    <section className="stack" style={{ gap: 8 }}>
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "center" }}>
-        <div className="eyebrow">Artwork refresh</div>
-        <div className="row">
+    <div className="stack" style={{ gap: "var(--space-4)" }}>
+      <div className="row" style={{ gap: "var(--space-5)", alignItems: "center" }}>
+        <div className="stack" style={{ gap: "var(--space-2)", minWidth: 0 }}>
+          <span style={{ color: "var(--text)", fontSize: "var(--text-sm)" }}>
+            {capable
+              ? "Fetched ahead of the pages that show them, so opening an artist does not download a hundred thumbnails while you wait."
+              : "Set up a provider above to fetch covers and artist images."}
+          </span>
+          {capable && <SummaryLine status={s} running={running} />}
+        </div>
+
+        <div className="row" style={{ marginLeft: "auto", flexShrink: 0 }}>
           {running ? (
             <button
               className="btn btn-ghost btn-sm"
@@ -88,10 +90,8 @@ export function ArtworkRefresh() {
             <button
               className="btn btn-secondary btn-sm"
               disabled={!capable}
-              // Only the forced pass confirms. A dialog on the ordinary one would
-              // train people to click through the dialog that matters.
-              onClick={() => (force ? setConfirming(true) : start())}
-              title="Fetches covers and artist images for everything in the collection, so pages paint from disk. Reads only: none of your audio files are touched."
+              onClick={() => setChoosing(true)}
+              title="Fetches covers and artist images for the collection. Reads only: none of your audio files are touched."
             >
               Refresh artwork
             </button>
@@ -99,96 +99,66 @@ export function ArtworkRefresh() {
         </div>
       </div>
 
-      <p className="muted" style={{ margin: 0, maxWidth: "68ch", fontSize: 12 }}>
-        {capable ? (
-          <>
-            Images are fetched ahead of the pages that show them, so opening an artist does not
-            download a hundred thumbnails while you wait. New artists and albums fetch their own as
-            they arrive and the rest is topped up on a schedule — this button is for filling a cold
-            cache now.
-          </>
-        ) : (
-          <>Set up an artwork provider above to fetch covers and artist images.</>
-        )}
-      </p>
-
-      {confirming && (
-        <ForceArtworkDialog
+      {choosing && (
+        <RefreshArtworkDialog
           images={s.images}
           missing={s.missing_cached}
-          onCancel={() => setConfirming(false)}
-          onConfirm={start}
+          onCancel={() => setChoosing(false)}
+          onRefresh={start(false)}
+          onForce={start(true)}
         />
       )}
-
-      {capable && (
-        <div className="row" style={{ gap: 8, alignItems: "center" }}>
-          <label className="row" style={{ gap: 6, alignItems: "center", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={force}
-              disabled={running}
-              onChange={(e) => setForce(e.target.checked)}
-            />
-            Ignore cached images
-          </label>
-          <span className="dim" style={{ fontSize: 11 }}>
-            {force
-              ? "Downloads every image again and re-asks about the ones with none — much slower, and how newly uploaded art is found."
-              : "Only fetches what is missing or expired."}
-          </span>
-        </div>
-      )}
-
-      <div className="row" style={{ gap: 18, flexWrap: "wrap", alignItems: "center" }}>
-        {running ? (
-          <>
-            <Pill kind="scan">Fetching</Pill>
-            <CoverageBar total={s.total} owned={s.done} label="images this pass" width={200} />
-            <span className="mono dim" style={{ fontSize: 11 }}>
-              {s.done} / {s.total}
-            </span>
-          </>
-        ) : (
-          <span className="dim mono" style={{ fontSize: 11 }}>
-            {s.finished_at
-              ? `last run ${new Date(s.finished_at).toLocaleString()}`
-              : "never run — the schedule or a new artist will start one"}
-          </span>
-        )}
-      </div>
-
-      <div className="row" style={{ gap: 18, flexWrap: "wrap" }}>
-        <Stat n={s.images} l="images cached" hint="On disk and served without a request" />
-        {/* The figure that explains a screen full of monogram tiles: the provider was
-            asked and had nothing. Without it, "no image" is indistinguishable from
-            "not fetched yet". */}
-        <Stat
-          n={s.missing_cached}
-          l="with no artwork"
-          hint="The provider was asked and has no image for these. Re-checked weekly, and immediately by a forced refresh."
-        />
-        {s.errors > 0 && <Stat n={s.errors} l="failed" hint="Logged and skipped; the pass continues" />}
-      </div>
 
       {s.last_error && (
-        <div className="dim" style={{ fontSize: 11 }} title={s.last_error}>
+        <span className="dim" style={{ fontSize: "var(--text-xs)" }} title={s.last_error}>
           Last error: {s.last_error}
-        </div>
+        </span>
       )}
-    </section>
+    </div>
   );
 }
 
-function Stat({ n, l, hint }: { n: number; l: string; hint?: string }) {
+/**
+ * What the cache holds, in one line.
+ *
+ * A derived summary rather than a row of stat blocks: these are supporting facts on a
+ * settings surface, and as 18px numerals they were the first thing the eye landed on.
+ * Figures in mono because that is how every count in this app is set; the words around
+ * them in sans, because mono is reserved for identifiers and an English sentence in it
+ * reads as debug output.
+ *
+ * "With no artwork" earns its place here — it is what explains a page of monogram
+ * tiles, and without it "no image" is indistinguishable from "not fetched yet".
+ */
+function SummaryLine({ status, running }: { status: ArtworkStatus; running: boolean }) {
+  if (running) {
+    return (
+      <div className="row" style={{ gap: "var(--space-5)", alignItems: "center" }}>
+        <CoverageBar total={status.total} owned={status.done} label="images this pass" width={180} />
+        <span className="dim mono" style={{ fontSize: "var(--text-xs)" }}>
+          {status.done} / {status.total}
+        </span>
+      </div>
+    );
+  }
+
   return (
-    <div title={hint}>
-      <div className="mono" style={{ fontSize: 18 }}>
-        {n.toLocaleString()}
-      </div>
-      <div className="dim" style={{ fontSize: 11 }}>
-        {l}
-      </div>
-    </div>
+    <span className="dim" style={{ fontSize: "var(--text-xs)" }}>
+      <span className="mono">{status.images.toLocaleString()}</span> cached
+      {" · "}
+      <span className="mono">{status.missing_cached.toLocaleString()}</span> with no artwork
+      {" · "}
+      {status.finished_at
+        ? `last run ${new Date(status.finished_at).toLocaleString()}`
+        : "never run — the schedule, or a new artist, will start one"}
+      {status.errors > 0 && (
+        <>
+          {" · "}
+          <span style={{ color: "var(--danger-text)" }}>
+            <span className="mono">{status.errors}</span> failed
+          </span>
+        </>
+      )}
+    </span>
   );
 }

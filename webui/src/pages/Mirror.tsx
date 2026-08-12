@@ -4,7 +4,7 @@ import { useFetch } from "../hooks";
 import { MirrorStatus } from "../types";
 import { CoverageBar } from "../components/CoverageBar";
 import { ErrorNote, Pill } from "../components/ui";
-import { ForceRefreshDialog } from "../components/ForceRefreshDialog";
+import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
 import { useToast } from "../toast";
 
 /**
@@ -56,10 +56,9 @@ export default function Mirror() {
   const toast = useToast();
   const status = useFetch<MirrorStatus>(() => api.get("/mirror/status"));
   const running = status.data?.running ?? false;
-  // Ignoring the cache is a modifier on the verb, not a second verb — the same
-  // choice the Migrations page makes when it asks for a full re-read.
-  const [force, setForce] = useState(false);
-  const [confirming, setConfirming] = useState(false);
+  // Both readings of the verb are chosen in the dialog, so the page holds no state
+  // about which one is meant — see RefreshMetadataDialog.
+  const [choosing, setChoosing] = useState(false);
 
   // Poll while a pass runs. Every three seconds is plenty for a job whose unit of
   // work is a rate-limited request.
@@ -80,25 +79,18 @@ export default function Mirror() {
   };
 
   /**
-   * Starts a pass, and puts the forced one behind the shared confirm dialog.
-   *
-   * The reset afterwards is the other half of making forcing deliberate: the
-   * checkbox is a modifier on a button that is pressed again later, so leaving it
-   * ticked turns one considered decision into a setting, and the *next* press —
-   * possibly days later, possibly by someone who did not tick it — silently costs
-   * hours. It resets whether or not the request succeeded, because what must not
-   * persist is the intent, not the outcome.
+   * Starts a pass. Which reading was chosen is an argument rather than page state:
+   * nothing is left ticked afterwards, so the next press cannot inherit a decision
+   * made days ago by someone else.
    */
-  const startRefresh = async () => {
-    setConfirming(false);
+  const startRefresh = (force: boolean) => async () => {
+    setChoosing(false);
     try {
       await api.post(`/mirror/sync${force ? "?force=true" : ""}`);
       toast("info", force ? "Full metadata refresh started — cached copies ignored" : "Metadata refresh started");
       setTimeout(() => status.reload(), 400);
     } catch (e) {
       toast("err", errMsg(e));
-    } finally {
-      setForce(false);
     }
   };
 
@@ -132,10 +124,10 @@ export default function Mirror() {
           ) : (
             <button
               className="btn btn-primary btn-sm"
-              // Only the forced pass confirms. Adding a dialog to the ordinary one
-              // would train people to click through the dialog that matters.
-              onClick={() => (force ? setConfirming(true) : startRefresh())}
-              title="Re-reads MusicBrainz for everything the collection refers to. One rate-limited request per entity, so a first pass over a large collection takes hours. Reads only: no files are written."
+              // One button, one verb. The dialog asks *which* reading — it is not a
+              // speed bump on the way to a decision already made on the page.
+              onClick={() => setChoosing(true)}
+              title="Re-reads MusicBrainz for what the collection refers to. Reads only: no files are written."
             >
               Refresh metadata
             </button>
@@ -143,30 +135,14 @@ export default function Mirror() {
         </div>
       </div>
 
-      {confirming && (
-        <ForceRefreshDialog
+      {choosing && (
+        <RefreshMetadataDialog
           entities={cachedTotal}
-          onCancel={() => setConfirming(false)}
-          onConfirm={startRefresh}
+          onCancel={() => setChoosing(false)}
+          onRefresh={startRefresh(false)}
+          onForce={startRefresh(true)}
         />
       )}
-
-      <div className="row" style={{ gap: 8, alignItems: "center" }}>
-        <label className="row" style={{ gap: 6, alignItems: "center", fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={force}
-            disabled={running}
-            onChange={(e) => setForce(e.target.checked)}
-          />
-          Ignore cached copies
-        </label>
-        <span className="dim" style={{ fontSize: 11 }}>
-          {force
-            ? "Re-reads everything, however recently it was checked — much slower, and how merges and deletions are found."
-            : "Only re-reads entries whose cached copy has expired."}
-        </span>
-      </div>
 
       <p className="dim" style={{ fontSize: 12, maxWidth: "68ch" }}>
         Autotaggerr keeps a local copy of every MusicBrainz entity your collection refers to, so

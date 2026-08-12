@@ -11,6 +11,7 @@ import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
 import { RunBar } from "../components/RunBar";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
+import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
 import { FilterChip, Pager, SortHeader, TableToolbar, matches, useBrowse, usePaging, useSorted } from "../components/browse";
 
 function ManagedBy({ managed_by }: { managed_by: string }) {
@@ -131,6 +132,7 @@ export default function Collection() {
   const hasLidarr = (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
   const [adding, setAdding] = useState(false);
   const [syncAsk, setSyncAsk] = useState(false);
+  const [choosingRefresh, setChoosingRefresh] = useState(false);
   const browse = useBrowse("name");
 
   // The queued verbs share one job runner, so the status says whether any of them
@@ -201,6 +203,16 @@ export default function Collection() {
     } catch (e) {
       toast("err", errMsg(e));
     }
+  };
+
+  // Which reading of the refresh verb was chosen is an argument, never page state —
+  // see RefreshMetadataDialog.
+  const startRefresh = (force: boolean) => async () => {
+    setChoosingRefresh(false);
+    await start(
+      `/mirror/sync${force ? "?force=true" : ""}`,
+      force ? "Full metadata refresh started — cached copies ignored" : "Metadata refresh started — see Activity",
+    )();
   };
 
   const syncLidarr = async (ignoreCache: boolean) => {
@@ -323,9 +335,13 @@ export default function Collection() {
         </button>
         <button
           className="btn btn-ghost btn-sm"
-          onClick={start("/refresh", "Metadata refresh started — see Activity")}
+          // Same verb as the Metadata page's, so it opens the same dialog rather than
+          // firing directly: `/refresh` and `/mirror/sync` are the same call, and one
+          // of them offering the cache choice while the other did not is exactly the
+          // drift that made these two words mean different things on different pages.
+          onClick={() => setChoosingRefresh(true)}
           disabled={running}
-          title="Re-read MusicBrainz for everything that is due a check. Reads only: no files are written. What changed upstream is reported, and Tag files (or the next Process) applies it."
+          title="Re-read MusicBrainz for what the collection refers to. Reads only: no files are written. What changed upstream is reported, and Tag files (or the next Process) applies it."
         >
           Refresh metadata
         </button>
@@ -482,6 +498,13 @@ export default function Collection() {
         </>
       )}
 
+      {choosingRefresh && (
+        <RefreshMetadataDialog
+          onCancel={() => setChoosingRefresh(false)}
+          onRefresh={startRefresh(false)}
+          onForce={startRefresh(true)}
+        />
+      )}
       {adding && <AddArtistModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
       {syncAsk && (
         <SyncLidarrDialog

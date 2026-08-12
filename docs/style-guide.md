@@ -561,7 +561,38 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   one**: the escape from a dialog you opened by accident must not be the button styled to be pressed.
   Use `danger` for anything that overwrites or discards; expensive-but-safe work stays `primary`.
   Confirm the *consequential* variant only — putting a dialog on the cheap sibling of an expensive
-  action trains people to click through the one that matters.
+  action trains people to click through the one that matters. When both variants are worth offering,
+  that is a **Choice dialog**, not two confirms.
+- **Choice dialog** (`ChoiceDialog`, `ui.tsx`) — for a verb with an ordinary reading and an expensive
+  one. **The choice lives in the dialog, never as a control beside the button.** A checkbox that
+  changes what the adjacent button does is a mode switch — two controls for one intention, and the
+  weaker one is what people click first (see *Direct manipulation beats a mode switch*). It is worse
+  on a settings surface, where a persistent tick box sits among controls that genuinely are stored
+  preferences and reads as one.
+
+  Moving the choice inside also **removes a rule rather than enforcing one**. The old shape needed
+  "the box resets once a pass starts", or one considered decision silently became a setting and the
+  next press — days later, by someone who did not tick it — cost hours. Nothing is left ticked, so
+  there is nothing to reset.
+
+  Two actions plus Cancel, ordered `Cancel · alternate · primary`. The primary is the routine reading
+  (what the schedule would do); the alternate is `secondary`, so the expensive one is not what the eye
+  lands on first — the same weighting the button spec uses for a destructive member of an ordinary
+  row. Each label restates its own verb.
+
+  **It differs from a confirm dialog in kind**: that one asks *are you sure*, this asks *which*. That
+  is why reaching the ordinary action through it does not become the trained-through click the confirm
+  rule warns about — nothing here is a speed bump, every press still resolves a real choice. Used by
+  `RefreshMetadataDialog` and `RefreshArtworkDialog`; `SyncLidarrDialog` is the same principle in its
+  other legitimate form, a single action with an in-dialog modifier, which suits a modifier that is
+  orthogonal to the action rather than a different reading of it.
+
+  One verb gets **one entry point**. Forcing a metadata refresh was reachable from two pages, which
+  is how the same two words came to honour the cache everywhere except one page.
+- **Panel footer** (`.panel-rule`) — an action that operates on a card's contents belongs *inside* the
+  card, under a full-bleed hairline, not as a section beneath it. Given its own eyebrow and its own
+  top-right button — the page-head convention — it reads as a second page heading. The rule is pulled
+  out to the card's padding on both sides so it divides the panel rather than boxing the footer.
 - **Brand mark** (`.brand .logo`, `Logo.tsx`) — a tag glyph on a 22px accent tile
   (`linear-gradient(135deg, var(--accent), #4c7dff)`, `5px` radius), followed by the wordmark. It
   appears exactly twice: the sidebar and the login card. **Drawn, never typed** — the mark was an

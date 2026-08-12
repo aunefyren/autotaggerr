@@ -1,9 +1,9 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { MusicbrainzMigration, MigrationList, MigrationPolicy } from "../types";
 import { EmptyState, ErrorNote, IdChip, Pill } from "../components/ui";
-import { ForceRefreshDialog } from "../components/ForceRefreshDialog";
 import { MBLink } from "../components/MBLink";
 import { useToast } from "../toast";
 
@@ -16,10 +16,10 @@ import { useToast } from "../toast";
  * visible below, because "what did it decide while I was not looking" is the
  * question this page exists to answer.
  *
- * The forced refresh at the top is the exception, and not really one: it is not a row
- * in this table, it is the Metadata page's verb reached from here. So it confirms
- * through that page's dialog rather than a copy — the cost is the same wherever it is
- * started, and the words for it live in exactly one place.
+ * It offers no way to *start* a metadata refresh. Finding a merge is not an activity
+ * of its own — it is what a refresh notices while fetching — so the verb belongs to
+ * the Metadata page, and a second entry point here meant the same two words honoured
+ * the cache everywhere except one page. The prose links there instead.
  */
 
 const ENTITY_LABELS: Record<string, string> = {
@@ -76,32 +76,9 @@ export default function Migrations() {
   const list = useFetch<MigrationList>(() => api.get("/migrations"));
   const policy = useFetch<MigrationPolicy>(() => api.get("/migrations/policy"));
   const [busy, setBusy] = useState<string | null>(null);
-  const [verifying, setVerifying] = useState(false);
-  const [confirming, setConfirming] = useState(false);
 
-  // Finding a merge is not an activity of its own — it is what a metadata refresh
-  // notices while fetching. So this is the ordinary refresh verb with the cache
-  // ignored, not a fourth thing with its own name. It runs for as long as the
-  // collection is large, so this only reports that it started; the Metadata and
-  // Activity pages are where it is watched.
-  //
-  // It goes behind the same dialog the Metadata page uses rather than a second one of
-  // its own: it is the same verb at the same cost, and duplicating the wording is how
-  // one verb came to mean two things. Finding merges is the reason forcing exists, so
-  // this keeps a way in — the dialog is what makes it deliberate.
-  const verify = async () => {
-    setConfirming(false);
-    setVerifying(true);
-    try {
-      await api.post("/migrations/verify");
-      toast("info", "Full metadata refresh started — follow it on the Metadata page");
-    } catch (e) {
-      toast("err", errMsg(e));
-    } finally {
-      setVerifying(false);
-    }
-  };
-
+  // Approving from a row is the confirmation: for anything held by policy, this table
+  // *is* the review step, so there is no second dialog asking whether you meant it.
   const act = (m: MusicbrainzMigration, what: "approve" | "dismiss") => async () => {
     setBusy(m.id);
     try {
@@ -133,9 +110,8 @@ export default function Migrations() {
       <div className="page-head">
         <h1>MusicBrainz migrations</h1>
         <div className="row">
-          {/* Ghost, not secondary: the button beside it is hours of rate-limited
-              work, and giving a free list reload the same visual weight invites
-              pressing the wrong one. */}
+          {/* Ghost: re-reading a list costs nothing, and this page's only control
+              should not carry the weight of an action that does. */}
           <button
             className="btn btn-ghost btn-sm"
             onClick={() => list.reload()}
@@ -143,17 +119,10 @@ export default function Migrations() {
           >
             Reload
           </button>
-          <button
-            className="btn btn-secondary btn-sm"
-            disabled={verifying}
-            onClick={() => setConfirming(true)}
-            title="Refresh every artist, release-group and release in the collection, ignoring cached copies — which is how merges and deletions are found. One rate-limited request each, so a large collection takes hours; watch it on the Metadata page. Reads only: no files are written, and anything found is queued under your approval policy."
-          >
-            {/* The parenthetical is not decoration: on every other page these words
-                honour the cache, and this one does not. Naming the difference is
-                what stops the shared verb from being a trap. */}
-            {verifying ? "Refreshing…" : "Refresh metadata (ignore cache)"}
-          </button>
+          {/* No refresh button here. This page reviews identity changes; starting a
+              metadata pass is the Metadata page's verb, and having a second entry
+              point meant the same two words honoured the cache on every page but one.
+              The prose below links there instead. */}
         </div>
       </div>
 
@@ -161,17 +130,14 @@ export default function Migrations() {
         MusicBrainz merges and deletes entities over time. Autotaggerr notices when an ID it
         stores has moved — the service answers for the old ID but returns a different one — and
         re-points its own records to follow. This is noticed by any metadata refresh, so the
-        nightly one keeps this list current on its own; the button above only forces the issue by
-        ignoring cached copies. Changes are applied as they are found unless a category is held
-        for review.
+        nightly one keeps this list current on its own. To look now, run a refresh from{" "}
+        <Link to="/mirror">Metadata</Link> — ignoring cached copies there is what re-reads every
+        ID rather than only the expired ones. Changes are applied as they are found unless a
+        category is held for review.
         {holding.length > 0
           ? ` Currently held for review: ${holding.join(", ")}.`
           : " Nothing is currently held for review."}
       </p>
-
-      {confirming && (
-        <ForceRefreshDialog busy={verifying} onCancel={() => setConfirming(false)} onConfirm={verify} />
-      )}
 
       {list.err && <ErrorNote message={list.err} />}
 

@@ -240,15 +240,26 @@ func (a *API) scanArtist(c *gin.Context) {
 	})
 }
 
-// refreshArtist re-reads this artist's catalogue and editions from MusicBrainz,
-// ignoring the cache TTL, and re-tags the files of anything that changed.
+// refreshArtist re-reads this artist's catalogue and editions from MusicBrainz and
+// re-tags the files of anything that changed.
+//
+// It **honours the cache**, unlike what this comment used to claim. ArtistScope
+// stopped forcing when forcing became a deliberate, collection-scoped choice: what a
+// user wants from a per-artist refresh is "up to date", which an unforced pass
+// delivers, and making the narrow button the expensive reading of words that mean the
+// cheap thing everywhere else was the trap. There is no per-artist force, and
+// mirror.TestOnlyAnExplicitForceIgnoresTheCache holds that line.
 func (a *API) refreshArtist(c *gin.Context) {
 	artist, ok := a.artistAction(c)
 	if !ok {
 		return
 	}
-	a.Scan.RefreshArtist(artist.MBID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued", "artist": artist.Name})
+	// force is the artist-scoped reading of the same choice the collection offers, and
+	// it arrives the same way: an explicit argument from the refresh dialog. Absent, the
+	// pass honours the cache — which is what the button on its own means everywhere.
+	force := c.Query("force") == "true"
+	a.Scan.RefreshArtist(artist.MBID, force)
+	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued", "artist": artist.Name, "force": force})
 }
 
 // retagArtist rewrites this artist's indexed files from their stored correlations.
