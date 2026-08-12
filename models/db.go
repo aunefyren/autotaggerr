@@ -108,7 +108,12 @@ const (
 	EventTypePlexRefresh = "plex_refresh"
 	EventTypeMigration   = "mb_migration"
 	EventTypeMirror      = "mb_mirror"
-	EventTypeHealth      = "health_check"
+	// EventTypeArtwork is a pass over the image cache. Its own type rather than a
+	// share of EventTypeMirror because artwork providers are a different kind of
+	// data source spending a different budget, and folding the two together put
+	// counters measured in images beside counters measured in MusicBrainz requests.
+	EventTypeArtwork = "artwork_refresh"
+	EventTypeHealth  = "health_check"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -210,6 +215,23 @@ type Manager struct {
 	LidarrBaseURL      string `json:"lidarr_base_url,omitempty"`
 	LidarrAPIKey       string `json:"-"`
 	LidarrHeaderCookie string `json:"-"`
+
+	// LidarrSkipArtistRefresh turns off the one write Autotaggerr makes to this
+	// manager: asking it to refresh an artist whose album IDs have stopped resolving.
+	// Nothing else is ever written — see modules/lidarr_command.go for why this one is
+	// the exception.
+	//
+	// Phrased as "skip this" rather than "allow this" for the reason migration.Policy
+	// is phrased that way: the zero value has to be the wanted behaviour. A manager row
+	// written before this field existed decodes to false, and false must mean the
+	// repair runs — otherwise every existing install quietly keeps accumulating albums
+	// it cannot read, with no indication that one setting fixes it. A `default:true`
+	// tag on the positive spelling would not do: GORM omits zero-valued fields that
+	// carry a default, so an explicit "off" on create would be written as "on".
+	//
+	// The switch exists for the case where the API key is deliberately read-only, or
+	// where something else owns refresh scheduling.
+	LidarrSkipArtistRefresh bool `json:"lidarr_skip_artist_refresh"`
 
 	// Autotaggerr-specific: which data source this manager resolves against.
 	DefaultDataSourceID *uuid.UUID `gorm:"type:uuid" json:"default_data_source_id,omitempty"`
@@ -530,6 +552,20 @@ const (
 	MigrationEntityRelease = "release"
 	MigrationEntityArtist  = "artist"
 
+	// MigrationEntityReleaseGroup carries deletions only, and that asymmetry is not an
+	// omission. A *merged* release-group still resolves — MusicBrainz answers 200 with
+	// the surviving entity — so a merge never reaches an error path and the old ID goes
+	// on working; only a group that resolves nowhere produces a signal. The signal comes
+	// from the editions browse (modules.GetMusicBrainzReleaseGroupReleases), confirmed by
+	// a direct lookup before anything is recorded.
+	//
+	// These rows are overwhelmingly not MusicBrainz's doing. A manager mirrors albums
+	// into the collection keyed by whatever ID it holds, and an ID its own metadata
+	// service has since dropped is indistinguishable here from one MusicBrainz deleted.
+	// Both mean the same thing to Autotaggerr — the group cannot be read — which is why
+	// they share a row type rather than being told apart on evidence nobody has.
+	MigrationEntityReleaseGroup = "release_group"
+
 	// Migration lifecycle. A migration is detected as pending, and either applied
 	// (immediately when its category is not held for review, or later by hand) or
 	// dismissed. Failed keeps a migration that could not be applied visible rather
@@ -576,6 +612,17 @@ type MusicbrainzMigration struct {
 	DetectedAt time.Time  `json:"detected_at"`
 	AppliedAt  *time.Time `json:"applied_at"`
 	Error      string     `json:"error,omitempty"`
+
+	// RepairAttemptedAt records that the manager holding this entity was asked to
+	// refresh it (release-groups only; see collection.RepairGhostReleaseGroups). It
+	// means "asked", not "worked" — set whatever the outcome, because a refresh that
+	// failed or changed nothing must not be repeated on every pass.
+	//
+	// It is also what makes automatic retirement safe. Until a repair has been tried,
+	// a dead release-group ID might be a mis-keyed album one refresh from being
+	// correct, and removing it unattended would destroy that. Afterwards, the manager
+	// has had its say.
+	RepairAttemptedAt *time.Time `json:"repair_attempted_at,omitempty"`
 }
 
 // User backs authentication. Starts as a single auto-generated admin; structured

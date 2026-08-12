@@ -53,3 +53,19 @@ type LidarrTrackMetadataDetails struct {
 	TrackTitle    string `json:"track_title"`
 	MBReleaseID   string `json:"mb_release_id"`
 }
+
+// LidarrCommand is one entry in Lidarr's command queue — what a POST to
+// /api/v1/command returns and what GET /api/v1/command/{id} reports on.
+//
+// Only the fields a caller waits on are modelled. Lidarr returns a good deal more
+// (trigger, queued/started/ended timestamps, a nested body echoing the request), none
+// of which changes what Autotaggerr does with the answer.
+type LidarrCommand struct {
+	ID   int64  `json:"id"`
+	Name string `json:"name"`
+	// Status is queued / started / completed / failed / aborted.
+	Status string `json:"status"`
+	// Message is Lidarr's own progress or failure text, worth quoting in an error
+	// because it names the metadata-service problem when there is one.
+	Message string `json:"message"`
+}

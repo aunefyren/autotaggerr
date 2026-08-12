@@ -43,7 +43,9 @@ export function Modal({ title, children, onClose, wide }: { title: string; child
     <div className="backdrop" onClick={onClose}>
       <div className={`modal${wide ? " wide" : ""}`} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
         <h2>{title}</h2>
-        {children}
+        {/* The body is a scroller so the modal can be bounded by the viewport without
+            the title scrolling away with it — see `.modal` in app.css. */}
+        <div className="modal-body">{children}</div>
       </div>
     </div>
   );
@@ -98,6 +100,28 @@ export function ConfirmDialog({
         </button>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * One blank shape standing in for a value that has not arrived yet.
+ *
+ * Drawn the way this app already draws an empty slot — `--surface-2` with a hairline,
+ * exactly like `.coverage-cell.none` — rather than as a shimmering grey block. A
+ * placeholder is a slot with nothing in it, and the app has a way of saying that.
+ *
+ * Sizes are the caller's, because the point of a placeholder is that the real thing
+ * lands in the same place: give it the geometry of the element it replaces.
+ */
+export function Skeleton({ w, h = 10, pill }: { w: number | string; h?: number; pill?: boolean }) {
+  return (
+    <span
+      className={`skel${pill ? " skel-pill" : ""}`}
+      style={{ width: w, height: h }}
+      // Decoration: the shapes say nothing an assistive reader wants, and the
+      // surface they are on carries aria-busy plus a status line instead.
+      aria-hidden="true"
+    />
   );
 }
 

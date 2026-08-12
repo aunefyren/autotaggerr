@@ -484,3 +484,21 @@ artist via `modules.MusicbrainzForgetEntity` for *both* the `artist` and `discog
 since two things are keyed on an artist MBID. Left in place they would expire and be re-fetched
 on every pass, spending rate limit to re-learn a redirect already dealt with. See
 [mb-migration.md](mb-migration.md).
+
+### Release-groups that do not resolve
+
+The editions phase is where a dead release-group ID surfaces, and it is the only phase that can
+surface one — a release-group is not fetched anywhere else. A 404 from the browse triggers a
+confirming `/release-group/<id>` lookup; if that agrees, a deletion is recorded and the pass reports
+the entity as **gone** rather than as an error.
+
+That distinction is the point. Before it, a 404 here came back as an ordinary error, so a group whose
+ID resolved nowhere failed identically on every pass forever — nothing recorded it, nothing skipped
+it, and the run's error count carried the same rows every night. Recording is paired with
+`retiredGroups`, which drops those IDs from every scope; see
+[mb-migration.md](mb-migration.md#groups-that-resolve-nowhere).
+
+Note the asymmetry with releases and artists: those detect **merges**, because a merged ID answers
+200 with a different `id`. A merged release-group answers 200 too, but the browse asks for editions
+rather than for the group, so there is no id to compare and nothing to notice. Deletion is the only
+release-group migration this path can detect.

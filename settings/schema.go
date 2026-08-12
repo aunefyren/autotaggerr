@@ -208,6 +208,32 @@ func Sections() []Section {
 			},
 		},
 		{
+			// Separate from the metadata section because artwork is a separate kind of
+			// data source, configured in its own place on /data-sources and spending a
+			// budget the metadata refresh never touches. Folding the two schedules into
+			// one section would imply a relationship the code deliberately does not have.
+			ID:          "artwork",
+			Title:       "Artwork refresh",
+			Description: "Fetching album covers and artist images ahead of the pages that show them, so a discography paints from disk instead of downloading a hundred thumbnails while you wait.",
+			Fields: []Field{
+				{
+					// Stored as "disabled", shown as "enabled" — same inversion, same
+					// reason, as the metadata switch above.
+					Key: "autotaggerr_artwork_enabled", Label: "Keep artwork fetched", Type: TypeBool, Tier: TierLive,
+					Help: "Off stops the scheduled fetch and the automatic one for new artists; images are still fetched when a page asks for them.",
+					get:  func(c models.ConfigStruct) any { return !c.AutotaggerrArtworkDisabled },
+					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrArtworkDisabled = !v }),
+				},
+				{
+					Key: "autotaggerr_artwork_cron_schedule", Label: "Fetch schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "Default is nightly at 05:00. New artists and albums fetch their own artwork as they arrive, so this is a backstop rather than the main path.",
+					Placeholder: "0 0 5 * * *",
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrArtworkCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrArtworkCronSchedule = v }, validCron),
+				},
+			},
+		},
+		{
 			// Named for what the setting governs, not for who supplies the data. A
 			// metadata source is a component you configure zero, one or several of, and
 			// only MusicBrainz is implemented today — but *whether an identity change

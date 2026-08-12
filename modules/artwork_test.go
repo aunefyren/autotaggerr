@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -349,5 +350,71 @@ func TestOrDefault(t *testing.T) {
 	}
 	if got := orDefault("https://configured", "fallback"); got != "https://configured" {
 		t.Errorf("orDefault = %q, want the configured value", got)
+	}
+}
+
+// ArtworkFresh is what lets the metadata refresh warm images without re-asking for
+// the ones it already has. It has to answer from the index rather than from
+// GetArtwork's return value, because a fresh negative entry and a provider that has
+// just said "no image" are the same ErrNoArtwork.
+func TestArtworkFreshReportsBothHalvesOfTheCache(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ResetArtworkNegativeCache()
+
+	const freshTestMBID = "019fa765-4321-7890-abcd-c389e527ed99"
+
+	// Nothing cached yet: a warm pass must fetch.
+	if ArtworkFresh(ArtworkEntityReleaseGroup, freshTestMBID, ArtworkKindFront, 250) {
+		t.Error("an empty cache reported an image as fresh")
+	}
+
+	server, _ := artworkTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(jpegBytes)
+	})
+	providers := ArtworkProviders{CoverArtEnabled: true, CoverArtBaseURL: server.URL}
+	if _, err := GetArtwork(providers, ArtworkEntityReleaseGroup, freshTestMBID, ArtworkKindFront, 250); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if !ArtworkFresh(ArtworkEntityReleaseGroup, freshTestMBID, ArtworkKindFront, 250) {
+		t.Error("a just-fetched image did not report as fresh")
+	}
+
+	// A remembered absence is an answer too — this is the half that keeps a pass
+	// from re-asking the provider about every coverless album every night.
+	missing, _ := artworkTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "not found", http.StatusNotFound)
+	})
+	const missingTestMBID = "019fa765-8765-7890-abcd-c389e527ed88"
+	noArt := ArtworkProviders{CoverArtEnabled: true, CoverArtBaseURL: missing.URL}
+	if _, err := GetArtwork(noArt, ArtworkEntityReleaseGroup, missingTestMBID, ArtworkKindFront, 250); !errors.Is(err, ErrNoArtwork) {
+		t.Fatalf("err = %v; want ErrNoArtwork", err)
+	}
+	if !ArtworkFresh(ArtworkEntityReleaseGroup, missingTestMBID, ArtworkKindFront, 250) {
+		t.Error("a remembered absence did not report as fresh")
+	}
+}
+
+// A positive index entry whose file has been deleted is not an answer — serving it
+// would mean a warm pass skipping an image that is no longer there. The negative
+// half has nothing on disk by definition and is taken at its word.
+func TestArtworkFreshRefusesAnEntryWhoseFileIsGone(t *testing.T) {
+	t.Chdir(t.TempDir())
+	ResetArtworkNegativeCache()
+
+	const goneTestMBID = "019fa765-1010-7890-abcd-c389e527ed77"
+	server, _ := artworkTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write(jpegBytes)
+	})
+	providers := ArtworkProviders{CoverArtEnabled: true, CoverArtBaseURL: server.URL}
+	if _, err := GetArtwork(providers, ArtworkEntityReleaseGroup, goneTestMBID, ArtworkKindFront, 250); err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+
+	key := artworkCacheKey(ArtworkEntityReleaseGroup, goneTestMBID, ArtworkKindFront, 250)
+	if err := os.Remove(artworkCachePath(key)); err != nil {
+		t.Fatalf("remove cached file: %v", err)
+	}
+	if ArtworkFresh(ArtworkEntityReleaseGroup, goneTestMBID, ArtworkKindFront, 250) {
+		t.Error("an index entry with no file behind it reported as fresh")
 	}
 }

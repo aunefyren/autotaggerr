@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 
+	"github.com/aunefyren/autotaggerr/artwork"
 	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/metadata"
@@ -21,6 +22,10 @@ type API struct {
 	DB     *gorm.DB
 	Scan   *process.Runner
 	Mirror *mirror.Runner
+	// Artwork is the image-cache refresh verb. Separate from Mirror because artwork
+	// providers are a different kind of data source spending a different budget; it
+	// may be nil, in which case the artwork routes report unavailable.
+	Artwork *artwork.Runner
 	// Rebuilder re-derives the collection after a handler changes the file index.
 	// May be nil, in which case requests are dropped (see collection.Rebuilder).
 	Rebuilder *collection.Rebuilder
@@ -161,6 +166,12 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/mirror/status", a.mirrorStatus)
 		protected.POST("/mirror/sync", a.triggerMirror)
 		protected.POST("/mirror/cancel", a.cancelMirror)
+
+		// Artwork: the scheduled fetch of covers and artist images. Its own verb
+		// rather than a stage of the mirror — see docs/artwork.md.
+		protected.GET("/artwork/status", a.artworkStatus)
+		protected.POST("/artwork/refresh", a.triggerArtworkRefresh)
+		protected.POST("/artwork/cancel", a.cancelArtworkRefresh)
 
 		// Activity events
 		protected.GET("/events", a.listEvents)

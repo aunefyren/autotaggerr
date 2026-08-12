@@ -223,6 +223,70 @@ func GetArtwork(providers ArtworkProviders, entity, mbid, kind string, size int)
 	return call.art, call.err
 }
 
+// ArtworkFresh reports whether the cache already holds a current answer for this
+// image — the bytes, or a remembered absence — so a warming pass can skip it
+// without spending an upstream request. It is the artwork counterpart of
+// MusicbrainzEntityFresh.
+//
+// It has to exist as its own predicate because GetArtwork cannot be asked the
+// question: a fresh negative entry and a provider that has just answered "no image"
+// both return ErrNoArtwork, so a pass that used the return value to decide whether
+// it had done any work would re-ask for every coverless album on every run.
+//
+// A positive entry whose file has since been deleted is not an answer, so the index
+// alone is not enough — the negative half has nothing on disk by definition and is
+// taken at its word.
+func ArtworkFresh(entity, mbid, kind string, size int) bool {
+	key := artworkCacheKey(entity, mbid, kind, artworkKeySize(entity, size))
+	meta, known := artworkMetaFor(key)
+	if !known || !meta.fresh() {
+		return false
+	}
+	if meta.missing {
+		return true
+	}
+	info, err := os.Stat(artworkCachePath(key))
+	return err == nil && info.Size() > 0
+}
+
+// ArtworkExpire marks one cache entry stale so the next GetArtwork goes upstream,
+// which is how a forced refresh reaches past the cache check GetArtwork does for
+// itself. Both halves are covered: an image is re-downloaded, and a remembered "no
+// image" is re-asked.
+//
+// Expiring rather than deleting, for the same reason MusicbrainzExpireEntity does
+// it — the stale copy stays on disk as the fallback if the re-fetch then fails, so a
+// forced pass during a provider outage does not empty a page that had covers on it.
+func ArtworkExpire(entity, mbid, kind string, size int) {
+	key := artworkCacheKey(entity, mbid, kind, artworkKeySize(entity, size))
+	meta, known := artworkMetaFor(key)
+	if !known {
+		return
+	}
+	meta.expiresAt = time.Now().Add(-time.Second)
+	storeArtworkMeta(key, meta)
+}
+
+// ArtworkCacheCounts reports what the artwork cache holds right now: how many
+// images, and how many remembered "this entity has no image" answers.
+//
+// The two are worth separating rather than summing. Only `images` costs a transfer
+// to rebuild, so it is the number a "re-download everything" estimate has to rest
+// on; `missing` is the cheap half, and on its own it answers the question a page of
+// monogram tiles raises — whether the provider was asked and said no.
+func ArtworkCacheCounts() (images, missing int) {
+	artworkIndexMu.Lock()
+	defer artworkIndexMu.Unlock()
+	for _, meta := range artworkIndex {
+		if meta.missing {
+			missing++
+			continue
+		}
+		images++
+	}
+	return images, missing
+}
+
 // validArtworkRequest rejects combinations that cannot exist. MusicBrainz has no
 // artist photos and the Cover Art Archive has no artist entity, so an artist
 // front cover is a coding mistake rather than a missing image.

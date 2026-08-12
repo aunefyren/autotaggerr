@@ -23,6 +23,7 @@ import (
 
 	"codnect.io/chrono"
 
+	"github.com/aunefyren/autotaggerr/artwork"
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/database"
@@ -44,10 +45,11 @@ import (
 )
 
 var (
-	plexClient   *modules.PlexClient
-	db           *gorm.DB
-	scanRunner   *process.Runner
-	mirrorRunner *mirror.Runner
+	plexClient    *modules.PlexClient
+	db            *gorm.DB
+	scanRunner    *process.Runner
+	mirrorRunner  *mirror.Runner
+	artworkRunner *artwork.Runner
 	// settingsRuntime owns the recurring schedules and re-applies settings saved in
 	// the UI to this running process.
 	settingsRuntime *settings.Runtime
@@ -199,6 +201,15 @@ func main() {
 	// and the file-writing job is the one with a user waiting on it.
 	mirrorRunner = scanRunner.Refresher()
 
+	// Artwork has its own runner and its own queue rather than a place on the scan
+	// runner's, because it spends none of the MusicBrainz budget the queue exists to
+	// serialise. Enqueuing it there would make the case it was built for — an artist
+	// added mid-scan whose covers a user is about to want — wait behind hours of file
+	// work for no benefit. Collection row creation notifies it directly, so a new
+	// artist or album fetches its images as it arrives rather than at the next pass.
+	artworkRunner = artwork.NewRunner(db, files.ConfigFile)
+	collection.SetArtworkWarmer(artworkRunner)
+
 	// Scheduled health checks for the configured connections. A baseline runs at
 	// startup (off the main goroutine, so a slow endpoint cannot stall boot); the cron
 	// then re-checks and records an event only when a connection's health changes.
@@ -226,6 +237,12 @@ func main() {
 			Run:      func() { scanRunner.SyncDrift() },
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrMirrorCronSchedule },
 			Enabled:  func(c models.ConfigStruct) bool { return !c.AutotaggerrMirrorDisabled },
+		},
+		settings.CronJob{
+			Name:     "artwork refresh",
+			Run:      func() { artworkRunner.RefreshCollection(false) },
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrArtworkCronSchedule },
+			Enabled:  func(c models.ConfigStruct) bool { return !c.AutotaggerrArtworkDisabled },
 		},
 		settings.CronJob{
 			Name:     "health check",
@@ -264,7 +281,7 @@ func main() {
 	}
 
 	// Initialize Router
-	router := initRouter(db, scanRunner, mirrorRunner, files.ConfigFile)
+	router := initRouter(db, scanRunner, mirrorRunner, artworkRunner, files.ConfigFile)
 
 	logger.Log.Info("router initialized. starting Autotaggerr at http://*:" + strconv.Itoa(files.ConfigFile.AutotaggerrPort))
 
@@ -323,7 +340,7 @@ func shutdown(server *http.Server, runner *process.Runner, schedules *settings.R
 	logger.Log.Info("Autotaggerr stopped")
 }
 
-func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Runner, cfg models.ConfigStruct) *gin.Engine {
+func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Runner, artworkRunner *artwork.Runner, cfg models.ConfigStruct) *gin.Engine {
 	router := gin.Default()
 
 	router.Use(cors.New(cors.Config{
@@ -345,6 +362,7 @@ func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Ru
 		DB:         db,
 		Scan:       scanRunner,
 		Mirror:     mirrorRunner,
+		Artwork:    artworkRunner,
 		Rebuilder:  collection.NewRebuilder(db),
 		Meta:       modules.NewMetadataSource(),
 		Settings:   settingsRuntime,

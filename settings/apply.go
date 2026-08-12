@@ -133,6 +133,8 @@ func (r *Runtime) applySchedules(cfg models.ConfigStruct, changed []string) []st
 		"autotaggerr_mirror_cron_schedule":  "metadata refresh",
 		"autotaggerr_health_cron_schedule":  "health check",
 		"autotaggerr_mirror_enabled":        "metadata refresh",
+		"autotaggerr_artwork_cron_schedule": "artwork refresh",
+		"autotaggerr_artwork_enabled":       "artwork refresh",
 	}
 
 	needed := map[string]bool{}

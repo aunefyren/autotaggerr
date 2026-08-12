@@ -191,13 +191,16 @@ func (a *API) updateDataSource(c *gin.Context) {
 // --- Managers ---------------------------------------------------------------
 
 type managerInput struct {
-	Name                *string    `json:"name"`
-	Type                *string    `json:"type"`
-	Enabled             *bool      `json:"enabled"`
-	LidarrBaseURL       *string    `json:"lidarr_base_url"`
-	LidarrAPIKey        *string    `json:"lidarr_api_key"`
-	LidarrHeaderCookie  *string    `json:"lidarr_header_cookie"`
-	DefaultDataSourceID *uuid.UUID `json:"default_data_source_id"`
+	Name               *string `json:"name"`
+	Type               *string `json:"type"`
+	Enabled            *bool   `json:"enabled"`
+	LidarrBaseURL      *string `json:"lidarr_base_url"`
+	LidarrAPIKey       *string `json:"lidarr_api_key"`
+	LidarrHeaderCookie *string `json:"lidarr_header_cookie"`
+	// Pointer like every other field here: absent means "leave it alone", which is
+	// what lets the UI PATCH one setting without resending the API key.
+	LidarrSkipArtistRefresh *bool      `json:"lidarr_skip_artist_refresh"`
+	DefaultDataSourceID     *uuid.UUID `json:"default_data_source_id"`
 }
 
 func (in managerInput) apply(m *models.Manager) {
@@ -218,6 +221,9 @@ func (in managerInput) apply(m *models.Manager) {
 	}
 	if in.LidarrHeaderCookie != nil {
 		m.LidarrHeaderCookie = *in.LidarrHeaderCookie
+	}
+	if in.LidarrSkipArtistRefresh != nil {
+		m.LidarrSkipArtistRefresh = *in.LidarrSkipArtistRefresh
 	}
 	if in.DefaultDataSourceID != nil {
 		m.DefaultDataSourceID = in.DefaultDataSourceID

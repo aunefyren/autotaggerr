@@ -38,6 +38,10 @@ func AddArtist(db *gorm.DB, mbID, name string) (models.CollectionArtist, error) 
 	if err := db.Create(&artist).Error; err != nil {
 		return artist, err
 	}
+	// The *Add artist* half of the create hook. Their release-groups do not exist
+	// yet — the discography sync creates those, and notifies from upsertReleaseGroup
+	// when it does — so this warms the portrait and backdrop only.
+	warmArtistArtwork(mbID)
 	return artist, nil
 }
 

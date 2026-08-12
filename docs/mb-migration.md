@@ -25,6 +25,43 @@ but 404-versus-503: treating an outage as a deletion would un-identify a library
 MusicBrainz had a bad afternoon. `modules.ErrEntityGone` (and `GoneEntity`) exist so callers can
 tell the two apart without parsing an error string.
 
+## Coverage: which entity, which change, which mechanism
+
+Not every identity change needs a migration row, and reading the four `RecordRedirect` /
+`RecordDeletion` call sites as the whole picture undercounts what is handled. Some cases are covered
+by mechanisms that predate this package and are the better answer for them.
+
+| Entity | Merged | Deleted |
+|--------|--------|---------|
+| **Artist** | migration — id comparison on lookup (`musicbrainz_artist.go:210`) | migration — 404 (`:104`, `:182`) |
+| **Release** | migration — id comparison on lookup (`musicbrainz.go:366`) | migration — 404 (`:339`) |
+| **Release-group** | *no row*: handled by subtraction — see [below](#release-groups-re-linked-not-remapped) | migration — confirmed 404 (`musicbrainz_search.go:322`) |
+| **Recording** | *no row needed*: self-heals through the release payload | same |
+| **Release-track** | *not handled* — see [wip.md](wip.md) | same |
+
+Three of those deserve their reasoning stated, because "no migration row" means something different
+in each.
+
+**A recording change needs no row, and that is not a shortcut.** Nothing in Autotaggerr is *keyed*
+on a recording MBID — it is written to files, never used to look anything up. `hashRelease`
+(`musicbrainz_drift.go:16`) marshals the entire release payload, so a changed `track.Recording.ID`
+flips the hash, the release is reported as changed, and the drift re-tag rewrites the file from the
+new payload. The track lookup that gets it there keys on `track.ID`, which a recording merge does not
+move. A migration row would add an approval step to something already correct by the time anyone
+could read it.
+
+**A release-group merge cannot be observed at all**, so subtraction is not a preference but the only
+option: the merged ID still answers 200, and the editions browse asks for a group's releases rather
+than for the group, so there is no `id` to compare. What happens instead is
+[re-linking plus pruning](#release-groups-re-linked-not-remapped).
+
+**A release-track change is the gap.** `files.go:290` matches by exact track ID inside the payload,
+and `ErrTrackNotInRelease` — the error it raises when that ID is gone — currently has no consumer.
+Under a manager the correlation supplies fresh IDs each scan and the problem never appears; without
+one, the fallback reads the stale ID from the tags of the very file it is trying to repair, and
+fails identically forever. Recorded in [wip.md](wip.md); the remedy the error message names (force
+re-correlate) works, but it is manual.
+
 ## Detection is separate from application
 
 Detection runs on the fetch path — mid-scan, on a worker goroutine, holding the rate limiter — so
@@ -179,10 +216,14 @@ payload.
 
 ### Pruning groups that merged away
 
-Re-linking moves the *releases*, but the old release-group row stays behind. Release-groups are the
-one entity Autotaggerr never fetches by ID — they arrive inside release payloads and discography
-listings — so there is no redirect to observe when two are merged. The old group just stops
+Re-linking moves the *releases*, but the old release-group row stays behind. There is no redirect to
+observe when two release-groups are merged: a merged group still resolves, because MusicBrainz
+follows its own redirect internally and answers 200 with the survivor. The old group simply stops
 appearing in the artist's discography.
+
+(Release-groups are fetched by ID in exactly one place — the confirmation probe described in
+[Groups that resolve nowhere](#groups-that-resolve-nowhere) — and that probe cannot see a merge for
+the reason just given. A 200 is a 200 whichever group answered it.)
 
 `collection.PruneOrphanReleaseGroups` therefore works by **subtraction**, which makes its guards the
 whole design. Absence is weak evidence, so a row is removed only when every innocent reading is
@@ -212,6 +253,109 @@ them is one nobody has heard of, cached copy or not.
 The prune also runs against the **unfiltered** discography, not the follow-filtered subset
 `SyncArtist` upserts — comparing against the filtered set would delete every release-group of a type
 the user does not follow.
+
+### Groups that resolve nowhere
+
+A separate case, on much stronger evidence: a release-group whose ID returns **404**.
+
+Most of these are not MusicBrainz's doing. A manager mirrors its albums into the collection keyed by
+whatever ID it holds (`collection.SyncManagers` writes Lidarr's `foreignAlbumId` verbatim), and an ID
+that manager's own metadata service has since dropped or re-keyed is indistinguishable here from one
+MusicBrainz deleted. Both mean the group cannot be read. The album itself is often alive and well
+upstream under a *different* ID.
+
+**Detection.** The signal comes from the editions browse,
+`modules.GetMusicBrainzReleaseGroupReleases`. A 404 there is not enough on its own — a browse is a
+query, and a query returning nothing is not testimony about its filter — so
+`confirmReleaseGroupGone` asks `/release-group/<id>` directly and records a
+`MigrationEntityReleaseGroup` / `MigrationKindDeleted` row only if that also 404s. One extra
+rate-limited request per suspect, spent once: the migration row is what stops the next pass asking
+again. A confirmation that fails *transiently* records nothing, since an outage is not evidence.
+
+**Suppression.** Recording is only half of not re-asking. Every scope is built from the collection's
+own rows, and a group awaiting review is still one of those rows, so `mirror.retiredGroups` excludes
+any group with a recorded deletion from `CollectionScope`, `ArtistScope` and `LibraryScope`. Every
+status counts, dismissed and failed included: both mean "do not retire this row", which is a
+decision about the collection and not a claim that the ID resolves.
+
+**Repair comes before retirement**, because most of these albums are not gone — they are *re-keyed*,
+and the manager already knows the new key. See [Repairing through the
+manager](#repairing-through-the-manager) below; nothing is retired until that has been tried.
+
+**Application.** `collection.RetireReleaseGroup` is `PruneOrphanReleaseGroups`' sibling, separated by
+the strength of the evidence rather than by what it deletes: a direct 404 needs no discography fetch,
+so a single row can be retired on demand. It keeps every guard prune applies — files on disk, an
+authored want, another credited artist, an owned edition, and `in_catalog`.
+
+`in_catalog` is there for a blunter reason than prune's. Prune defers to the manager as a competing
+authority on what exists; this does not, because an ID that resolves nowhere cannot be read whoever
+lists it. It defers because `SyncManagers` upserts a row for every album the manager reports, so
+deleting one the manager still lists achieves nothing — the next sync restores it. The album has to
+stop being listed *there* first. The refusal says so, since the user's next move is in the manager.
+
+**A refused retirement is "not yet", not "no".** `ProcessPending` re-picks failed release-group
+deletions alongside pending ones, and re-attempts them once `collection.ReleaseGroupRetirable` says
+the blocker has cleared — which is exactly what a manager refresh a run or a week later brings about.
+The check and the retirement share `releaseGroupRetirementBlock`, so a retry cannot test different
+conditions from the act and end up either looping on a row it can never remove or skipping one it
+could. A row still blocked is left untouched: no counter movement, no rewritten reason, no churn on
+every nightly pass.
+
+The retry is scoped to *retirements*, deliberately. Every other migration fails for a reason a retry
+cannot change — a redirect with no target stays targetless — so re-attempting those would be pure
+noise.
+
+**Held for review until a repair has been tried.** This is the one deliberate exception to the
+zero-value-means-apply convention under [Review and policy](#review-and-policy), and it expires. The
+convention is safe where a deletion is MusicBrainz's own act, because then there is nothing to
+recover; here there usually is, so applying unattended would remove an album one manager refresh
+would have fixed. Once `RepairAttemptedAt` is set the objection is spent — the manager has re-read
+the artist and either corrected the ID or stopped listing the album — and the row auto-applies. What
+is left in the queue is the genuinely unidentifiable minority, which is a queue worth reading.
+
+**Reporting.** `collection.GhostReleaseGroups` counts the groups a manager still lists whose ID does
+not resolve, and the Lidarr sync reports them as *Not in MusicBrainz* beside its existing *Not in
+Lidarr* finding. The metadata refresh can only show the symptom, one failed row at a time; the sync
+is where the IDs came from.
+
+### Repairing through the manager
+
+`collection.RepairGhostReleaseGroups` asks the manager to re-read the artists holding unresolvable
+IDs, then re-mirrors them. Measured against a live Lidarr, this is what actually fixes them:
+`Heatstroke` moved from an ID that 404s to `f71cd67f-bf59-48e6-a89f-359a26e7e977`, which resolves,
+and three Sabrina Carpenter `Alien` variants likewise picked up live MBIDs. Albums that genuinely
+exist nowhere are dropped instead. Either outcome is progress; both are the manager's call, not a
+guess made here.
+
+The order is not negotiable — **refresh, wait for the command, re-sync**. Re-syncing early mirrors
+the same stale catalog back and concludes nothing changed; retiring early deletes the row that was
+about to be corrected. This is why the stage runs before `applyMigrations` in a run.
+
+Constraints, all of which are the point rather than caution for its own sake:
+
+- **One refresh per artist**, not per album. A single artist held eight dead IDs on the instance this
+  was built against, and one refresh answers for all of them.
+- **A cooldown** (`repairCooldown`, 7 days) keyed on `RepairAttemptedAt`, stamped whatever the
+  outcome. Without it, an album absent everywhere triggers a manager refresh on every run forever. A
+  newly discovered ghost on an already-asked artist ignores the cooldown, since the refresh covers
+  the whole artist anyway.
+- **Full runs only.** A one-artist button must not set the whole collection refreshing in Lidarr.
+- **Opt-out per manager** (`Manager.LidarrSkipArtistRefresh`), for a deliberately read-only API key
+  or where something else owns refresh scheduling. Phrased negatively so the zero value is "allowed"
+  — see the field comment for why a `default:true` tag would not have worked.
+
+This is the only write Autotaggerr makes to a manager, and `modules/lidarr_command.go` explains why
+it is the only one that earns it: it does not tell Lidarr what its data should be, it asks Lidarr to
+reconcile against its own metadata source — the same operation its scheduled task and its Refresh
+button perform. Autotaggerr supplies only the timing, and the timing is the whole value, because
+Lidarr's scheduled refresh is throttled per artist. On the instance measured it ran at 05:04 and left
+two artists holding dead IDs hours later.
+
+Two things deliberately **not** built. Deleting the album from the manager would destroy exactly the
+rows a refresh repairs. Searching MusicBrainz by title and taking the best hit would infer an answer
+the manager can state — and badly: on these rows the correct matches scored 78–90, below any
+sensible confidence floor, with titles differing by Unicode punctuation and case (`Alien (M‐22
+remix)` with U+2010 against `Alien (M-22 Remix)`).
 
 ## Where it runs
 

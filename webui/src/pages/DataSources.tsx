@@ -3,6 +3,7 @@ import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { DataSource, DATA_SOURCE_LABEL, dataSourceCategory } from "../types";
 import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
+import { ArtworkRefresh } from "../components/ArtworkRefresh";
 import { useToast } from "../toast";
 
 /** The one provider per non-metadata role, in the order the panels list them. */
@@ -128,6 +129,10 @@ export default function DataSources() {
         onSetUp={setAddingType}
         onRemoveDuplicate={removeDuplicate}
       />
+
+      {/* Directly under the artwork panel, because it is the one action those two
+          providers are for and the trigger belongs next to what it configures. */}
+      <ArtworkRefresh />
 
       {(addingType || editing) && (
         <DataSourceForm

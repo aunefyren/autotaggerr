@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/files"
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 )
@@ -264,6 +265,15 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 
 	var parsed models.MusicBrainzReleaseBrowseResponse
 	if err := musicbrainzGetJSON(endpoint, &parsed); err != nil {
+		// A 404 here is the one error that says something about the release-group
+		// rather than about the request, so it is checked before the stale fallback:
+		// serving a cached edition list for a group that no longer exists is exactly
+		// the state that kept these IDs being re-probed nightly forever.
+		if notFoundStatus(HTTPStatus(err)) {
+			if goneErr := confirmReleaseGroupGone(releaseGroupID, err); goneErr != nil {
+				return nil, goneErr
+			}
+		}
 		// Serve a stale list rather than an empty page when MusicBrainz is down.
 		if ok {
 			return stale, nil
@@ -273,6 +283,45 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 
 	mbCachePut(models.MBEntityEditions, releaseGroupID, parsed.Releases)
 	return parsed.Releases, nil
+}
+
+// confirmReleaseGroupGone turns a 404 from the editions *browse* into a recorded
+// deletion, but only after asking MusicBrainz about the release-group directly.
+// Returns a GoneError when the group is confirmed absent, and nil when it is not —
+// in which case the caller keeps treating the browse failure as an ordinary error.
+//
+// The second request is the whole point. `/release?release-group=X` answers 404 both
+// when X does not exist and, in principle, for reasons that have nothing to do with X;
+// a browse is a query, and a query returning nothing is not testimony about the filter.
+// `/release-group/X` is testimony. One extra rate-limit slot per suspect buys the
+// difference between retiring an album on evidence and retiring it on a guess, and it
+// is spent once — the migration row is what stops the next pass asking again.
+//
+// A *merged* group cannot arrive here: MusicBrainz resolves merges internally and
+// answers 200 with the survivor, so the old ID keeps working and there is no redirect
+// to observe. Deletion is the only release-group migration this can detect.
+func confirmReleaseGroupGone(releaseGroupID string, browseErr error) error {
+	endpoint := fmt.Sprintf("%s/release-group/%s?fmt=json", musicbrainzBaseURL, url.PathEscape(releaseGroupID))
+
+	// Decoded into the discography shape rather than a bespoke one: the probe reads
+	// nothing out of the payload, only whether there was a payload to read.
+	var probe models.MusicBrainzArtistReleaseGroup
+	err := musicbrainzGetJSON(endpoint, &probe)
+	if err == nil {
+		// The group is there; the browse 404 was about the browse. Nothing to record.
+		logger.Log.Debugf("release-group %s browse returned 404 but the group resolves; not recording a deletion", releaseGroupID)
+		return nil
+	}
+	if !notFoundStatus(HTTPStatus(err)) {
+		// The confirmation itself failed for an unrelated reason — an outage, a
+		// throttle. Silence is the correct output: recording a deletion off a failed
+		// confirmation is the mistake this function exists to prevent.
+		return nil
+	}
+
+	RecordDeletion(models.MigrationEntityReleaseGroup, releaseGroupID)
+	return newGoneError(models.MigrationEntityReleaseGroup, releaseGroupID,
+		HTTPStatus(browseErr), "release-group does not resolve on MusicBrainz")
 }
 
 // musicbrainzGetJSON performs a rate-limited, User-Agent'd GET and decodes JSON,
@@ -310,7 +359,10 @@ func musicbrainzGetJSONOnce(endpoint string, out any) error {
 		if transientStatus(resp.StatusCode) {
 			return newTransientError(nil, "MusicBrainz unavailable (HTTP %d, retry later): %s", resp.StatusCode, snippet)
 		}
-		return fmt.Errorf("MusicBrainz returned HTTP %d: %s", resp.StatusCode, snippet)
+		// Typed rather than formatted, so a caller that knows what its own 404 means
+		// can upgrade it (see GetMusicBrainzReleaseGroupReleases). The message is
+		// unchanged for everyone else — StatusError.Error renders what this used to.
+		return &StatusError{Status: resp.StatusCode, Detail: snippet}
 	}
 
 	body, err := io.ReadAll(resp.Body)

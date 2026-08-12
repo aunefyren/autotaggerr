@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { CollectionArtist, Manager, ScanStatus } from "../types";
-import { EmptyState, ErrorNote, Pill } from "../components/ui";
+import { EmptyState, ErrorNote, Pill, Skeleton } from "../components/ui";
 import { useToast } from "../toast";
 import { MBLink } from "../components/MBLink";
 import { AddArtistModal } from "../components/AddArtistModal";
@@ -53,6 +53,63 @@ function WantedSummary({ artist }: { artist: CollectionArtist }) {
   }
   if (picked > 0) return <Pill kind="chg">{picked} picked</Pill>;
   return <span className="dim">—</span>;
+}
+
+/** Enough to fill the fold. Not a guess at how many artists there are. */
+const PLACEHOLDER_ROWS = 8;
+/**
+ * Varied so the name column reads as a list of names rather than as a grid of bars.
+ * The range is the range a real name plus its MB link occupies (roughly 75–155px):
+ * `table.data` is auto-layout, so a placeholder wider or narrower than the content it
+ * stands in for hands the difference to another column and the headers slide sideways
+ * as the rows land.
+ */
+const NAME_WIDTHS = [132, 84, 156, 104, 72, 144, 96, 118];
+
+/**
+ * The table while the collection is still being counted.
+ *
+ * `/artists` aggregates every release group, desire and artist credit in the collection
+ * before it can answer, so on a real library the page has a visible wait — and it used
+ * to spend that wait as blank space, then drop a toolbar, a table and a pager in all at
+ * once. This is the same table with its values missing: the shared `<thead>`, the same
+ * 34px rows, one placeholder per cell. Nothing below the table moves when the data
+ * lands, and the columns settle by a few pixels rather than appearing from nowhere.
+ *
+ * It is deliberately not a spinner. A spinner says "wait" and nothing else; the shape
+ * of the page says what is coming, and a shape that is already correct is the part that
+ * makes the arrival feel instant.
+ */
+function LoadingRows() {
+  return (
+    <tbody aria-hidden="true">
+      {Array.from({ length: PLACEHOLDER_ROWS }, (_, i) => (
+        <tr key={i}>
+          <td><Skeleton w={24} h={24} /></td>
+          <td><Skeleton w={NAME_WIDTHS[i % NAME_WIDTHS.length]} /></td>
+          {/* 21px is a `.pill`'s own height (11px line + 3px padding + hairline), so a
+              placeholder pill and the pill that replaces it are the same object. */}
+          <td><Skeleton w={62} h={21} pill /></td>
+          <td>
+            <div className="row" style={{ gap: 8 }}>
+              {/* The row's one moving part, and it is not a new idea: the indeterminate
+                  meter already means "real work, counted in a unit this bar does not
+                  have" wherever a run reports progress. A coverage that is not known
+                  yet is exactly that, so the loading collection is drawn in the same
+                  language as a loading run. */}
+              <span className="coverage" style={{ width: 120 }}>
+                <span className="coverage-track indeterminate" />
+              </span>
+              <Skeleton w={26} />
+            </div>
+          </td>
+          <td className="num"><Skeleton w={14} /></td>
+          <td className="num"><Skeleton w={14} /></td>
+          <td><Skeleton w={88} h={21} pill /></td>
+        </tr>
+      ))}
+    </tbody>
+  );
 }
 
 /** Sort keys, kept next to the accessors so a header and its ordering cannot drift. */
@@ -158,6 +215,11 @@ export default function Collection() {
   };
 
   const artists = data ?? [];
+  // The first load only — the one with nothing on screen to keep. A reload has data
+  // already (after a run ends, and after Scan), and replacing a populated table with
+  // placeholders would be a step backwards from the wait this exists to soften: the
+  // rows on screen are still true, and the ones that change are a handful.
+  const first = loading && !data;
   // Mirroring cannot introduce an artist — it reads the catalogue of artists the
   // collection already has and says are Lidarr's. With none of those, the pass returns
   // before its first HTTP call, so the button's only outcome is a zero in the feed.
@@ -300,34 +362,48 @@ export default function Collection() {
         />
       )}
 
-      {artists.length > 0 && (
+      {(first || artists.length > 0) && (
         <>
+          {/* The filter box is live through the wait — typing while the collection
+              loads narrows the list the moment it arrives, which is the other half of
+              making the page usable before it is finished. The chip and the count are
+              not: "Mismatched 0" and "0 of 0" are facts, and neither is known yet. */}
           <TableToolbar
             browse={browse}
             placeholder="Filter artists"
             showing={
-              paging.pageCount > 1
-                ? `${paging.from}–${paging.to} of ${shown.length}`
-                : `${shown.length} of ${artists.length}`
+              first
+                ? undefined
+                : paging.pageCount > 1
+                  ? `${paging.from}–${paging.to} of ${shown.length}`
+                  : `${shown.length} of ${artists.length}`
             }
           >
-            <FilterChip
-              on={onlyMismatched}
-              count={mismatchedCount}
-              label="Mismatched"
-              tone="warn"
-              title="Only artists where disk and manager disagree about some album"
-              onClick={() => browse.setFlag("mismatch", onlyMismatched ? null : "1")}
-            />
+            {!first && (
+              <FilterChip
+                on={onlyMismatched}
+                count={mismatchedCount}
+                label="Mismatched"
+                tone="warn"
+                title="Only artists where disk and manager disagree about some album"
+                onClick={() => browse.setFlag("mismatch", onlyMismatched ? null : "1")}
+              />
+            )}
           </TableToolbar>
 
-          {shown.length === 0 ? (
+          {!first && shown.length === 0 ? (
             <div className="card">
               <div className="dim" style={{ fontSize: 12 }}>No artist matches this filter.</div>
             </div>
           ) : (
-            <div className="tablewrap">
+            <div className="tablewrap" aria-busy={first || undefined}>
+              {/* The placeholder rows say "loading" to everyone who can see them and to
+                  nobody who cannot, so the same fact is stated once in words here. */}
+              {first && <span className="sr-only" role="status">Loading the collection…</span>}
               <table className="data">
+                {/* One header for both states, so a column and its placeholder cannot
+                    drift apart. Sorting stays live: a sort chosen during the wait is
+                    the order the rows arrive in. */}
                 <thead>
                   <tr>
                     <th style={{ width: 28 }}></th>
@@ -341,6 +417,7 @@ export default function Collection() {
                     <th>Wanted</th>
                   </tr>
                 </thead>
+                {first && <LoadingRows />}
                 <tbody>
                   {page.map((ar) => {
                     const owned = ar.owned_count ?? 0;

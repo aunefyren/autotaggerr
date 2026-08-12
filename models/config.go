@@ -98,6 +98,18 @@ type ConfigStruct struct {
 	AutotaggerrMirrorDisabled     bool   `json:"autotaggerr_mirror_disabled"`
 	AutotaggerrMirrorCronSchedule string `json:"autotaggerr_mirror_cron_schedule"`
 
+	// Artwork refresh. Covers and artist images are warmed on their own schedule
+	// rather than as part of the metadata refresh: they come from a different kind of
+	// data source spending a different budget (the image hosts' throttle, not
+	// MusicBrainz's one request per second), so there is nothing to coordinate and no
+	// reason to make one wait for the other. See docs/artwork.md.
+	//
+	// Disabled rather than enabled, for the same reason the mirror key is phrased
+	// that way: a bool absent from an existing config.json decodes as false, and
+	// false has to mean the default behaviour.
+	AutotaggerrArtworkDisabled     bool   `json:"autotaggerr_artwork_disabled"`
+	AutotaggerrArtworkCronSchedule string `json:"autotaggerr_artwork_cron_schedule"`
+
 	// Health-check schedule for the configured Lidarr/Plex connections. Checks are
 	// cheap and only record an Activity event when a service's health changes, so a
 	// frequent cadence does not flood the feed. Empty falls back to the default.

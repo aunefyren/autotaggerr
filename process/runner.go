@@ -1005,6 +1005,15 @@ func (r *Runner) runScope(scope Scope) {
 	logger.Log.Infof("MusicBrainz lookups: %d served from cache, %d coalesced onto an in-flight fetch, %d fetched",
 		mbStats.CacheHits, mbStats.Coalesced, mbStats.Fetches)
 
+	// Repair before the queue is drained, never after. A release-group deletion is
+	// held for review until the manager has been asked about it, so this stage is what
+	// unblocks the drain below — and running it the other way round would retire albums
+	// the refresh was about to correct. Full runs only: a one-artist button should not
+	// set the whole collection refreshing in Lidarr.
+	if scopeIsFull(scope) {
+		r.repairGhostAlbums(event)
+	}
+
 	// A scan fetches releases just as a sync does, so it detects redirects and
 	// deletions too — draining the queue here keeps a cold scan from leaving them
 	// for whenever the next sync happens to run.
@@ -1351,6 +1360,48 @@ func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 	events.Finish(r.db, ev, status, summary, details)
 	events.AddItems(r.db, ev, collection.SyncEventItems(stats))
 	return artists, albums
+}
+
+// repairGhostAlbums asks each manager to re-read the artists holding albums whose
+// MusicBrainz ID no longer resolves, so the queue drained next can tell a mis-keyed
+// album from a genuinely dead one.
+//
+// Records an event **only when there was something to repair**, on the same reasoning
+// as applyMigrations: a nightly "0 candidates" row would bury the runs that actually
+// fixed something. Failures are logged and reported on the event, never returned — a
+// manager being unreachable must not stop the run that found the problem.
+func (r *Runner) repairGhostAlbums(parent *models.Event) collection.RepairStats {
+	if r.db == nil {
+		return collection.RepairStats{}
+	}
+
+	stats, err := collection.RepairGhostReleaseGroups(r.db)
+	if err != nil {
+		logger.Log.Warnf("failed to repair albums with unresolvable MusicBrainz IDs: %s", err.Error())
+		return stats
+	}
+	if stats.Candidates == 0 {
+		return stats
+	}
+
+	ev := events.BeginChild(r.db, parent, models.EventTypeLidarrSync, "Repair albums via Lidarr")
+	status := models.EventStatusOK
+	if len(stats.Failures) > 0 {
+		status = models.EventStatusError
+	}
+	summary := fmt.Sprintf("%d album(s) with unresolvable IDs · %s refreshed · %d repaired",
+		stats.Candidates, plural(stats.Artists, "artist", "artists"), stats.Repaired)
+	if stats.Skipped > 0 {
+		summary += fmt.Sprintf(" · %d skipped (asked recently)", stats.Skipped)
+	}
+	ev.Stats = []models.EventStat{
+		{Label: "Unresolvable albums", Value: stats.Candidates, Kind: models.EventStatNotable},
+		{Label: "Artists refreshed", Value: stats.Artists},
+		{Label: "Repaired", Value: stats.Repaired, Kind: models.EventStatNotable},
+		{Label: "Refreshes failed", Value: len(stats.Failures), Kind: models.EventStatBad},
+	}
+	events.Finish(r.db, ev, status, summary, map[string]any{"repair": stats})
+	return stats
 }
 
 // applyMigrations drains the pending MusicBrainz migration queue at a run boundary.

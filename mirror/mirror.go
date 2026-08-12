@@ -235,12 +235,17 @@ func CollectionScope(db *gorm.DB, force bool) (Scope, error) {
 	scope.Artists = artistIDs
 	scope.Releases = releaseIDs
 
+	retired, err := retiredGroups(db)
+	if err != nil {
+		return scope, err
+	}
+
 	var groups []models.CollectionReleaseGroup
 	if err := db.Select("mb_id").Find(&groups).Error; err != nil {
 		return scope, err
 	}
 	for _, g := range groups {
-		if g.MBID != "" {
+		if g.MBID != "" && !retired[g.MBID] {
 			scope.Groups = append(scope.Groups, g.MBID)
 		}
 	}
@@ -289,12 +294,17 @@ func ArtistScope(db *gorm.DB, artistMBID string) (Scope, error) {
 		Detail:  map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID},
 	}
 
+	retired, err := retiredGroups(db)
+	if err != nil {
+		return scope, err
+	}
+
 	var groups []models.CollectionReleaseGroup
 	if err := db.Select("mb_id").Where("artist_mb_id = ?", artistMBID).Find(&groups).Error; err != nil {
 		return scope, err
 	}
 	for _, g := range groups {
-		if g.MBID != "" {
+		if g.MBID != "" && !retired[g.MBID] {
 			scope.Groups = append(scope.Groups, g.MBID)
 		}
 	}
@@ -362,13 +372,45 @@ func LibraryScope(db *gorm.DB, libraryID uuid.UUID) (Scope, error) {
 			artists[e.ArtistMBID] = true
 		}
 	}
+	retired, err := retiredGroups(db)
+	if err != nil {
+		return scope, err
+	}
 	for id := range groups {
-		scope.Groups = append(scope.Groups, id)
+		if !retired[id] {
+			scope.Groups = append(scope.Groups, id)
+		}
 	}
 	for id := range artists {
 		scope.Artists = append(scope.Artists, id)
 	}
 	return scope, nil
+}
+
+// retiredGroups is the release-group MBIDs a pass must not ask about again: those
+// with a confirmed deletion already on record.
+//
+// Recording a deletion is only half of not re-asking. Every scope is built from the
+// collection's own rows, and a group whose retirement is *pending review* is still one
+// of those rows — so without this the pass re-probes it, re-confirms it, and files a
+// duplicate-suppressed migration every single night, which is the loop the deletion
+// record was meant to close.
+//
+// Every status counts, including dismissed and failed. Those two mean "do not retire
+// this row", which is a decision about the collection; neither is a claim that the ID
+// resolves upstream, and re-reading it cannot produce a different answer.
+func retiredGroups(db *gorm.DB) (map[string]bool, error) {
+	var mbids []string
+	if err := db.Model(&models.MusicbrainzMigration{}).
+		Where("entity_type = ? AND kind = ?", models.MigrationEntityReleaseGroup, models.MigrationKindDeleted).
+		Pluck("old_mb_id", &mbids).Error; err != nil {
+		return nil, err
+	}
+	retired := make(map[string]bool, len(mbids))
+	for _, id := range mbids {
+		retired[id] = true
+	}
+	return retired, nil
 }
 
 // DueScope covers only cached releases whose TTL has elapsed. It is what a scan

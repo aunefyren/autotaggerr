@@ -311,6 +311,7 @@ Feature docs:
   the track's artist tag.
 - `mb-migration.md` — following MusicBrainz merges and deletions across Autotaggerr's own records.
 - `mirror.md` — the local MusicBrainz mirror: what is cached where, TTLs, and the refresh pass.
+- `artwork.md` — covers and artist images: warming them ahead of the page, and why it is its own verb.
 - `fingerprinting.md` — optional AcoustID identification.
 - `authentication.md` — local login, API keys, OIDC.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.

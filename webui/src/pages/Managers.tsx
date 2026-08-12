@@ -154,6 +154,7 @@ function EditManager({ manager, onClose, onSaved }: { manager: Manager; onClose:
   const [baseUrl, setBaseUrl] = useState(manager.lidarr_base_url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [cookie, setCookie] = useState("");
+  const [allowRefresh, setAllowRefresh] = useState(!manager.lidarr_skip_artist_refresh);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: FormEvent) => {
@@ -165,6 +166,9 @@ function EditManager({ manager, onClose, onSaved }: { manager: Manager; onClose:
         body.lidarr_base_url = baseUrl;
         if (apiKey) body.lidarr_api_key = apiKey; // omit to keep the stored key
         if (cookie) body.lidarr_header_cookie = cookie; // omit to keep the stored cookie
+        // Stored inverted so an old row (false) means "allowed"; the checkbox reads
+        // the way round a person thinks about it.
+        body.lidarr_skip_artist_refresh = !allowRefresh;
       }
       await api.put(`/managers/${manager.id}`, body);
       onSaved();
@@ -205,6 +209,17 @@ function EditManager({ manager, onClose, onSaved }: { manager: Manager; onClose:
                 domain-specific. These sessions expire; use <strong>Test</strong> above to check.
               </p>
             </div>
+            <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={allowRefresh} onChange={(e) => setAllowRefresh(e.target.checked)} />
+              <span>Let Autotaggerr refresh an artist in Lidarr</span>
+            </label>
+            <p className="muted" style={{ margin: "-4px 0 0", fontSize: 12 }}>
+              The only thing Autotaggerr ever writes to Lidarr. When an album's MusicBrainz ID
+              stops resolving, this asks Lidarr to re-read that one artist — the same thing its
+              own scheduled task and its Refresh button do. Lidarr usually responds by correcting
+              the ID, which is what repairs the album here. Turn it off if the API key is meant to
+              be read-only.
+            </p>
           </>
         )}
         <div className="modal-actions">

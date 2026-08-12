@@ -128,6 +128,15 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrArtworkCronSchedule == "" {
+		// set new value — 05:00, after the metadata refresh has had two hours to find
+		// albums added upstream. It is only a nicety: row creation warms its own
+		// artwork, so this pass is a backstop for expiry rather than the thing that
+		// catches up with the mirror, and the hour is not load-bearing.
+		ConfigFile.AutotaggerrArtworkCronSchedule = "0 0 5 * * *"
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrHealthCronSchedule == "" {
 		// set new value — every five minutes; cheap, and only records an event when a
 		// connection's health actually changes
@@ -201,6 +210,9 @@ func CreateConfigFile() error {
 
 	ConfigFile.AutotaggerrMirrorDisabled = false
 	ConfigFile.AutotaggerrMirrorCronSchedule = "0 0 3 * * *"
+
+	ConfigFile.AutotaggerrArtworkDisabled = false
+	ConfigFile.AutotaggerrArtworkCronSchedule = "0 0 5 * * *"
 
 	ConfigFile.AutotaggerrHealthCronSchedule = "0 */5 * * * *"
 

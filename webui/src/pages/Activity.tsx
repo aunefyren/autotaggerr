@@ -16,6 +16,7 @@ const TYPE_LABELS: Record<string, string> = {
   scan: "Processing",
   count_files: "Counting files",
   mb_mirror: "Metadata refresh",
+  artwork_refresh: "Artwork refresh",
   // Every pass that writes tags, whether a user pressed Tag files or a run reached its
   // tagging stage. One name, because it is one kind of work — the row says which run it
   // came from, which is the part that actually differs.
@@ -51,6 +52,8 @@ const TYPE_LABELS: Record<string, string> = {
 const TYPE_NOTES: Record<string, string> = {
   mb_mirror:
     "A metadata refresh re-reads MusicBrainz and writes no files. Releases that changed upstream are re-tagged by the next processing run, or immediately with Tag files.",
+  artwork_refresh:
+    "Fetches covers and artist images into the local cache so the browsing pages paint from disk. Its own activity rather than part of a metadata refresh: artwork comes from separate providers on a separate budget, so none of its numbers is comparable with the MusicBrainz ones. Most rows come from a new artist or album fetching its own artwork as it arrives; the scheduled pass tops up what has expired. Nothing in your library is written.",
   count_files:
     "Sizes the run before it starts: every folder walked once to count the files it will visit. It reads no tags and changes nothing.",
   collection_scan:
@@ -807,7 +810,7 @@ function EventDetail({
         {failures.length > 0 && (
           <div>
             <div className="eyebrow" style={{ marginBottom: 6 }}>Lookups that failed</div>
-            <div className="scroll stack" style={{ gap: 2 }}>
+            <div className="stack" style={{ gap: 2 }}>
               {failures.map((f, i) => (
                 <div key={i} className="mono" style={{ fontSize: 11, color: "var(--danger-text)", wordBreak: "break-word" }}>{f}</div>
               ))}
@@ -953,7 +956,7 @@ function ItemList({
     return (
       <div>
         <div className="eyebrow" style={{ marginBottom: 6 }}>Files that failed</div>
-        <div className="scroll mono" style={{ fontSize: 11, color: "var(--danger-text)", display: "flex", flexDirection: "column", gap: 2 }}>
+        <div className="mono" style={{ fontSize: 11, color: "var(--danger-text)", display: "flex", flexDirection: "column", gap: 2 }}>
           {fallbackErrors.map((f, i) => (<div key={i} style={{ wordBreak: "break-all" }}>{f}</div>))}
         </div>
       </div>
@@ -1009,7 +1012,11 @@ function ItemList({
           </button>
         )}
       </div>
-      <div className="scroll stack" style={{ gap: grouped ? 14 : 10 }}>
+      {/* No inner scroller: the modal body is one now, and a list with nothing pinned
+          above it has no reason to own a second. Two nested scrollbars for one list is
+          worse than a long one — an inner `.scroll` is for keeping a search field or a
+          filter visible while its results move, which this is not. */}
+      <div className="stack" style={{ gap: grouped ? 14 : 10 }}>
         {phases.map((phase) => {
           const rows = shown.filter((it) => (it.phase ?? "") === phase);
           if (rows.length === 0) return null;

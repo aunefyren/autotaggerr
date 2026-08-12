@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/aunefyren/autotaggerr/artwork"
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
@@ -34,7 +35,7 @@ func testRouter(t *testing.T) *gin.Engine {
 	}
 	cfg := models.ConfigStruct{AutotaggerrName: "Autotaggerr", AutotaggerrVersion: "test"}
 	scanRunner := process.NewRunner(db, nil, cfg)
-	return initRouter(db, scanRunner, mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, cfg), cfg)
+	return initRouter(db, scanRunner, mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, cfg), artwork.NewRunner(db, cfg), cfg)
 }
 
 func routerGet(t *testing.T, r *gin.Engine, path string) *httptest.ResponseRecorder {

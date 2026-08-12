@@ -438,6 +438,40 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   read as "working, unquantified". Which phases drive the bar is one shared rule
   (`phaseDrivesProgress`, `components/phases.ts`), because the Activity banner, the Activity feed
   rows, the Dashboard widget and the Artist page all draw the same counters.
+- **Loading placeholder** (`.skel`, `Skeleton` in `ui.tsx`) — what a surface shows while its first
+  fetch is in flight, when that fetch is slow enough to leave the page blank. It is **the surface's
+  own geometry with the values missing**, not a spinner and not a centred word: the collection's
+  loading state is the real table — one `<thead>` shared with the loaded state, real 34px rows, one
+  placeholder per cell — so the rows arrive *into* a table rather than replacing a void with one. A
+  shape that is already correct is what makes the arrival feel instant; a spinner says *wait* and
+  nothing else.
+  **Size each placeholder like the content it stands in for.** `table.data` is auto-layout, so a bar
+  wider or narrower than the real value hands the difference to another column and the headers slide
+  sideways as the rows land. Matching the *range* of the real content (a name is 75–155px, a pill is
+  21px tall) settles that to a few pixels; it cannot be eliminated, since the widest name in a
+  collection is not knowable before the fetch. Vertical position is exact, which is the half that
+  matters — nothing below the table moves.
+  **A placeholder is an empty slot, and this app already draws one** — `--surface-2` with an inset
+  hairline, the same treatment as `.coverage-cell.none`. No shimmer sweep: that is a second visual
+  idea for a fact the page states once, and `prefers-reduced-motion` deletes it globally anyway,
+  leaving a design whose loading state is invisible to the people most likely to need it stated.
+  The one moving part is the **indeterminate coverage meter** in the row's meter column (see
+  *Progress*), which already means "real work, counted in a unit this bar does not have" — a
+  coverage that is not known yet is exactly that, so a loading collection is drawn in the same
+  language as a loading run.
+  **First load only.** Show it for `loading && !data`; a reload has rows on screen that are still
+  true, and replacing them with placeholders is a step backwards from the wait the pattern exists to
+  soften. No artificial delay before it appears, either — the skeleton is not a different layout, so
+  there is nothing to flash.
+  **The controls that are already answerable stay live.** The filter box works through the wait
+  (typing narrows the list the moment it arrives) and so do the sort headers, since a sort chosen
+  during the wait is the order the rows arrive in. Counts do not: a chip reading `Mismatched 0` or a
+  toolbar reading `0 of 0` states a fact nobody knows yet, so those are simply absent until they are
+  known.
+  The rows are placeholders, never a promise about **how many** there are — pick a count that fills
+  the fold without implying a collection size. Mark the placeholder block `aria-hidden`, put
+  `aria-busy` on the container, and state it once in words for the reader who cannot see any of it
+  (`.sr-only` + `role="status"`).
 - **Run rail** (`.rail`, `FeedRow` in `Activity.tsx`) — how a flat feed shows that several activities
   came from one run. The Activity feed is one row per thing that happened, ordered only by when it
   happened, so the relationship cannot be structural: a line in a 20px gutter joins the rows of one
@@ -506,7 +540,19 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   reach for this only when the fix would make the label a sentence.
 - **Empty state** — centered, muted icon, one-line explanation, and a primary action. An empty
   screen is an invitation to act ("No libraries yet — add your first music folder").
-- **Modal** — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop `rgba(13,11,20,.7)`; focus-trapped.
+- **Modal** (`Modal`, `ui.tsx`) — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop
+  `rgba(13,11,20,.7)`; focus-trapped.
+  **Never taller than the screen.** The dialog is capped at the backdrop's content box and split into
+  a pinned title and a scrolling `.modal-body`. A centred flex item that outgrows its container
+  overflows *both* ends, and the backdrop is `position: fixed` with no overflow of its own — so a
+  long modal's top edge was not merely off-screen, it was unreachable, with no scrollbar anywhere to
+  bring it back. The title is what a long modal loses first, hence pinning it rather than letting the
+  whole dialog scroll. (`min-height: 0` on the body is load-bearing: a flex item's default floor is
+  its content, which is the overflow being prevented.)
+  **An inner `.scroll` is for keeping something pinned above a list** — a search field while its
+  results move, the file path over its tag diff. A list with nothing above it to keep in view does
+  not get one: the body already scrolls, and two nested scrollbars for one list is worse than a long
+  list. The Activity detail modal had two of them and was the case that broke.
 - **Confirm dialog** (`ConfirmDialog`, `ui.tsx`) — a Modal with a required **body** and a confirm
   button that **restates the verb** ("Detach", "Ignore cache and refresh"), never "OK". The body is
   the whole component: a dialog that only asks *are you sure?* adds a click without adding

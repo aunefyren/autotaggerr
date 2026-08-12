@@ -46,6 +46,9 @@ export interface Manager {
   type: string;
   enabled: boolean;
   lidarr_base_url?: string;
+  // Stored inverted so that a row written before the field existed means "allowed";
+  // the form shows it the other way up.
+  lidarr_skip_artist_refresh?: boolean;
   health: string;
 }
 
@@ -242,6 +245,36 @@ export interface MirrorStatus {
   relinked: number;
   last_error?: string;
   cached?: Record<string, number>;
+}
+
+/**
+ * The *Refresh artwork* verb's status. Deliberately not folded into MirrorStatus:
+ * images come from the artwork providers rather than MusicBrainz, so none of these
+ * numbers is comparable with the metadata ones.
+ */
+export interface ArtworkStatus {
+  running: boolean;
+  title?: string;
+  started_at?: string;
+  finished_at?: string;
+  total: number;
+  done: number;
+  fetched: number;
+  fresh: number;
+  /** Asked and answered: the provider has no image. The ordinary case, not a failure. */
+  missing: number;
+  errors: number;
+  last_error?: string;
+  /** What the cache holds right now. `images` is what a forced pass re-downloads. */
+  images: number;
+  missing_cached: number;
+  /**
+   * Whether anything can be fetched at all. Without these the page cannot tell
+   * "nothing warmed because it is all current" from "nothing warmed because no
+   * provider is configured" — opposite situations that look identical in zeroes.
+   */
+  covers_enabled: boolean;
+  artist_enabled: boolean;
 }
 
 export interface ItemsPage {

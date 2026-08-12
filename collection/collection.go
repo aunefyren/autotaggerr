@@ -1273,6 +1273,9 @@ func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
 		logger.Log.Warnf("failed to upsert artist %s: %s", mbID, err.Error())
 		return err
 	}
+	// Only on create: the update branch above returns before this, so a rebuild does
+	// not hand the whole collection to the warmer several times a day.
+	warmArtistArtwork(mbID)
 	return nil
 }
 
@@ -1398,6 +1401,10 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 		logger.Log.Warnf("failed to upsert release-group %s: %s", w.mbID, err.Error())
 		return err
 	}
+	// Only on create — see warmArtistArtwork. This is the hook that covers a Lidarr
+	// sync and a discography sync alike, because both reach the collection through
+	// here rather than through a path of their own.
+	warmGroupArtwork(w.mbID)
 	return nil
 }
 
@@ -1441,6 +1448,19 @@ type SyncStats struct {
 	// is.
 	Unknown []string `json:"unknown,omitempty"`
 
+	// Ghosts is the mirror image: albums a manager listed whose MusicBrainz ID resolves
+	// nowhere. Unknown is the collection pointing at a manager that has nothing there;
+	// this is a manager pointing at a MusicBrainz that has nothing there.
+	//
+	// It belongs on this pass even though the metadata refresh is what discovers it,
+	// because this pass is where the IDs come from. A refresh can only report the
+	// symptom — one failed row per album, on the far side of the collection from the
+	// catalog that supplied the ID — and the fix is in the manager, not here.
+	//
+	// Read from the recorded deletions rather than probed, so it costs no request and
+	// reports the standing total rather than only what this pass happened to touch.
+	Ghosts []string `json:"ghosts,omitempty"`
+
 	// Failures are the lookups that errored, one line each. Every one of these used to
 	// be a `continue` with a log line: Lidarr going down mid-pass produced an Activity
 	// row identical to a healthy one, just with smaller numbers.
@@ -1460,6 +1480,7 @@ func SyncEventStats(stats SyncStats) []models.EventStat {
 		{Label: "Artists synced", Value: stats.ArtistsSynced},
 		{Label: "Albums", Value: stats.Groups},
 		{Label: "Not in Lidarr", Value: len(stats.Unknown), Kind: models.EventStatNotable, Filter: models.EventItemStatusUnknown},
+		{Label: "Not in MusicBrainz", Value: len(stats.Ghosts), Kind: models.EventStatNotable, Filter: models.EventItemStatusGone},
 		{Label: "Lookups failed", Value: len(stats.Failures), Kind: models.EventStatBad},
 	}
 }
@@ -1471,12 +1492,20 @@ func SyncEventStats(stats SyncStats) []models.EventStat {
 // page like every other entity row in the feed — the point of the counter is going and
 // looking at the artists it counted.
 func SyncEventItems(stats SyncStats) []models.EventItem {
-	items := make([]models.EventItem, 0, len(stats.Unknown))
+	items := make([]models.EventItem, 0, len(stats.Unknown)+len(stats.Ghosts))
 	for _, mbid := range stats.Unknown {
 		items = append(items, models.EventItem{
 			Path:   mbid,
 			Kind:   models.EventItemKindEntity,
 			Status: models.EventItemStatusUnknown,
+		})
+	}
+	for _, mbid := range stats.Ghosts {
+		items = append(items, models.EventItem{
+			Path:   mbid,
+			Kind:   models.EventItemKindEntity,
+			Status: models.EventItemStatusGone,
+			Error:  "the manager lists this album under a MusicBrainz ID that does not resolve",
 		})
 	}
 	return items
@@ -1492,6 +1521,9 @@ func SyncEventDetails(stats SyncStats) map[string]any {
 	if len(stats.Unknown) > 0 {
 		details["unknown_artists"] = stats.Unknown
 	}
+	if len(stats.Ghosts) > 0 {
+		details["ghost_albums"] = stats.Ghosts
+	}
 	if len(stats.Failures) > 0 {
 		details["failures"] = stats.Failures
 	}
@@ -1505,6 +1537,9 @@ func SyncSummaryLine(stats SyncStats) string {
 	line := fmt.Sprintf("%d artists synced · %d albums", stats.ArtistsSynced, stats.Groups)
 	if n := len(stats.Unknown); n > 0 {
 		line += fmt.Sprintf(" · %d not in Lidarr", n)
+	}
+	if n := len(stats.Ghosts); n > 0 {
+		line += fmt.Sprintf(" · %d not in MusicBrainz", n)
 	}
 	if n := len(stats.Failures); n > 0 {
 		line += fmt.Sprintf(" · %d lookup(s) failed", n)
@@ -1703,6 +1738,16 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 	if err := reconcileManagerDesires(db); err != nil {
 		logger.Log.Warnf("failed to reconcile manager-derived wants: %s", err.Error())
 		stats.Failures = append(stats.Failures, "reconciling wants: "+err.Error())
+	}
+
+	// Read after the catalog block is current, so a ghost the manager has since dropped
+	// stops being reported without waiting for its migration row to be resolved. Logged
+	// rather than returned for the same reason as the line above: the mirror landed.
+	ghosts, err := GhostReleaseGroups(db)
+	if err != nil {
+		logger.Log.Warnf("failed to list albums with unresolvable MusicBrainz IDs: %s", err.Error())
+	} else {
+		stats.Ghosts = ghosts
 	}
 	return stats, nil
 }

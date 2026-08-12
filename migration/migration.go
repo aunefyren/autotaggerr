@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
@@ -62,6 +63,28 @@ func (p Policy) heldForReview(m models.MusicbrainzMigration) bool {
 	if m.TouchesPinned && p.ReviewPinned {
 		return true
 	}
+	// A release-group deletion is held until the manager has been asked to repair it,
+	// and this is the one place the zero-value-means-apply convention above is
+	// deliberately not followed.
+	//
+	// The convention is safe where a deletion is MusicBrainz's own act, because then
+	// there is nothing to recover: the entity is gone and the row is dead weight. A
+	// release-group deletion is usually not that. It is typically a manager holding an
+	// ID that upstream dropped or re-keyed, and the album is alive in MusicBrainz under
+	// a different ID — so applying it unattended would remove an album that one
+	// manager refresh repairs.
+	//
+	// Once that refresh has happened the objection is spent: the manager has re-read
+	// the artist and either corrected the ID or stopped listing the album, so a row
+	// still pointing at an unresolvable ID is genuinely dead and can go without asking.
+	// This is what keeps the review queue down to the cases a human can actually settle
+	// — an album nothing anywhere can identify — rather than the whole population.
+	//
+	// Retirement is guarded regardless (collection.RetireReleaseGroup), so an
+	// auto-applied deletion that still has a claim on it refuses and says why.
+	if m.EntityType == models.MigrationEntityReleaseGroup {
+		return m.RepairAttemptedAt == nil
+	}
 	if m.Kind == models.MigrationKindDeleted {
 		return p.ReviewDeletions
 	}
@@ -80,6 +103,7 @@ type Result struct {
 	Failed    int      `json:"failed"`
 	Files     int      `json:"files_remapped"`
 	Unmatched int      `json:"files_unmatched"`
+	Retired   int      `json:"release_groups_retired,omitempty"`
 	Errors    []string `json:"errors,omitempty"`
 }
 
@@ -92,6 +116,7 @@ func (r *Result) Add(other Result) {
 	r.Failed += other.Failed
 	r.Files += other.Files
 	r.Unmatched += other.Unmatched
+	r.Retired += other.Retired
 	r.Errors = append(r.Errors, other.Errors...)
 }
 
@@ -107,12 +132,34 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 		return res, errors.New("no database configured")
 	}
 
-	var pending []models.MusicbrainzMigration
-	if err := db.Where("status = ?", models.MigrationStatusPending).Find(&pending).Error; err != nil {
+	// Pending, plus failed release-group retirements — the one failure whose cause is
+	// expected to clear on its own.
+	//
+	// Every other migration fails for a reason a retry cannot change: a redirect with
+	// no target stays targetless. A retirement fails because something still claims the
+	// album, and the usual claim is the manager listing it, which is exactly what the
+	// repair pass sets out to change. Leaving those permanently failed meant a row that
+	// became retirable an hour later stayed failed forever, waiting on a discography
+	// prune or a human.
+	var candidates []models.MusicbrainzMigration
+	if err := db.
+		Where("status = ?", models.MigrationStatusPending).
+		Or("status = ? AND entity_type = ? AND kind = ?",
+			models.MigrationStatusFailed, models.MigrationEntityReleaseGroup, models.MigrationKindDeleted).
+		Find(&candidates).Error; err != nil {
 		return res, err
 	}
 
-	for _, m := range pending {
+	for _, m := range candidates {
+		// Checked before measuring, not after: a failed row was measured on the pass
+		// that failed it, so re-measuring a still-blocked one would re-save the row to
+		// write back the values it already holds. Retrying regardless would also rewrite
+		// the same refusal every run, telling the reader nothing new, and would report a
+		// failure the run did not cause.
+		if m.Status == models.MigrationStatusFailed && !retirementUnblocked(db, m) {
+			continue
+		}
+
 		if err := measure(db, &m); err != nil {
 			logger.Log.Warnf("failed to measure migration %s: %s", m.OldMBID, err.Error())
 			continue
@@ -132,9 +179,22 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 		res.Applied++
 		res.Files += applied.files
 		res.Unmatched += applied.unmatched
+		res.Retired += applied.retired
 	}
 
 	return res, nil
+}
+
+// retirementUnblocked reports whether a previously failed release-group retirement
+// would succeed now. A read error is treated as "still blocked": the next run asks
+// again, which is the harmless direction to be wrong in.
+func retirementUnblocked(db *gorm.DB, m models.MusicbrainzMigration) bool {
+	ok, _, err := collection.ReleaseGroupRetirable(db, m.OldMBID)
+	if err != nil {
+		logger.Log.Warnf("could not re-check retirement for %s: %s", m.OldMBID, err.Error())
+		return false
+	}
+	return ok
 }
 
 // ApplyByID applies one migration on demand — the approve button. Policy is not
@@ -244,6 +304,8 @@ func affectedDesires(db *gorm.DB, m models.MusicbrainzMigration) (int, error) {
 	switch m.EntityType {
 	case models.MigrationEntityArtist:
 		err = db.Model(&models.CollectionDesire{}).Where("artist_mb_id = ?", m.OldMBID).Count(&n).Error
+	case models.MigrationEntityReleaseGroup:
+		err = db.Model(&models.CollectionDesire{}).Where("release_group_mb_id = ?", m.OldMBID).Count(&n).Error
 	default:
 		err = db.Model(&models.CollectionDesire{}).Where("release_mb_id = ?", m.OldMBID).Count(&n).Error
 	}
@@ -257,6 +319,14 @@ func describe(db *gorm.DB, m models.MusicbrainzMigration) string {
 		var artist models.CollectionArtist
 		if err := db.Where("mb_id = ?", m.OldMBID).First(&artist).Error; err == nil {
 			return artist.Name
+		}
+	case models.MigrationEntityReleaseGroup:
+		// Captured before the row can be retired: applying this migration deletes the
+		// only thing that knows the title, and a review queue of bare UUIDs is not a
+		// review queue.
+		var rg models.CollectionReleaseGroup
+		if err := db.Where("mb_id = ?", m.OldMBID).First(&rg).Error; err == nil {
+			return rg.Title
 		}
 	default:
 		var release models.CollectionRelease
@@ -274,6 +344,10 @@ func describe(db *gorm.DB, m models.MusicbrainzMigration) string {
 type applyCounts struct {
 	files     int
 	unmatched int
+	// retired is release-groups withdrawn from the catalogue. Counted apart from
+	// files because nothing on disk moved: the run's summary would otherwise report a
+	// retirement as "0 files remapped, 0 unmatched" and read as having done nothing.
+	retired int
 }
 
 // apply performs a migration in a single transaction and records the outcome on the
@@ -520,6 +594,32 @@ func applyDeletion(tx *gorm.DB, m models.MusicbrainzMigration) (applyCounts, err
 		// artist's own collection row goes.
 		if err := tx.Where("mb_id = ?", m.OldMBID).Delete(&models.CollectionArtist{}).Error; err != nil {
 			return counts, err
+		}
+		return counts, nil
+	}
+
+	if m.EntityType == models.MigrationEntityReleaseGroup {
+		// No file touches a release-group directly — files are keyed by release — so
+		// there is nothing to un-match here, only a catalogue row to withdraw. The
+		// guards live in collection because they are prune's guards, and the two paths
+		// deleting the same row on different evidence must not drift apart.
+		removed, reason, err := collection.RetireReleaseGroup(tx, m.OldMBID)
+		if err != nil {
+			return counts, err
+		}
+		if !removed && reason != "" {
+			// A refusal is a real outcome rather than a crash, so it is recorded on the
+			// row as the sentence that explains it — the person who approved this can
+			// then read why nothing happened. It is not necessarily final: a retirement
+			// blocked by the manager still listing the album becomes possible once a
+			// refresh drops it, which is why ProcessPending re-picks these.
+			return counts, errors.New(reason)
+		}
+		if removed {
+			// An absent row is a success — there is nothing left to retire, which is the
+			// state the migration wanted — but it is not a retirement, and counting it
+			// as one would report albums removed by a run that removed nothing.
+			counts.retired = 1
 		}
 		return counts, nil
 	}

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/aunefyren/autotaggerr/artwork"
 	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/database"
@@ -45,6 +46,7 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 		DB:         db,
 		Scan:       scanRunner,
 		Mirror:     mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, models.ConfigStruct{}),
+		Artwork:    artwork.NewRunner(db, models.ConfigStruct{}),
 		Rebuilder:  collection.NewRebuilder(db),
 		SigningKey: []byte("signing-key"),
 		AppName:    "AT",

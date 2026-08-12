@@ -4,12 +4,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 
-	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
-	"gorm.io/gorm"
 )
 
 // Artwork is proxied rather than linked directly from the browser for three
@@ -17,29 +15,9 @@ import (
 // cover is fetched once per install instead of once per visitor, and a page full
 // of covers never reveals the user's IP to an external host.
 
-// artworkProviders resolves the enabled artwork data sources. Both are optional;
-// an absent source simply means that kind of image is unavailable, which the
-// handler reports as a 204 and the UI renders as a monogram tile.
-func artworkProviders(db *gorm.DB) modules.ArtworkProviders {
-	providers := modules.ArtworkProviders{}
-
-	var coverArt models.DataSource
-	if err := db.Where("type = ? AND enabled = ?", models.DataSourceTypeCoverArtArchive, true).
-		First(&coverArt).Error; err == nil {
-		providers.CoverArtEnabled = true
-		providers.CoverArtBaseURL = coverArt.BaseURL
-	}
-
-	var fanart models.DataSource
-	if err := db.Where("type = ? AND enabled = ?", models.DataSourceTypeFanart, true).
-		First(&fanart).Error; err == nil {
-		providers.FanartEnabled = true
-		providers.FanartBaseURL = fanart.BaseURL
-		providers.FanartAPIKey = fanart.APIKey
-	}
-
-	return providers
-}
+// Provider resolution lives in components.ArtworkProviders: the metadata refresh
+// warms images ahead of a user asking for them, so the handler is no longer the
+// only caller.
 
 // artworkMaxSize caps the requested edge length. Nothing in the UI renders larger
 // than the album hero, and an unbounded number here is a request for the provider
@@ -78,7 +56,7 @@ func (a *API) artwork(c *gin.Context) {
 		size = parsed
 	}
 
-	art, err := modules.GetArtwork(artworkProviders(a.DB), entity, mbid, kind, size)
+	art, err := modules.GetArtwork(components.ArtworkProviders(a.DB), entity, mbid, kind, size)
 	if err != nil {
 		if errors.Is(err, modules.ErrNoArtwork) {
 			// 204, not 404. Most artists have no fanart.tv entry and most releases have
@@ -142,9 +120,9 @@ func (a *API) artwork(c *gin.Context) {
 //
 //	GET /artwork-capabilities -> {"cover": bool, "artist": bool}
 func (a *API) artworkCapabilities(c *gin.Context) {
-	providers := artworkProviders(a.DB)
+	providers := components.ArtworkProviders(a.DB)
 	c.JSON(http.StatusOK, gin.H{
-		"cover":  providers.CoverArtEnabled,
-		"artist": providers.FanartEnabled && strings.TrimSpace(providers.FanartAPIKey) != "",
+		"cover":  components.CanServeCovers(providers),
+		"artist": components.CanServeArtistImages(providers),
 	})
 }

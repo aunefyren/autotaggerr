@@ -83,6 +83,39 @@ func transientStatus(status int) bool {
 	return status >= 500 || status == http.StatusTooManyRequests
 }
 
+// StatusError is a non-transient HTTP status from MusicBrainz that the call site was
+// not able to classify on its own.
+//
+// The generic fetch helper cannot decide what a 404 means, because that depends on the
+// endpoint: on a lookup it is the entity being gone, but on a *browse* it can equally
+// be the filter entity being unknown, so the two need different handling and only the
+// caller knows which it made. Carrying the status lets a caller branch and upgrade the
+// error to a GoneError once it has the evidence, instead of parsing the message.
+type StatusError struct {
+	Status int
+	Detail string
+}
+
+func (e *StatusError) Error() string {
+	return fmt.Sprintf("MusicBrainz returned HTTP %d: %s", e.Status, e.Detail)
+}
+
+// HTTPStatus returns the status a StatusError carries, or 0 for any other error.
+func HTTPStatus(err error) int {
+	var status *StatusError
+	if errors.As(err, &status) {
+		return status.Status
+	}
+	return 0
+}
+
+// notFoundStatus reports whether a status means the thing asked for is not there, as
+// opposed to the request being wrong or the service being unwell. Kept beside
+// transientStatus because the two together are the whole classification.
+func notFoundStatus(status int) bool {
+	return status == http.StatusNotFound || status == http.StatusGone
+}
+
 // GoneError wraps ErrEntityGone with the entity it refers to, so a handler can act
 // on the specific ID without parsing a message.
 type GoneError struct {

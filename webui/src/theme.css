@@ -76,6 +76,13 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   color: var(--text-dim); font-weight: 500;
 }
 .tabnum { font-variant-numeric: tabular-nums; }
+/* Said to a screen reader only. For a fact the sighted reader gets from the shape of
+   the page — a table of loading placeholders states "still loading" to anyone who can
+   see it and to nobody who cannot. */
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0;
+}
 
 /* Buttons */
 .btn {
@@ -182,6 +189,20 @@ table.data td .path { font-family: var(--font-mono); color: var(--text); font-si
 .coverage-fill { display: block; height: 100%; }
 .coverage-fill.full { background: var(--diff-add-text); }
 .coverage-fill.half { background: var(--warning); }
+
+/* Loading placeholder — a slot with nothing in it yet.
+
+   Same treatment as `.coverage-cell.none` (surface-2 + a hairline) because that is
+   already how this app draws an empty slot; a shimmer sweep would be a second visual
+   idea for a fact the page states once. It carries no animation of its own either:
+   a skeleton table's one moving part is the indeterminate meter in its coverage
+   column, which already means "real work, unquantified" everywhere else. */
+.skel {
+  display: inline-block; vertical-align: middle;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border);
+  border-radius: var(--radius-sm);
+}
+.skel-pill { border-radius: var(--radius-pill); }
 
 /* Indeterminate progress — a stage whose work is real but counted in a different unit
    than the bar (a run's metadata, migration and collection stages count entities, the

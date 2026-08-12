@@ -83,6 +83,128 @@ func PruneOrphanReleaseGroups(db *gorm.DB, artistMBID string, live []models.Musi
 	return pruned, nil
 }
 
+// RetireReleaseGroup removes a release-group MusicBrainz has been *confirmed* not to
+// have, and reports why it declined when it declines.
+//
+// This is PruneOrphanReleaseGroups' sibling, separated by the strength of the evidence
+// rather than by what it deletes. Prune works by subtraction — absent from a
+// discography listing — and needs a complete, untruncated discography to say even
+// that. Here the evidence is a direct lookup that answered 404, so no discography
+// fetch is involved and a single row can be retired on demand.
+//
+// Every guard prune applies still applies, and `in_catalog` is among them — for a
+// blunter reason than prune's. Prune defers to the manager as a competing authority on
+// what exists. This does not: an ID that resolves nowhere cannot be read whoever lists
+// it. It defers because `SyncManagers` upserts a row for every album the manager
+// reports, so deleting one the manager still lists achieves nothing — the next sync
+// puts it straight back. The album has to stop being listed *there* before removing it
+// here means anything, which is what the manager-refresh repair path is for.
+//
+// The returned reason is empty when the group was removed. It is a sentence for the
+// migration row, so a held migration can say why it will not apply rather than failing
+// silently or retrying forever — and for the catalog case it names the fix.
+func RetireReleaseGroup(db *gorm.DB, releaseGroupMBID string) (removed bool, reason string, err error) {
+	if db == nil || releaseGroupMBID == "" {
+		return false, "no release-group given", nil
+	}
+
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", releaseGroupMBID).First(&rg).Error; err != nil {
+		// Already gone — from an earlier retirement, or an artist prune that took it.
+		// Not an error: the row being absent is the state this function wants.
+		return false, "", nil
+	}
+
+	reason, err = releaseGroupRetirementBlock(db, rg)
+	if err != nil || reason != "" {
+		return false, reason, err
+	}
+
+	if err := db.Where("release_group_mb_id = ?", releaseGroupMBID).
+		Delete(&models.CollectionReleaseGroupArtist{}).Error; err != nil {
+		return false, "", err
+	}
+	if err := db.Where("mb_id = ?", releaseGroupMBID).
+		Delete(&models.CollectionReleaseGroup{}).Error; err != nil {
+		return false, "", err
+	}
+	return true, "", nil
+}
+
+// ReleaseGroupRetirable reports whether RetireReleaseGroup would remove this group if
+// it were called now, without removing anything.
+//
+// It exists so a *failed* retirement can be retried at the moment its blocker clears
+// rather than never. The common blocker is the manager still listing the album, and
+// that is precisely the condition a manager refresh is expected to change a run or a
+// week later — so "failed" here means "not yet", not "no".
+//
+// An absent row reports retirable: there is nothing to remove and nothing blocking, so
+// a caller retrying will succeed and can stop carrying the row as failed.
+func ReleaseGroupRetirable(db *gorm.DB, releaseGroupMBID string) (bool, string, error) {
+	if db == nil || releaseGroupMBID == "" {
+		return false, "no release-group given", nil
+	}
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", releaseGroupMBID).First(&rg).Error; err != nil {
+		return true, "", nil
+	}
+	reason, err := releaseGroupRetirementBlock(db, rg)
+	if err != nil {
+		return false, "", err
+	}
+	return reason == "", reason, nil
+}
+
+// releaseGroupRetirementBlock names the claim that stops this group being retired, or
+// returns "" when nothing does. One function so the check and the act cannot disagree:
+// a retry that tested different conditions from the retirement would either loop on a
+// row it can never remove, or skip one it could.
+func releaseGroupRetirementBlock(db *gorm.DB, rg models.CollectionReleaseGroup) (string, error) {
+	if rg.Owned {
+		return "files on disk still resolve to this album", nil
+	}
+	if rg.InCatalog {
+		return "the manager still lists this album — refresh the artist there first, " +
+			"or it will be restored on the next sync", nil
+	}
+
+	// Passing the row's own artist keeps "another artist is credited" meaning the same
+	// thing it means in prune: a collaboration is not orphaned by one credit going.
+	orphan, err := isOrphanReleaseGroup(db, rg.ArtistMBID, rg.MBID)
+	if err != nil {
+		return "", err
+	}
+	if !orphan {
+		return "an authored want, another credited artist, or an owned edition still references it", nil
+	}
+	return "", nil
+}
+
+// GhostReleaseGroups is the manager-mirrored albums whose MusicBrainz ID resolves
+// nowhere: the release-groups with a confirmed deletion recorded against them that a
+// manager's catalog still lists.
+//
+// It reads the migration table rather than re-probing, so the Lidarr sync can report
+// the finding without spending a single request. The finding belongs on that pass
+// because that is where the cause is — a metadata refresh can only ever show the
+// symptom, one failed row at a time, on the far side of the collection from the
+// catalog that supplied the ID.
+func GhostReleaseGroups(db *gorm.DB) ([]string, error) {
+	if db == nil {
+		return nil, nil
+	}
+	var mbids []string
+	err := db.Model(&models.CollectionReleaseGroup{}).
+		Joins("JOIN musicbrainz_migrations ON musicbrainz_migrations.old_mb_id = collection_release_groups.mb_id").
+		Where("musicbrainz_migrations.entity_type = ? AND musicbrainz_migrations.kind = ?",
+			models.MigrationEntityReleaseGroup, models.MigrationKindDeleted).
+		Where("collection_release_groups.in_catalog = ?", true).
+		Order("collection_release_groups.mb_id").
+		Distinct().Pluck("collection_release_groups.mb_id", &mbids).Error
+	return mbids, err
+}
+
 // isOrphanReleaseGroup checks the two claims that live outside the release-group row
 // itself: an authored want, and another artist's credit.
 func isOrphanReleaseGroup(db *gorm.DB, artistMBID, releaseGroupMBID string) (bool, error) {

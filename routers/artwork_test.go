@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
@@ -264,13 +265,13 @@ func TestArtworkClampsHugeSize(t *testing.T) {
 func TestArtworkProvidersResolution(t *testing.T) {
 	_, db := artworkAPI(t)
 
-	if p := artworkProviders(db); p.CoverArtEnabled || p.FanartEnabled {
+	if p := components.ArtworkProviders(db); p.CoverArtEnabled || p.FanartEnabled {
 		t.Errorf("empty database resolved providers: %+v", p)
 	}
 
 	addDataSource(t, db, models.DataSourceTypeCoverArtArchive, "https://caa.example", "", true)
 	addDataSource(t, db, models.DataSourceTypeFanart, "https://fanart.example", "k", true)
-	p := artworkProviders(db)
+	p := components.ArtworkProviders(db)
 	if !p.CoverArtEnabled || p.CoverArtBaseURL != "https://caa.example" {
 		t.Errorf("cover art not resolved: %+v", p)
 	}
@@ -328,5 +329,66 @@ func TestArtworkCapabilitiesRequiresAuth(t *testing.T) {
 	r, _ := artworkAPI(t)
 	if w := do(r, "GET", "/api/v1/artwork-capabilities", "", nil); w.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", w.Code)
+	}
+}
+
+// The *Refresh artwork* verb's three routes. They are the surface the /data-sources
+// panel drives, and the capability flags on the status payload are load-bearing: the
+// page uses them to tell "nothing to fetch because it is all current" from "nothing to
+// fetch because no provider is configured", which look identical in a row of zeroes.
+func TestArtworkRefreshRoutes(t *testing.T) {
+	r, db := artworkAPI(t)
+	token := loginToken(t, r)
+
+	status := func() map[string]any {
+		t.Helper()
+		w := do(r, "GET", "/api/v1/artwork/status", token, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("status = %d, want 200: %s", w.Code, w.Body.String())
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode status: %v", err)
+		}
+		return body
+	}
+
+	// With no data sources, the page must be able to say why rather than showing a
+	// button that would start a pass certain to fetch nothing.
+	if body := status(); body["covers_enabled"] != false || body["artist_enabled"] != false {
+		t.Errorf("capabilities with no sources = %+v, want both false", body)
+	}
+
+	addDataSource(t, db, models.DataSourceTypeCoverArtArchive, "https://caa.example", "", true)
+	if body := status(); body["covers_enabled"] != true {
+		t.Errorf("covers_enabled = %v after adding the source, want true", body["covers_enabled"])
+	}
+	// fanart is not configured, so artist images stay unavailable — the two providers
+	// are independent and one must not imply the other.
+	if body := status(); body["artist_enabled"] != false {
+		t.Errorf("artist_enabled = %v with no fanart source, want false", body["artist_enabled"])
+	}
+
+	// 202, not 200: a first pass over a cold collection runs for the better part of an
+	// hour, so the request cannot wait for it.
+	if w := do(r, "POST", "/api/v1/artwork/refresh", token, nil); w.Code != http.StatusAccepted {
+		t.Errorf("refresh = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	// Cancelling is safe at any point, including when nothing is running — the button
+	// is offered unconditionally while a pass shows as in flight.
+	if w := do(r, "POST", "/api/v1/artwork/cancel", token, nil); w.Code != http.StatusOK {
+		t.Errorf("cancel = %d, want 200: %s", w.Code, w.Body.String())
+	}
+}
+
+// The verb is behind the session like every other action; only the image endpoint
+// itself is public (an <img> tag cannot send an Authorization header).
+func TestArtworkRefreshRoutesRequireAuth(t *testing.T) {
+	r, _ := artworkAPI(t)
+	for _, path := range []string{"/api/v1/artwork/status", "/api/v1/artwork/refresh"} {
+		w := getArtwork(r, path)
+		if w.Code != http.StatusUnauthorized && w.Code != http.StatusNotFound {
+			t.Errorf("GET %s unauthenticated = %d, want 401", path, w.Code)
+		}
 	}
 }

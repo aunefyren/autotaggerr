@@ -25,6 +25,7 @@ import { useToast } from "../toast";
 const ENTITY_LABELS: Record<string, string> = {
   release: "Release",
   artist: "Artist",
+  release_group: "Album",
 };
 
 function StatusPill({ status }: { status: string }) {
@@ -42,6 +43,18 @@ function Impact({ m }: { m: MusicbrainzMigration }) {
   }
   if (m.affected_desires > 0) {
     parts.push(`${m.affected_desires} want${m.affected_desires === 1 ? "" : "s"}`);
+  }
+  // A retirement touches no file and usually no want, so the generic dash would say
+  // "nothing happens" about a row whose whole purpose is to remove an album. Name the
+  // effect instead — and a want, if there is one, is what will *block* it.
+  if (m.entity_type === "release_group" && m.affected_files === 0) {
+    return (
+      <span>
+        {m.affected_desires > 0
+          ? `blocked by ${parts.join(" · ")}`
+          : "removes the album from the collection"}
+      </span>
+    );
   }
   if (parts.length === 0) return <span className="dim">—</span>;
 
@@ -215,7 +228,14 @@ function MigrationTable({
                   <span>{m.name || ENTITY_LABELS[m.entity_type] || m.entity_type}</span>
                   <span className="dim" style={{ fontSize: 11 }}>
                     {ENTITY_LABELS[m.entity_type] ?? m.entity_type}
-                    {m.kind === "deleted" ? " · deleted upstream" : " · merged"}
+                    {m.kind !== "deleted"
+                      ? " · merged"
+                      : m.entity_type === "release_group"
+                        // Not "deleted upstream": the ID usually comes from a manager
+                        // and was never MusicBrainz's to delete. What is known is only
+                        // that it resolves nowhere.
+                        ? " · ID does not resolve"
+                        : " · deleted upstream"}
                   </span>
                 </div>
               </td>

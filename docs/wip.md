@@ -7,7 +7,7 @@ the rest from here.
 Shipped features are documented in [media-manager.md](media-manager.md),
 [collection.md](collection.md), [attach.md](attach.md), [scanning.md](scanning.md),
 [tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md),
-[mb-migration.md](mb-migration.md), [mirror.md](mirror.md),
+[mb-migration.md](mb-migration.md), [mirror.md](mirror.md), [artwork.md](artwork.md),
 [authentication.md](authentication.md) and [settings.md](settings.md).
 
 ## Open work
@@ -49,7 +49,16 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   A row on whatever holds collection-wide policy is the right home.
 - **Refresh coverage is collection-scoped.** A pass warms artists, release-groups and releases the
   collection already knows about. Artists reached only by browsing still fall back to the
-  on-demand path.
+  on-demand path. Artwork no longer has this gap — new rows fetch their own as they arrive
+  ([artwork.md](artwork.md#new-rows-fetch-their-own-artwork)) — but the metadata half still does.
+- **The 500 px album hero is not warmed**, only the 250 px size the lists use
+  ([artwork.md](artwork.md#what-it-warms)). One image on a page opened one album at a time is one
+  throttled request, so warming it would double the artwork pass and its disk for a page that is
+  already fast. Worth revisiting only if the hero ever appears in a grid.
+- **Artwork has no per-artist scope.** The refresh verb covers the whole collection or nothing; the
+  create hooks cover everything that arrives. The gap between them is an artist whose covers went
+  missing from the cache after they were added — recoverable today only by a full pass. If that
+  turns out to matter it is a `Targets` constructor and a button, not new machinery.
 - **A running job cannot be cancelled.** Graceful shutdown has shipped (see
   [scanning.md](scanning.md#stopping-on-purpose)): schedules stop, HTTP drains, pending jobs are
   dropped and the job in flight is given 30 seconds. What is missing is the ability to *stop* that
@@ -119,15 +128,89 @@ still open:
 ## MusicBrainz entity migration — what is left
 
 The feature has shipped, including release-group pruning, artist identity verification and the
-manual sweep; see [mb-migration.md](mb-migration.md). Residual open work:
+manual sweep; see [mb-migration.md](mb-migration.md). Artist and release are covered for both merge
+and deletion, release-group for deletion (and for merges by subtraction), and recordings need no row
+— the coverage matrix and the reasoning for each *no row* live in
+[mb-migration.md](mb-migration.md#coverage-which-entity-which-change-which-mechanism). What that
+matrix leaves open:
+
+- **A release-track that is no longer in its release is a dead end.** This is the one identity change
+  with no recovery path at all, automatic or otherwise, short of a manual force re-correlate.
+
+  `ProcessTrackFile` locates the track by exact ID inside the release payload
+  (`modules/files.go:290`). When MusicBrainz rebuilds a release's tracklist without changing the
+  *release* ID, that lookup misses and the function returns `ErrTrackNotInRelease`
+  (`modules/files.go:29`, raised at `:312`) — **which nothing in the repo consumes.** No handler, no
+  migration row, no fallback. It surfaces as a per-file error and stays one.
+
+  Whether that matters depends on where the correlation came from, and the exposure is narrower than
+  it first looks. Under a manager, `ResolveMetadataDetailsFromLidarr` (`modules/files.go:216`)
+  supplies fresh track IDs on every scan, so the condition clears on its own within a cache TTL. The
+  exposed case is a **manager-less install** — FLACs carrying their own MB IDs — because the fallback
+  at `:240` reads the stale ID out of the tags of the very file it is trying to repair. That is the
+  only place in the pipeline where the input is the artefact being corrected, and it is why the
+  failure is permanent rather than merely slow: every subsequent scan reproduces it exactly.
+
+  The fix is a positional fallback: when the ID match misses, re-match on disc plus track position
+  and treat a hit as a re-correlation, writing the new track ID. `MapFilesToTracks`
+  (`modules/track_mapping.go:56`) already implements exactly this logic for bulk attach, including
+  the all-or-nothing rule that stops a partial number match from silently mixing strategies.
+
+  It wants care rather than speed. A wrong positional match mistags a file, which is the one failure
+  this codebase most consistently designs against — so the fallback should refuse ambiguity the way
+  `mapByNumber` does, should record itself as a distinct `CorrelationSource` so it is auditable
+  afterwards, and should almost certainly not apply to `Pinned` items, whose whole point is that a
+  person chose them by hand.
+
+- **A manager re-keying an album to another *valid* MusicBrainz ID is undetected.** The repair path
+  shipped this week only catches the case where the old ID is *dead*
+  ([mb-migration.md](mb-migration.md#groups-that-resolve-nowhere)). If Lidarr moves an album from
+  valid ID A to valid ID B, nothing 404s: the sync clears `in_catalog` on A and creates B, and A
+  survives — it is a real release-group in the artist's discography, so `PruneOrphanReleaseGroups`
+  will not take it either. The result is a silent duplicate on the artist page, one of them with no
+  files and no catalog entry.
+
+  Detectable from the same before/after sync diff that would carry a want across a repair (the entry
+  above), which is an argument for building the two together: an album vanishing from a manager's
+  catalog in the same pass that an equivalent one appears is the signal in both cases.
+
+- **A manager re-keying an *artist* is reported but not adopted.** The old MBID stops being listed,
+  so it lands in `SyncStats.Unknown` and shows as *Not in Lidarr*; the new MBID is never picked up,
+  because `SyncManagers` only asks about artists the collection already holds. Reporting it is
+  arguably correct — the collection is not obliged to follow a manager's re-identification — but the
+  user is left to work out that the two rows are the same artist. Lowest priority of the three: it is
+  visible, it is explained, and nothing is lost.
+
+Residual open work on what has shipped:
 
 - **Release-group pruning only runs on a discography sync**, which is per-artist and user-triggered.
   An artist nobody syncs keeps their orphaned rows. The sweep verifies artist *identity* but does
   not prune their groups, because that would mean a discography fetch per artist on top of the
   lookup.
+- **Repair by manager refresh has shipped**; see
+  [mb-migration.md](mb-migration.md#repairing-through-the-manager). Residual:
+  - **A repaired album's want does not follow it.** When a manager re-keys an album, the old ID's
+    row is retired and the live-ID album arrives as a new row, so a `CollectionDesire` pointing at
+    the old ID is stranded. MusicBrainz cannot help here — these IDs were never MusicBrainz's, so
+    there is no merge to detect, and release-group merges are the one category detection does not
+    cover anyway. The before/after diff across a refresh (dead ID gone, new ID present, same artist
+    and title) is a far stronger basis for a `MigrationKindRedirect` than any search would be.
+    Deferred because no desire in the collection measured pointed at a ghost — build it when one
+    does.
+  - **The repair stage has no button.** It runs on a full pass only. An artist page showing "3
+    albums here have IDs that do not resolve — refresh in Lidarr" would let a user fix one artist
+    without waiting for the nightly run.
 
 ## Known issues / limitations
 
+- **`GET /artists` recomputes the whole collection on every request.** `listArtists`
+  (`routers/collection.go:272`) loads every artist, every release group, every desire and every
+  credit link, then aggregates in Go — deliberately, so the complete/discrepancy rules have one
+  definition shared with the artist page, but it means the cost is the size of the collection and
+  nothing is cached between calls. The /collection page now covers the wait with a skeleton table
+  (see [style-guide.md](style-guide.md) → *Loading placeholder*), which makes it feel responsive
+  without making it faster. If it needs to actually be faster, the counts are the thing to
+  materialise — they change only when a scan or a sync does.
 - **Worker-count tuning.** Scan events now carry `mb_lookups` (cache hit / coalesced / fetched), so
   the cost of a run is finally measurable. The default `autotaggerr_process_concurrency` of 4 has
   never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
