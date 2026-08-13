@@ -1438,6 +1438,15 @@ func (r *Runner) repairArtistAlbumsNow(artistMBID string) {
 		return
 	}
 
+	// Whatever happens below, the rows stop claiming a repair is in flight when this
+	// returns. Deferred rather than written at each exit, because the one thing worse
+	// than a table that does not show work happening is one that shows work that is not.
+	defer func() {
+		if err := migration.ClearRepairQueued(r.db, artistMBID); err != nil {
+			logger.Log.Warnf("failed to clear repair marks for %s: %s", artistMBID, err.Error())
+		}
+	}()
+
 	// A parent event, so the refresh, the drain and the rebuild read as one action in
 	// the feed rather than as three unrelated rows appearing at the same second.
 	ev := events.Begin(r.db, models.EventTypeMigration, "Repair albums via the manager")
@@ -1492,9 +1501,9 @@ func (r *Runner) applyMigrations(parent *models.Event) migration.Result {
 		r.recordMigrations(parent, res, err)
 		return res
 	}
-	if res.Applied > 0 || res.Pending > 0 || res.Failed > 0 {
-		logger.Log.Infof("MusicBrainz migrations: %d applied (%d files remapped, %d files un-identified) · %d awaiting review · %d failed",
-			res.Applied, res.Files, res.Unmatched, res.Pending, res.Failed)
+	if res.Applied > 0 || res.Pending > 0 || res.Failed > 0 || res.Resolved > 0 {
+		logger.Log.Infof("identity migrations: %d applied (%d files remapped, %d files un-identified) · %d resolved elsewhere · %d awaiting review · %d failed",
+			res.Applied, res.Files, res.Unmatched, res.Resolved, res.Pending, res.Failed)
 		r.recordMigrations(parent, res, nil)
 	}
 	return res
@@ -1510,12 +1519,16 @@ func (r *Runner) recordMigrations(parent *models.Event, res migration.Result, er
 	status := models.EventStatusOK
 	details := map[string]any{
 		"applied":         res.Applied,
+		"resolved":        res.Resolved,
 		"pending":         res.Pending,
 		"failed":          res.Failed,
 		"files_remapped":  res.Files,
 		"files_unmatched": res.Unmatched,
 	}
 	summary := fmt.Sprintf("%d applied · %d files remapped · %d awaiting review", res.Applied, res.Files, res.Pending)
+	if res.Resolved > 0 {
+		summary += fmt.Sprintf(" · %d resolved elsewhere", res.Resolved)
+	}
 	if len(res.Errors) > 0 {
 		details["errors"] = res.Errors
 	}
@@ -1532,10 +1545,45 @@ func (r *Runner) recordMigrations(parent *models.Event, res migration.Result, er
 		{Label: "Applied", Value: res.Applied, Kind: models.EventStatNotable},
 		{Label: "Files remapped", Value: res.Files},
 		{Label: "Files un-identified", Value: res.Unmatched},
+		{Label: "Resolved elsewhere", Value: res.Resolved, Kind: models.EventStatMuted},
 		{Label: "Awaiting review", Value: res.Pending, Kind: models.EventStatMuted},
 		{Label: "Failed", Value: res.Failed, Kind: models.EventStatBad},
 	}
+
+	// One row per identity settled, so the event says *which* records changed rather
+	// than only how many. A count is enough to notice a run did something and never
+	// enough to check it a day later, which is the whole reason a merge is worth
+	// reporting: it rewrote what one of the user's albums is.
+	events.AddItems(r.db, ev, migrationItems(res.Outcomes))
 	events.Finish(r.db, ev, status, summary, details)
+}
+
+// migrationItems turns per-row outcomes into event detail rows.
+//
+// The MBID is the row's identifier because that is what the feed resolves: names,
+// artists and file counts are looked up from it at read time (events.ResolveRefs), so a
+// merge that is still in the collection names itself, and one that has been retired
+// falls back to the name captured on the migration row.
+func migrationItems(outcomes []migration.Outcome) []models.EventItem {
+	items := make([]models.EventItem, 0, len(outcomes))
+	for _, o := range outcomes {
+		items = append(items, models.EventItem{
+			Path:   o.OldMBID,
+			Kind:   models.EventItemKindEntity,
+			Status: o.Status,
+			// The detail sentence rides Error for a failure — where it is the refusal —
+			// and for a resolution, where it is why nothing had to be applied. Both are
+			// the one thing the reader needs beside the row, and the field is the row's
+			// only place to say something in words.
+			//
+			// TagsWritten is deliberately left at zero even for a merge that re-pointed
+			// a dozen files: on an entity row it renders as "12 files re-tagged", and a
+			// migration writes no tags. What it does is blank their processed marker so
+			// the *next* run re-tags them, which is not the same claim.
+			Error: o.Detail,
+		})
+	}
+	return items
 }
 
 // SyncDrift refreshes metadata for the whole collection. It is the refresh verb at

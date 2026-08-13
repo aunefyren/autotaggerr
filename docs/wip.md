@@ -73,13 +73,14 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   shape of gap: *3 albums gone* names no albums, because the pass compares MBID sets and keeps only
   the sizes. Keeping the two sets would make them `EventItem` rows like every other finding, and
   those rows already resolve to names and links.
-- **`Related` resolution stops at the Activity modal.** `events.ResolveRefs` and
+- **`Related` resolution reaches two surfaces, not every one.** `events.ResolveRefs` and
   `GET /mb/:mbid/files` answer "what is this identifier, and which files depend on it"
-  ([scanning.md](scanning.md#an-identifier-is-not-a-subject)), but only a detail row asks. The
-  Migrations page lists bare MBIDs for exactly the same reason and would read the same way with the
-  same call. So would an Items filter by release — which is the other half of the *what failed?*
-  entry above, since "show me the files behind this MBID" and "show me the files that failed" are
-  one query with different predicates.
+  ([scanning.md](scanning.md#an-identifier-is-not-a-subject)). The Migrations page now answers the
+  second half its own way — a file count per row, linking to `/items?mbid=`, which is the Items
+  filter by release this entry used to ask for — and `ResolveRefs` falls back to the migration
+  table so a retired album still names itself in the feed. What is left is everywhere else that
+  prints an MBID: the *what failed?* entry above wants the same treatment, since "show me the files
+  behind this MBID" and "show me the files that failed" are one query with different predicates.
 - **A per-artist Lidarr lookup failure has no row.** `SyncStats.Failures` carries the sentence and
   the count, rendered as a plain list, because a manager-level failure is not *about* an entity. But
   the per-artist half of it is — the artist MBID is in hand at the point of the error — so those
@@ -203,21 +204,24 @@ Residual open work on what has shipped:
     a user who has not opened the Migrations page. `Runner.RepairArtistAlbums` is the verb; it needs
     an endpoint and a button, not new machinery.
 
-### Frontend follow-ups — Migrations page (separate repo)
+### Migrations page — what is left after the rewrite
 
-The backend for both of these has shipped and is tested; the built bundle in `web/dist` has to catch
-up. See [mb-migration.md](mb-migration.md#what-the-review-queue-shows).
+The page now renders the review context, handles the 202, pages both tables on the server, shows a
+repair in flight, and names its source rather than assuming one. What that left open:
 
-- **Render the review context.** Each row in `GET /migrations` now carries `problem` and `effect`
-  (ready-to-show sentences), plus `files_on_disk`, `editions`, `owned`, `in_catalog`, `blocker`,
-  `needs_manager_refresh` and `artist_mbid` / `artist_name`. The current card shows the entity type
-  and kind only, which for a release-group deletion is "Album · ID does not resolve" over a row of
-  zeroes. At minimum: print `problem` and `effect`; better, show the file/edition count and the
-  blocker as their own affordances.
-- **Handle 202 from approve.** When `needs_manager_refresh` is true, approve returns **202** with
-  `{artist_mbid, artist_name, message}` and the row stays `pending` — it is asking the manager, not
-  applying. Label the button accordingly for that case (*"Ask Lidarr to re-read <artist>"* rather
-  than *Approve*), show `message`, and link to Activity rather than expecting the row to disappear.
+- **The blocker names the fix but cannot perform it.** *"files on disk still resolve to this album"*
+  is a refusal whose remedy is deleting or re-attaching those files, and the row links to them
+  (`/items?mbid=`) but stops there. A **Detach** or **Re-identify these files** action from the
+  migration row would close the loop; the attach machinery already exists
+  ([attach.md](attach.md)).
+- **The queue does not group by artist.** `artist_open` tells a row how many siblings one refresh
+  would settle, and the row says so in words — but the eight rows still sit apart, sorted by whatever
+  the table is sorted by. A grouped section per artist (the pattern the artist page's catalogue uses)
+  would make "one press covers these" visible rather than stated.
+- **`resolution_detail` is a sentence, not a link.** *"a manager re-keyed it"* is the right words and
+  the wrong affordance: the album it was re-keyed *to* is usually in the collection under its new ID,
+  and nothing points at it. Needs the before/after diff described under *A repaired album's want does
+  not follow it* above — the same evidence would carry both.
 
 ## Known issues / limitations
 

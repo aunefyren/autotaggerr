@@ -21,6 +21,7 @@ package migration
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/collection"
@@ -98,13 +99,56 @@ func (p Policy) heldForReview(m models.MusicbrainzMigration) bool {
 
 // Result summarises a processing run, for the caller's event payload.
 type Result struct {
-	Applied   int      `json:"applied"`
-	Pending   int      `json:"pending"`
-	Failed    int      `json:"failed"`
+	Applied int `json:"applied"`
+	Pending int `json:"pending"`
+	Failed  int `json:"failed"`
+	// Resolved is rows closed without being applied because the reason they were queued
+	// stopped existing. Counted apart from Applied because nothing was rewritten: a run
+	// reporting a manager's repair as an application would credit itself with work the
+	// manager did.
+	Resolved  int      `json:"resolved,omitempty"`
 	Files     int      `json:"files_remapped"`
 	Unmatched int      `json:"files_unmatched"`
 	Retired   int      `json:"release_groups_retired,omitempty"`
 	Errors    []string `json:"errors,omitempty"`
+
+	// Outcomes is one entry per row this run settled, so the Activity event can list
+	// *which* identities changed rather than only how many. The counts above answer
+	// "did anything happen"; a person reading the feed a day later wants the names.
+	Outcomes []Outcome `json:"outcomes,omitempty"`
+}
+
+// Outcome is what happened to one migration, in the shape an event detail row needs.
+//
+// It carries the entity's name because the name is about to stop being lookup-able:
+// retiring an album deletes the only row that knows its title, so a detail list built
+// from the collection afterwards would be a column of bare UUIDs.
+type Outcome struct {
+	EntityType string `json:"entity_type"`
+	Kind       string `json:"kind"`
+	OldMBID    string `json:"old_mb_id"`
+	NewMBID    string `json:"new_mb_id,omitempty"`
+	Name       string `json:"name,omitempty"`
+	// Status is a models.EventItemStatus*, so the caller can hand it to an event row
+	// without translating.
+	Status string `json:"status"`
+	// Detail is the sentence for a resolution or a failure, empty for a plain apply.
+	Detail string `json:"detail,omitempty"`
+	Files  int    `json:"files,omitempty"`
+}
+
+// outcomeOf describes a settled row.
+func outcomeOf(m models.MusicbrainzMigration, status, detail string) Outcome {
+	return Outcome{
+		EntityType: m.EntityType,
+		Kind:       m.Kind,
+		OldMBID:    m.OldMBID,
+		NewMBID:    m.NewMBID,
+		Name:       m.Name,
+		Status:     status,
+		Detail:     detail,
+		Files:      m.AffectedFiles,
+	}
 }
 
 // Add accumulates another run's result into this one. A run that drains the queue
@@ -114,10 +158,12 @@ func (r *Result) Add(other Result) {
 	r.Applied += other.Applied
 	r.Pending += other.Pending
 	r.Failed += other.Failed
+	r.Resolved += other.Resolved
 	r.Files += other.Files
 	r.Unmatched += other.Unmatched
 	r.Retired += other.Retired
 	r.Errors = append(r.Errors, other.Errors...)
+	r.Outcomes = append(r.Outcomes, other.Outcomes...)
 }
 
 // ProcessPending measures every pending migration, applies the ones policy allows,
@@ -151,6 +197,20 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 	}
 
 	for _, m := range candidates {
+		// Settled elsewhere while it sat here. Checked before anything else, because
+		// every step below assumes there is still something to migrate: measuring a
+		// vanished entity writes zeroes, and applying one reports a rewrite of nothing
+		// as an application.
+		if reason, moot := mootReason(db, m); moot {
+			if err := closeExternally(db, &m, reason); err != nil {
+				logger.Log.Warnf("failed to close migration %s: %s", m.OldMBID, err.Error())
+				continue
+			}
+			res.Resolved++
+			res.Outcomes = append(res.Outcomes, outcomeOf(m, models.EventItemStatusResolved, reason))
+			continue
+		}
+
 		// Checked before measuring, not after: a failed row was measured on the pass
 		// that failed it, so re-measuring a still-blocked one would re-save the row to
 		// write back the values it already holds. Retrying regardless would also rewrite
@@ -170,19 +230,96 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 			continue
 		}
 
-		applied, err := apply(db, &m)
+		applied, err := apply(db, &m, models.MigrationResolutionAutomatic)
 		if err != nil {
 			res.Failed++
 			res.Errors = append(res.Errors, fmt.Sprintf("%s %s: %s", m.EntityType, m.OldMBID, err.Error()))
+			res.Outcomes = append(res.Outcomes, outcomeOf(m, models.EventItemStatusError, err.Error()))
 			continue
 		}
 		res.Applied++
 		res.Files += applied.files
 		res.Unmatched += applied.unmatched
 		res.Retired += applied.retired
+		res.Outcomes = append(res.Outcomes, outcomeOf(m, models.EventItemStatusMigrated, ""))
 	}
 
 	return res, nil
+}
+
+// mootReason reports whether there is anything left to migrate, and if not, the
+// sentence saying why.
+//
+// The queue is not the only thing that can settle an identity change. A manager
+// re-keys an album and the row it was holding stops existing; an artist prune takes a
+// release-group; the last file pointing at a merged release is re-correlated by a scan.
+// The migration then describes a change to state nobody holds any more — and applying
+// it would rewrite nothing while reporting an application, which is the one outcome
+// worse than leaving it queued.
+//
+// Absence is read as "nothing to do", never as "do something": every branch here is a
+// count of what still references the old ID, so being wrong means leaving a row in the
+// queue rather than closing one that mattered.
+func mootReason(db *gorm.DB, m models.MusicbrainzMigration) (string, bool) {
+	// A redirect with nowhere to point is malformed, not moot. Closing it quietly
+	// because nothing happens to reference it today would file a data problem under
+	// "resolved itself"; failing it leaves the row saying what is wrong with it.
+	if m.Kind == models.MigrationKindRedirect && m.NewMBID == "" {
+		return "", false
+	}
+
+	switch m.EntityType {
+	case models.MigrationEntityReleaseGroup:
+		// A retirement's whole content is deleting this row. Without it there is no
+		// retirement to perform, whoever removed it.
+		if countRows(db, &models.CollectionReleaseGroup{}, "mb_id = ?", m.OldMBID) > 0 {
+			return "", false
+		}
+		return "the album is no longer in the collection — a manager re-keyed it, or it " +
+			"was removed while this was waiting", true
+
+	case models.MigrationEntityArtist:
+		refs := countRows(db, &models.CollectionArtist{}, "mb_id = ?", m.OldMBID) +
+			countRows(db, &models.CollectionReleaseGroup{}, "artist_mb_id = ?", m.OldMBID) +
+			countRows(db, &models.CollectionRelease{}, "artist_mb_id = ?", m.OldMBID) +
+			countRows(db, &models.CollectionDesire{}, "artist_mb_id = ?", m.OldMBID) +
+			countRows(db, &models.CollectionReleaseGroupArtist{}, "artist_mb_id = ?", m.OldMBID)
+		if refs > 0 {
+			return "", false
+		}
+		return "nothing in the collection is filed under this artist ID any more", true
+
+	default:
+		refs := countRows(db, &models.LibraryItem{}, "mb_release_id = ?", m.OldMBID) +
+			countRows(db, &models.CollectionRelease{}, "mb_id = ?", m.OldMBID) +
+			countRows(db, &models.CollectionDesire{}, "release_mb_id = ?", m.OldMBID)
+		if refs > 0 {
+			return "", false
+		}
+		return "no file and no collection row is keyed on this release any more", true
+	}
+}
+
+// closeExternally settles a row nothing here had to apply.
+//
+// The cached entity goes with it, exactly as an application drops it: the old ID is
+// dead weight either way, and leaving it cached means the next drift sync re-reads it,
+// re-detects the same change and re-opens the row this just closed. Dropping it is also
+// what makes modules.reopenIfClosedExternally a signal rather than a loop — after this,
+// only something that genuinely still points at the old ID can cause another fetch.
+func closeExternally(db *gorm.DB, m *models.MusicbrainzMigration, detail string) error {
+	now := time.Now()
+	m.Status = models.MigrationStatusResolved
+	m.Resolution = models.MigrationResolutionExternal
+	m.ResolutionDetail = detail
+	m.ResolvedAt = &now
+	m.Error = ""
+	if err := db.Save(m).Error; err != nil {
+		return err
+	}
+	forgetCachedEntity(*m)
+	logger.Log.Infof("%s migration %s closed without applying: %s", m.EntityType, m.OldMBID, detail)
+	return nil
 }
 
 // retirementUnblocked reports whether a previously failed release-group retirement
@@ -199,18 +336,26 @@ func retirementUnblocked(db *gorm.DB, m models.MusicbrainzMigration) bool {
 
 // ApplyByID applies one migration on demand — the approve button. Policy is not
 // consulted: an explicit approval *is* the decision the policy was deferring to.
+//
+// A row that has become moot while it sat in the queue is closed rather than applied,
+// on the same reasoning as the drain: pressing approve on an album a manager already
+// re-keyed should report what actually happened to it, not claim a retirement that
+// removed nothing.
 func ApplyByID(db *gorm.DB, id uuid.UUID) (models.MusicbrainzMigration, error) {
 	var m models.MusicbrainzMigration
 	if err := db.First(&m, "id = ?", id).Error; err != nil {
 		return m, err
 	}
-	if m.Status == models.MigrationStatusApplied {
-		return m, errors.New("migration has already been applied")
+	if err := settled(m); err != nil {
+		return m, err
+	}
+	if reason, moot := mootReason(db, m); moot {
+		return m, closeExternally(db, &m, reason)
 	}
 	if err := measure(db, &m); err != nil {
 		return m, err
 	}
-	if _, err := apply(db, &m); err != nil {
+	if _, err := apply(db, &m, models.MigrationResolutionApproved); err != nil {
 		return m, err
 	}
 	return m, nil
@@ -225,25 +370,152 @@ func Dismiss(db *gorm.DB, id uuid.UUID) (models.MusicbrainzMigration, error) {
 	if err := db.First(&m, "id = ?", id).Error; err != nil {
 		return m, err
 	}
-	if m.Status == models.MigrationStatusApplied {
-		return m, errors.New("migration has already been applied")
+	if err := settled(m); err != nil {
+		return m, err
 	}
+	now := time.Now()
 	m.Status = models.MigrationStatusDismissed
+	m.Resolution = models.MigrationResolutionDismissed
+	m.ResolvedAt = &now
 	return m, db.Save(&m).Error
 }
 
-// List returns migrations, newest first, optionally filtered by status.
-func List(db *gorm.DB, status string, limit int) ([]models.MusicbrainzMigration, error) {
-	q := db.Order("detected_at desc")
-	if status != "" {
-		q = q.Where("status = ?", status)
+// settled refuses a second decision on a row that already has one. A dismissed or
+// failed row is still open — both are re-decidable — but an applied or resolved one is
+// a statement about work that has happened.
+func settled(m models.MusicbrainzMigration) error {
+	switch m.Status {
+	case models.MigrationStatusApplied:
+		return errors.New("migration has already been applied")
+	case models.MigrationStatusResolved:
+		return errors.New("this change was already resolved without needing to be applied")
 	}
-	if limit > 0 {
-		q = q.Limit(limit)
-	}
+	return nil
+}
+
+// ListOptions is one page of the migrations table: which rows, in what order.
+type ListOptions struct {
+	// Status filters to one lifecycle state; empty is every row. "open" is the queue —
+	// pending plus failed — since a failed retirement is still waiting on something and
+	// belongs with the work rather than with the history.
+	Status string
+	// Query matches the entity's name or its old ID. Both, because half the reasons to
+	// open this page start from a UUID someone pasted out of a log or a manager.
+	Query  string
+	Limit  int
+	Offset int
+	// Sort is a ListSort* key and Dir is "asc"/"desc". An unknown key falls back to the
+	// default for the status being asked for, rather than erroring: a stale bookmark
+	// should show the list, not a message about a query parameter.
+	Sort string
+	Dir  string
+}
+
+// The orderings the table offers. They are named for the fact rather than the column,
+// because two of them are computed: a row's resolution time is whichever of three
+// stamps it actually has, and older rows have none of them.
+const (
+	ListSortDetected = "detected"
+	ListSortResolved = "resolved"
+	ListSortName     = "name"
+	ListSortEntity   = "entity"
+	ListSortStatus   = "status"
+)
+
+// StatusOpen asks for everything still awaiting a decision, and StatusClosed for
+// everything that is over. Neither is a stored status: a failed row is one whose
+// application was refused for a reason that may clear (see ProcessPending), so it
+// belongs in the queue with the pending ones and not in a history of settled things —
+// which is also the only place a person can see what is failing and why.
+const (
+	StatusOpen   = "open"
+	StatusClosed = "closed"
+)
+
+// openStatuses is the queue: awaiting a decision, or refused and re-tried.
+var openStatuses = []string{models.MigrationStatusPending, models.MigrationStatusFailed}
+
+// resolvedAtExpr is when a row left the queue, for rows written before there was a
+// column for it. A dismissal recorded nothing at all, and an application recorded only
+// applied_at, so history ordered by any single column put half the table in an
+// arbitrary place — which is what made it look alphabetical, since detection order
+// follows the order a sweep walks artists in.
+const resolvedAtExpr = "COALESCE(resolved_at, applied_at, updated_at)"
+
+// List returns one page of migrations plus the total matching the filter.
+//
+// The total is what makes paging honest: the page itself cannot say whether there are
+// three more rows or three hundred, and this table is one people scroll looking for a
+// specific album.
+func List(db *gorm.DB, opts ListOptions) ([]models.MusicbrainzMigration, int64, error) {
 	var rows []models.MusicbrainzMigration
+	if db == nil {
+		return rows, 0, errors.New("no database configured")
+	}
+
+	q := db.Model(&models.MusicbrainzMigration{})
+	switch opts.Status {
+	case "":
+	case StatusOpen:
+		q = q.Where("status IN ?", openStatuses)
+	case StatusClosed:
+		q = q.Where("status NOT IN ?", openStatuses)
+	default:
+		q = q.Where("status = ?", opts.Status)
+	}
+	if query := strings.TrimSpace(opts.Query); query != "" {
+		like := "%" + query + "%"
+		q = q.Where("name LIKE ? OR old_mb_id LIKE ?", like, like)
+	}
+
+	var total int64
+	if err := q.Count(&total).Error; err != nil {
+		return rows, 0, err
+	}
+
+	q = q.Order(orderClause(opts))
+	if opts.Limit > 0 {
+		q = q.Limit(opts.Limit)
+	}
+	if opts.Offset > 0 {
+		q = q.Offset(opts.Offset)
+	}
 	err := q.Find(&rows).Error
-	return rows, err
+	return rows, total, err
+}
+
+// orderClause turns a sort key into SQL, defaulting per status: the queue is read
+// newest-detected-first, and the history newest-resolved-first. Every ordering ends in
+// a detection tiebreak so a page boundary cannot repeat or skip a row when two stamps
+// are equal — which they routinely are, since a sweep records many rows in one second.
+func orderClause(opts ListOptions) string {
+	dir := "desc"
+	if strings.EqualFold(opts.Dir, "asc") {
+		dir = "asc"
+	}
+
+	sort := opts.Sort
+	if sort == "" {
+		sort = ListSortDetected
+		if opts.Status != "" && opts.Status != StatusOpen && opts.Status != models.MigrationStatusPending {
+			sort = ListSortResolved
+		}
+	}
+
+	switch sort {
+	case ListSortResolved:
+		return resolvedAtExpr + " " + dir + ", detected_at desc"
+	case ListSortName:
+		// NOCASE so "the beatles" files with "The Beatles" rather than after every
+		// capitalised title, which is how a reader looking for a name expects it.
+		return "name COLLATE NOCASE " + dir + ", detected_at desc"
+	case ListSortEntity:
+		return "entity_type " + dir + ", name COLLATE NOCASE asc, detected_at desc"
+	case ListSortStatus:
+		return "status " + dir + ", detected_at desc"
+	default:
+		return "detected_at " + dir
+	}
 }
 
 // PendingCount is the badge number for the UI.
@@ -252,6 +524,71 @@ func PendingCount(db *gorm.DB) (int64, error) {
 	err := db.Model(&models.MusicbrainzMigration{}).
 		Where("status = ?", models.MigrationStatusPending).Count(&n).Error
 	return n, err
+}
+
+// MarkRepairQueued stamps every open row belonging to an artist as having a manager
+// repair in flight, and reports how many that was.
+//
+// Every row, not the one that was approved, because the repair is per *artist*: one
+// refresh answers for all the albums of theirs holding unresolvable IDs. A table that
+// marked only the pressed row would leave its siblings looking untouched while the very
+// job that will settle them runs, and the first thing anyone does with a queue of eight
+// albums by one artist is press the second one too.
+func MarkRepairQueued(db *gorm.DB, artistMBID string) (int64, error) {
+	if db == nil || artistMBID == "" {
+		return 0, nil
+	}
+	res := db.Model(&models.MusicbrainzMigration{}).
+		Where("status IN ?", []string{models.MigrationStatusPending, models.MigrationStatusFailed}).
+		Where("old_mb_id IN (?)", releaseGroupsOfArtist(db, artistMBID)).
+		Where("entity_type = ?", models.MigrationEntityReleaseGroup).
+		Update("repair_queued_at", time.Now())
+	return res.RowsAffected, res.Error
+}
+
+// ClearRepairQueued removes the in-flight mark for one artist, whatever the repair
+// concluded. It is called on the way out of the job rather than only on success: a
+// refresh that failed has still stopped running, and a row left marked would claim work
+// is happening that is not.
+func ClearRepairQueued(db *gorm.DB, artistMBID string) error {
+	if db == nil || artistMBID == "" {
+		return nil
+	}
+	return db.Model(&models.MusicbrainzMigration{}).
+		Where("repair_queued_at IS NOT NULL").
+		Where("old_mb_id IN (?)", releaseGroupsOfArtist(db, artistMBID)).
+		Update("repair_queued_at", nil).Error
+}
+
+// ReconcileQueued clears in-flight marks left behind by a process that died holding
+// them, in the same spirit as events.ReconcileRunning: nothing is running at startup,
+// so a mark that survived a restart can only be a lie. Startup-only by contract — it
+// cannot tell a stale mark from one this process just made.
+func ReconcileQueued(db *gorm.DB) {
+	if db == nil {
+		return
+	}
+	res := db.Model(&models.MusicbrainzMigration{}).
+		Where("repair_queued_at IS NOT NULL").
+		Update("repair_queued_at", nil)
+	if res.Error != nil {
+		logger.Log.Warnf("failed to clear stale migration repair marks: %s", res.Error.Error())
+		return
+	}
+	if res.RowsAffected > 0 {
+		logger.Log.Infof("cleared %d migration repair mark(s) left by a previous process", res.RowsAffected)
+	}
+}
+
+// releaseGroupsOfArtist is the album IDs an artist is credited on, as a subquery. Both
+// credit routes count: the release-group's own artist column and the credit link table,
+// so a collaboration is not missed on the artist who is not first-billed.
+func releaseGroupsOfArtist(db *gorm.DB, artistMBID string) *gorm.DB {
+	return db.Model(&models.CollectionReleaseGroup{}).
+		Select("mb_id").
+		Where("artist_mb_id = ?", artistMBID).
+		Or("mb_id IN (?)", db.Model(&models.CollectionReleaseGroupArtist{}).
+			Select("release_group_mb_id").Where("artist_mb_id = ?", artistMBID))
 }
 
 // measure fills in the impact snapshot and whether a pinned correlation is involved.
@@ -353,7 +690,7 @@ type applyCounts struct {
 // apply performs a migration in a single transaction and records the outcome on the
 // row. All-or-nothing is the point: a half-remapped merge leaves some tables keyed
 // on the old ID and some on the new, which is worse than not having started.
-func apply(db *gorm.DB, m *models.MusicbrainzMigration) (applyCounts, error) {
+func apply(db *gorm.DB, m *models.MusicbrainzMigration, resolution string) (applyCounts, error) {
 	counts := applyCounts{}
 
 	err := db.Transaction(func(tx *gorm.DB) error {
@@ -382,13 +719,25 @@ func apply(db *gorm.DB, m *models.MusicbrainzMigration) (applyCounts, error) {
 	m.Status = models.MigrationStatusApplied
 	m.Error = ""
 	m.AppliedAt = &now
+	m.Resolution = resolution
+	m.ResolvedAt = &now
 	if err := db.Save(m).Error; err != nil {
 		return counts, err
 	}
 
-	// The cache is keyed by MBID too, and the old key is now dead weight: left in
-	// place it expires and gets re-fetched on every drift sync, spending rate limit
-	// to re-learn a redirect that has already been dealt with.
+	forgetCachedEntity(*m)
+
+	logger.Log.Infof("applied %s %s migration %s -> %s (%d files)",
+		m.SourceLabel(), m.EntityType, m.OldMBID, m.NewMBID, counts.files)
+	return counts, nil
+}
+
+// forgetCachedEntity drops what the cache holds under a migrated ID.
+//
+// The cache is keyed by MBID too, and once a row is settled the old key is dead
+// weight: left in place it expires and gets re-fetched on every drift sync, spending
+// rate limit to re-learn a change that has already been dealt with.
+func forgetCachedEntity(m models.MusicbrainzMigration) {
 	switch m.EntityType {
 	case models.MigrationEntityRelease:
 		modules.DropCachedRelease(m.OldMBID)
@@ -398,10 +747,6 @@ func apply(db *gorm.DB, m *models.MusicbrainzMigration) (applyCounts, error) {
 		modules.MusicbrainzForgetEntity(models.MBEntityArtist, m.OldMBID)
 		modules.MusicbrainzForgetEntity(models.MBEntityDiscography, m.OldMBID)
 	}
-
-	logger.Log.Infof("applied MusicBrainz %s migration %s -> %s (%d files)",
-		m.EntityType, m.OldMBID, m.NewMBID, counts.files)
-	return counts, nil
 }
 
 // applyReleaseRedirect repoints everything keyed on a merged release.

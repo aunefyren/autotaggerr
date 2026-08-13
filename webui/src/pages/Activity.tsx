@@ -883,6 +883,21 @@ const ENTITY_OUTCOMES: Record<string, { label: string; kind: string; note: strin
     kind: "err",
     note: "The lookup itself did not complete — a timeout, a rate-limit rejection, or a malformed response. Nothing is known about the entity either way, and the next pass tries again.",
   },
+  migrated: {
+    label: "Re-pointed",
+    kind: "ok",
+    note: "An identity change was applied: the collection's records now use the surviving ID, or — for an entity that resolves nowhere — the album was withdrawn and its files marked as needing re-identification. No audio was touched; a merge blanks the files' processed marker so the next run re-tags them from the new record.",
+  },
+  resolved: {
+    label: "Resolved elsewhere",
+    kind: "off",
+    note: "The change stopped needing to be applied before anything applied it — a manager re-keyed the album, a prune took the row, or the last file pointing at the old ID was re-correlated. The row says which. Nothing here rewrote anything.",
+  },
+  dismissed: {
+    label: "Dismissed",
+    kind: "off",
+    note: "Someone declined the change. Autotaggerr's records stay on the old ID, and the change is remembered so it is not raised again.",
+  },
 };
 
 /**

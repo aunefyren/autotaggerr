@@ -31,6 +31,7 @@ import (
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/health"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/migration"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
@@ -191,6 +192,11 @@ func main() {
 	// Rewrite events recorded under a type name that has since been renamed, so the
 	// feed describes old runs with the verb they would be called today.
 	events.MigrateLegacyTypes(db)
+
+	// The same reconciliation for migrations marked as having a manager repair in
+	// flight: no job survived the restart, so any surviving mark is a row claiming work
+	// is happening that is not. Startup-only, for the reason ReconcileRunning is.
+	migration.ReconcileQueued(db)
 
 	// Shared scan runner: the cron job, the startup run, and the API all drive
 	// library processing through this one instance (single-run guard + status).

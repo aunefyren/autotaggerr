@@ -575,6 +575,13 @@ func TestRefreshRespectsMigrationApprovalPolicy(t *testing.T) {
 	files.ConfigFile = models.ConfigStruct{AutotaggerrMigrationReviewReleases: true}
 	t.Cleanup(func() { files.ConfigFile = original })
 
+	// Something has to be keyed on the old ID for the merge to be a decision at all:
+	// a migration nothing references is closed as already-settled rather than held,
+	// which would answer this test's question by not asking it.
+	if err := db.Create(&models.CollectionRelease{MBID: "old-release"}).Error; err != nil {
+		t.Fatalf("seed edition: %v", err)
+	}
+
 	// A merge that the policy says must be reviewed before it is acted on.
 	pending := models.MusicbrainzMigration{
 		EntityType: models.MigrationEntityRelease,
@@ -607,6 +614,12 @@ func TestRefreshAppliesMigrationsWhenPolicyAllows(t *testing.T) {
 	original := files.ConfigFile
 	files.ConfigFile = models.ConfigStruct{}
 	t.Cleanup(func() { files.ConfigFile = original })
+
+	// As above: applied and closed-as-settled are different outcomes, and only a merge
+	// something is actually keyed on distinguishes them.
+	if err := db.Create(&models.CollectionRelease{MBID: "old-release"}).Error; err != nil {
+		t.Fatalf("seed edition: %v", err)
+	}
 
 	pending := models.MusicbrainzMigration{
 		EntityType: models.MigrationEntityRelease,

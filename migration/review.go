@@ -33,11 +33,25 @@ import (
 type Review struct {
 	models.MusicbrainzMigration
 
+	// Source is the reporting source written the way it spells itself. Sent as its own
+	// field rather than left for the client to map, so the page has no table of source
+	// names to keep in step with the one in models.
+	Source string `json:"source_label"`
+
 	// ArtistMBID and ArtistName name the artist to act on. For a release-group row
 	// this is the artist a manager refresh would target, which is the fix the
 	// blocked case asks for — a bare album title does not tell the user where to go.
 	ArtistMBID string `json:"artist_mb_id,omitempty"`
 	ArtistName string `json:"artist_name,omitempty"`
+
+	// ArtistOpen is how many rows in the queue — this one included — are waiting on the
+	// same artist. One manager refresh settles all of them, so a queue of eight albums
+	// by one artist is one decision rather than eight, and a page that does not say so
+	// invites the user to press approve seven more times.
+	//
+	// Counted across the whole queue, not the page: siblings sitting on page two are
+	// exactly the ones a per-page count would hide.
+	ArtistOpen int `json:"artist_open,omitempty"`
 
 	// FilesOnDisk is how many indexed files sit under this entity. It is *not*
 	// AffectedFiles: a retirement rewrites no file at all, and the honest answer to
@@ -71,12 +85,58 @@ type Review struct {
 }
 
 // Reviews decorates a list of migrations for the review UI.
+//
+// The sibling counts are filled in afterwards, from one grouped query over the whole
+// queue rather than one query per row: the count is about rows this page may not
+// contain, and asking per row would be the same query fifty times.
 func Reviews(db *gorm.DB, rows []models.MusicbrainzMigration) []Review {
 	out := make([]Review, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, NewReview(db, row))
 	}
+	fillArtistOpen(db, out)
 	return out
+}
+
+// fillArtistOpen counts the open album rows waiting on each artist.
+//
+// Album rows only. They are the ones a single manager refresh settles together, which
+// is the fact the count exists to state; a release merge and an artist merge that
+// happen to share an artist are two unrelated decisions and saying "2 waiting" about
+// them would be a coincidence dressed as a reason.
+func fillArtistOpen(db *gorm.DB, reviews []Review) {
+	if db == nil || len(reviews) == 0 {
+		return
+	}
+
+	type row struct {
+		ArtistMBID string
+		N          int
+	}
+	var counts []row
+	err := db.Model(&models.CollectionReleaseGroup{}).
+		Select("collection_release_groups.artist_mb_id as artist_mb_id, count(*) as n").
+		Joins("JOIN musicbrainz_migrations ON musicbrainz_migrations.old_mb_id = collection_release_groups.mb_id").
+		Where("musicbrainz_migrations.entity_type = ?", models.MigrationEntityReleaseGroup).
+		Where("musicbrainz_migrations.status IN ?",
+			[]string{models.MigrationStatusPending, models.MigrationStatusFailed}).
+		Group("collection_release_groups.artist_mb_id").
+		Scan(&counts).Error
+	if err != nil {
+		// A missing count costs a sentence on a row. It must not cost the row.
+		return
+	}
+
+	byArtist := make(map[string]int, len(counts))
+	for _, c := range counts {
+		byArtist[c.ArtistMBID] = c.N
+	}
+	for i := range reviews {
+		if reviews[i].EntityType != models.MigrationEntityReleaseGroup {
+			continue
+		}
+		reviews[i].ArtistOpen = byArtist[reviews[i].ArtistMBID]
+	}
 }
 
 // NewReview computes the review context for one migration.
@@ -86,8 +146,9 @@ func Reviews(db *gorm.DB, rows []models.MusicbrainzMigration) []Review {
 // to render because one count could not be read would be worse than one that renders
 // with the count absent.
 func NewReview(db *gorm.DB, m models.MusicbrainzMigration) Review {
-	r := Review{MusicbrainzMigration: m}
+	r := Review{MusicbrainzMigration: m, Source: m.SourceLabel()}
 	if db == nil {
+		r.Problem, r.Effect = r.sentences()
 		return r
 	}
 
@@ -151,10 +212,15 @@ func (r *Review) fillReleaseGroup(db *gorm.DB) {
 // user-facing surface of this feature.
 func (r Review) sentences() (problem, effect string) {
 	files := plural(r.FilesOnDisk, "file", "files")
+	// The source is named rather than assumed. Every one of these sentences is a report
+	// of what one data source said about one identifier, and there is nothing about a
+	// merged identity that is particular to MusicBrainz — so the sentence takes the name
+	// from the row and reads correctly the day a second source reports one.
+	source := r.SourceLabel()
 
 	switch {
 	case r.EntityType == models.MigrationEntityReleaseGroup:
-		problem = "MusicBrainz does not have this album under the ID Autotaggerr holds. " +
+		problem = source + " does not have this album under the ID Autotaggerr holds. " +
 			"That is usually a manager holding an ID its metadata service has since " +
 			"dropped or re-keyed, rather than the album being gone — so the ID is " +
 			"checked with the manager before anything is removed."
@@ -179,20 +245,20 @@ func (r Review) sentences() (problem, effect string) {
 		return problem, effect
 
 	case r.Kind == models.MigrationKindDeleted && r.EntityType == models.MigrationEntityArtist:
-		problem = "MusicBrainz no longer has this artist under the ID Autotaggerr holds."
+		problem = source + " no longer has this artist under the ID Autotaggerr holds."
 		effect = "Approving removes the artist from your collection. Their albums are " +
 			"keyed by release, so no file and no album row is affected."
 		return problem, effect
 
 	case r.Kind == models.MigrationKindDeleted:
-		problem = "MusicBrainz no longer has this release under the ID Autotaggerr holds."
+		problem = source + " no longer has this release under the ID Autotaggerr holds."
 		effect = fmt.Sprintf("Approving marks %s as needing re-identification and drops the "+
-			"owned edition, so the album stops counting as complete. The MusicBrainz IDs "+
+			"owned edition, so the album stops counting as complete. The identifiers "+
 			"stay on the files, and any want you authored is left alone.", files)
 		return problem, effect
 
 	case r.EntityType == models.MigrationEntityArtist:
-		problem = "MusicBrainz merged this artist into another. The collection is keyed " +
+		problem = source + " merged this artist into another. The collection is keyed " +
 			"on an ID that now names a different record."
 		effect = "Approving re-points the artist's albums, editions and wants at the " +
 			"surviving ID. Monitoring and follow settings are merged, never dropped. " +
@@ -200,7 +266,7 @@ func (r Review) sentences() (problem, effect string) {
 		return problem, effect
 
 	default:
-		problem = "MusicBrainz merged this release into another. The collection is keyed " +
+		problem = source + " merged this release into another. The collection is keyed " +
 			"on an ID that now names a different record."
 		effect = fmt.Sprintf("Approving re-points %s at the surviving ID and clears their "+
 			"processed marker, so the next run re-reads track IDs from the new release "+

@@ -3,6 +3,7 @@ package routers
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -209,6 +210,15 @@ func TestApproveBlockedAlbumAsksTheManager(t *testing.T) {
 	if row.Status != models.MigrationStatusPending {
 		t.Errorf("status = %q, want it still pending until the manager answers", row.Status)
 	}
+	// But it does not look untouched. A press that answers 202 and changes nothing on
+	// screen is indistinguishable from a broken button, so the row carries the fact that
+	// a refresh is in flight — durably, so a reload still shows it.
+	if row.RepairQueuedAt == nil {
+		t.Error("the row does not show that a manager refresh is running for it")
+	}
+	if body["queued"] != true {
+		t.Errorf("queued = %v, want the client to be able to tell this from an application", body["queued"])
+	}
 }
 
 // TestListMigrationsExplainsItself: a review queue of bare IDs and zeroes is not a
@@ -258,5 +268,125 @@ func TestListMigrationsExplainsItself(t *testing.T) {
 	}
 	if !row.NeedsManagerRefresh || row.Blocker == "" {
 		t.Errorf("the manager's claim on this album must be visible before approving, got %+v", row)
+	}
+}
+
+// The table can hold thousands of rows and every one of them costs the review queries
+// that say what approving it would do, so a page is a page on the server.
+func TestListMigrationsPages(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	for _, id := range []string{"rel-1", "rel-2", "rel-3"} {
+		seedMigration(t, api, models.MigrationEntityRelease, id, id+"-new", models.MigrationStatusPending)
+	}
+
+	w := do(r, "GET", "/api/v1/migrations?status=open&limit=2", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, body %s", w.Code, w.Body.String())
+	}
+	var page struct {
+		Migrations []models.MusicbrainzMigration `json:"migrations"`
+		Total      int                           `json:"total"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	// The total is what makes the pager honest: the page itself cannot say whether
+	// there are three more rows or three hundred.
+	if len(page.Migrations) != 2 || page.Total != 3 {
+		t.Errorf("page/total = %d/%d, want 2/3", len(page.Migrations), page.Total)
+	}
+
+	w = do(r, "GET", "/api/v1/migrations?status=open&limit=2&offset=2", token, nil)
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(page.Migrations) != 1 {
+		t.Errorf("second page = %d rows, want 1", len(page.Migrations))
+	}
+}
+
+// A decision nobody recorded is indistinguishable afterwards from the nightly pass
+// having made it, which is exactly what the feed exists to settle.
+func TestDecidingAMigrationLandsInActivity(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	m := seedMigration(t, api, models.MigrationEntityRelease, "rel-old", "rel-new", models.MigrationStatusPending)
+	m.Name = "Kid A"
+	if err := api.DB.Save(&m).Error; err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	if w := do(r, "POST", "/api/v1/migrations/"+m.ID.String()+"/dismiss", token, nil); w.Code != http.StatusOK {
+		t.Fatalf("dismiss code = %d, body %s", w.Code, w.Body.String())
+	}
+
+	var ev models.Event
+	if err := api.DB.Where("type = ?", models.EventTypeMigration).First(&ev).Error; err != nil {
+		t.Fatalf("no activity was recorded for the decision: %v", err)
+	}
+	if !strings.Contains(ev.Summary, "Kid A") {
+		t.Errorf("summary = %q, want it to name what was decided", ev.Summary)
+	}
+
+	// And the entity row beneath it, so the feed can resolve the name, the artist and
+	// the files the identifier stands for.
+	var items []models.EventItem
+	if err := api.DB.Where("event_id = ?", ev.ID).Find(&items).Error; err != nil {
+		t.Fatalf("load items: %v", err)
+	}
+	if len(items) != 1 || items[0].Path != "rel-old" || items[0].Status != models.EventItemStatusDismissed {
+		t.Errorf("detail rows = %+v, want one dismissed entity row for rel-old", items)
+	}
+}
+
+// "Show me the files behind this identifier" — the link a migration row offers, asked
+// of a page the user can act on rather than of a read-only detail row.
+func TestListItemsFiltersByMBID(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	lib := models.Library{Name: "L", Path: t.TempDir(), Enabled: true}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	for path, release := range map[string]string{"/m/a.flac": "rel-1", "/m/b.flac": "rel-2"} {
+		if err := api.DB.Create(&models.LibraryItem{
+			LibraryID: lib.ID, Path: path, Status: models.LibraryItemStatusOK, MBReleaseID: release,
+		}).Error; err != nil {
+			t.Fatalf("create item: %v", err)
+		}
+	}
+	// An album reaches its files only through its editions, which is the resolution the
+	// filter shares with GET /mb/:mbid/files.
+	if err := api.DB.Create(&models.CollectionRelease{MBID: "rel-1", ReleaseGroupMBID: "rg-1"}).Error; err != nil {
+		t.Fatalf("create edition: %v", err)
+	}
+
+	var page struct {
+		Items []models.LibraryItem `json:"items"`
+		Total int                  `json:"total"`
+	}
+	w := do(r, "GET", "/api/v1/library-items?mbid=rg-1", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("code = %d, body %s", w.Code, w.Body.String())
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if page.Total != 1 || len(page.Items) != 1 || page.Items[0].MBReleaseID != "rel-1" {
+		t.Errorf("filtered items = %+v (total %d), want just the album's file", page.Items, page.Total)
+	}
+
+	// An identifier nothing points at answers with nothing, rather than quietly
+	// dropping the filter and showing the whole library under one album's name.
+	w = do(r, "GET", "/api/v1/library-items?mbid=nobody", token, nil)
+	if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if page.Total != 0 {
+		t.Errorf("unknown identifier returned %d items, want none", page.Total)
 	}
 }

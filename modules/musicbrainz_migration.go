@@ -167,6 +167,7 @@ func RecordRedirect(entityType, oldMBID, newMBID, name string) {
 	var existing models.MusicbrainzMigration
 	err := cacheDB.Where("entity_type = ? AND old_mb_id = ?", entityType, oldMBID).First(&existing).Error
 	if err == nil {
+		reopenIfClosedExternally(existing)
 		return
 	}
 
@@ -176,6 +177,7 @@ func RecordRedirect(entityType, oldMBID, newMBID, name string) {
 		NewMBID:    newMBID,
 		Kind:       models.MigrationKindRedirect,
 		Status:     models.MigrationStatusPending,
+		Source:     models.DataSourceTypeMusicBrainz,
 		Name:       name,
 		DetectedAt: time.Now(),
 	}
@@ -197,6 +199,7 @@ func RecordDeletion(entityType, mbID string) {
 
 	var existing models.MusicbrainzMigration
 	if err := cacheDB.Where("entity_type = ? AND old_mb_id = ?", entityType, mbID).First(&existing).Error; err == nil {
+		reopenIfClosedExternally(existing)
 		return
 	}
 
@@ -205,6 +208,7 @@ func RecordDeletion(entityType, mbID string) {
 		OldMBID:    mbID,
 		Kind:       models.MigrationKindDeleted,
 		Status:     models.MigrationStatusPending,
+		Source:     models.DataSourceTypeMusicBrainz,
 		DetectedAt: time.Now(),
 	}
 	if err := cacheDB.Create(&row).Error; err != nil {
@@ -212,6 +216,38 @@ func RecordDeletion(entityType, mbID string) {
 		return
 	}
 	logger.Log.Infof("MusicBrainz %s %s no longer exists upstream", entityType, mbID)
+}
+
+// reopenIfClosedExternally puts a row back in the queue when the same change is seen
+// again after being closed as resolved-by-something-else.
+//
+// A row is closed externally when nothing in the collection was keyed on the old ID
+// any more, and closing it drops the cached entity — so nothing should ever ask for
+// that ID again. Seeing the redirect a second time means something does point at it
+// after all (a file re-indexed, an album re-mirrored under the old key), and the
+// judgement that there was nothing to migrate no longer holds.
+//
+// Deliberately narrow. An applied row must not re-open — the remap happened, and the
+// old ID resolving is exactly what a merge means — and a dismissed one must not, since
+// re-raising a change the user declined is the nagging they declined.
+func reopenIfClosedExternally(existing models.MusicbrainzMigration) {
+	if existing.Resolution != models.MigrationResolutionExternal {
+		return
+	}
+	err := cacheDB.Model(&models.MusicbrainzMigration{}).
+		Where("id = ?", existing.ID).
+		Updates(map[string]any{
+			"status":            models.MigrationStatusPending,
+			"resolution":        "",
+			"resolution_detail": "",
+			"resolved_at":       nil,
+		}).Error
+	if err != nil {
+		logger.Log.Warnf("failed to re-open migration %s: %s", existing.OldMBID, err.Error())
+		return
+	}
+	logger.Log.Infof("%s %s is referenced again; its identity change is back in the review queue",
+		existing.EntityType, existing.OldMBID)
 }
 
 // DropCachedRelease removes a release from both the in-memory and persistent cache.

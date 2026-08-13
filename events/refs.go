@@ -123,6 +123,29 @@ func ResolveRefs(db *gorm.DB, items []models.EventItem) {
 		fileCounts[f.MBReleaseID] = f.N
 	}
 
+	// The last resort: what a migration row remembers being called.
+	//
+	// Retiring an album deletes the only row that knows its title, and un-matching a
+	// deleted release does the same for the edition — so the rows most in need of a name
+	// are exactly the ones the three lookups above cannot answer. The migration captured
+	// the name at detection for this reason, and reading it here means every event that
+	// reports on a dead identifier gets the benefit, not only the migration ones.
+	type migrationRow struct {
+		OldMBID    string
+		EntityType string
+		Name       string
+	}
+	var remembered []migrationRow
+	if err := db.Model(&models.MusicbrainzMigration{}).
+		Select("old_mb_id, entity_type, name").
+		Where("old_mb_id IN ? AND name <> ''", ids).Scan(&remembered).Error; err != nil {
+		logger.Log.Warnf("failed to resolve migrated identifiers for event detail: %s", err.Error())
+	}
+	migrationNames := make(map[string]migrationRow, len(remembered))
+	for _, row := range remembered {
+		migrationNames[row.OldMBID] = row
+	}
+
 	refs := make(map[string]*models.EntityRef, len(ids))
 	for _, id := range ids {
 		ref := &models.EntityRef{Files: fileCounts[id]}
@@ -145,6 +168,16 @@ func ResolveRefs(db *gorm.DB, items []models.EventItem) {
 			ref.Kind = models.EntityKindArtist
 			ref.Name = artistNames[id]
 			ref.ArtistMBID = id
+		case migrationNames[id].Name != "":
+			// The collection cannot name it because the collection no longer holds it.
+			// Checked after the live rows and before the file-count case, so a name is
+			// only ever taken from memory when there is nothing current to take it from.
+			row := migrationNames[id]
+			ref.Kind = migrationEntityKind(row.EntityType)
+			ref.Name = row.Name
+			if ref.Kind == models.EntityKindArtist {
+				ref.ArtistMBID = id
+			}
 		case ref.Files > 0:
 			// Files point at it and the collection has no row for it. A file is only
 			// ever correlated to a release, so the kind is not in doubt — what is
@@ -165,5 +198,19 @@ func ResolveRefs(db *gorm.DB, items []models.EventItem) {
 		if ref, ok := refs[items[i].Path]; ok {
 			items[i].Related = ref
 		}
+	}
+}
+
+// migrationEntityKind translates a migration row's entity type into the vocabulary the
+// detail rows use — which is MusicBrainz's own, because the link beside the name opens
+// musicbrainz.org and a translated label would disagree with the page it opens.
+func migrationEntityKind(entityType string) string {
+	switch entityType {
+	case models.MigrationEntityArtist:
+		return models.EntityKindArtist
+	case models.MigrationEntityReleaseGroup:
+		return models.EntityKindReleaseGroup
+	default:
+		return models.EntityKindRelease
 	}
 }

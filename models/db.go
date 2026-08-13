@@ -187,6 +187,26 @@ func DataSourceCategory(sourceType string) string {
 	return ""
 }
 
+// DataSourceLabel is how a source type is written in a sentence. The type strings are
+// lowercase keys and none of them is spelled the way the service spells itself, so a
+// UI printing them raw says "musicbrainz" and "coverartarchive" in prose.
+//
+// An unknown type is returned unchanged rather than blanked: a source this build does
+// not know about is still better named badly than not at all.
+func DataSourceLabel(sourceType string) string {
+	switch sourceType {
+	case DataSourceTypeMusicBrainz:
+		return "MusicBrainz"
+	case DataSourceTypeAcoustID:
+		return "AcoustID"
+	case DataSourceTypeCoverArtArchive:
+		return "Cover Art Archive"
+	case DataSourceTypeFanart:
+		return "fanart.tv"
+	}
+	return sourceType
+}
+
 // DataSourceIsSingleton reports whether a second row of this type is meaningless.
 // There is exactly one AcoustID service, one Cover Art Archive and one fanart.tv, so
 // duplicates are a configuration mistake that silently does nothing — only the first
@@ -574,6 +594,31 @@ const (
 	MigrationStatusApplied   = "applied"
 	MigrationStatusDismissed = "dismissed"
 	MigrationStatusFailed    = "failed"
+	// MigrationStatusResolved is a change that stopped needing to be applied before
+	// anyone applied it: the manager re-keyed the album, a prune took the row, the last
+	// file pointing at the old ID went away. Kept apart from applied because nothing
+	// here rewrote anything, and a history that reports both the same way cannot answer
+	// "what did it decide while I was not looking" — which is the question the page is
+	// for. The row is still kept, so the change is not re-raised from scratch.
+	MigrationStatusResolved = "resolved"
+
+	// How a migration left the queue. Status says *where* the row ended up; the
+	// resolution says who or what put it there, which is the question a history table
+	// is actually read for. Without it, an album the manager repaired and an album
+	// somebody approved by hand are both "Applied" with a timestamp, and the two are
+	// not the same event at all.
+	//
+	// MigrationResolutionApproved: a person pressed the button.
+	MigrationResolutionApproved = "approved"
+	// MigrationResolutionAutomatic: policy did not hold it, so a run applied it.
+	MigrationResolutionAutomatic = "automatic"
+	// MigrationResolutionDismissed: a person declined it.
+	MigrationResolutionDismissed = "dismissed"
+	// MigrationResolutionExternal: nothing here applied it — the reason it was queued
+	// stopped existing. A manager re-keyed the album, another migration took the row,
+	// a prune removed it. The row is closed with a sentence saying which, because
+	// "resolved itself" is only useful if it says what did the resolving.
+	MigrationResolutionExternal = "external"
 )
 
 // MusicbrainzMigration is one upstream identity change and what Autotaggerr did
@@ -591,6 +636,12 @@ type MusicbrainzMigration struct {
 	Base
 	EntityType string `gorm:"index:idx_mb_migration,unique;not null" json:"entity_type"`
 	OldMBID    string `gorm:"index:idx_mb_migration,unique;not null" json:"old_mb_id"`
+	// Source is the data source that reported the change (DataSourceType*). The table
+	// is named for MusicBrainz because MusicBrainz is the only source that reports one
+	// today, but nothing about a merged identity is MusicBrainz-specific, and the row
+	// is what the UI reads to decide whether to name a source at all. Empty means
+	// MusicBrainz: every row written before this column existed came from there.
+	Source string `json:"source"`
 	// NewMBID is empty for a deletion — there is nothing to point at.
 	NewMBID string `json:"new_mb_id"`
 	Kind    string `gorm:"not null" json:"kind"`
@@ -613,6 +664,28 @@ type MusicbrainzMigration struct {
 	AppliedAt  *time.Time `json:"applied_at"`
 	Error      string     `json:"error,omitempty"`
 
+	// Resolution is MigrationResolution*: how this row left the queue, and
+	// ResolutionDetail is the sentence saying why, for the cases where the reason is
+	// not implied by the word. ResolvedAt is when it happened — for anything but an
+	// application that is not AppliedAt, which is why history sorts on this instead.
+	//
+	// A dismissal used to record none of the three, so a dismissed row showed an empty
+	// timestamp column and a history ordered by detection read as ordered by nothing.
+	Resolution       string     `gorm:"index" json:"resolution,omitempty"`
+	ResolutionDetail string     `json:"resolution_detail,omitempty"`
+	ResolvedAt       *time.Time `json:"resolved_at,omitempty"`
+
+	// RepairQueuedAt marks that a manager repair is in flight for this row's artist.
+	// It is set on *every* pending row that artist holds, because one refresh answers
+	// for all of them, and cleared when the job ends (or at startup, if the process
+	// died holding it).
+	//
+	// It exists because approving a blocked album applies nothing: it queues a job and
+	// returns 202. Without something on the row, the table answered a press with an
+	// unchanged row and two still-clickable buttons, which reads as nothing having
+	// happened — see RepairAttemptedAt for the durable half of the same story.
+	RepairQueuedAt *time.Time `json:"repair_queued_at,omitempty"`
+
 	// RepairAttemptedAt records that the manager holding this entity was asked to
 	// refresh it (release-groups only; see collection.RepairGhostReleaseGroups). It
 	// means "asked", not "worked" — set whatever the outcome, because a refresh that
@@ -623,6 +696,21 @@ type MusicbrainzMigration struct {
 	// correct, and removing it unattended would destroy that. Afterwards, the manager
 	// has had its say.
 	RepairAttemptedAt *time.Time `json:"repair_attempted_at,omitempty"`
+}
+
+// SourceType is the migration's data source, defaulting to MusicBrainz for rows
+// written before the column existed. Read through this rather than the field, so the
+// backfill lives in one place instead of at every renderer.
+func (m MusicbrainzMigration) SourceType() string {
+	if m.Source == "" {
+		return DataSourceTypeMusicBrainz
+	}
+	return m.Source
+}
+
+// SourceLabel is the source written the way it spells itself, for a sentence.
+func (m MusicbrainzMigration) SourceLabel() string {
+	return DataSourceLabel(m.SourceType())
 }
 
 // User backs authentication. Starts as a single auto-generated admin; structured
@@ -893,6 +981,17 @@ const (
 	// EventItemStatusRelinked is a release that moved to a different release-group
 	// upstream. Its own content may be unchanged; what moved is where it belongs.
 	EventItemStatusRelinked = "relinked"
+	// The three outcomes of an identity change, on an entity row. They are what turns
+	// "3 applied · 1 failed" in a summary into a list naming which three.
+	//
+	// EventItemStatusMigrated: the change was applied — a merge re-pointed, a deletion
+	// un-matched its files, an album retired.
+	EventItemStatusMigrated = "migrated"
+	// EventItemStatusResolved: the change stopped needing to be applied. Its own row
+	// says what did the resolving; the point of the status is that nothing here did.
+	EventItemStatusResolved = "resolved"
+	// EventItemStatusDismissed: a person declined it.
+	EventItemStatusDismissed = "dismissed"
 	// EventItemStatusUnknown is a thing the authority does not have: an artist the
 	// collection files under Lidarr that Lidarr never listed. Distinct from Gone (the
 	// source used to have it and says so) and from Error (we could not ask) — this is

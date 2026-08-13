@@ -134,6 +134,50 @@ Approving from the UI does not re-consult the policy — an explicit approval *i
 policy was deferring. Dismissing keeps the row rather than deleting it, because a deleted row would
 let the next fetch of the same old ID re-detect the identical move and re-queue it.
 
+### Status says where it ended up; resolution says who put it there
+
+`status` is the lifecycle — `pending`, `applied`, `dismissed`, `failed`, `resolved` — and
+`resolution` is the second half of the same fact: `approved` (a person pressed the button),
+`automatic` (policy did not hold it), `dismissed`, `external` (nothing here applied it).
+
+The pair exists because the history was unreadable without it. An album a manager repaired and an
+album somebody approved by hand both read as *Applied* with a timestamp, which answers neither of
+the two questions a history is opened for — *what did it decide while I was not looking*, and *why
+did this one settle itself*. `resolution_detail` carries the sentence for the cases where the word
+is not enough, and `resolved_at` is when it happened: a dismissal recorded none of the three, so the
+history had an empty date column and an ordering that fell back to detection time — which follows
+the order a sweep walks artists in, and therefore reads as alphabetical.
+
+**A failed row is not history.** Its refusal is usually *not yet* (see
+[Groups that resolve nowhere](#groups-that-resolve-nowhere)), so it sits in the queue with the
+pending ones, where the blocker it is stuck on is visible and re-tried. `migration.StatusOpen` and
+`StatusClosed` are the two lists the page reads, and neither is a stored status.
+
+### Rows that settle themselves
+
+The queue is not the only thing that can end an identity change. A manager re-keys an album and the
+row it was holding a dead ID for stops existing; a prune takes a release-group; a scan re-correlates
+the last file pointing at a merged release. What is left is a migration describing a change to state
+nobody holds — and applying it would rewrite nothing while reporting an application.
+
+So `ProcessPending` asks `mootReason` before it does anything else with a row: is anything still
+keyed on this ID? For an album that is its own collection row (a retirement's whole content is
+deleting it); for an artist and a release, every table that references the ID plus the files. Absence
+is read as *nothing to do*, never as *do something*, so being wrong leaves a row queued rather than
+closing one that mattered. What survives is closed as `resolved` / `external` with the sentence
+saying which, and the cached entity is dropped exactly as an application drops it.
+
+Two refusals keep that from being too clever:
+
+- **Malformed is not moot.** A redirect with no target can never be applied, and closing it because
+  nothing references it today would file a data problem under *resolved itself*. It fails, and the
+  row says why.
+- **Re-detection re-opens it.** Closing drops the cache, so nothing should ask for that ID again —
+  and if something does, the judgement that there was nothing to migrate no longer holds.
+  `modules.reopenIfClosedExternally` puts the row back in the queue. Narrowly: an applied row must
+  not re-open (the remap happened, and the old ID resolving is what a merge *means*), and a
+  dismissed one must not either, since re-raising a declined change is the nagging that was declined.
+
 ## What applying one does
 
 Everything happens in a single transaction. A half-remapped merge would leave some tables keyed on
@@ -385,6 +429,19 @@ until the manager has actually answered. It is **queued rather than inline** bec
 open; the queue's dedup makes a second press a no-op, and the whole thing reports as one parent
 event in Activity.
 
+**The press has to show.** A 202 that leaves the row exactly as it was, with both buttons still
+live, is indistinguishable from a button that does nothing — which is what it looked like. So
+`RepairQueuedAt` is stamped before the job is enqueued (the worker may start before the handler
+returns) and cleared in a `defer` when the job ends, whatever it concluded. It is stamped on **every
+open row of that artist's**, not the one that was pressed: one refresh answers for all of them, and
+the first thing anyone does with a queue of eight albums by one artist is press the second one too.
+The review payload's `artist_open` says how many that is, so the page can state it before the press
+rather than after.
+
+The mark is durable rather than client-side, so a reload or a second tab shows it — and therefore
+needs the same reconciliation an event does: `migration.ReconcileQueued` clears it at startup beside
+`events.ReconcileRunning`, since nothing is running then and a surviving mark can only be a lie.
+
 ## What the review queue shows
 
 `migration.Review` decorates each row at read time, because the stored row cannot describe itself.
@@ -401,11 +458,31 @@ the reader actually has.
 | `blocker` | why approving would not complete, read *before* the press instead of after the failure. Asked of `collection.ReleaseGroupRetirable`, not re-derived, so the queue and the apply path cannot disagree |
 | `needs_manager_refresh` | the one blocker that is not final, and therefore the one where approve asks rather than applies |
 | `artist_mbid`, `artist_name` | who a refresh would target — a bare album title does not tell the user where the fix lives |
+| `artist_open` | how many rows one refresh of that artist would settle, so eight albums read as one decision rather than eight |
+| `source_label` | which source reported it, written the way it spells itself |
 | `problem`, `effect` | the same facts as sentences, safe to render verbatim |
 
 Computed at read time rather than stored, because every one of these moves independently of the
 migration: files arrive, a manager stops listing an album, a repair is attempted. A snapshot taken
 at detection would be confidently wrong by the time anybody looked at it.
+
+`artist_open` is the one exception to *per row*: it is one grouped query over the whole queue, run
+after the page is decorated. The count is about rows this page may not contain — siblings on page two
+are exactly the ones a per-page count would hide — and asking per row would be the same query fifty
+times.
+
+### The source is named, never assumed
+
+Nothing about a merged identity is particular to MusicBrainz. The row carries a `source`
+(`models.DataSourceType*`, empty meaning MusicBrainz for rows written before the column existed) and
+every sentence takes the name from it, so the same queue reads correctly the day a second source
+reports one. The page around them talks about *metadata* rather than about MusicBrainz for the same
+reason the settings section does — see
+[settings.md](settings.md#sections-are-named-for-what-they-govern-not-who-supplies-the-data).
+
+The table is still `musicbrainz_migrations` and the event type is still `mb_migration`. Both are
+stored strings, renaming them is a data migration, and neither is user-visible: the feed has called
+that type *Identity changes* since it started emitting it.
 
 ## Where it runs
 
@@ -418,11 +495,25 @@ Counts ride the run's Activity event as `migrations`, alongside `releases_gone` 
 `releases_relinked` — both of which are invisible in the file counts, since neither needs a single
 file to change.
 
+**Counts, and then which ones.** The stage also writes one entity `EventItem` per row it settled —
+`migrated`, `resolved`, `dismissed` or `error` — because a count is enough to notice a run did
+something and never enough to check it a day later, which is the whole reason a merge is worth
+reporting: it rewrote what one of the user's albums *is*. A decision made by hand emits its own event
+for the same reason; without one it was indistinguishable afterwards from the nightly pass having
+made it.
+
+Those rows name themselves through `events.ResolveRefs`, which falls back to the migration table
+when the collection cannot answer. That fallback is the point: retiring an album deletes the only
+row that knows its title, so the identifiers most in need of a name are exactly the ones the
+collection lookups miss. `TagsWritten` stays zero even for a merge that re-pointed a dozen files —
+on an entity row it renders as *"12 files re-tagged"*, and a migration writes no tags; it blanks the
+processed marker so the *next* run does.
+
 ## API
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /migrations` | all migrations, newest first (`?status=pending` for the queue), each decorated with its [review context](#what-the-review-queue-shows) |
+| `GET /migrations` | one page of migrations, each decorated with its [review context](#what-the-review-queue-shows). `?status=open` is the queue (pending + failed), `?status=closed` the history; `limit`/`offset`/`sort`/`dir`/`q` page, order and search it, and the response carries `total` |
 | `GET /migrations/policy` | which categories are currently held for review |
 | `POST /migrations/:id/approve` | apply one, then rebuild the collection — **202** instead when the album needs a manager refresh first ([above](#approving-a-blocked-album)) |
 | `POST /migrations/:id/dismiss` | record it as deliberately not applied |

@@ -239,17 +239,7 @@ func (a *API) mbFiles(c *gin.Context) {
 		return
 	}
 
-	// Which releases to look under. The identifier itself is always one candidate —
-	// a release whose collection row was pruned still has files pointing at it, and
-	// that is exactly the case worth surfacing.
-	releaseIDs := []string{mbid}
-	var related []string
-	if err := a.DB.Model(&models.CollectionRelease{}).
-		Where("release_group_mb_id = ? OR artist_mb_id = ?", mbid, mbid).
-		Distinct().Pluck("mb_id", &related).Error; err != nil {
-		logger.Log.Warnf("failed to resolve editions for %s: %s", mbid, err.Error())
-	}
-	releaseIDs = append(releaseIDs, related...)
+	releaseIDs := a.releasesUnder(mbid)
 
 	type fileRow struct {
 		Path        string `json:"path"`
@@ -277,6 +267,24 @@ func (a *API) mbFiles(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"mb_id": mbid, "total": total, "files": rows})
+}
+
+// releasesUnder is every release MBID an identifier reaches, which is what files are
+// keyed by. An artist or a release-group resolves through the collection's editions;
+// a release is its own answer.
+//
+// The identifier itself is always a candidate, whatever kind it turns out to be — a
+// release whose collection row was pruned still has files pointing at it, and that is
+// exactly the case worth surfacing rather than hiding behind a missing row.
+func (a *API) releasesUnder(mbid string) []string {
+	releaseIDs := []string{mbid}
+	var related []string
+	if err := a.DB.Model(&models.CollectionRelease{}).
+		Where("release_group_mb_id = ? OR artist_mb_id = ?", mbid, mbid).
+		Distinct().Pluck("mb_id", &related).Error; err != nil {
+		logger.Log.Warnf("failed to resolve editions for %s: %s", mbid, err.Error())
+	}
+	return append(releaseIDs, related...)
 }
 
 func (a *API) getEvent(c *gin.Context) {

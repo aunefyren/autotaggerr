@@ -609,9 +609,13 @@ export interface CollectionDesire {
 }
 
 /**
- * A MusicBrainz identity change: an entity that was merged into another upstream,
- * or deleted outright. Pending rows are waiting for approval because their category
- * is held for review; everything else is history.
+ * An identity change reported by a metadata source: an entity merged into another
+ * upstream, or one whose ID resolves nowhere. Open rows (pending, and failed ones
+ * being re-tried) are the queue; everything else is history.
+ *
+ * Most of this is computed at read time by the server rather than stored, because it
+ * describes state that moves independently of the change — files arrive, a manager
+ * stops listing an album, a repair is attempted. See migration.Review.
  */
 export interface MusicbrainzMigration {
   id: string;
@@ -621,17 +625,60 @@ export interface MusicbrainzMigration {
   kind: string;
   status: string;
   name: string;
+  /** The reporting source, written the way it spells itself ("MusicBrainz"). */
+  source_label: string;
   affected_files: number;
   affected_desires: number;
   touches_pinned: boolean;
   detected_at: string;
   applied_at: string | null;
   error?: string;
+
+  /** How it left the queue, and — when the word is not enough — why. */
+  resolution?: "approved" | "automatic" | "dismissed" | "external";
+  resolution_detail?: string;
+  resolved_at?: string | null;
+
+  /** Set while a manager refresh queued for this row's artist is in flight. */
+  repair_queued_at?: string | null;
+  /** Set once the manager has been asked, whatever the answer. */
+  repair_attempted_at?: string | null;
+
+  artist_mb_id?: string;
+  artist_name?: string;
+  /** Open rows waiting on the same artist, this one included. One refresh settles all. */
+  artist_open?: number;
+
+  /** Files under this entity — what you own, not what approving would rewrite. */
+  files_on_disk: number;
+  editions?: number;
+  owned: boolean;
+  in_catalog: boolean;
+  /** Why approving would not complete right now, read before the press. */
+  blocker?: string;
+  /** The one blocker a refresh can clear: approve asks the manager instead of applying. */
+  needs_manager_refresh: boolean;
+  /** Ready-to-render sentences: what is wrong, and what approving does about it. */
+  problem: string;
+  effect: string;
 }
 
 export interface MigrationList {
   migrations: MusicbrainzMigration[];
+  /** Rows matching the filter, not rows in this page — the pager needs both. */
+  total: number;
+  limit: number;
+  offset: number;
+  /** Pending across the whole table, for the badge. */
   pending: number;
+}
+
+/** What approve answers with when it queued a manager refresh instead of applying. */
+export interface MigrationRepairQueued {
+  queued?: boolean;
+  artist_mbid?: string;
+  artist_name?: string;
+  message?: string;
 }
 
 /** Which categories of migration wait for approval instead of applying themselves. */

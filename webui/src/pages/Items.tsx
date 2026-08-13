@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api } from "../api";
 import { useFetch } from "../hooks";
 import { ItemsPage, Library, LibraryItem } from "../types";
@@ -23,6 +24,12 @@ export default function Items() {
   const [status, setStatus] = useState("");
   const [q, setQ] = useState("");
   const [offset, setOffset] = useState(0);
+  // "Show me the files behind this identifier", asked by a link from somewhere that
+  // knows an MBID — a migration row, an activity detail. It lives in the URL rather
+  // than in a filter control because it is a destination, not something you would ever
+  // type here: any of the three kinds resolves, and the server does the resolving.
+  const [params, setParams] = useSearchParams();
+  const mbid = params.get("mbid") ?? "";
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [attaching, setAttaching] = useState<LibraryItem | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
@@ -32,10 +39,11 @@ export default function Items() {
   if (libraryId) query.set("library_id", libraryId);
   if (status) query.set("status", status);
   if (q) query.set("q", q);
+  if (mbid) query.set("mbid", mbid);
   query.set("limit", String(PAGE));
   query.set("offset", String(offset));
 
-  const page = useFetch<ItemsPage>(() => api.get(`/library-items?${query.toString()}`), [libraryId, status, q, offset]);
+  const page = useFetch<ItemsPage>(() => api.get(`/library-items?${query.toString()}`), [libraryId, status, q, mbid, offset]);
 
   const resetAnd = (fn: () => void) => {
     setOffset(0);
@@ -79,6 +87,28 @@ export default function Items() {
         </select>
         <input className="input mono" style={{ width: 240 }} placeholder="Filter by path…" value={q} onChange={(e) => resetAnd(() => setQ(e.target.value))} />
       </div>
+
+      {/* The identifier filter states itself and offers its own way out. A narrowing
+          arrived at by following a link is the one a user is most likely to forget is
+          on — an empty result here would otherwise read as an empty library. */}
+      {mbid && (
+        <div className="row" style={{ gap: 8, alignItems: "baseline", flexWrap: "wrap" }}>
+          <span className="dim" style={{ fontSize: 12 }}>Files under</span>
+          <IdChip value={mbid} />
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() =>
+              resetAnd(() => {
+                const next = new URLSearchParams(params);
+                next.delete("mbid");
+                setParams(next, { replace: true });
+              })
+            }
+          >
+            Show everything
+          </button>
+        </div>
+      )}
 
       {picked.length > 0 && (
         <div className="row" style={{ justifyContent: "space-between" }}>

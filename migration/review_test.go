@@ -186,3 +186,46 @@ func TestReviewOfRetiredAlbumDoesNotInventContext(t *testing.T) {
 		t.Errorf("a retired album has no context to report, got %+v", r)
 	}
 }
+
+// One manager refresh settles every album of an artist's, so the queue has to say so
+// before the press rather than leaving the user to approve seven more rows by hand.
+func TestReviewCountsSiblingsWaitingOnTheSameArtist(t *testing.T) {
+	db := testDB(t)
+	first := ghostGroup(t, db, "rg-1", "art-1", "One", nil)
+	ghostGroup(t, db, "rg-2", "art-1", "Two", nil)
+	// A different artist's album is a different decision.
+	ghostGroup(t, db, "rg-3", "art-2", "Three", nil)
+
+	rows, _, err := List(db, ListOptions{Status: StatusOpen})
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	reviews := Reviews(db, rows)
+
+	byID := map[string]Review{}
+	for _, r := range reviews {
+		byID[r.OldMBID] = r
+	}
+	if byID["rg-1"].ArtistOpen != 2 {
+		t.Errorf("artist_open for %s = %d, want 2", first.OldMBID, byID["rg-1"].ArtistOpen)
+	}
+	if byID["rg-3"].ArtistOpen != 1 {
+		t.Errorf("artist_open for the other artist = %d, want 1", byID["rg-3"].ArtistOpen)
+	}
+}
+
+// Nothing about a merged identity is particular to MusicBrainz, so the sentence names
+// the source the row came from — including for rows written before there was a column
+// to record it in.
+func TestReviewNamesItsSource(t *testing.T) {
+	db := testDB(t)
+	m := ghostGroup(t, db, "rg-1", "art-1", "One", nil)
+
+	r := NewReview(db, m)
+	if r.Source != "MusicBrainz" {
+		t.Errorf("source label = %q, want MusicBrainz for a row with no source recorded", r.Source)
+	}
+	if !strings.HasPrefix(r.Problem, "MusicBrainz ") {
+		t.Errorf("problem = %q, want it to name the source that reported the change", r.Problem)
+	}
+}

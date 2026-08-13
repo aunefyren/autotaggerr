@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
@@ -356,7 +357,7 @@ func (a *API) processStatus(c *gin.Context) {
 }
 
 // listLibraryItems returns a paginated, filterable view of the correlation index.
-// Filters: library_id, status, and q (path substring). Pagination: limit/offset.
+// Filters: library_id, status, q (path substring) and mbid. Pagination: limit/offset.
 func (a *API) listLibraryItems(c *gin.Context) {
 	q := a.DB.Model(&models.LibraryItem{})
 
@@ -373,6 +374,18 @@ func (a *API) listLibraryItems(c *gin.Context) {
 	}
 	if search := c.Query("q"); search != "" {
 		q = q.Where("path LIKE ?", "%"+search+"%")
+	}
+	// "Show me the files behind this identifier" — the other half of the question
+	// GET /mb/:mbid/files answers, asked of a page the user can then act on rather than
+	// of a read-only detail row. Any of the three kinds, resolved the same way, because
+	// the caller is a link on a row that knows an MBID and not which kind of thing it
+	// stands for.
+	//
+	// An identifier nothing points at yields no rows rather than every row: an empty
+	// result is the honest answer to "which files depend on this", and quietly ignoring
+	// the filter would show a whole library under a heading naming one album.
+	if mbid := strings.TrimSpace(c.Query("mbid")); mbid != "" {
+		q = q.Where("mb_release_id IN ?", a.releasesUnder(mbid))
 	}
 
 	var total int64

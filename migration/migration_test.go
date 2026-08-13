@@ -584,6 +584,12 @@ func TestProcessPendingAppliesAndHolds(t *testing.T) {
 	}).Error; err != nil {
 		t.Fatalf("create item: %v", err)
 	}
+	// The artist has to exist in the collection for the merge to mean anything: a
+	// migration for an ID nothing is filed under is closed as already-settled rather
+	// than held, which is what ProcessPending's reconcile step is for.
+	if err := db.Create(&models.CollectionArtist{MBID: "art-old", Name: "Old"}).Error; err != nil {
+		t.Fatalf("create artist: %v", err)
+	}
 	pendingRedirect(t, db, models.MigrationEntityRelease, "rel-old", "rel-new")
 	pendingRedirect(t, db, models.MigrationEntityArtist, "art-old", "art-new")
 
@@ -791,15 +797,15 @@ func TestListAndPendingCount(t *testing.T) {
 		t.Fatalf("Dismiss: %v", err)
 	}
 
-	all, err := List(db, "", 0)
+	all, total, err := List(db, ListOptions{})
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(all) != 2 {
-		t.Errorf("List(all) = %d rows, want 2", len(all))
+	if len(all) != 2 || total != 2 {
+		t.Errorf("List(all) = %d rows (total %d), want 2", len(all), total)
 	}
 
-	pending, err := List(db, models.MigrationStatusPending, 0)
+	pending, _, err := List(db, ListOptions{Status: models.MigrationStatusPending})
 	if err != nil {
 		t.Fatalf("List(pending): %v", err)
 	}
