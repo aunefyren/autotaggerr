@@ -50,9 +50,21 @@ const MB_ENTITY: Record<string, "release" | "artist" | "release-group"> = {
   release_group: "release-group",
 };
 
-/** Whether this row is waiting on a manager refresh that is already running. */
+/** The two statuses that mean a row is still in the queue rather than in the history. */
+function isOpen(m: MusicbrainzMigration): boolean {
+  return m.status === "pending" || m.status === "failed";
+}
+
+/**
+ * Whether this row is waiting on a manager refresh that is already running.
+ *
+ * A settled row is never working, whatever mark it carries: an outcome is a statement
+ * about work that has finished, and it outranks any claim that work is in progress.
+ * The mark used to be checked on its own and a stale one could out-shout a recorded
+ * result, so a retired album sat in the history saying "Asking the manager…".
+ */
 function isWorking(m: MusicbrainzMigration): boolean {
-  return Boolean(m.repair_queued_at);
+  return Boolean(m.repair_queued_at) && isOpen(m);
 }
 
 /**
@@ -369,6 +381,12 @@ function QueueRow({
   // so. "Approve" on a row whose approval asks a question somewhere else is the label
   // that made the whole interaction look broken.
   const primary = m.needs_manager_refresh ? "Ask the manager" : "Apply";
+  // The third state, which had no label of its own: something claims this album that no
+  // manager refresh can answer — files on disk, a want, another credited artist. The
+  // press would fail with the sentence already shown in red beside it, so the control
+  // is disabled rather than offering an action that cannot go anywhere. The blocker is
+  // the title, because a disabled button is exactly where the reason gets asked for.
+  const stuck = Boolean(m.blocker) && !m.needs_manager_refresh;
 
   return (
     <>
@@ -378,26 +396,35 @@ function QueueRow({
         <td>
           <div className="stack" style={{ gap: 2 }}>
             <StatusCell m={m} />
-            {working ? (
+            {working && (
               <span className="dim" style={{ fontSize: 11 }}>
                 The manager is re-reading this artist. The row settles itself when it answers.
               </span>
-            ) : (
+            )}
+            {/* The refusal, in full and on its own. It is the one thing on the row a
+                person can act on — usually by removing the files it names — so it is
+                never truncated, and it replaces the effect line rather than sitting
+                under it: the effect for a blocked row *is* the blocker, wrapped in
+                "Approving would not remove anything right now", so showing both printed
+                the same sentence twice. */}
+            {!working && stuck && (
+              <span style={{ fontSize: 11, color: "var(--danger-text)" }}>{m.blocker}</span>
+            )}
+            {!working && !stuck && (
               <span className="dim" style={{ fontSize: 11 }}>
                 {firstSentence(m.effect)}
               </span>
             )}
-            {/* The refusal, in full. It is the one thing on the row a person can act on
-                — usually by removing the files it names — so it is never truncated. */}
-            {!working && m.blocker && !m.needs_manager_refresh && (
-              <span style={{ fontSize: 11, color: "var(--danger-text)" }}>{m.blocker}</span>
-            )}
-            {(m.artist_open ?? 0) > 1 && (
+            {/* Only where a refresh is what the press does. On a row that applies
+                directly, "one refresh settles them all" sat under a sentence saying the
+                album is about to be removed and beside a button that refreshes nothing
+                — two claims about one press, one of them false. */}
+            {!working && m.needs_manager_refresh && (m.artist_open ?? 0) > 1 && (
               <span className="dim" style={{ fontSize: 11 }}>
                 {m.artist_open} albums by this artist are waiting — one refresh settles them all.
               </span>
             )}
-            <button className="railref" onClick={() => setOpen((v) => !v)}>
+            <button className="railref" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
               <span>{open ? "▼" : "▶"} Why</span>
             </button>
           </div>
@@ -417,22 +444,28 @@ function QueueRow({
             </button>
             <button
               className="btn btn-primary btn-sm"
-              disabled={busy === m.id || working}
+              disabled={busy === m.id || working || stuck}
               onClick={act(m, "approve")}
+              title={stuck ? m.blocker : undefined}
             >
               {busy === m.id ? "Working…" : primary}
             </button>
           </div>
         </td>
       </tr>
+      {/* The explanation belongs to the row above it, so it is styled as part of that
+          row rather than as another row of the table: its own surface, indented past
+          the hairline, and padded like the prose it is. Inheriting the table's cell
+          rule gave it a 34px line box and no vertical padding, which pressed three
+          lines of text against the borders on both sides. */}
       {open && (
-        <tr>
+        <tr className="detail-row">
           <td colSpan={5}>
-            <div className="stack" style={{ gap: 6, fontSize: 12, maxWidth: "80ch" }}>
-              <span>{m.problem}</span>
-              <span className="dim">{m.effect}</span>
+            <div className="detail-body">
+              <p>{m.problem}</p>
+              <p className="dim">{m.effect}</p>
               {m.error && !m.blocker && (
-                <span style={{ color: "var(--danger-text)" }}>{m.error}</span>
+                <p style={{ color: "var(--danger-text)" }}>{m.error}</p>
               )}
             </div>
           </td>

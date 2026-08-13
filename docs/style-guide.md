@@ -302,6 +302,15 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   that followed the slice would disagree with the coverage meter beside it. The header's
   caret is `.twisty`; a *list* is never collapsed this way — the Activity feed tried it and the rows
   it hid were the ones worth reading (see *Run rail*).
+- **Row disclosure** (`.detail-row` / `.detail-body`) — the paragraph a table row keeps folded away,
+  opened underneath it as a `colSpan` row. It is *part of the row above*, not another row of the
+  table, and has to look it: `--surface-2`, a 2px `--accent` inset gutter continuing down from the
+  row it explains, `--space-5`/`--space-6` padding, and the hover fill pinned so the pointer never
+  lights up two rows at once. Give it a class — inheriting the ordinary cell rule means
+  `height: 34px` and no vertical padding, which opens a three-line explanation pressed against the
+  hairlines on both sides. Prose measure is **68ch**, the same as page-head explanations; 80ch of
+  12px text is a line the eye loses its place returning from. The toggle carries `aria-expanded`.
+  It states what the row could not fit, never a longer version of the same sentence.
 - **Browse state lives in the URL** (`useBrowse`) — query, sort key, direction, active filter, open
   sections, selected detail row, **page**. Written with `replace`, not `push`, so sorting a table is
   not a history entry. The reason is concrete: opening an album and coming back must not reset the

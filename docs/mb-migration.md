@@ -148,6 +148,16 @@ is not enough, and `resolved_at` is when it happened: a dismissal recorded none 
 history had an empty date column and an ordering that fell back to detection time — which follows
 the order a sweep walks artists in, and therefore reads as alphabetical.
 
+**Every settled row carries a sentence, applications included.** `migration.appliedDetail` writes it
+in the past tense from what the transaction actually did, because status and resolution between them
+say where a row ended up and who put it there and neither says *what was done* — and an album
+vanishing from the collection view reads very differently once the line beneath it says no file was
+touched. A retirement's sentence names which of the two roads it took, since both end in the same
+deletion: the manager was re-read and let go of the album, or no manager ever listed it. A reader who
+cannot tell those apart has to go and check Lidarr. This is deliberately not the review payload's
+`effect`, which is an offer composed before the fact ("Approving removes…") from counts that were
+predictions.
+
 **A failed row is not history.** Its refusal is usually *not yet* (see
 [Groups that resolve nowhere](#groups-that-resolve-nowhere)), so it sits in the queue with the
 pending ones, where the blocker it is stuck on is visible and re-tried. `migration.StatusOpen` and
@@ -349,13 +359,37 @@ The retry is scoped to *retirements*, deliberately. Every other migration fails 
 cannot change — a redirect with no target stays targetless — so re-attempting those would be pure
 noise.
 
-**Held for review until a repair has been tried.** This is the one deliberate exception to the
+**Held for review only while a repair is possible.** This is the one deliberate exception to the
 zero-value-means-apply convention under [Review and policy](#review-and-policy), and it expires. The
 convention is safe where a deletion is MusicBrainz's own act, because then there is nothing to
 recover; here there usually is, so applying unattended would remove an album one manager refresh
-would have fixed. Once `RepairAttemptedAt` is set the objection is spent — the manager has re-read
-the artist and either corrected the ID or stopped listing the album — and the row auto-applies. What
-is left in the queue is the genuinely unidentifiable minority, which is a queue worth reading.
+would have fixed.
+
+Two things end the hold, and both have to, because it is on the *possibility* of a repair rather than
+on the ceremony of having tried one:
+
+- **The manager has been asked** (`RepairAttemptedAt`). It re-read the artist and either corrected
+  the ID or stopped listing the album, so a row still pointing at an unresolvable ID is genuinely
+  dead.
+- **No manager lists the album** (`migration.repairable`, which is the live `in_catalog` flag). Then
+  there is nobody to ask and nothing to recover.
+
+The second condition is not a refinement; without it the rule **deadlocked**. The repair pass takes
+its candidates from `collection.GhostReleaseGroups`, which selects albums a manager *still lists*, so
+an album outside the catalog could never be stamped — and a hold that waited for the stamp waited for
+an event that could not occur. The row sat in the queue until a person pressed Apply, which did
+exactly what the drain would have done unattended. The commonest way to reach that state is the
+repair working: the manager drops the album, `in_catalog` clears, and the row that was one refresh
+from settling itself became one that could only be settled by hand.
+
+The flag is read live rather than snapshotted at detection, because an album leaves a manager's
+catalog between runs and a stored copy would hold a row on a claim that expired weeks ago. A read
+error reports *repairable* — the answer that keeps the row queued: being wrong that way costs a
+press, being wrong the other way retires an album on a database hiccup.
+
+What is left in the queue is then only what a person can actually change: an album a manager still
+lists (one press, which asks it), and one something else claims (a file, a want, another credited
+artist — remove the claim). That is a queue worth reading.
 
 **Reporting.** `collection.GhostReleaseGroups` counts the groups a manager still lists whose ID does
 not resolve, and the Lidarr sync reports them as *Not in MusicBrainz* beside its existing *Not in
@@ -442,6 +476,15 @@ The mark is durable rather than client-side, so a reload or a second tab shows i
 needs the same reconciliation an event does: `migration.ReconcileQueued` clears it at startup beside
 `events.ReconcileRunning`, since nothing is running then and a surviving mark can only be a lie.
 
+**Clearing it takes two writers, because the job cannot reach the rows it settled.**
+`ClearRepairQueued` scopes by artist, and the only route from a migration row to an artist is the
+album — which retiring deletes. So the rows the repair *succeeded* on were exactly the ones the
+deferred clear missed, and they sat in the history saying *Asking the manager…* until the next
+restart: success left the spinner. Settled rows therefore clear their own mark as they close (`apply`,
+`closeExternally`, `Dismiss`), the job's `defer` clears the ones still open, and the page ignores the
+mark on anything closed — an outcome is a statement about work that finished, and it outranks any
+claim that work is in flight.
+
 ## What the review queue shows
 
 `migration.Review` decorates each row at read time, because the stored row cannot describe itself.
@@ -470,6 +513,20 @@ at detection would be confidently wrong by the time anybody looked at it.
 after the page is decorated. The count is about rows this page may not contain — siblings on page two
 are exactly the ones a per-page count would hide — and asking per row would be the same query fifty
 times.
+
+**Three states, three controls.** `blocker` and `needs_manager_refresh` between them say which of
+three things a press means, and the row has to agree with itself about that:
+
+| State | Primary control |
+|-------|-----------------|
+| nothing objects | **Apply** — approving applies it |
+| `needs_manager_refresh` | **Ask the manager** — approving queues a refresh, and the row says how many siblings it settles |
+| `blocker`, not refreshable | **Apply, disabled**, blocker in red beside it and as the title — a file, a want or another credited artist claims this album, and the press would fail with that same sentence |
+
+The third had no control of its own: a blocked row offered a live primary button whose press returned
+the refusal already printed beside it. The sibling count belongs to the second row of that table
+alone — under an *Apply* it sat beside a sentence saying the album is about to be removed and a button
+that refreshes nothing, which is two claims about one press with one of them false.
 
 ### The source is named, never assumed
 

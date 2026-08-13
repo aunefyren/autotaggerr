@@ -203,6 +203,12 @@ Residual open work on what has shipped:
     is the *artist-page* entry point: "3 albums here have IDs that do not resolve — ask Lidarr", for
     a user who has not opened the Migrations page. `Runner.RepairArtistAlbums` is the verb; it needs
     an endpoint and a button, not new machinery.
+  - **A manager with artist refresh turned off leaves rows nobody can settle.** With
+    `Manager.LidarrSkipArtistRefresh` set, an album the manager still lists can be neither repaired
+    (the pass skips that manager) nor retired (`in_catalog` guards it), so the row is correctly stuck
+    — but *Ask the manager* is still offered and silently does nothing. The row should say the
+    setting is what is holding it, the way every other blocker names its cause. The hold itself is
+    right: the manager is the authority and it still lists the album.
 
 ### Migrations page — what is left after the rewrite
 

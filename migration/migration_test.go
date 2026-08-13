@@ -547,31 +547,31 @@ func TestPolicyHoldsOnlyWhatItIsToldTo(t *testing.T) {
 	// written before this feature existed decodes to exactly this.
 	var zero Policy
 	for _, m := range []models.MusicbrainzMigration{release, artist, deletion, pinned} {
-		if zero.heldForReview(m) {
+		if zero.heldForReview(m, false) {
 			t.Errorf("zero policy held %s/%s; the default must be to apply", m.EntityType, m.Kind)
 		}
 	}
 
-	if !(Policy{ReviewReleases: true}).heldForReview(release) {
+	if !(Policy{ReviewReleases: true}).heldForReview(release, false) {
 		t.Error("release review did not hold a release redirect")
 	}
-	if (Policy{ReviewReleases: true}).heldForReview(artist) {
+	if (Policy{ReviewReleases: true}).heldForReview(artist, false) {
 		t.Error("release review held an artist redirect")
 	}
-	if !(Policy{ReviewArtists: true}).heldForReview(artist) {
+	if !(Policy{ReviewArtists: true}).heldForReview(artist, false) {
 		t.Error("artist review did not hold an artist redirect")
 	}
-	if !(Policy{ReviewDeletions: true}).heldForReview(deletion) {
+	if !(Policy{ReviewDeletions: true}).heldForReview(deletion, false) {
 		t.Error("deletion review did not hold a deletion")
 	}
-	if (Policy{ReviewDeletions: true}).heldForReview(release) {
+	if (Policy{ReviewDeletions: true}).heldForReview(release, false) {
 		t.Error("deletion review held a redirect")
 	}
 	// Pinned is an override, not another category: it holds regardless of type.
-	if !(Policy{ReviewPinned: true}).heldForReview(pinned) {
+	if !(Policy{ReviewPinned: true}).heldForReview(pinned, false) {
 		t.Error("pinned review did not hold a migration touching a manual correlation")
 	}
-	if (Policy{ReviewPinned: true}).heldForReview(release) {
+	if (Policy{ReviewPinned: true}).heldForReview(release, false) {
 		t.Error("pinned review held a migration that touches no pinned item")
 	}
 }

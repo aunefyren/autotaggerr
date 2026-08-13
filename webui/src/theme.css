@@ -379,6 +379,27 @@ table.data tbody tr.group-row:hover td { background: var(--surface-2); }
 .group-head .group-cov { margin-left: auto; }
 .group-section + .group-section { margin-top: 0; }
 
+/* Row disclosure — the paragraph a row keeps folded away, opened underneath it.
+   It is part of the row above rather than another row of the table, and it has to
+   look it: its own surface, an accent gutter continuing down from the row it explains,
+   and the padding prose needs. Without a rule of its own it inherits the ordinary cell
+   — `height: 34px` and no vertical padding — so a three-line explanation opens pressed
+   against the hairlines above and below it. The hover fill is pinned for the same
+   reason the section header pins it: the pointer is on one row, and lighting up its
+   explanation as well makes it ambiguous which. */
+table.data tbody tr.detail-row td {
+  height: auto; padding: var(--space-5) var(--space-6);
+  background: var(--surface-2); box-shadow: inset 2px 0 0 var(--accent);
+}
+table.data tbody tr.detail-row:hover td { background: var(--surface-2); }
+.detail-body {
+  display: flex; flex-direction: column; gap: var(--space-4);
+  /* Prose measure, the same one the page's own explanation uses. 80ch of 12px text
+     is a line the eye loses its place on returning from. */
+  max-width: 68ch; font-size: 12px; line-height: 1.5;
+}
+.detail-body p { margin: 0; }
+
 /* Edition / track rows — a checkbox that is the want, and a body that selects.
    Two jobs, two hit areas: that split is what removed the need for a mode switch
    above the panes. */

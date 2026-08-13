@@ -60,11 +60,17 @@ func PolicyFromConfig(cfg models.ConfigStruct) Policy {
 // rule is an override, not another category: a migration that would rewrite a manual
 // correlation is held whatever its entity type, because the thing being second-
 // guessed is a decision a person made by hand.
-func (p Policy) heldForReview(m models.MusicbrainzMigration) bool {
+//
+// repairable is whether asking a manager could still change the answer — a caller
+// without that fact to hand passes false, which is the reading that applies rather
+// than the one that queues. It is a parameter rather than a lookup so this stays a
+// pure function of the row and one fact about it: policy is the part of this package
+// worth being able to read in one screen.
+func (p Policy) heldForReview(m models.MusicbrainzMigration, repairable bool) bool {
 	if m.TouchesPinned && p.ReviewPinned {
 		return true
 	}
-	// A release-group deletion is held until the manager has been asked to repair it,
+	// A release-group deletion is held while a repair is still possible and untried,
 	// and this is the one place the zero-value-means-apply convention above is
 	// deliberately not followed.
 	//
@@ -75,16 +81,25 @@ func (p Policy) heldForReview(m models.MusicbrainzMigration) bool {
 	// a different ID — so applying it unattended would remove an album that one
 	// manager refresh repairs.
 	//
-	// Once that refresh has happened the objection is spent: the manager has re-read
-	// the artist and either corrected the ID or stopped listing the album, so a row
-	// still pointing at an unresolvable ID is genuinely dead and can go without asking.
-	// This is what keeps the review queue down to the cases a human can actually settle
-	// — an album nothing anywhere can identify — rather than the whole population.
+	// Two things end that objection, and both have to, because the hold is on the
+	// *possibility* of a repair rather than on the ceremony of having tried one:
+	//
+	//   - The manager has been asked (RepairAttemptedAt). It re-read the artist and
+	//     either corrected the ID or stopped listing the album, so a row still pointing
+	//     at an unresolvable ID is genuinely dead and can go without asking again.
+	//   - No manager lists the album at all (repairable == false). Then there is nobody
+	//     to ask and nothing to recover: the ID resolves nowhere and the only authority
+	//     that could have re-keyed it has already let go. Holding on RepairAttemptedAt
+	//     alone deadlocked exactly these rows — the repair pass takes its candidates
+	//     from collection.GhostReleaseGroups, which selects albums a manager still
+	//     lists, so an album outside the catalog could never be stamped and waited for
+	//     an event that could not happen. What it waited for was a person pressing a
+	//     button that did what this pass would have done.
 	//
 	// Retirement is guarded regardless (collection.RetireReleaseGroup), so an
 	// auto-applied deletion that still has a claim on it refuses and says why.
 	if m.EntityType == models.MigrationEntityReleaseGroup {
-		return m.RepairAttemptedAt == nil
+		return m.RepairAttemptedAt == nil && repairable
 	}
 	if m.Kind == models.MigrationKindDeleted {
 		return p.ReviewDeletions
@@ -225,7 +240,7 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 			continue
 		}
 
-		if policy.heldForReview(m) {
+		if policy.heldForReview(m, repairable(db, m)) {
 			res.Pending++
 			continue
 		}
@@ -245,6 +260,33 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 	}
 
 	return res, nil
+}
+
+// repairable reports whether a manager could still be asked about this row — which,
+// for a release-group deletion, is the same question as whether one still lists the
+// album. Nothing else is repairable through a manager, so nothing else claims to be.
+//
+// It is the live catalog flag rather than a stored one because that is the fact the
+// hold is about: an album drops out of a manager's catalog between runs, and a
+// snapshot taken at detection would hold a row on a claim that expired weeks ago.
+//
+// A read error reports true — the answer that keeps the row queued. Being wrong that
+// way costs a person one press; being wrong the other way retires an album on a
+// database hiccup.
+func repairable(db *gorm.DB, m models.MusicbrainzMigration) bool {
+	if db == nil || m.EntityType != models.MigrationEntityReleaseGroup {
+		return false
+	}
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", m.OldMBID).First(&rg).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			// No collection row at all: nothing to retire and nobody listing it. The
+			// moot check ahead of this settles the row; it is not held for a repair.
+			return false
+		}
+		return true
+	}
+	return rg.InCatalog
 }
 
 // mootReason reports whether there is anything left to migrate, and if not, the
@@ -314,6 +356,7 @@ func closeExternally(db *gorm.DB, m *models.MusicbrainzMigration, detail string)
 	m.ResolutionDetail = detail
 	m.ResolvedAt = &now
 	m.Error = ""
+	m.RepairQueuedAt = nil
 	if err := db.Save(m).Error; err != nil {
 		return err
 	}
@@ -377,6 +420,7 @@ func Dismiss(db *gorm.DB, id uuid.UUID) (models.MusicbrainzMigration, error) {
 	m.Status = models.MigrationStatusDismissed
 	m.Resolution = models.MigrationResolutionDismissed
 	m.ResolvedAt = &now
+	m.RepairQueuedAt = nil
 	return m, db.Save(&m).Error
 }
 
@@ -550,6 +594,12 @@ func MarkRepairQueued(db *gorm.DB, artistMBID string) (int64, error) {
 // concluded. It is called on the way out of the job rather than only on success: a
 // refresh that failed has still stopped running, and a row left marked would claim work
 // is happening that is not.
+//
+// It reaches the rows still *open* after the job. The ones it settled are out of its
+// reach — the album is the only route from a migration row to its artist, and retiring
+// the album deletes it — so those clear their own mark as they close (see apply and
+// closeExternally). Between them every row the job touched ends up unmarked, and this
+// one no longer has to be the half that succeeded.
 func ClearRepairQueued(db *gorm.DB, artistMBID string) error {
 	if db == nil || artistMBID == "" {
 		return nil
@@ -721,6 +771,13 @@ func apply(db *gorm.DB, m *models.MusicbrainzMigration, resolution string) (appl
 	m.AppliedAt = &now
 	m.Resolution = resolution
 	m.ResolvedAt = &now
+	m.ResolutionDetail = appliedDetail(*m, counts)
+	// A settled row is not waiting on a manager, whatever mark it was carrying. Cleared
+	// here rather than only by the job that set it, because the job clears by looking
+	// the artist up through the album — and retiring the album is precisely what this
+	// just did. The rows a repair succeeded on were the ones left claiming it was still
+	// running.
+	m.RepairQueuedAt = nil
 	if err := db.Save(m).Error; err != nil {
 		return counts, err
 	}
@@ -730,6 +787,61 @@ func apply(db *gorm.DB, m *models.MusicbrainzMigration, resolution string) (appl
 	logger.Log.Infof("applied %s %s migration %s -> %s (%d files)",
 		m.SourceLabel(), m.EntityType, m.OldMBID, m.NewMBID, counts.files)
 	return counts, nil
+}
+
+// appliedDetail is the sentence the history shows beside an applied row.
+//
+// A closed row's status says where it ended up and its resolution says who put it
+// there; neither says what was done. Both questions a history is opened for — what did
+// it decide while I was not looking, and why did this one settle itself — need the
+// third fact, and for a retirement it is the one that reassures: an album vanishing
+// from the collection view reads very differently once the line beneath it says no file
+// was touched.
+//
+// Written in the past tense from what actually happened, which is why it is not the
+// review payload's Effect: that sentence is an offer ("Approving removes…") composed
+// before the fact, and the counts here are the ones the transaction produced.
+func appliedDetail(m models.MusicbrainzMigration, counts applyCounts) string {
+	source := m.SourceLabel()
+
+	switch {
+	case m.EntityType == models.MigrationEntityReleaseGroup:
+		if counts.retired == 0 {
+			return "There was nothing left to remove — the album had already left the collection."
+		}
+		// Which of the two roads it took here is the whole point of the sentence. One
+		// says a manager was consulted and let go of the album; the other says no
+		// manager ever claimed it. Both end in the same deletion, and a reader who
+		// cannot tell them apart has to go and check whether Lidarr still lists it.
+		if m.RepairAttemptedAt != nil {
+			return "The manager was re-read and no longer lists this album, and the ID " +
+				"still resolves nowhere, so the album was removed from your collection " +
+				"view. No files were touched and nothing was deleted from the manager."
+		}
+		return "No manager lists this album and its ID resolves nowhere, so it was " +
+			"removed from your collection view. No files were touched."
+
+	case m.Kind == models.MigrationKindDeleted && m.EntityType == models.MigrationEntityArtist:
+		return "The artist was removed from your collection. Their albums are keyed by " +
+			"release, so no file and no album row was affected."
+
+	case m.Kind == models.MigrationKindDeleted:
+		// Phrased to sit either side of the singular/plural line: "1 file must be" and
+		// "3 files must be" both read, where anything with its own verb needs two
+		// sentences to say one thing.
+		return fmt.Sprintf("%s no longer has this release, so %s must be re-identified "+
+			"and the owned edition was dropped. The identifiers stay on the files.",
+			source, plural(counts.unmatched, "file", "files"))
+
+	case m.EntityType == models.MigrationEntityArtist:
+		return "The artist's albums, editions and wants were re-pointed at the surviving " +
+			"ID. Monitoring and follow settings were merged, not dropped."
+
+	default:
+		return fmt.Sprintf("Re-pointed %s at the surviving ID and cleared the processed "+
+			"marker, so the next run re-reads the track IDs from the new release and "+
+			"re-tags them.", plural(counts.files, "file", "files"))
+	}
 }
 
 // forgetCachedEntity drops what the cache holds under a migrated ID.

@@ -34,15 +34,15 @@ func groupExists(t *testing.T, db *gorm.DB, mbID string) bool {
 	return n > 0
 }
 
-// TestReleaseGroupDeletionHeldUntilRepairTried: the deliberate break from the
-// zero-value-means-apply convention, and its expiry date.
+// TestReleaseGroupDeletionHeldWhileRepairPossible: the deliberate break from the
+// zero-value-means-apply convention, and the two things that end it.
 //
 // A release-group ID that resolves nowhere is usually a manager holding a stale key
 // for an album MusicBrainz still has under a different ID. Auto-applying that removes
 // a repairable album unattended, so it is held whatever the policy says — including
-// the all-false policy an old config.json decodes to. Once the manager has been asked
-// to refresh and the ID still does not resolve, the objection is spent.
-func TestReleaseGroupDeletionHeldUntilRepairTried(t *testing.T) {
+// the all-false policy an old config.json decodes to. The hold ends when the manager
+// has been asked, *or* when there is no manager listing the album to ask.
+func TestReleaseGroupDeletionHeldWhileRepairPossible(t *testing.T) {
 	m := models.MusicbrainzMigration{
 		EntityType: models.MigrationEntityReleaseGroup,
 		Kind:       models.MigrationKindDeleted,
@@ -51,20 +51,28 @@ func TestReleaseGroupDeletionHeldUntilRepairTried(t *testing.T) {
 		{},
 		{ReviewDeletions: false, ReviewReleases: false, ReviewArtists: false, ReviewPinned: false},
 	} {
-		if !p.heldForReview(m) {
+		if !p.heldForReview(m, true) {
 			t.Fatalf("policy %+v must hold an un-repaired release-group deletion", p)
 		}
 	}
 
+	// No manager lists the album, so there is nobody to ask. Holding on the stamp alone
+	// deadlocked exactly this row: the repair pass only ever stamps albums a manager
+	// still lists, so it waited for an event that could not happen, and the wait could
+	// only be ended by a person pressing a button that did what the drain would do.
+	if (Policy{}).heldForReview(m, false) {
+		t.Error("a deletion no manager could repair must not be held for a repair")
+	}
+
 	attempted := time.Now()
 	m.RepairAttemptedAt = &attempted
-	if (Policy{}).heldForReview(m) {
+	if (Policy{}).heldForReview(m, true) {
 		t.Error("once the manager has been asked, the deletion must stop being held")
 	}
 	// The pinned override still outranks it: a manual correlation is a human decision
 	// and a manager refresh is not an answer to it.
 	m.TouchesPinned = true
-	if !(Policy{ReviewPinned: true}).heldForReview(m) {
+	if !(Policy{ReviewPinned: true}).heldForReview(m, true) {
 		t.Error("ReviewPinned must still hold a repaired-but-pinned row")
 	}
 
@@ -74,16 +82,19 @@ func TestReleaseGroupDeletionHeldUntilRepairTried(t *testing.T) {
 		EntityType: models.MigrationEntityRelease,
 		Kind:       models.MigrationKindDeleted,
 	}
-	if (Policy{}).heldForReview(release) {
+	if (Policy{}).heldForReview(release, true) {
 		t.Error("a release deletion must still auto-apply under the zero policy")
 	}
 }
 
 // TestProcessPendingHoldsReleaseGroups: the policy rule reaching the drain. A pass
-// that measured the row must leave it pending rather than applying it.
+// that measured a repairable row must leave it pending rather than applying it — the
+// manager still lists this album, so a refresh might yet correct its ID.
 func TestProcessPendingHoldsReleaseGroups(t *testing.T) {
 	db := testDB(t)
-	storeGroup(t, db, "rg-ghost", "artist-1", "Ghost Album", nil)
+	storeGroup(t, db, "rg-ghost", "artist-1", "Ghost Album", func(rg *models.CollectionReleaseGroup) {
+		rg.InCatalog = true
+	})
 	pendingDeletion(t, db, models.MigrationEntityReleaseGroup, "rg-ghost")
 
 	res, err := ProcessPending(db, Policy{})
@@ -91,7 +102,7 @@ func TestProcessPendingHoldsReleaseGroups(t *testing.T) {
 		t.Fatalf("ProcessPending: %v", err)
 	}
 	if res.Applied != 0 {
-		t.Errorf("Applied = %d, want 0 — release-group deletions are held", res.Applied)
+		t.Errorf("Applied = %d, want 0 — a repairable release-group deletion is held", res.Applied)
 	}
 	if res.Pending != 1 {
 		t.Errorf("Pending = %d, want 1", res.Pending)
@@ -100,6 +111,73 @@ func TestProcessPendingHoldsReleaseGroups(t *testing.T) {
 	var rg models.CollectionReleaseGroup
 	if err := db.Where("mb_id = ?", "rg-ghost").First(&rg).Error; err != nil {
 		t.Fatal("the album was removed without approval")
+	}
+}
+
+// TestProcessPendingRetiresUnrepairableReleaseGroups: the other side of the hold, and
+// the deadlock it fixes.
+//
+// No manager lists this album, so no repair pass will ever stamp it and no refresh can
+// change what it is. Holding it would queue it forever for a person to press a button
+// that does exactly this — so the drain settles it, unattended, and the row lands in
+// the history saying what happened to it.
+func TestProcessPendingRetiresUnrepairableReleaseGroups(t *testing.T) {
+	db := testDB(t)
+	storeGroup(t, db, "rg-orphan", "artist-1", "Orphan Album", nil)
+	m := pendingDeletion(t, db, models.MigrationEntityReleaseGroup, "rg-orphan")
+
+	res, err := ProcessPending(db, Policy{})
+	if err != nil {
+		t.Fatalf("ProcessPending: %v", err)
+	}
+	if res.Applied != 1 || res.Retired != 1 {
+		t.Errorf("Applied=%d Retired=%d, want 1 and 1", res.Applied, res.Retired)
+	}
+	if res.Pending != 0 {
+		t.Errorf("Pending = %d, want 0 — nothing here is waiting on a manager", res.Pending)
+	}
+	if groupExists(t, db, "rg-orphan") {
+		t.Error("the album nobody lists is still in the collection")
+	}
+
+	var row models.MusicbrainzMigration
+	if err := db.First(&row, "id = ?", m.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if row.Status != models.MigrationStatusApplied {
+		t.Errorf("status = %q, want applied", row.Status)
+	}
+	// The history is read to find out what was decided while nobody was looking, and a
+	// bare "Applied" pill answers none of it.
+	if !strings.Contains(row.ResolutionDetail, "No manager lists this album") {
+		t.Errorf("ResolutionDetail = %q, want it to say why the album could go", row.ResolutionDetail)
+	}
+}
+
+// TestAppliedRowDropsRepairMark: a settled row is not waiting on a manager.
+//
+// The job that set the mark clears it by looking the artist up through the album, and
+// retiring the album is what deletes that route — so the rows a repair *succeeded* on
+// were the ones left claiming a refresh was still running, in the history, forever.
+func TestAppliedRowDropsRepairMark(t *testing.T) {
+	db := testDB(t)
+	storeGroup(t, db, "rg-orphan", "artist-1", "Orphan Album", nil)
+	m := pendingDeletion(t, db, models.MigrationEntityReleaseGroup, "rg-orphan")
+	queued := time.Now()
+	if err := db.Model(&m).Update("repair_queued_at", queued).Error; err != nil {
+		t.Fatalf("stamp queued: %v", err)
+	}
+
+	if _, err := ProcessPending(db, Policy{}); err != nil {
+		t.Fatalf("ProcessPending: %v", err)
+	}
+
+	var row models.MusicbrainzMigration
+	if err := db.First(&row, "id = ?", m.ID).Error; err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if row.RepairQueuedAt != nil {
+		t.Error("a settled row still claims a manager refresh is in flight")
 	}
 }
 
