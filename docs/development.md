@@ -42,6 +42,20 @@ go get -u ./... && go mod tidy                 # Go modules
 cd webui && npm update && npm run build && cd ..   # npm packages, then rebuild the bundle
 ```
 
+**`webui/package.json` declares caret ranges, not exact versions**, and that is what makes the npm
+half of that command do anything. `npm update` moves a package only within its declared range, so an
+exact pin is a range of one and can never be updated — which is not a theoretical objection: it left
+`react-router-dom` on 6.21.3 through months of `make update`, accumulating three high-severity
+advisories in a transitive dependency (`@remix-run/router`) that no amount of updating could reach.
+A transitive package is never bumped directly; the parent that pins it is.
+
+Reproducibility does not come from those pins and never did — `package-lock.json` is committed and
+every install path that matters (`make deps`, the Dockerfile, both CI workflows) uses `npm ci`, which
+resolves from the lockfile alone and ignores the ranges entirely. The carets are read only by
+`npm update` and `npm install`, so their whole effect is to let a deliberate update take patch and
+minor releases while still refusing to cross a major, which is where breaking changes live. Crossing
+one stays an explicit `npm install <pkg>@<major>` with a build and a click-through behind it.
+
 ### Makefile shortcuts
 
 A [`Makefile`](../Makefile) wraps these flows so the frontend step is never forgotten:

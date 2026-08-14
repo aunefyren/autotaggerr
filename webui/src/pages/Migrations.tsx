@@ -507,11 +507,15 @@ function HistoryTable({
               <td>
                 <div className="stack" style={{ gap: 2 }}>
                   <StatusCell m={m} />
-                  {/* Why it closed, when nothing here closed it. This is the sentence the
-                      page was missing: a row that resolved itself said "Applied" and left
-                      the reader to guess what had happened upstream. */}
+                  {/* Why it closed, and — since applications carry one now too — what was
+                      done. This is the sentence the page was missing: a row that resolved
+                      itself said "Applied" and left the reader to guess what had happened
+                      upstream. Measured rather than left to fill the column, which on a
+                      wide screen ran one 11px sentence across the best part of 900px. */}
                   {m.resolution_detail && (
-                    <span className="dim" style={{ fontSize: 11 }}>{m.resolution_detail}</span>
+                    <span className="dim" style={{ fontSize: 11, maxWidth: "80ch", lineHeight: 1.45 }}>
+                      {m.resolution_detail}
+                    </span>
                   )}
                   {m.error && (
                     <span style={{ fontSize: 11, color: "var(--danger-text)" }}>{m.error}</span>

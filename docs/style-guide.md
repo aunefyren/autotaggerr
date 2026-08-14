@@ -199,9 +199,16 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Table** — `--surface-1` body, `--surface-2` sticky header (`--text-muted`, medium, `--text-xs`
   uppercase). Rows separated by `--border` hairlines (no zebra). Hover = `--surface-2`. Selected =
   `--accent-subtle` fill + 2px `--accent` left border. Numeric/ID cells `--font-mono`. Right-align
-  numbers.
+  numbers. Cells carry `--space-4`/`--space-5` padding with the 34px row height as the *minimum*:
+  `border-box` folds the padding into that height, so a single-line row is unchanged and only the
+  cells that already wrapped — a stacked name/ID, a sentence — stop touching their hairlines. A
+  sentence in a cell takes a measure (`max-width`) like any other prose; a table column is as wide
+  as the widest thing in it, which is not a reason to set 11px text across 900px of it.
 - **Status pill** — `--radius-pill`, `--text-xs`, medium, `10px` tall dot + label; color from the
   status map, on a `*-bg` tint with `*-text`. Disabled/unmatched uses `--surface-2`/`--text-dim`.
+  **It is the width of its label, never of its container.** `inline-flex` is not enough inside a
+  `.stack`: a flex column stretches its items, and a pill filling a table column stops reading as a
+  status on the row and starts reading as a banner across it (`.stack > .pill` pins `align-self`).
 - **ID chip** — `--font-mono`, `--text-xs`, `--surface-2` bg, `--border`, `--radius-sm`; click-to-copy
   MB IDs / ISRCs. Truncate with middle-ellipsis for UUIDs; full value on hover/copy.
 - **Card / panel** — `--surface-1`, `1px --border`, `--radius-lg`, `--space-6` padding. Optional

@@ -125,6 +125,12 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   border-radius: var(--radius-pill); border: 1px solid transparent; white-space: nowrap;
 }
 .pill .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+/* A pill is the size of its label, always. `inline-flex` does not achieve that inside a
+   `.stack`: a flex column stretches its items by default, and the pill is an item there,
+   so "Applied" spanned the whole Outcome column and read as a banner across the row
+   rather than as a status on it. Scoped to `.stack` because `.row` centres its items and
+   an unscoped `align-self` would top-align every pill sitting beside taller content. */
+.stack > .pill { align-self: flex-start; }
 .pill-ok { background: var(--success-bg); color: var(--success-text); } .pill-ok .dot { background: var(--success); }
 .pill-err { background: var(--danger-bg); color: var(--danger-text); } .pill-err .dot { background: var(--danger); }
 .pill-warn { background: var(--warning-bg); color: var(--warning-text); } .pill-warn .dot { background: var(--warning); }
@@ -162,7 +168,12 @@ table.data thead th {
   font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted);
   padding: 8px 12px; border-bottom: 1px solid var(--border); white-space: nowrap;
 }
-table.data tbody td { padding: 0 12px; height: 34px; border-bottom: 1px solid var(--border); color: var(--text-muted); vertical-align: middle; }
+/* Vertical padding with the row height kept as the minimum, which is what makes this
+   safe to apply to every table: `height` on a cell is a floor, and `border-box` folds
+   the padding into it, so a single-line row is still exactly 34px. Only rows whose
+   content already exceeded that — a stacked name/ID cell, a wrapped sentence — grow,
+   and those were the ones pressed against the hairline above and below them. */
+table.data tbody td { padding: var(--space-4) var(--space-5); height: 34px; border-bottom: 1px solid var(--border); color: var(--text-muted); vertical-align: middle; }
 table.data tbody tr:last-child td { border-bottom: none; }
 table.data tbody tr:hover td { background: var(--surface-2); }
 table.data td.num { text-align: right; font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
