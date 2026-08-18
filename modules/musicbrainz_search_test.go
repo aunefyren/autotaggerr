@@ -67,6 +67,30 @@ func TestFindReleaseTrack(t *testing.T) {
 	}
 }
 
+// TestReleaseTracksKeepsVideoTracks: the flattening stays faithful on purpose.
+// Automatic mapping refuses to propose a video track (see MapFilesToTracks) and the
+// collection does not count an unowned one, but the track is real and a person
+// ripping the audio off a bonus DVD is choosing it deliberately — so it stays in the
+// list and stays attachable, which means FindReleaseTrack has to keep validating it.
+func TestReleaseTracksKeepsVideoTracks(t *testing.T) {
+	release := twoMediumRelease()
+	release.Media[1].Tracks[0].Recording.Video = true
+
+	tracks := ReleaseTracks(release)
+	if len(tracks) != 3 {
+		t.Fatalf("got %d tracks, want 3 — a video track must not be dropped here", len(tracks))
+	}
+	if !tracks[2].Video {
+		t.Error("the video flag must reach the attach list, or it cannot be labelled")
+	}
+	if tracks[0].Video {
+		t.Error("an audio track must not be flagged as video")
+	}
+	if _, ok := FindReleaseTrack(release, tracks[2].TrackID); !ok {
+		t.Error("a deliberately picked video track must still validate")
+	}
+}
+
 func TestReleaseTracksEmpty(t *testing.T) {
 	if got := ReleaseTracks(models.MusicBrainzReleaseResponse{}); len(got) != 0 {
 		t.Errorf("got %d tracks for an empty release", len(got))

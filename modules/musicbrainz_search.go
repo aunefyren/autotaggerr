@@ -178,10 +178,20 @@ type ReleaseTrack struct {
 	Medium      int    `json:"medium"`
 	MediumTitle string `json:"medium_title"`
 	Length      int    `json:"length"`
+	// Video marks a track that is not audio (see models.Track.IsVideo). It is
+	// carried rather than filtered out so the attach list can *show* the track and
+	// label it: automatic mapping never proposes one, but a person ripping the audio
+	// off a bonus DVD is choosing deliberately and must still be able to.
+	Video bool `json:"video"`
 }
 
 // ReleaseTracks flattens a release's media into a single track list. It goes
 // through GetMusicBrainzRelease, so a release already in the cache costs nothing.
+//
+// It is deliberately faithful — every track, video included. Filtering here would
+// also silently narrow FindReleaseTrack, which validates a hand-picked track before
+// it is attached, and turning a deliberate choice into "no such track" is the wrong
+// way to express "we would not have suggested that".
 func ReleaseTracks(release models.MusicBrainzReleaseResponse) []ReleaseTrack {
 	var out []ReleaseTrack
 	for _, medium := range release.Media {
@@ -195,6 +205,7 @@ func ReleaseTracks(release models.MusicBrainzReleaseResponse) []ReleaseTrack {
 				Medium:      medium.Position,
 				MediumTitle: medium.Title,
 				Length:      track.Length,
+				Video:       track.IsVideo(),
 			})
 		}
 	}

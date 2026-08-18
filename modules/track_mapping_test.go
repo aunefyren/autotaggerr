@@ -184,3 +184,77 @@ func TestWindowsPathsMapToo(t *testing.T) {
 		t.Errorf("mapping = %+v", got[0])
 	}
 }
+
+// withVideoDisc appends a video medium to an audio one, the shape of a CD+DVD
+// edition (Frank Ocean's *Endless*: 19 audio, 22 videos).
+func withVideoDisc(audio, video int) []ReleaseTrack {
+	tracks := singleDisc(audio)
+	for i := 1; i <= video; i++ {
+		tracks = append(tracks, ReleaseTrack{
+			TrackID:  "vid-" + itoa(i),
+			Position: i,
+			Number:   itoa(i),
+			Medium:   2,
+			Video:    true,
+		})
+	}
+	return tracks
+}
+
+// TestMappingNeverProposesAVideoTrack: a bonus DVD is not a candidate pool for audio
+// files. Beyond the obvious wrongness of pairing one, its presence used to wreck both
+// strategies — the release looked multi-medium, so a bare "05" was ambiguous between
+// the discs and the number strategy bailed, and the sort-order fallback then zipped
+// the audio files against a tracklist twice the length.
+func TestMappingNeverProposesAVideoTrack(t *testing.T) {
+	paths := []string{
+		"/m/A/Endless/01 First.flac",
+		"/m/A/Endless/02 Second.flac",
+		"/m/A/Endless/03 Third.flac",
+	}
+	got := MapFilesToTracks(paths, withVideoDisc(3, 4))
+
+	// The audio disc maps by number, exactly as it would if the DVD were not there.
+	want := []string{"a-id", "b-id", "c-id"}
+	for i, id := range want {
+		if got[i].TrackID != id {
+			t.Errorf("paths[%d] -> %q, want %q", i, got[i].TrackID, id)
+		}
+		if got[i].How != MapByNumber {
+			t.Errorf("paths[%d] how = %q, want %q — the DVD must not make this ambiguous", i, got[i].How, MapByNumber)
+		}
+	}
+}
+
+// TestMappingByOrderSkipsVideoTracks: the fallback zips against the tracklist, so a
+// video medium sitting in it would shift every pairing after the audio ran out.
+func TestMappingByOrderSkipsVideoTracks(t *testing.T) {
+	paths := []string{
+		"/m/A/Endless/First.flac",
+		"/m/A/Endless/Second.flac",
+		"/m/A/Endless/Third.flac",
+	}
+	got := MapFilesToTracks(paths, withVideoDisc(2, 4))
+
+	if got[0].How != MapByOrder {
+		t.Fatalf("expected the sort-order fallback, got %q", got[0].How)
+	}
+	// Two audio tracks for three files: the third is left unmapped rather than
+	// pointed at the first video.
+	if got[0].TrackID != "a-id" || got[1].TrackID != "b-id" {
+		t.Errorf("mapped = %q, %q; want a-id, b-id", got[0].TrackID, got[1].TrackID)
+	}
+	if got[2].TrackID != "" || got[2].How != MapUnmapped {
+		t.Errorf("third file = %q (%s), want unmapped — a video track is not a candidate",
+			got[2].TrackID, got[2].How)
+	}
+}
+
+// TestMappingAllVideoReleaseMapsNothing: a release with no audio at all has no
+// candidates, and must say so rather than falling through to the videos.
+func TestMappingAllVideoReleaseMapsNothing(t *testing.T) {
+	got := MapFilesToTracks([]string{"/m/A/DVD/01 Clip.flac"}, withVideoDisc(0, 3))
+	if got[0].How != MapUnmapped || got[0].TrackID != "" {
+		t.Errorf("mapping = %+v, want unmapped", got[0])
+	}
+}

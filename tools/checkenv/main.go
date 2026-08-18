@@ -23,8 +23,15 @@ func main() {
 	// list is complete.
 	report(true, "go", version("go", "version"))
 
-	nodeOK := tool("node", "Install Node "+nodeRequirement+" from https://nodejs.org")
-	if nodeOK {
+	// Node is the one tool whose *presence* is not the question, so it does not go
+	// through `tool`: that would print an OK line for the version about to be rejected
+	// on the next, and a report that contradicts itself two lines apart is worse than
+	// no report. reportNodeVersion owns the single verdict.
+	nodeOK := true
+	if _, err := exec.LookPath("node"); err != nil {
+		report(false, "node", "not found on PATH — install Node "+nodeRequirement+" from https://nodejs.org")
+		nodeOK = false
+	} else {
 		nodeOK = reportNodeVersion()
 	}
 	npmOK := tool("npm", "npm ships with Node — reinstall Node from https://nodejs.org")
@@ -66,6 +73,7 @@ func reportNodeVersion() bool {
 	}
 
 	if (major == 20 && minor >= 19) || (major == 22 && minor >= 12) || major >= 23 {
+		report(true, "node", raw)
 		return true
 	}
 	report(false, "node", raw+" is too old — vite needs "+nodeRequirement)

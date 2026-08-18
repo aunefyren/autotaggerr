@@ -12,8 +12,15 @@ function fileName(path: string): string {
 }
 
 /** "2-05 · Dreams", or just the number on a single-disc release. */
-function trackLabel(track: { medium: number; number: string; title: string }, multiDisc: boolean): string {
-  return `${multiDisc ? `${track.medium}-${track.number}` : track.number} · ${track.title}`;
+function trackLabel(
+  track: { medium: number; number: string; title: string; video?: boolean },
+  multiDisc: boolean,
+): string {
+  const position = multiDisc ? `${track.medium}-${track.number}` : track.number;
+  // Video tracks are listed but never proposed, so the label has to say why one is
+  // sitting there unmapped — otherwise a bonus DVD reads as tracks the mapping
+  // simply missed.
+  return `${position} · ${track.title}${track.video ? " (video)" : ""}`;
 }
 
 /**

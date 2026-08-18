@@ -200,6 +200,14 @@ export function AttachModal({
                         {release.tracks.some((x) => x.medium !== t.medium) ? `${t.medium}-${t.number}` : t.number}
                       </span>
                       <span style={{ color: "var(--text)" }}>{t.title}</span>
+                      {/* A video track is still attachable — someone ripping the audio
+                          off a bonus DVD means it — but it is never suggested and never
+                          counted as a track you are missing, so it says what it is. */}
+                      {t.video && (
+                        <span className="dim mono" style={{ fontSize: 11 }}>
+                          video
+                        </span>
+                      )}
                       {suggested && (
                         <span className="dim mono" style={{ fontSize: 11, color: "var(--accent-text)" }}>
                           suggested

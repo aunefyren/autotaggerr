@@ -18,7 +18,9 @@ package collection
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"math/rand/v2"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -202,6 +204,7 @@ func RecordScanUnder(db *gorm.DB, parent *models.Event, title string, scope Rebu
 		"artists_removed":      stats.ArtistsRemoved,
 		"albums_added":         stats.AlbumsAdded,
 		"albums_removed":       stats.AlbumsRemoved,
+		"files_removed":        stats.FilesRemoved,
 	}
 	for k, v := range detail {
 		details[k] = v
@@ -212,6 +215,9 @@ func RecordScanUnder(db *gorm.DB, parent *models.Event, title string, scope Rebu
 	// by leaving them out — the totals are then the whole story, which is the truth.
 	if change := changeClause(stats); change != "" {
 		summary += " · " + change
+	}
+	if stats.FilesRemoved > 0 {
+		summary += fmt.Sprintf(" · %d file(s) removed", stats.FilesRemoved)
 	}
 	if stats.CreditChanges > 0 {
 		summary += fmt.Sprintf(" · %d credit change(s)", stats.CreditChanges)
@@ -276,6 +282,7 @@ func ScanStats(stats RebuildStats) []models.EventStat {
 		{Label: "Albums added", Value: stats.AlbumsAdded, Kind: models.EventStatNotable},
 		{Label: "Albums gone", Value: stats.AlbumsRemoved, Kind: models.EventStatBad},
 		{Label: "Credit changes", Value: stats.CreditChanges, Kind: models.EventStatNotable},
+		{Label: "Files removed", Value: stats.FilesRemoved, Kind: models.EventStatBad},
 	}
 }
 
@@ -418,6 +425,12 @@ type RebuildStats struct {
 	ArtistsRemoved int `json:"artists_removed"`
 	AlbumsAdded    int `json:"albums_added"`
 	AlbumsRemoved  int `json:"albums_removed"`
+	// FilesRemoved is index rows this pass proved gone and deleted — see
+	// pruneGoneFiles. A Scan reports the disk as it stands, not as the index last
+	// recorded it, so this is not bookkeeping: it is what makes AlbumsRemoved and a
+	// no-longer-owned release-group's disappearance real instead of a display quirk
+	// that the next Process would only repeat.
+	FilesRemoved int `json:"files_removed"`
 	// EmptyReason names the input that was missing when a pass found nothing, and is
 	// blank whenever the pass had something to work from — including when it honestly
 	// found zero.
@@ -482,6 +495,118 @@ func scanEmptyReason(db *gorm.DB, scope bounds, all, scoped int) string {
 	return ScanEmptyArtistNoFiles
 }
 
+// collectionPruneBatch bounds the id list per DELETE, the same limit
+// process.pruneDeleteBatch applies for the same reason: SQLite's default
+// host-parameter limit, which a library that lost a whole disc can exceed.
+const collectionPruneBatch = 200
+
+// pruneGoneFiles proves which of a Scan's own rows are still on disk and deletes the
+// ones that are not, before anything is aggregated from them.
+//
+// Rebuild used to trust the index outright: a file deleted outside Autotaggerr left
+// its row until the next Process walked the folder and pruned it — which meant Scan,
+// pressed specifically because the view looked stale, faithfully reproduced the same
+// stale answer. Since Rebuild reads the index and nothing else, "does the collection
+// match the disk" was a question only Process could actually answer.
+//
+// It is a stat per row, not a walk: cheap enough to run inline on the rows a Scan
+// already reads, unlike process.pruneMissingItems which exists to catch files a walk
+// never even had a row for. The two are complementary, not duplicates — see
+// docs/scanning.md.
+//
+// One guard, and it is the one that matters: a library that fails to stat is
+// unavailable, not empty, and every row under it is presumed present rather than
+// checked. Without it, an unmounted or flaky share would read as "every file gone" on
+// the very verb whose whole premise is running often and unattended (Rebuilder.Request
+// fires it after every manual attach). Only fs.ErrNotExist on the file itself counts
+// as gone — a permission or I/O error leaves the row alone, the same rule
+// process.pruneMissingItems applies to individual files.
+//
+// A pinned row is a manual attachment; it is still deleted when its file is gone (the
+// pin identifies a file that no longer exists), but logged separately, because "your
+// manual attachments went away" is not something to leave to a bare count.
+func pruneGoneFiles(db *gorm.DB, rows []itemRow) (kept []itemRow, removedIDs map[uuid.UUID]bool, removed int, err error) {
+	if len(rows) == 0 {
+		return rows, nil, 0, nil
+	}
+
+	var libraries []models.Library
+	if err := db.Find(&libraries).Error; err != nil {
+		return rows, nil, 0, err
+	}
+	libPath := make(map[uuid.UUID]string, len(libraries))
+	for _, l := range libraries {
+		libPath[l.ID] = l.Path
+	}
+
+	available := map[uuid.UUID]bool{}
+	checked := map[uuid.UUID]bool{}
+	availableFor := func(libraryID uuid.UUID) bool {
+		if checked[libraryID] {
+			return available[libraryID]
+		}
+		checked[libraryID] = true
+		path := libPath[libraryID]
+		if path == "" {
+			// The item outlived its library row. Nothing to stat against, so this
+			// library's files cannot be proven gone.
+			available[libraryID] = false
+			return false
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			logger.Log.Warnf("library %q is unavailable, skipping the existence check for its files: %s", path, statErr.Error())
+			available[libraryID] = false
+			return false
+		}
+		available[libraryID] = true
+		return true
+	}
+
+	kept = make([]itemRow, 0, len(rows))
+	removedIDs = map[uuid.UUID]bool{}
+	var goneIDs []uuid.UUID
+	pinned := 0
+	for _, r := range rows {
+		if !availableFor(r.LibraryID) {
+			kept = append(kept, r)
+			continue
+		}
+		if _, statErr := os.Stat(r.Path); statErr == nil {
+			kept = append(kept, r)
+			continue
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			logger.Log.Warnf("cannot tell whether %q still exists, keeping its index row: %s", r.Path, statErr.Error())
+			kept = append(kept, r)
+			continue
+		}
+		goneIDs = append(goneIDs, r.ID)
+		removedIDs[r.ID] = true
+		if r.Pinned {
+			pinned++
+			logger.Log.Warnf("dropping the manual attachment for %q: the file is no longer on disk", r.Path)
+		}
+		logger.Log.Debugf("scan pruning index row for missing file: %s", r.Path)
+	}
+	if len(goneIDs) == 0 {
+		return kept, removedIDs, 0, nil
+	}
+
+	for start := 0; start < len(goneIDs); start += collectionPruneBatch {
+		end := min(start+collectionPruneBatch, len(goneIDs))
+		if err := db.Where("id IN ?", goneIDs[start:end]).Delete(&models.LibraryItem{}).Error; err != nil {
+			// Report what did land: a partial prune is still progress, not something
+			// to roll back — the caller's transaction still rolls back the rest of the
+			// rebuild if this returns an error, so nothing here is left inconsistent.
+			return kept, removedIDs, removed, err
+		}
+		removed += end - start
+	}
+	if pinned > 0 {
+		logger.Log.Warnf("scan dropped %d manual attachment(s) whose files are gone", pinned)
+	}
+	return kept, removedIDs, removed, nil
+}
+
 // rebuildTx is the body of Rebuild, run inside the caller's transaction. Every write
 // below goes through the handle passed in, so a failure at any point rolls the whole
 // re-derivation back rather than leaving the disk view half-cleared.
@@ -527,12 +652,42 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		}
 	}
 
+	// A Scan reports the disk as it stands, not as the index last recorded it — so
+	// before anything is aggregated from these rows, prove which of them are still
+	// there. Only the rows in scope: an artist-scoped pass must conclude nothing
+	// about files it was not asked about. See pruneGoneFiles.
+	rows, removedIDs, filesRemoved, err := pruneGoneFiles(db, rows)
+	if err != nil {
+		return RebuildStats{}, err
+	}
+	if len(removedIDs) > 0 {
+		kept := make([]itemRow, 0, len(all))
+		for _, r := range all {
+			if !removedIDs[r.ID] {
+				kept = append(kept, r)
+			}
+		}
+		all = kept
+	}
+
 	// Pass 1: count owned files per release, and gather artist + manager provenance.
 	releaseOwned := map[string]int{}
+	// Which tracks are owned, as opposed to how many files are. Read only by the
+	// video rule in releaseTrackTotal — a video track counts toward the total when a
+	// file actually resolves to it, and otherwise does not exist as far as ownership
+	// is concerned. Kept apart from releaseOwned because the two answer different
+	// questions: two files claiming one track are two files but one track.
+	releaseOwnedTracks := map[string]map[string]bool{}
 	artistName := map[string]string{}
 	artistManagers := map[string]map[string]bool{}
 	for _, r := range rows {
 		releaseOwned[r.MBReleaseID]++
+		if r.MBReleaseTrackID != "" {
+			if releaseOwnedTracks[r.MBReleaseID] == nil {
+				releaseOwnedTracks[r.MBReleaseID] = map[string]bool{}
+			}
+			releaseOwnedTracks[r.MBReleaseID][r.MBReleaseTrackID] = true
+		}
 
 		release, ok := modules.CachedRelease(r.MBReleaseID)
 		if !ok {
@@ -587,10 +742,7 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		if rgID == "" || len(albumCredit) == 0 {
 			continue
 		}
-		total := 0
-		for _, m := range release.Media {
-			total += len(m.Tracks)
-		}
+		total := releaseTrackTotal(release, releaseOwnedTracks[relID])
 		credits := make([]string, 0, len(albumCredit))
 		for _, credit := range albumCredit {
 			if credit.Artist.ID != "" {
@@ -667,7 +819,7 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		return RebuildStats{}, err
 	}
 
-	stats := RebuildStats{Artists: len(artistManagers), Owned: len(rgBest), CreditChanges: changes.total()}
+	stats := RebuildStats{Artists: len(artistManagers), Owned: len(rgBest), CreditChanges: changes.total(), FilesRemoved: filesRemoved}
 	// What moved. The totals above describe the collection; these describe the pass,
 	// and they are the difference between "the Scan ran" and "the Scan did something".
 	after := collectionSnapshot{artists: setOf(artistManagers), groups: setOf(rgBest)}
@@ -945,6 +1097,37 @@ func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease, scope boun
 		failed = err
 	}
 	return failed
+}
+
+// releaseTrackTotal is how many tracks of an edition you could own: every audio
+// track, plus any video track a file actually resolved to.
+//
+// The plain `len(medium.Tracks)` it replaces made a bonus DVD look like a permanent
+// hole in the album. Frank Ocean's *Endless* is the case: the 2018 CD+DVD edition is
+// 19 audio tracks and 22 videos, so a complete album read 19/41 while Lidarr — which
+// ignores video media — correctly said 19/19. The count that matters is the one a
+// music library can close.
+//
+// **Owned video tracks still count**, which is the whole reason this takes the owned
+// set rather than filtering unconditionally. Someone who ripped the DVD's audio has
+// files that legitimately resolve to those tracks; excluding them regardless would
+// report 41/19 — owning more of an album than it contains — and `Complete` would be
+// true for a reason nobody could read. Counting them only once owned makes the total
+// describe what this library can hold rather than what MusicBrainz happens to list,
+// and it can never be exceeded by the owned count.
+//
+// `owned` may be nil, which is the ordinary case of an album whose files are all
+// audio.
+func releaseTrackTotal(release models.MusicBrainzReleaseResponse, owned map[string]bool) int {
+	total := 0
+	for _, medium := range release.Media {
+		for _, track := range medium.Tracks {
+			if !track.IsVideo() || owned[track.ID] {
+				total++
+			}
+		}
+	}
+	return total
 }
 
 // mediaSummary describes a release's media the way an edition list needs it:
@@ -1676,15 +1859,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			// Drop the previous catalog view for this artist so albums removed from
 			// Lidarr stop being listed. Done only after the fetch succeeded, and it
 			// leaves the disk columns intact.
-			if err := db.Model(&models.CollectionReleaseGroup{}).
-				Where("artist_mb_id = ? AND in_catalog = ?", la.ForeignArtistID, true).
-				Updates(map[string]any{
-					"in_catalog": false, "catalog_owned_tracks": 0,
-					"catalog_total_tracks": 0, "catalog_monitored": false,
-					"catalog_release_mb_id": "",
-				}).Error; err != nil {
-				logger.Log.Warnf("failed to reset catalog state for %s: %s", la.Name, err.Error())
-			}
+			clearCatalogView(db, la.ForeignArtistID, la.Name)
 
 			for _, al := range albums {
 				if al.ForeignAlbumID == "" {
@@ -1726,6 +1901,18 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 		for mbid := range want {
 			if !seen[mbid] {
 				stats.Unknown = append(stats.Unknown, mbid)
+				// ...and their catalog view goes with them. The reset above runs per
+				// *listed* artist, so an artist deleted from Lidarr entirely never
+				// reached it and kept the counts, the monitored edition and
+				// `in_catalog` from the last pass that did find them — the artist page
+				// then reports files the manager holds for an album the manager has
+				// never heard of, and no amount of re-syncing could clear it because
+				// clearing only happened where there was something to replace it with.
+				//
+				// Same guard as the reporting it sits inside, for the same reason: a
+				// listing that failed says nothing about who is missing, so nothing is
+				// retired on the strength of it.
+				clearCatalogView(db, mbid, mbid)
 			}
 		}
 		sort.Strings(stats.Unknown)
@@ -1750,6 +1937,25 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 		stats.Ghosts = ghosts
 	}
 	return stats, nil
+}
+
+// clearCatalogView retires everything a manager wrote about one artist's albums,
+// leaving the disk columns — which Rebuild owns — untouched. `label` is only for the
+// log line, since the caller that has a name has one and the caller that has only an
+// MBID does not.
+//
+// Two callers, one rule: the catalog block is a mirror, and a mirror of something that
+// is no longer there is not evidence, it is a leftover.
+func clearCatalogView(db *gorm.DB, artistMBID, label string) {
+	if err := db.Model(&models.CollectionReleaseGroup{}).
+		Where("artist_mb_id = ? AND in_catalog = ?", artistMBID, true).
+		Updates(map[string]any{
+			"in_catalog": false, "catalog_owned_tracks": 0,
+			"catalog_total_tracks": 0, "catalog_monitored": false,
+			"catalog_release_mb_id": "",
+		}).Error; err != nil {
+		logger.Log.Warnf("failed to reset catalog state for %s: %s", label, err.Error())
+	}
 }
 
 // syncEmptyReason works out why a mirror pass found no artist to ask Lidarr about.

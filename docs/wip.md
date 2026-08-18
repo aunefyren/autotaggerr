@@ -231,6 +231,16 @@ repair in flight, and names its source rather than assuming one. What that left 
 
 ## Known issues / limitations
 
+- **A search hit's track count still includes video tracks.** The video rule
+  ([collection.md](collection.md#a-video-track-is-not-a-track-you-are-missing)) governs the
+  collection's own counts, but a row that came from the MusicBrainz *search* API carries
+  `track-count` per medium with no track list behind it, so there is nothing to filter — the release
+  search list totals those and shows *Endless* as `CD + DVD · 41 tracks`. Correcting only
+  `SearchResultFromRelease` (which does have the tracks) would make two rows in the same list count
+  by different rules, which is why it was left faithful. Closing it properly means fetching each hit
+  to count its audio tracks — a rate-limited request per search result, for a number the format
+  string half-answers already. Worth it only if the count is ever used for more than a glance.
+
 - **`GET /artists` recomputes the whole collection on every request.** `listArtists`
   (`routers/collection.go:272`) loads every artist, every release group, every desire and every
   credit link, then aggregates in Go — deliberately, so the complete/discrepancy rules have one

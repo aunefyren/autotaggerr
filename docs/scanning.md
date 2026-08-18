@@ -10,18 +10,22 @@ A library is acted on by exactly four verbs, each available at whatever scope yo
 | Verb | Reads | Writes files | Owner |
 | --- | --- | --- | --- |
 | **Process** | disk + MusicBrainz | **yes** | `process.Runner` |
-| **Scan** | the local database | no | `collection.Rebuild` |
+| **Scan** | the local database + a stat per indexed file | no | `collection.Rebuild` |
 | **Refresh metadata** | MusicBrainz | no | `mirror.Runner` |
 | **Tag files** | the local database | **yes** | `process.Runner` |
 
 **Process** is the full pipeline the app exists for: walk the folders, resolve each file's
-metadata, write its tags. It is the only verb that reads the disk and so the only one that can
-discover a file that was added, moved or changed.
+metadata, write its tags. It is the only verb that *discovers* a file — one added, moved, or
+renamed into a library needs a directory walk to be found at all, and Scan does not do one.
 
-**Scan** re-derives what the collection holds from the files *already indexed* — no disk walk, no
-network, no file writes. It is the cheapest of the four, and it is what makes the collection view
-agree with the index when the two have drifted apart. Processing ends with one, so the button is
-for when the view looks stale without a run having happened.
+**Scan** re-derives what the collection holds from the files *already indexed* — no directory walk,
+no network, no file writes. It is the cheapest of the four, and it is what makes the collection view
+agree with the disk when the two have drifted apart. Processing ends with one, so the button is for
+when the view looks stale without a run having happened.
+
+Agreeing with the disk means proving each row is still there, not just re-aggregating what the index
+last said — see [pruneGoneFiles](#a-scan-proves-its-own-rows), the reason Scan is no longer purely a
+database pass.
 
 | | artist | library | everything |
 | --- | --- | --- | --- |
@@ -324,8 +328,14 @@ than a few rows:
 
 - **It runs only after a successful walk.** A walk that failed partway is exactly the case where
   "the file is not there" means "we could not look".
-- **Every root must exist.** An unmounted library, or one whose path moved, stats as "every file is
-  gone" and would otherwise empty its own index. An unavailable root refuses the whole pass.
+- **The library root must exist.** An unmounted library, or one whose path moved, stats as "every
+  file is gone" and would otherwise empty its own index. An unavailable library refuses the whole
+  pass. A **scope** root is held to the per-file standard instead: an artist-scoped run derives its
+  root from the *indexed* paths, so deleting an artist's whole folder — what a manager does when it
+  deletes the artist — hands the pass a root that no longer exists. Refusing there left those rows
+  permanently, since the scoped run could not prune them and only a whole-library run (whose root is
+  the library, which does exist) could reach them. With the library mounted, a missing sub-root is
+  proven absence; anything other than "not there" still refuses.
 - **Only `fs.ErrNotExist` counts as gone.** A permission error, an I/O error or a dead network mount
   leaves the row alone. Absence has to be proven, not assumed — a wrong deletion is the one reading
   that cannot be recovered from.
@@ -338,6 +348,45 @@ The count rides the run's event as `files_removed` and appends a `· N removed` 
 line only when something actually went. A move is delete-plus-create to a path-keyed index, so a
 moved file loses its pin; carrying pins across a move (matching on size + mtime) would be a separate
 feature.
+
+### A Scan proves its own rows
+
+`process.pruneMissingItems` above runs once per Process, after a walk. It used to be the *only*
+place a gone file's row was ever removed, which meant Scan — pressed specifically because the
+collection view looked stale — re-derived from exactly the same stale rows and reported the same
+stale answer. A Lidarr-deleted artist whose whole folder went with it could not be fixed by Scan at
+all: nothing had walked the tree since the deletion, so nothing had pruned it.
+
+`collection.pruneGoneFiles` closes that gap without giving Scan a walk. It runs inside
+`rebuildTx`, immediately after the pass reads the index rows in its scope and before anything is
+aggregated from them: each row is `os.Stat`'d, and the ones that prove gone are deleted before
+`collection.Rebuild` counts what is owned. It is a stat per row, not a directory walk — cheap enough
+to stay inline on the artist scope (a handful of files) and on the collection-wide button (bounded
+by however many files are indexed), unlike a full re-walk of every library.
+
+It carries the same two guards `pruneMissingItems` does, adapted to having no roots to check:
+
+- **A library that fails to stat is unavailable, not empty.** Every row under it is presumed present
+  rather than checked — the same reasoning as the walk-based prune's root guard, applied per library
+  since a Scan has no walk to have already proven the library reachable.
+- **Only `fs.ErrNotExist` on the file itself counts as gone.** A permission or I/O error leaves the
+  row alone.
+
+It needs no folder-existence check at all, and that is the one place it is simpler than the
+walk-based prune: it stats each file's own path directly, so an artist's whole folder disappearing
+is just every one of that artist's files individually proving gone — there is no intermediate
+"scope root" to reason about the way `pruneMissingItems` has to for a narrowed Process.
+
+Scoping matches the rebuild it runs inside: only rows `bounds.inScope` admits are checked, so an
+artist-scoped Scan proves nothing about a different artist's files, the same rule
+[`RebuildScoped`](collection.md#scoping-a-rebuild) already holds for every write it makes. A pinned
+row still goes — the pin identifies a file that is no longer there — logged separately from the
+plain count for the same reason as above.
+
+The count lands on `RebuildStats.FilesRemoved`, rides the Scan event's `files_removed` detail and
+its own `Files removed` stat, and appends a `· N file(s) removed` clause to the summary line. It is
+additive with the walk-based prune, not a replacement for it: a Process still needs to *discover* a
+file Scan was never shown in the first place.
 
 ## The collection stage
 

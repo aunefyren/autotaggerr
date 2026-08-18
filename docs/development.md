@@ -68,14 +68,14 @@ A [`Makefile`](../Makefile) wraps these flows so the frontend step is never forg
 | `make run` | verify prereqs, rebuild `web/dist`, then `go run .` |
 | `make check` | verify the toolchain (Go, Node, npm, `tsc`) and print a clear report |
 | `make deps` | force a clean `npm ci --include=dev` in `webui/` (fixes a missing `tsc`); installs for the platform you run it on — see [below](#building-the-same-checkout-from-windows-and-wsl) |
-| `make update` | `go get -u` + `go mod tidy` + `npm update` + rebuild the bundle |
+| `make update` | verify prereqs, then `go get -u` + `go mod tidy` + `npm update` + rebuild the bundle |
 | `make test` / `make fmt` / `make vet` | the CI gates locally |
 
 Every recipe uses only `go`/`npm`/`cd`, so the same Makefile runs on Linux/macOS and Windows —
 but `make` is not bundled with Windows. Install it once (`choco install make` or
 `scoop install make`), or use the raw commands above, which need no extra tooling.
 
-`make build`/`ui`/`run` run `make check` first (`tools/checkenv`, a small cross-platform Go program),
+`make build`/`ui`/`run`/`update` run `make check` first (`tools/checkenv`, a small cross-platform Go program),
 so a missing Node, npm, or TypeScript compiler fails with an explanation and a fix rather than a raw
 platform error. **`tsc` is not a system tool** — it is a devDependency in `webui/node_modules`, so a
 "'tsc' is not recognized" failure means the frontend deps were not installed, or were installed

@@ -3,6 +3,8 @@ package routers
 import (
 	"encoding/json"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -62,12 +64,20 @@ func TestApproveMigrationAppliesIt(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 
-	lib := models.Library{Name: "L", Path: t.TempDir(), Enabled: true}
+	root := t.TempDir()
+	lib := models.Library{Name: "L", Path: root, Enabled: true}
 	if err := api.DB.Create(&lib).Error; err != nil {
 		t.Fatalf("create library: %v", err)
 	}
+	// Rebuild (run after approval) now proves each row still exists before
+	// aggregating it, so the fixture needs a real file — a path that was never
+	// written is indistinguishable from one that has since been deleted.
+	itemPath := filepath.Join(root, "a.flac")
+	if err := os.WriteFile(itemPath, []byte("x"), 0o644); err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
 	if err := api.DB.Create(&models.LibraryItem{
-		LibraryID: lib.ID, Path: "/m/a.flac", Status: models.LibraryItemStatusOK, MBReleaseID: "rel-old",
+		LibraryID: lib.ID, Path: itemPath, Status: models.LibraryItemStatusOK, MBReleaseID: "rel-old",
 	}).Error; err != nil {
 		t.Fatalf("create item: %v", err)
 	}

@@ -240,13 +240,17 @@ export default function Artist() {
     }
   };
 
-  // Scan is the odd one of the four: it is a database pass, so it answers with what
-  // it found instead of queueing. Reporting the counts is what makes pressing it
-  // feel like it did something, since nothing appears in the Activity feed.
+  // Scan is the odd one of the four: it is a fast pass over this artist's already
+  // indexed files, so it answers with what it found instead of queueing. Reporting
+  // the counts is what makes pressing it feel like it did something, since nothing
+  // appears in the Activity feed.
   const scan = async () => {
     try {
-      const r = await api.post<{ owned_release_groups: number }>(`/artists/${mbid}/scan`);
-      toast("ok", `Scanned — ${r.owned_release_groups} album(s) on disk`);
+      const r = await api.post<{ owned_release_groups: number; files_removed: number }>(
+        `/artists/${mbid}/scan`,
+      );
+      const removed = r.files_removed > 0 ? ` — ${r.files_removed} file(s) gone from disk` : "";
+      toast("ok", `Scanned — ${r.owned_release_groups} album(s) on disk${removed}`);
       refresh();
     } catch (e) {
       toast("err", errMsg(e));
@@ -476,7 +480,7 @@ export default function Artist() {
         <button
           className="btn btn-ghost btn-sm"
           disabled={running}
-          title="Re-derive this artist's albums from the files already indexed. No disk walk, no MusicBrainz, no file writes — press this when the albums shown here look out of date."
+          title="Re-derive this artist's albums from the files already indexed, dropping any that are no longer there. No directory walk, no MusicBrainz, no file writes — press this when the albums shown here look out of date."
           onClick={scan}
         >
           Scan

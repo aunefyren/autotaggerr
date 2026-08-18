@@ -136,6 +136,12 @@ export interface ReleaseTrack {
   medium: number;
   medium_title: string;
   length: number;
+  /**
+   * A video rather than a piece of audio (a bonus DVD, an enhanced CD's last
+   * track). Automatic mapping never proposes one and it is not counted among the
+   * tracks you are missing, but it stays pickable by hand for audio ripped off one.
+   */
+  video: boolean;
 }
 
 /**

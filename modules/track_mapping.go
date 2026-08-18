@@ -51,6 +51,15 @@ var discFolderPattern = regexp.MustCompile(`(?i)\b(?:cd|disc|disk)\s*[-_]?\s*(\d
 //  2. Otherwise fall back to sort order: paths sorted, zipped against the flattened
 //     tracklist. Files past the end of the tracklist stay unmapped.
 //
+// Video tracks are never proposed (see models.Track.IsVideo). They are not audio,
+// so pairing one with an audio file is always wrong — and on a CD+DVD edition there
+// are enough of them to wreck both strategies: the DVD makes the release look
+// multi-medium, so a bare "05" filename becomes ambiguous between the two discs and
+// the number strategy bails, and the sort-order fallback then zips 19 audio files
+// against a 41-entry list. Dropping them first is what makes such an edition behave
+// like the single-disc album it is for a music library's purposes. The tracks stay
+// in the list a human picks from — this governs only what is *suggested*.
+//
 // Paths are not required to be sorted on the way in; the order of the returned
 // slice matches the order of the input.
 func MapFilesToTracks(paths []string, tracks []ReleaseTrack) []FileTrackMapping {
@@ -58,6 +67,7 @@ func MapFilesToTracks(paths []string, tracks []ReleaseTrack) []FileTrackMapping 
 	for i, path := range paths {
 		out[i] = FileTrackMapping{Path: path, How: MapUnmapped}
 	}
+	tracks = audioTracks(tracks)
 	if len(paths) == 0 || len(tracks) == 0 {
 		return out
 	}
@@ -85,6 +95,29 @@ func MapFilesToTracks(paths []string, tracks []ReleaseTrack) []FileTrackMapping 
 			break
 		}
 		out[index] = mappingFor(paths[index], tracks[position], MapByOrder)
+	}
+	return out
+}
+
+// audioTracks drops the tracks no audio file can be. It returns the input unchanged
+// when there is nothing to drop, which is every ordinary release — so the common path
+// allocates nothing.
+func audioTracks(tracks []ReleaseTrack) []ReleaseTrack {
+	video := false
+	for _, t := range tracks {
+		if t.Video {
+			video = true
+			break
+		}
+	}
+	if !video {
+		return tracks
+	}
+	out := make([]ReleaseTrack, 0, len(tracks))
+	for _, t := range tracks {
+		if !t.Video {
+			out = append(out, t)
+		}
 	}
 	return out
 }

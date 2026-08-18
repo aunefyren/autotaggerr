@@ -104,6 +104,24 @@ type Track struct {
 	Title        string         `json:"title"`
 }
 
+// IsVideo reports whether this track is a video rather than a piece of audio.
+//
+// It is the one definition of a rule several places need: a video track is not a
+// track an audio library can hold, so it must not be counted as one you are missing
+// and must not be proposed as a candidate for an audio file. Frank Ocean's *Endless*
+// is the case that named it — the 2018 CD+DVD edition is 19 audio tracks and 22
+// videos, which a plain `len(medium.Tracks)` reports as a 41-track album that is
+// permanently 22 short. An "enhanced CD" carrying one music video as its last track
+// is the same bug at a smaller scale, and the reason this is a per-*track* predicate
+// rather than a check on the medium's format: the medium says "CD", and only the
+// recording says which of its tracks you could ever own.
+//
+// It reads `recording.video`, which is present on every cached release — the release
+// fetch has always used `inc=recordings` — so no cache needs to be discarded for this
+// to start answering correctly. A release somehow stored without recordings answers
+// false for everything, which is exactly the behaviour that predates this rule.
+func (t Track) IsVideo() bool { return t.Recording.Video }
+
 type Artist struct {
 	ID   string `json:"id"`
 	Tags []struct {

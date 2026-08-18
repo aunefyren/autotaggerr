@@ -41,10 +41,11 @@ const pruneDeleteBatch = 200
 // Two guards are the whole design, because the failure mode is deleting a library's
 // index rather than a few rows:
 //
-//   - **Every root must exist.** An unmounted library, or one whose path moved,
+//   - **The library root must exist.** An unmounted library, or one whose path moved,
 //     stats as "every file is gone" and would otherwise empty its own index. The
 //     caller also only runs this after a successful walk, so a root that vanished
-//     mid-scan is already excluded.
+//     mid-scan is already excluded. A *scope* root under a mounted library is held to
+//     the per-file standard instead — see below.
 //   - **Only fs.ErrNotExist counts as gone.** A permission error, an I/O error or a
 //     dead network mount leaves the row alone. Absence has to be proven, not
 //     assumed — the one reading that cannot be recovered from is a wrong deletion.
@@ -58,12 +59,25 @@ func pruneMissingItems(db *gorm.DB, library models.Library, roots []string) (int
 		return 0, nil
 	}
 
-	walked := roots
-	if len(walked) == 0 {
-		walked = []string{library.Path}
+	// The library itself has to be there. That is the unmount case, and it is the one
+	// that must never be read as "every file is gone".
+	if _, err := os.Stat(library.Path); err != nil {
+		return 0, fmt.Errorf("library root %q is unavailable, skipping prune: %w", library.Path, err)
 	}
-	for _, root := range walked {
-		if _, err := os.Stat(root); err != nil {
+	// A *scope* root is different, and conflating the two was a bug with no way out of
+	// it. An artist-scoped run derives its root from the indexed paths, so deleting an
+	// artist's whole folder — what a manager does when it deletes the artist — hands
+	// this function a root that no longer exists. Refusing there left the artist's rows
+	// permanently: the scoped Process could not prune them, and the collection went on
+	// reporting files for an artist with none.
+	//
+	// With the library mounted, a missing sub-root is proven absence, which is the same
+	// standard the per-file check below applies. Anything other than "not there" still
+	// refuses, because a permission or I/O error proves nothing.
+	for _, root := range roots {
+		if _, err := os.Stat(root); err == nil || errors.Is(err, fs.ErrNotExist) {
+			continue
+		} else {
 			return 0, fmt.Errorf("scan root %q is unavailable, skipping prune: %w", root, err)
 		}
 	}

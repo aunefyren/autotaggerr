@@ -70,6 +70,13 @@ a **Skip** option per row, and duplicate targets blocked — before anything is 
   mapping ends up looking right and being wrong.
 - Each pairing carries **how** it was reached (`number` / `order`), so the review table can flag the
   weaker signal.
+- **Video tracks are never proposed** (see
+  [collection.md](collection.md#a-video-track-is-not-a-track-you-are-missing)). A bonus DVD is not a
+  candidate pool for audio files, and its presence used to break both strategies at once: the
+  release looked multi-disc, so a bare `05` was ambiguous and the number strategy bailed, and the
+  sort-order fallback then zipped the audio files against a tracklist twice the length. They stay in
+  the picker, labelled `(video)`, because ripping the audio off one is a real thing to want — the
+  rule governs what is *suggested*, not what is possible.
 
 `POST /attach/bulk` validates **every** pairing against the real release before writing **any** of
 them: the user reviewed the mapping as a whole, so a half-applied album is worse than a rejected

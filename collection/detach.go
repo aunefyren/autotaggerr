@@ -288,10 +288,18 @@ func deriveArtistManager(db *gorm.DB, artistMBID string) (string, error) {
 }
 
 // itemRow is the part of a correlated file that provenance is derived from: which
-// release it is, and which library it sits in.
+// release it is, and which library it sits in. ID and Path exist for the one caller
+// that needs to act on the row itself rather than aggregate it — pruneGoneFiles,
+// which deletes what it proves is gone. MBReleaseTrackID is read only by the
+// video-track rule (see models.Track.IsVideo), which has to know *which* tracks a
+// release owns and not merely how many.
 type itemRow struct {
-	MBReleaseID string
-	LibraryID   uuid.UUID
+	ID               uuid.UUID
+	MBReleaseID      string
+	MBReleaseTrackID string
+	LibraryID        uuid.UUID
+	Path             string
+	Pinned           bool
 }
 
 // ownedItemRows lists every correlated file in the index.

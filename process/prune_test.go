@@ -221,3 +221,52 @@ func TestPruneMissingItemsBatching(t *testing.T) {
 		t.Errorf("%d row(s) survived the batched delete", n)
 	}
 }
+
+// TestPruneMissingItemsVanishedScopeRoot is the artist whose whole folder went away.
+//
+// It is the shape of the real report this test was written for: Lidarr deleted an
+// artist and every one of their files, which takes the artist folder with it. The
+// artist-scoped Process that follows resolves its root from the *indexed* paths — so
+// the root it is handed no longer exists — and the root-existence guard then refused
+// the prune wholesale, on the grounds that a root which does not stat might be an
+// unmounted library. Nothing ever cleared those rows, so the collection kept reporting
+// files for an artist with no files at all, and only a whole-library Process (whose
+// root is the library itself, which does exist) could reach them.
+//
+// The library being present is what tells the two cases apart: a sub-root missing from
+// a mounted library is proven absence, not an unavailable mount.
+func TestPruneMissingItemsVanishedScopeRoot(t *testing.T) {
+	db := newTestDB(t)
+	root := t.TempDir()
+
+	kept := filepath.Join(root, "Artist B", "Album", "01.flac")
+	if err := os.MkdirAll(filepath.Dir(kept), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(kept, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lib := models.Library{Name: "L", Path: root}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	gone := filepath.Join(root, "Artist A", "Album", "01.flac")
+	seedItem(t, db, lib, gone, false)
+	seedItem(t, db, lib, kept, false)
+
+	removed, err := pruneMissingItems(db, lib, []string{filepath.Join(root, "Artist A")})
+	if err != nil {
+		t.Fatalf("pruneMissingItems: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	paths := indexedPaths(t, db, lib)
+	if paths[gone] {
+		t.Error("the index row of a file under a vanished artist folder should have been pruned")
+	}
+	if !paths[kept] {
+		t.Error("a file that is still on disk must keep its row")
+	}
+}

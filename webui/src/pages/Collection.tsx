@@ -168,21 +168,26 @@ export default function Collection() {
   const noFiles = indexed === 0;
   const needsProcess = "Nothing is indexed yet — run Process to walk your libraries first.";
 
-  // Scan answers inline (it only reads the index), so it reports its own result
-  // rather than sending the user to the Activity feed for it. An empty pass comes back
-  // with the reason it found nothing, which is the part worth showing.
+  // Scan answers inline (it reads the index and stats each indexed file — no
+  // directory walk, no MusicBrainz), so it reports its own result rather than
+  // sending the user to the Activity feed for it. An empty pass comes back with the
+  // reason it found nothing, which is the part worth showing.
   const scan = async () => {
     setScanning(true);
     try {
       const r = await api.post<{
         artists: number;
         owned_release_groups: number;
+        files_removed: number;
         empty_reason?: string;
       }>("/scan");
       if (r.empty_reason) {
         toast("info", `Nothing to scan — ${r.empty_reason}`);
       } else {
-        toast("ok", `Scanned — ${r.artists} artists, ${r.owned_release_groups} albums`);
+        // The removed count matters more than the totals when it is nonzero: it is
+        // the answer to "why did this album just disappear".
+        const removed = r.files_removed > 0 ? ` — ${r.files_removed} file(s) gone from disk` : "";
+        toast("ok", `Scanned — ${r.artists} artists, ${r.owned_release_groups} albums${removed}`);
       }
       reload();
       status.reload();
@@ -316,7 +321,7 @@ export default function Collection() {
           title={
             noFiles
               ? `Nothing to re-derive — ${needsProcess}`
-              : "Re-derive what you own from the files already indexed. No disk walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
+              : "Re-derive what you own from the files already indexed, dropping any that are no longer there. No directory walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
           }
         >
           {scanning ? "Scanning…" : "Scan"}

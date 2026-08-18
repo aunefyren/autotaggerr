@@ -218,8 +218,10 @@ func (a *API) processArtist(c *gin.Context) {
 }
 
 // scanArtist re-derives one artist's albums from the files already indexed — the
-// *Scan* verb at artist scope. It writes nothing to disk and asks MusicBrainz
-// nothing, so it answers inline with what it found.
+// *Scan* verb at artist scope. It writes no audio file and asks MusicBrainz nothing,
+// so it answers inline with what it found. It does stat each of the artist's indexed
+// files and drop the rows it proves gone (see collection.pruneGoneFiles) — a handful
+// of files at this scope, so still inline-cheap.
 func (a *API) scanArtist(c *gin.Context) {
 	artist, ok := a.artistAction(c)
 	if !ok {
@@ -238,6 +240,7 @@ func (a *API) scanArtist(c *gin.Context) {
 		"artists":              stats.Artists,
 		"owned_release_groups": stats.Owned,
 		"credit_changes":       stats.CreditChanges,
+		"files_removed":        stats.FilesRemoved,
 	})
 }
 

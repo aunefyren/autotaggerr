@@ -16,6 +16,12 @@ reduced to a provenance badge and which actions are offered.
 `collection.Rebuild`. Nothing writes them directly, which means any code path that changes the
 file index has to re-derive or the collection reports something the index no longer says.
 
+Computed from the index does not mean trusting it outright. Before a rebuild aggregates anything,
+`pruneGoneFiles` stats every row in its scope and deletes the ones no longer on disk — a stat per
+row, not a walk, which is what lets Scan do it inline. See
+[scanning.md](scanning.md#a-scan-proves-its-own-rows) for the guard that keeps an unmounted
+library from reading as "every file gone".
+
 Three paths do:
 
 | Path | How |
@@ -338,6 +344,15 @@ smaller numbers in it.
   because they are not *about* an entity, so they ride `details.failures` and render as their own
   list.
 
+**An unknown artist's catalog view is retired with them.** The reset that clears `in_catalog` and
+the catalog counts runs per artist the manager *listed*, immediately before re-mirroring their
+albums — so an artist deleted from Lidarr outright never reached it, and kept the counts, the
+monitored edition and `in_catalog` from the last pass that did find them. The artist page then
+reported files the manager holds for an album the manager has never heard of, and no amount of
+re-syncing could clear it, because clearing only happened where there was something to replace it
+with. `clearCatalogView` therefore also runs for every artist that lands in `Unknown` — under the
+same guard as the reporting, below.
+
 **A failed listing suppresses the unknowns entirely.** An artist missing from a list that was never
 fetched is not missing, it is unlooked-at — the same distinction the MusicBrainz path draws between
 a 404 and a timeout. Reporting a whole collection as unknown because Lidarr was restarting would be
@@ -464,6 +479,49 @@ and so can never introduce one. **Absence of an answer is not a negative answer.
 and `SyncLidarr` stamp `LastSyncedAt`, so the rule is manager-agnostic; an artist no manager has
 synced simply reports no discrepancies at all, which is also the right answer for a native artist
 nobody follows.
+
+### A video track is not a track you are missing
+
+`releaseTrackTotal` decides how many tracks an edition has, and it is not
+`len(medium.Tracks)`. Frank Ocean's *Endless* is why: the 2018 CD+DVD edition
+(`c14006ec-8b09-4fcd-addd-e5a2960013d0`) is 19 audio tracks and 22 videos, so a library holding the
+complete album read **19/41** and could never close the gap. Lidarr, which ignores video media,
+said 19/19 and was right.
+
+The rule is **per track, not per medium** — `models.Track.IsVideo`, reading `recording.video`. The
+medium's format cannot answer it: an "enhanced CD" carrying one music video as its last track is the
+same bug at a smaller scale, and there the format says plain `CD`. The flag is on every cached
+release already, since the release fetch has always used `inc=recordings`, so nothing had to be
+re-fetched for this to start working.
+
+**An owned video track still counts.** The total is *audio tracks, plus any video track a file
+actually resolves to* — not simply the audio ones. Someone who ripped the bonus DVD's audio has
+files that legitimately point at those tracks, and excluding them regardless would report 41/19:
+owning more of an album than it contains, with `Complete()` true for a reason nobody could read.
+Counting them once owned makes the total describe what this library can hold, and makes it
+impossible for the owned count to exceed it.
+
+Two other places apply the same rule, and one deliberately does not:
+
+- **Bulk attach never proposes one** (`MapFilesToTracks`). Beyond the obvious wrongness of pairing a
+  video with an audio file, a DVD used to wreck both strategies: it made the release look
+  multi-medium, so a bare `05` filename was ambiguous between the discs and the number strategy
+  bailed, and the sort-order fallback then zipped 19 files against a 41-entry list.
+- **The track list itself stays faithful** (`ReleaseTracks`). Video tracks are carried with a
+  `Video` flag and labelled `(video)` in the attach pickers rather than filtered out, because
+  filtering would also narrow `FindReleaseTrack`, which validates a hand-picked track before it is
+  attached — turning a deliberate choice into "no such track" is the wrong way to say "we would not
+  have suggested that".
+- **Search results are left alone** (`SearchResultFromRelease`). Its contract is to project a full
+  release onto the same shape the MusicBrainz *search* API returns, and search hits carry
+  `track-count` per medium with no track list to filter by. Correcting the one source we could would
+  make two rows in the same list count differently, which is worse than a faithful 41 sitting beside
+  a format string that already says `CD + DVD`. The collection's own editions
+  (`routers/collection.go`, projecting `CollectionRelease.TotalTracks`) do show the corrected
+  number, because that value is ours.
+
+`TRACKTOTAL` is not affected: it is written per medium (`modules/files.go`), so a CD file gets the
+CD's own count, which is the physically correct answer even when a later medium is video.
 
 ## Per-edition ownership
 

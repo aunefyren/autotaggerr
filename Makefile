@@ -41,6 +41,10 @@ ui: check webui/node_modules
 # Force a clean, dev-included frontend install. `--include=dev` guarantees the build
 # tools (tsc, vite) are installed even when NODE_ENV=production would otherwise skip
 # devDependencies — the usual cause of a missing `tsc`.
+#
+# Deliberately NOT `deps: check`, unlike every other npm target. This is the fix
+# `check` *recommends* when tsc is missing or was installed for another OS, so gating
+# it behind that check would make the repair unreachable from the failure.
 deps:
 	cd webui && npm ci --include=dev
 
@@ -53,7 +57,14 @@ run: ui
 
 # Update dependencies in BOTH ecosystems — `go get -u` never touches npm — then rebuild
 # the frontend bundle so the embedded UI matches the updated source.
-update:
+#
+# `check` first, like every other target that ends in a frontend build. Without it this
+# was the one way to reach `npm run build` unverified: an out-of-date Node got all the
+# way past `npm update` — which happily runs on Node 16 and rewrites package-lock.json
+# with an old npm — before dying inside the bundler on a missing `node:util` export,
+# which names neither the cause nor the fix. That is precisely the raw platform error
+# checkenv exists to replace.
+update: check
 	go get -u ./...
 	go mod tidy
 	cd webui && npm update

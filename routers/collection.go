@@ -436,11 +436,13 @@ func (a *API) setArtistMonitored(c *gin.Context) {
 }
 
 // scanCollection re-derives the owned (present) side from the index — the *Scan*
-// verb at collection scope. Fast and network-free (it reads only cached releases),
-// which is why it answers inline instead of queueing.
+// verb at collection scope. Network-free (it reads only cached releases) and no
+// directory walk, which is why it answers inline instead of queueing; it does stat
+// each indexed file, cheap enough to stay inline but still a real disk read.
 //
 // It is the cheapest of the four verbs and the one that makes the collection view
-// agree with what the index already knows. Discovering files on disk is Process.
+// agree with what the disk actually holds. What it cannot do is *discover* a file —
+// that needs a walk, which is Process.
 func (a *API) scanCollection(c *gin.Context) {
 	stats, err := collection.RecordScan(a.DB, "Collection scan", collection.RebuildScope{}, nil)
 	if err != nil {
@@ -451,6 +453,7 @@ func (a *API) scanCollection(c *gin.Context) {
 		"artists":              stats.Artists,
 		"owned_release_groups": stats.Owned,
 		"credit_changes":       stats.CreditChanges,
+		"files_removed":        stats.FilesRemoved,
 		// Present only when the pass had nothing to read. The page shows it instead of
 		// "Scanned — 0 artists, 0 albums", which is true and tells nobody anything.
 		"empty_reason": stats.EmptyReason,
