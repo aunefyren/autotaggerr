@@ -271,7 +271,7 @@ func (p *PlexClient) HealthCheck() (health bool, err error) {
 	if resp.StatusCode != http.StatusOK {
 		b, _ := io.ReadAll(resp.Body)
 		logger.Log.Error("failed to ping Plex. response: " + string(b))
-		return health, err
+		return false, fmt.Errorf("plex %s -> %d: %s", path, resp.StatusCode, strings.TrimSpace(string(b)))
 	}
 
 	// Optional: parse identity to confirm structure

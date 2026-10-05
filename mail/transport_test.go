@@ -24,6 +24,9 @@ type fakeSMTP struct {
 	// rejectAt is the command whose response is an error ("MAIL", "RCPT", "DATA",
 	// "AUTH"), empty for a server that accepts everything.
 	rejectAt string
+	// rejectBody makes the server refuse the message after reading all of it — the
+	// content-filter rejection, which arrives only once the data phase is closed.
+	rejectBody bool
 
 	mu       sync.Mutex
 	received []string // command verbs, in order
@@ -115,6 +118,10 @@ func (s *fakeSMTP) serve(conn net.Conn) {
 			s.mu.Lock()
 			s.body = body.String()
 			s.mu.Unlock()
+			if s.rejectBody {
+				write("554 rejected as spam")
+				continue
+			}
 			write("250 queued")
 		case "QUIT":
 			write("221 bye")
