@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -427,17 +428,31 @@ func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit, tagger model
 	return artistString
 }
 
-func MusicBrainzDateStringToDateTime(dateStr string) (time.Time, error) {
-	// Go's time layout uses this reference date: "2006-01-02 15:04:05"
-	layout := "2006-01-02"
-	var parsedTime time.Time
+// musicBrainzDateLayouts are the precisions MusicBrainz dates come in, most precise
+// first. A year or a year and month is common, not an edge case — older releases
+// rarely have a known day.
+var musicBrainzDateLayouts = []string{"2006-01-02", "2006-01", "2006"}
 
-	parsedTime, err := time.Parse(layout, dateStr)
-	if err != nil {
-		return parsedTime, err
+// ParseMusicBrainzDate validates a MusicBrainz date and returns its year and the date
+// at the precision MusicBrainz gave it ("1983", "1983-10" or "1983-10-05"). The date is
+// never padded out to a full day: writing 1983-01-01 for "1983" would invent a day
+// nobody knows, and both Vorbis DATE and ID3 TDRC accept the shorter forms.
+//
+// It used to accept only the full layout, so every partial date failed to parse and
+// the release was tagged with no date or year at all.
+func ParseMusicBrainzDate(dateStr string) (year string, date string, err error) {
+	dateStr = strings.TrimSpace(dateStr)
+	for _, layout := range musicBrainzDateLayouts {
+		if len(dateStr) != len(layout) {
+			continue
+		}
+		parsed, err := time.Parse(layout, dateStr)
+		if err != nil {
+			return "", "", err
+		}
+		return strconv.Itoa(parsed.Year()), dateStr, nil
 	}
-
-	return parsedTime, nil
+	return "", "", fmt.Errorf("unrecognised MusicBrainz date %q", dateStr)
 }
 
 // MusicbrainzLoadCache warms the in-memory map at startup, importing the legacy

@@ -112,6 +112,11 @@ above). The differences that remain are ones the formats force:
 | Release date | `DATE` + `RELEASEDATE` | `TDRC` |
 | Disc total | `DISCTOTAL` + `TOTALDISCS` | half of the paired `TPOS` |
 
+Dates are written at the precision MusicBrainz gives them — `1983`, `1983-10` or `1983-10-05` —
+never padded to an invented day; both `DATE` and `TDRC` accept the shorter forms
+(`ParseMusicBrainzDate`). Partial dates once failed to parse, which silently left such releases
+with no date or year tags at all.
+
 Vorbis has no single spelling everyone agrees on, hence the duplicated keys; ID3 does. The `TXXX`
 spelling for the recording MBID is the one `extractFromID3v2` already read back for the `recording`
 type, so writing it repaired a lookup that had never had a source.

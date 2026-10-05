@@ -83,16 +83,43 @@ func TestMusicBrainzArtistsArrayToString(t *testing.T) {
 	}
 }
 
-func TestMusicBrainzDateStringToDateTime(t *testing.T) {
-	parsed, err := MusicBrainzDateStringToDateTime("2020-05-01")
-	if err != nil {
-		t.Fatalf("unexpected error parsing valid date: %v", err)
+func TestParseMusicBrainzDate(t *testing.T) {
+	tests := []struct {
+		in       string
+		wantYear string
+		wantDate string
+		wantErr  bool
+	}{
+		{in: "2020-05-01", wantYear: "2020", wantDate: "2020-05-01"},
+		// Partial dates are the regression: MusicBrainz returns these routinely, and
+		// they used to fail to parse, leaving the file with no date or year at all.
+		{in: "1983-10", wantYear: "1983", wantDate: "1983-10"},
+		{in: "1983", wantYear: "1983", wantDate: "1983"},
+		{in: " 1983 ", wantYear: "1983", wantDate: "1983"},
+		{in: "", wantErr: true},
+		{in: "not-a-date", wantErr: true},
+		{in: "1983-13", wantErr: true},
+		{in: "1983-02-30", wantErr: true},
+		{in: "83", wantErr: true},
 	}
-	if parsed.Year() != 2020 || parsed.Month() != 5 || parsed.Day() != 1 {
-		t.Errorf("parsed date = %v, want 2020-05-01", parsed)
-	}
-
-	if _, err := MusicBrainzDateStringToDateTime("not-a-date"); err == nil {
-		t.Error("expected error for invalid date string, got nil")
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			year, date, err := ParseMusicBrainzDate(tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Errorf("ParseMusicBrainzDate(%q) = (%q, %q), want error", tt.in, year, date)
+				}
+				if year != "" || date != "" {
+					t.Errorf("ParseMusicBrainzDate(%q) returned (%q, %q) alongside an error, want empty", tt.in, year, date)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ParseMusicBrainzDate(%q) unexpected error: %v", tt.in, err)
+			}
+			if year != tt.wantYear || date != tt.wantDate {
+				t.Errorf("ParseMusicBrainzDate(%q) = (%q, %q), want (%q, %q)", tt.in, year, date, tt.wantYear, tt.wantDate)
+			}
+		})
 	}
 }

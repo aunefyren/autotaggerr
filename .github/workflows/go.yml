@@ -20,7 +20,7 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.25.x'
+          go-version: '1.26.x'
           cache: true
 
       # metaflac (flac) is a runtime dependency and the FLAC tests exercise the real

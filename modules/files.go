@@ -482,21 +482,10 @@ func BuildFileTags(
 	trackArtistIDs := creditedIDs(track.ArtistCredit)
 	releaseArtistIDs := creditedIDs(response.ArtistCredit)
 
-	releaseTime, err := MusicBrainzDateStringToDateTime(response.Date)
-	releaseYear := ""
-	releaseDate := ""
-	if err == nil {
-		releaseYear = strconv.Itoa(releaseTime.Year())
-		releaseDate = releaseTime.Format("2006-01-02")
-	}
-
-	releaseGroupTime, err := MusicBrainzDateStringToDateTime(response.ReleaseGroup.FirstReleaseDate)
-	releaseGroupYear := ""
-	releaseGroupDate := ""
-	if err == nil {
-		releaseGroupYear = strconv.Itoa(releaseGroupTime.Year())
-		releaseGroupDate = releaseGroupTime.Format("2006-01-02")
-	}
+	// A blank or malformed date leaves both empty, which drops the tags rather than
+	// writing a wrong one.
+	releaseYear, releaseDate, _ := ParseMusicBrainzDate(response.Date)
+	releaseGroupYear, releaseGroupDate, _ := ParseMusicBrainzDate(response.ReleaseGroup.FirstReleaseDate)
 
 	// A release's labels and catalogue numbers are two lists off one LabelInfo, and
 	// either half can be blank on any given entry. Collecting them separately and

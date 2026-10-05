@@ -6,7 +6,7 @@ still open) before making changes.
 
 ## Local setup
 
-- Go 1.25 (the `go.mod` toolchain target). Older toolchains cannot build the module.
+- Go 1.26 (the `go.mod` toolchain target). Older toolchains cannot build the module.
 - Node `^20.19.0 || >=22.12.0` — vite 8's engine requirement, and a hard one: npm refuses the
   install on anything older. CI and the Docker `web` stage both run Node 22. `make check` reports a
   version that will not work rather than letting npm say it in passing.

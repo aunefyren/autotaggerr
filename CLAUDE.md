@@ -34,7 +34,7 @@ go run . --file "/music/Artist/Album (2020)/01 Track.flac" --fileRoot "/music"  
 The repo has a growing test suite (`modules/`, `utilities/`). CI (`.github/workflows/go.yml`)
 runs `gofmt` → `go build` → `go vet` → `go test -race` with coverage; it installs `flac`/`ffmpeg`
 so the audio fixture tests run there too (`ffmpeg` synthesizes the fixtures; only `metaflac` is a
-runtime dependency). Go 1.25 is the module target.
+runtime dependency). Go 1.26 is the module target.
 
 **Git is owned by the human.** Do not stage, commit, push, branch, or otherwise touch git state
 — the maintainer handles all version control. Make and verify changes in the working tree only.
