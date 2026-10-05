@@ -6,9 +6,11 @@ import (
 	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
+	"gorm.io/gorm"
 )
 
-// RetireReleaseGroup is prune's rules minus the one guard the evidence overrules.
+// RetireReleaseGroup is prune's rules minus the guard the evidence overrules — another
+// credited artist.
 // These tests pin exactly which guards survived, because the difference between the
 // two paths is the whole reason there are two.
 
@@ -111,23 +113,80 @@ func TestRetireRefusesWantedGroup(t *testing.T) {
 	}
 }
 
-// TestRetireRefusesCoCreditedGroup: a collaboration is not orphaned by one artist's
-// claim lapsing.
-func TestRetireRefusesCoCreditedGroup(t *testing.T) {
+// TestRetireRemovesCoCreditedGroup: a 404 is about the ID, not one artist's claim, so
+// another credit points at the same dead ID and protects nothing. Refusing here left a
+// dead collaboration permanently blocked — prune deferred to the co-credit too.
+func TestRetireRemovesCoCreditedGroup(t *testing.T) {
 	db := testDB(t)
 	storeGroup(t, db, "rg-collab", "artist-1", nil)
 	if err := db.Create(&models.CollectionReleaseGroupArtist{
-		ReleaseGroupMBID: "rg-collab", ArtistMBID: "artist-2",
+		ReleaseGroupMBID: "rg-collab", ArtistMBID: "artist-2", Position: 1,
 	}).Error; err != nil {
 		t.Fatalf("create second credit: %v", err)
 	}
 
-	removed, _, err := RetireReleaseGroup(db, "rg-collab")
+	removed, reason, err := RetireReleaseGroup(db, "rg-collab")
 	if err != nil {
 		t.Fatalf("retire: %v", err)
 	}
-	if removed {
-		t.Fatal("must not retire a group another artist is credited on")
+	if !removed {
+		t.Fatalf("want the co-credited group retired, refused with: %s", reason)
+	}
+	var links int64
+	if err := db.Model(&models.CollectionReleaseGroupArtist{}).
+		Where("release_group_mb_id = ?", "rg-collab").Count(&links).Error; err != nil {
+		t.Fatalf("count links: %v", err)
+	}
+	if links != 0 {
+		t.Errorf("%d credit links left behind; every artist's must go", links)
+	}
+}
+
+// TestRetireRefusalNamesTheClaim: the reason is shown on a held migration, so it has
+// to say which claim to clear rather than list every possibility.
+func TestRetireRefusalNamesTheClaim(t *testing.T) {
+	cases := map[string]struct {
+		claim func(t *testing.T, db *gorm.DB)
+		want  string
+	}{
+		"want": {
+			claim: func(t *testing.T, db *gorm.DB) {
+				if err := db.Create(&models.CollectionDesire{
+					ArtistMBID: "artist-1", ReleaseGroupMBID: "rg-held",
+				}).Error; err != nil {
+					t.Fatalf("create desire: %v", err)
+				}
+			},
+			want: "wanted",
+		},
+		"edition": {
+			claim: func(t *testing.T, db *gorm.DB) {
+				if err := db.Create(&models.CollectionRelease{
+					MBID: "rel-1", ReleaseGroupMBID: "rg-held",
+				}).Error; err != nil {
+					t.Fatalf("create release: %v", err)
+				}
+			},
+			want: "edition",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			db := testDB(t)
+			storeGroup(t, db, "rg-held", "artist-1", nil)
+			tc.claim(t, db)
+
+			removed, reason, err := RetireReleaseGroup(db, "rg-held")
+			if err != nil {
+				t.Fatalf("retire: %v", err)
+			}
+			if removed {
+				t.Fatal("must not retire a claimed group")
+			}
+			if !strings.Contains(reason, tc.want) {
+				t.Errorf("reason = %q, want it to name the %s", reason, tc.want)
+			}
+		})
 	}
 }
 

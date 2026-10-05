@@ -29,12 +29,15 @@ import (
 //     an album is not invalidated by a MusicBrainz browse result.
 //   - No desire references it. Authored intent is never collateral damage — the same
 //     rule the deletion path follows.
-//   - No *other* artist is credited on it. A collaboration dropping off one artist's
-//     discography says nothing about the other's claim to it.
+//   - No owned edition points at it.
 //
-// What survives all five is a row for an album that nobody owns, no manager knows,
-// nobody asked for, and no artist is credited on — which is what a merged-away
-// release-group looks like.
+// A group that passes those but is still credited to *another* artist is not deleted:
+// only this artist's credit is withdrawn. A collaboration dropping off one artist's
+// discography says nothing about the other's claim to it — but it does say this
+// artist's claim is gone. Skipping the group outright instead was a deadlock: each
+// credited artist's prune deferred to the other, so a dead collaboration could never
+// leave either page. Withdrawing one credit per pass lets the last artist's prune take
+// the row. The count returned is groups removed from this artist's page, either way.
 func PruneOrphanReleaseGroups(db *gorm.DB, artistMBID string, live []models.MusicBrainzArtistReleaseGroup) (int, error) {
 	if db == nil || artistMBID == "" {
 		return 0, nil
@@ -62,11 +65,23 @@ func PruneOrphanReleaseGroups(db *gorm.DB, artistMBID string, live []models.Musi
 			continue
 		}
 
-		orphan, err := isOrphanReleaseGroup(db, artistMBID, rg.MBID)
+		claim, err := releaseGroupClaim(db, rg.MBID)
 		if err != nil {
 			return pruned, err
 		}
-		if !orphan {
+		if claim != "" {
+			continue
+		}
+
+		others, err := otherCreditedArtists(db, artistMBID, rg.MBID)
+		if err != nil {
+			return pruned, err
+		}
+		if len(others) > 0 {
+			if err := withdrawCredit(db, rg, artistMBID, others[0]); err != nil {
+				return pruned, err
+			}
+			pruned++
 			continue
 		}
 
@@ -92,13 +107,18 @@ func PruneOrphanReleaseGroups(db *gorm.DB, artistMBID string, live []models.Musi
 // that. Here the evidence is a direct lookup that answered 404, so no discography
 // fetch is involved and a single row can be retired on demand.
 //
-// Every guard prune applies still applies, and `in_catalog` is among them — for a
-// blunter reason than prune's. Prune defers to the manager as a competing authority on
+// Every guard prune applies still applies but one, and `in_catalog` is among the
+// survivors — for a blunter reason than prune's. Prune defers to the manager as a competing authority on
 // what exists. This does not: an ID that resolves nowhere cannot be read whoever lists
 // it. It defers because `SyncManagers` upserts a row for every album the manager
 // reports, so deleting one the manager still lists achieves nothing — the next sync
 // puts it straight back. The album has to stop being listed *there* before removing it
 // here means anything, which is what the manager-refresh repair path is for.
+//
+// The one that does not survive is another credited artist. Prune defers to a
+// co-credit because absence from one discography says nothing about the other's; a 404
+// says the same thing about both, so the other credit points at the same dead ID and
+// there is no claim left for it to protect. The group goes with all of its links.
 //
 // The returned reason is empty when the group was removed. It is a sentence for the
 // migration row, so a held migration can say why it will not apply rather than failing
@@ -169,16 +189,9 @@ func releaseGroupRetirementBlock(db *gorm.DB, rg models.CollectionReleaseGroup) 
 			"or it will be restored on the next sync", nil
 	}
 
-	// Passing the row's own artist keeps "another artist is credited" meaning the same
-	// thing it means in prune: a collaboration is not orphaned by one credit going.
-	orphan, err := isOrphanReleaseGroup(db, rg.ArtistMBID, rg.MBID)
-	if err != nil {
-		return "", err
-	}
-	if !orphan {
-		return "an authored want, another credited artist, or an owned edition still references it", nil
-	}
-	return "", nil
+	// No co-credit check: see RetireReleaseGroup for why a confirmed deletion overrules
+	// one. The claims left are the ones a 404 says nothing about.
+	return releaseGroupClaim(db, rg.MBID)
 }
 
 // GhostReleaseGroups is the manager-mirrored albums whose MusicBrainz ID resolves
@@ -205,26 +218,19 @@ func GhostReleaseGroups(db *gorm.DB) ([]string, error) {
 	return mbids, err
 }
 
-// isOrphanReleaseGroup checks the two claims that live outside the release-group row
-// itself: an authored want, and another artist's credit.
-func isOrphanReleaseGroup(db *gorm.DB, artistMBID, releaseGroupMBID string) (bool, error) {
+// releaseGroupClaim names the claim outside the release-group row that keeps it — an
+// authored want, or an edition files resolved to — or returns "" when there is none.
+// Each claim gets its own sentence because the sentence is shown on a held migration,
+// and a blocker that lists every possibility leaves the user to guess which one to
+// clear.
+func releaseGroupClaim(db *gorm.DB, releaseGroupMBID string) (string, error) {
 	var desires int64
 	if err := db.Model(&models.CollectionDesire{}).
 		Where("release_group_mb_id = ?", releaseGroupMBID).Count(&desires).Error; err != nil {
-		return false, err
+		return "", err
 	}
 	if desires > 0 {
-		return false, nil
-	}
-
-	var otherCredits int64
-	if err := db.Model(&models.CollectionReleaseGroupArtist{}).
-		Where("release_group_mb_id = ? AND artist_mb_id <> ?", releaseGroupMBID, artistMBID).
-		Count(&otherCredits).Error; err != nil {
-		return false, err
-	}
-	if otherCredits > 0 {
-		return false, nil
+		return "you have marked this album as wanted — clear that first", nil
 	}
 
 	// An edition row pointing at this group means files resolved to it at some point,
@@ -232,9 +238,46 @@ func isOrphanReleaseGroup(db *gorm.DB, artistMBID, releaseGroupMBID string) (boo
 	var editions int64
 	if err := db.Model(&models.CollectionRelease{}).
 		Where("release_group_mb_id = ?", releaseGroupMBID).Count(&editions).Error; err != nil {
-		return false, err
+		return "", err
 	}
-	return editions == 0, nil
+	if editions > 0 {
+		return "an edition of this album is still in your collection — files resolved to it, " +
+			"and a scan removes it once they are gone", nil
+	}
+	return "", nil
+}
+
+// otherCreditedArtists returns the artists besides artistMBID credited on a
+// release-group, in credit order.
+func otherCreditedArtists(db *gorm.DB, artistMBID, releaseGroupMBID string) ([]string, error) {
+	var others []string
+	err := db.Model(&models.CollectionReleaseGroupArtist{}).
+		Where("release_group_mb_id = ? AND artist_mb_id <> ?", releaseGroupMBID, artistMBID).
+		Order("position").
+		Pluck("artist_mb_id", &others).Error
+	return others, err
+}
+
+// withdrawCredit takes one artist off a release-group that stays credited to others.
+//
+// Dropping the link is not enough on its own when this artist holds the primary-credit
+// column: ReleaseGroupsForArtist unions the column with the links, so the row would
+// stay on their page. The column moves to the next credited artist instead, which is
+// the credit the row is still standing on.
+func withdrawCredit(db *gorm.DB, rg models.CollectionReleaseGroup, artistMBID, nextPrimary string) error {
+	if err := db.Where("release_group_mb_id = ? AND artist_mb_id = ?", rg.MBID, artistMBID).
+		Delete(&models.CollectionReleaseGroupArtist{}).Error; err != nil {
+		return err
+	}
+	if rg.ArtistMBID == artistMBID {
+		if err := db.Model(&models.CollectionReleaseGroup{}).Where("mb_id = ?", rg.MBID).
+			Update("artist_mb_id", nextPrimary).Error; err != nil {
+			return err
+		}
+	}
+	logger.Log.Infof("unlinked release-group %s from artist %s: absent from their discography, still credited to %s",
+		rg.MBID, artistMBID, nextPrimary)
+	return nil
 }
 
 // pruneOrphanArtists removes collection artists that nothing points at any more.

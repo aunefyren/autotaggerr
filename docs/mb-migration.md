@@ -282,9 +282,15 @@ the reason just given. A 200 is a 200 whichever group answered it.)
 `collection.PruneOrphanReleaseGroups` therefore works by **subtraction**, which makes its guards the
 whole design. Absence is weak evidence, so a row is removed only when every innocent reading is
 ruled out: it is absent from the live discography, nothing on disk owns it, no manager lists it, no
-desire references it, no *other* artist is credited on it, and no edition row points at it. What
-survives all six is an album nobody owns, no manager knows, nobody asked for and no artist is
-credited on.
+desire references it, and no edition row points at it.
+
+**A collaboration loses one credit, not the row.** If another artist is still credited, prune
+withdraws only *this* artist's link (moving the primary-credit column to the next credited artist
+when this one held it, since `ReleaseGroupsForArtist` unions the column with the links). Absence from
+one discography says nothing about the other's — but it does say this artist's claim is gone. It
+used to skip the group outright, which deadlocked: each credited artist's prune deferred to the
+other, so a dead collaboration stayed on both pages forever. Now the last credited artist's prune
+removes the row.
 
 Two refusals matter as much as the guards:
 
@@ -338,8 +344,11 @@ manager](#repairing-through-the-manager) below; nothing is retired until that ha
 
 **Application.** `collection.RetireReleaseGroup` is `PruneOrphanReleaseGroups`' sibling, separated by
 the strength of the evidence rather than by what it deletes: a direct 404 needs no discography fetch,
-so a single row can be retired on demand. It keeps every guard prune applies — files on disk, an
-authored want, another credited artist, an owned edition, and `in_catalog`.
+so a single row can be retired on demand. It keeps prune's guards — files on disk, an authored
+want, an owned edition, and `in_catalog` — but **not** the co-credit one: a 404 is about the ID, so
+another artist's credit points at the same dead ID and protects nothing. The group goes with every
+credit link. Each remaining blocker has its own sentence, so a held row names the one claim to
+clear.
 
 `in_catalog` is there for a blunter reason than prune's. Prune defers to the manager as a competing
 authority on what exists; this does not, because an ID that resolves nowhere cannot be read whoever
@@ -388,8 +397,8 @@ error reports *repairable* — the answer that keeps the row queued: being wrong
 press, being wrong the other way retires an album on a database hiccup.
 
 What is left in the queue is then only what a person can actually change: an album a manager still
-lists (one press, which asks it), and one something else claims (a file, a want, another credited
-artist — remove the claim). That is a queue worth reading.
+lists (one press, which asks it), and one something else claims (a file, a want, an edition —
+remove the claim). That is a queue worth reading.
 
 **Reporting.** `collection.GhostReleaseGroups` counts the groups a manager still lists whose ID does
 not resolve, and the Lidarr sync reports them as *Not in MusicBrainz* beside its existing *Not in
@@ -521,7 +530,7 @@ three things a press means, and the row has to agree with itself about that:
 |-------|-----------------|
 | nothing objects | **Apply** — approving applies it |
 | `needs_manager_refresh` | **Ask the manager** — approving queues a refresh, and the row says how many siblings it settles |
-| `blocker`, not refreshable | **Apply, disabled**, blocker in red beside it and as the title — a file, a want or another credited artist claims this album, and the press would fail with that same sentence |
+| `blocker`, not refreshable | **Apply, disabled**, blocker in red beside it and as the title — a file, a want or an edition claims this album, and the press would fail with that same sentence |
 
 The third had no control of its own: a blocked row offered a live primary button whose press returned
 the refusal already printed beside it. The sibling count belongs to the second row of that table

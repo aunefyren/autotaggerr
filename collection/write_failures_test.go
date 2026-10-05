@@ -70,18 +70,20 @@ func TestPruneStopsWhenTheClaimCheckFails(t *testing.T) {
 // TestOrphanCheckFailsOnEachClaim: each of the three claims a release-group can carry
 // outside its own row is checked, and failing to read any of them is an error.
 func TestOrphanCheckFailsOnEachClaim(t *testing.T) {
-	for name, model := range map[string]any{
-		"credits":  &models.CollectionReleaseGroupArtist{},
-		"editions": &models.CollectionRelease{},
-	} {
-		t.Run(name, func(t *testing.T) {
-			db := testDB(t)
-			dropTable(t, db, model)
-			if _, err := isOrphanReleaseGroup(db, "artist-1", "rg-1"); err == nil {
-				t.Error("want an error")
-			}
-		})
-	}
+	t.Run("credits", func(t *testing.T) {
+		db := testDB(t)
+		dropTable(t, db, &models.CollectionReleaseGroupArtist{})
+		if _, err := otherCreditedArtists(db, "artist-1", "rg-1"); err == nil {
+			t.Error("want an error")
+		}
+	})
+	t.Run("editions", func(t *testing.T) {
+		db := testDB(t)
+		dropTable(t, db, &models.CollectionRelease{})
+		if _, err := releaseGroupClaim(db, "rg-1"); err == nil {
+			t.Error("want an error")
+		}
+	})
 }
 
 // TestRetireStopsOnAFailedDelete mirrors the prune case for the confirmed-deletion

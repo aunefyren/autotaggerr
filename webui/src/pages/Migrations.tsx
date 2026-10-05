@@ -382,7 +382,7 @@ function QueueRow({
   // that made the whole interaction look broken.
   const primary = m.needs_manager_refresh ? "Ask the manager" : "Apply";
   // The third state, which had no label of its own: something claims this album that no
-  // manager refresh can answer — files on disk, a want, another credited artist. The
+  // manager refresh can answer — files on disk, a want, an edition. The
   // press would fail with the sentence already shown in red beside it, so the control
   // is disabled rather than offering an action that cannot go anywhere. The blocker is
   // the title, because a disabled button is exactly where the reason gets asked for.

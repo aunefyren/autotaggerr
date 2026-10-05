@@ -1200,7 +1200,7 @@ func SyncArtist(db *gorm.DB, meta metadata.MetadataSource, artistMBID string) (w
 		if pruned, err := PruneOrphanReleaseGroups(db, artistMBID, groups); err != nil {
 			logger.Log.Warnf("failed to prune orphaned release-groups for %s: %s", artistMBID, err.Error())
 		} else if pruned > 0 {
-			logger.Log.Infof("pruned %d release-group(s) MusicBrainz no longer lists for %s", pruned, artist.Name)
+			logger.Log.Infof("removed %d release-group(s) MusicBrainz no longer lists from %s", pruned, artist.Name)
 		}
 	}
 
