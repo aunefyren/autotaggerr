@@ -11,6 +11,7 @@ import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
 import { RunBar } from "../components/RunBar";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
+import { ScanDialog } from "../components/ScanDialog";
 import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
 import { FilterChip, Pager, SortHeader, TableToolbar, matches, useBrowse, usePaging, useSorted } from "../components/browse";
 
@@ -132,6 +133,7 @@ export default function Collection() {
   const hasLidarr = (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
   const [adding, setAdding] = useState(false);
   const [syncAsk, setSyncAsk] = useState(false);
+  const [scanAsk, setScanAsk] = useState(false);
   const [choosingRefresh, setChoosingRefresh] = useState(false);
   const browse = useBrowse("name");
 
@@ -172,7 +174,20 @@ export default function Collection() {
   // directory walk, no MusicBrainz), so it reports its own result rather than
   // sending the user to the Activity feed for it. An empty pass comes back with the
   // reason it found nothing, which is the part worth showing.
-  const scan = async () => {
+  //
+  // With the disk walk ticked it is queued instead, and reports through Activity.
+  const scan = async (walkDisk: boolean) => {
+    setScanAsk(false);
+    if (walkDisk) {
+      try {
+        await api.post("/scan", { walk_disk: true });
+        toast("info", "Scan with disk walk started — see Activity");
+        setTimeout(() => status.reload(), 300);
+      } catch (e) {
+        toast("err", errMsg(e));
+      }
+      return;
+    }
     setScanning(true);
     try {
       const r = await api.post<{
@@ -316,12 +331,12 @@ export default function Collection() {
       >
         <button
           className="btn btn-ghost btn-sm"
-          onClick={scan}
+          onClick={() => setScanAsk(true)}
           disabled={scanning || noFiles}
           title={
             noFiles
               ? `Nothing to re-derive — ${needsProcess}`
-              : "Re-derive what you own from the files already indexed, dropping any that are no longer there. No directory walk, no MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
+              : "Re-derive what you own from the files already indexed, dropping any that are no longer there — optionally walking the libraries first to find moved and new files. No MusicBrainz, no file writes — processing does this at the end of every run, so this is for when the view looks stale."
           }
         >
           {scanning ? "Scanning…" : "Scan"}
@@ -511,6 +526,14 @@ export default function Collection() {
         />
       )}
       {adding && <AddArtistModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
+      {scanAsk && (
+        <ScanDialog
+          scope="the whole collection"
+          onConfirm={scan}
+          onCancel={() => setScanAsk(false)}
+        />
+      )}
+
       {syncAsk && (
         <SyncLidarrDialog
           scope="every Lidarr-managed artist"

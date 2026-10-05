@@ -34,6 +34,7 @@ const TYPE_LABELS: Record<string, string> = {
   plex_refresh: "Plex refresh",
   health_check: "Health check",
   collection_scan: "Collection scan",
+  discover_files: "Scan with disk walk",
 };
 
 /**
@@ -58,6 +59,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Sizes the run before it starts: every folder walked once to count the files it will visit. It reads no tags and changes nothing.",
   collection_scan:
     "Re-derives the collection from the files already indexed — no disk walk, no network, no file writes. It runs after tagging on purpose: it can only describe what this run has already recorded.",
+  discover_files:
+    "A Scan asked to walk the disk first. Files that moved keep their identity at the new path, matched on size and modification time; files with no identity are looked up with the manager. No tags are written — newly found files are tagged by the next processing run. The collection scan beneath it is the ordinary Scan, run on what the walk recorded.",
   lidarr_sync:
     "Mirrors the manager's catalogue over the collection. It runs after the collection scan on purpose: the mirror only covers artists the collection already knows about, including any this run just discovered. Artists Lidarr did not list are reported rather than assumed away — their wanted view has nothing behind it until they are matched or detached.",
   plex_refresh:
@@ -97,6 +100,8 @@ const JOB_KIND_LABELS: Record<string, string> = {
   refresh_verify: "Full metadata refresh",
   refresh_artist: "Metadata refresh",
   refresh_library: "Metadata refresh",
+  discover_all: "Scan with disk walk",
+  discover_artist: "Scan with disk walk",
 };
 
 // isProcessJob distinguishes a file-walking processing run (which reports file

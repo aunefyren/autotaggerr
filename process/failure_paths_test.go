@@ -51,31 +51,38 @@ func eventsOfType(t *testing.T, db *gorm.DB, typ string) []models.Event {
 	return evs
 }
 
-// Every kind is classified exactly once. fileWriting decides queue priority and
+// Every kind is classified exactly once. aheadOfMetadata decides queue priority and
 // metadataRefresh decides whose progress Status reads, so a kind in both — or a
 // file-writing kind read as a refresh — would show the wrong bar or jump the queue.
 func TestJobKindClassification(t *testing.T) {
 	cases := []struct {
 		kind    jobKind
 		writes  bool
+		ahead   bool
 		refresh bool
 	}{
-		{jobProcessAll, true, false},
-		{jobProcessLibrary, true, false},
-		{jobProcessArtist, true, false},
-		{jobRetagAll, true, false},
-		{jobRetagLibrary, true, false},
-		{jobRetagArtist, true, false},
-		{jobForceRecorrelate, true, false},
-		{jobRefreshAll, false, true},
-		{jobRefreshVerify, false, true},
-		{jobRefreshArtist, false, true},
-		{jobRefreshLibrary, false, true},
-		{jobRepairArtist, false, false},
+		{jobProcessAll, true, true, false},
+		{jobProcessLibrary, true, true, false},
+		{jobProcessArtist, true, true, false},
+		{jobRetagAll, true, true, false},
+		{jobRetagLibrary, true, true, false},
+		{jobRetagArtist, true, true, false},
+		{jobForceRecorrelate, true, true, false},
+		{jobRefreshAll, false, false, true},
+		{jobRefreshVerify, false, false, true},
+		{jobRefreshArtist, false, false, true},
+		{jobRefreshLibrary, false, false, true},
+		{jobRepairArtist, false, false, false},
+		// Discovery writes the index, not audio, but is ordered like file work.
+		{jobDiscoverAll, false, true, false},
+		{jobDiscoverArtist, false, true, false},
 	}
 	for _, c := range cases {
 		if got := c.kind.fileWriting(); got != c.writes {
 			t.Errorf("%s.fileWriting() = %v, want %v", c.kind, got, c.writes)
+		}
+		if got := c.kind.aheadOfMetadata(); got != c.ahead {
+			t.Errorf("%s.aheadOfMetadata() = %v, want %v", c.kind, got, c.ahead)
 		}
 		if got := c.kind.metadataRefresh(); got != c.refresh {
 			t.Errorf("%s.metadataRefresh() = %v, want %v", c.kind, got, c.refresh)

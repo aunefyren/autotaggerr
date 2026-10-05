@@ -478,3 +478,34 @@ func TestArtistRefreshForcesOnlyWhenAsked(t *testing.T) {
 		}
 	}
 }
+
+// With walk_disk the Scan is queued rather than answered inline: a walk is minutes on
+// a large library. The refusals match Process — an artist with no folder to walk is a
+// 409, not a job that finds nothing.
+func TestScanWithDiskWalkQueues(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	walk := map[string]any{"walk_disk": true}
+
+	if w := do(r, "POST", "/api/v1/scan", token, walk); w.Code != http.StatusConflict {
+		t.Errorf("walk with no libraries = %d, want 409: %s", w.Code, w.Body.String())
+	}
+	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-0", Name: "Nobody"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := do(r, "POST", "/api/v1/artists/artist-0/scan", token, walk); w.Code != http.StatusConflict {
+		t.Errorf("walk of a fileless artist = %d, want 409: %s", w.Code, w.Body.String())
+	}
+
+	mbid := seedArtistWithFile(t, api, t.TempDir())
+	if w := do(r, "POST", "/api/v1/artists/"+mbid+"/scan", token, walk); w.Code != http.StatusAccepted {
+		t.Errorf("artist walk = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "POST", "/api/v1/scan", token, walk); w.Code != http.StatusAccepted {
+		t.Errorf("collection walk = %d, want 202: %s", w.Code, w.Body.String())
+	}
+	// Unticked is the inline Scan it always was.
+	if w := do(r, "POST", "/api/v1/scan", token, map[string]any{"walk_disk": false}); w.Code != http.StatusOK {
+		t.Errorf("scan without the walk = %d, want 200: %s", w.Code, w.Body.String())
+	}
+}

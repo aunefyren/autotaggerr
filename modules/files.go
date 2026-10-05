@@ -99,6 +99,12 @@ var supportedExtensions = map[string]bool{
 	".wav":  false,
 }
 
+// IsSupportedAudioFile reports whether a path has an extension the pipeline
+// processes — the same test the walk applies, for callers that walk on their own.
+func IsSupportedAudioFile(path string) bool {
+	return supportedExtensions[strings.ToLower(filepath.Ext(path))]
+}
+
 // extractMusicBrainzReleaseID extracts the MusicBrainz Album ID from either MP3 (ID3v2) or FLAC (Vorbis)
 func ExtractMusicBrainzReleaseID(filePath string) (string, error) {
 	ext := strings.ToLower(filepath.Ext(filePath))

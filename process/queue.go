@@ -32,6 +32,8 @@ const (
 	jobRefreshArtist    jobKind = "refresh_artist"
 	jobRefreshLibrary   jobKind = "refresh_library"
 	jobRepairArtist     jobKind = "repair_artist"
+	jobDiscoverAll      jobKind = "discover_all"
+	jobDiscoverArtist   jobKind = "discover_artist"
 )
 
 // fileWriting reports whether a kind rewrites audio files. File-writing jobs are
@@ -43,6 +45,14 @@ func (k jobKind) fileWriting() bool {
 		return true
 	}
 	return false
+}
+
+// aheadOfMetadata reports whether a kind is ordered ahead of pending metadata jobs:
+// the file-writing verbs, and a disk-walking Scan. Discovery writes no audio file, but
+// it is what someone presses when an album has gone missing, and leaving it behind an
+// hours-long refresh would be the same wait the ordering exists to prevent.
+func (k jobKind) aheadOfMetadata() bool {
+	return k.fileWriting() || k == jobDiscoverAll || k == jobDiscoverArtist
 }
 
 // metadataRefresh reports whether a kind is a metadata pass. Those count entities on
@@ -97,9 +107,9 @@ func (r *Runner) enqueue(j job) {
 			return
 		}
 	}
-	if j.kind.fileWriting() {
+	if j.kind.aheadOfMetadata() {
 		i := 0
-		for i < len(r.queue) && r.queue[i].kind.fileWriting() {
+		for i < len(r.queue) && r.queue[i].kind.aheadOfMetadata() {
 			i++
 		}
 		r.queue = append(r.queue[:i], append([]job{j}, r.queue[i:]...)...)

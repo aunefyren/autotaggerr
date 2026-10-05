@@ -9,6 +9,7 @@ import { useToast } from "../toast";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
+import { ScanDialog } from "../components/ScanDialog";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
 import { RunBar } from "../components/RunBar";
@@ -166,6 +167,7 @@ export default function Artist() {
   const canSyncLidarr = isLidarr && (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
   const [syncAsk, setSyncAsk] = useState(false);
   const [choosingRefresh, setChoosingRefresh] = useState(false);
+  const [scanAsk, setScanAsk] = useState(false);
 
   const refresh = () => { detail.reload(); disco.reload(); };
 
@@ -242,10 +244,17 @@ export default function Artist() {
 
   // Scan is the odd one of the four: it is a fast pass over this artist's already
   // indexed files, so it answers with what it found instead of queueing. Reporting
-  // the counts is what makes pressing it feel like it did something, since nothing
-  // appears in the Activity feed.
-  const scan = async () => {
+  // the counts is what makes pressing it feel like it did something. With the disk
+  // walk ticked it is queued like the others instead, and reports through Activity.
+  const scan = async (walkDisk: boolean) => {
+    setScanAsk(false);
     try {
+      if (walkDisk) {
+        await api.post(`/artists/${mbid}/scan`, { walk_disk: true });
+        toast("info", "Scan with disk walk started — see Activity");
+        setTimeout(() => status.reload(), 300);
+        return;
+      }
       const r = await api.post<{ owned_release_groups: number; files_removed: number }>(
         `/artists/${mbid}/scan`,
       );
@@ -480,8 +489,8 @@ export default function Artist() {
         <button
           className="btn btn-ghost btn-sm"
           disabled={running}
-          title="Re-derive this artist's albums from the files already indexed, dropping any that are no longer there. No directory walk, no MusicBrainz, no file writes — press this when the albums shown here look out of date."
-          onClick={scan}
+          title="Re-derive this artist's albums from the files already indexed, dropping any that are no longer there — optionally walking their folders first to find moved and new files. No MusicBrainz, no file writes — press this when the albums shown here look out of date."
+          onClick={() => setScanAsk(true)}
         >
           Scan
         </button>
@@ -578,6 +587,14 @@ export default function Artist() {
               </p>
             </>
           }
+        />
+      )}
+
+      {scanAsk && (
+        <ScanDialog
+          scope={artist ? artist.name : "this artist"}
+          onConfirm={scan}
+          onCancel={() => setScanAsk(false)}
         />
       )}
 

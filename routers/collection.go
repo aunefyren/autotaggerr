@@ -12,6 +12,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/aunefyren/autotaggerr/process"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -442,8 +443,27 @@ func (a *API) setArtistMonitored(c *gin.Context) {
 //
 // It is the cheapest of the four verbs and the one that makes the collection view
 // agree with what the disk actually holds. What it cannot do is *discover* a file —
-// that needs a walk, which is Process.
+// that needs a walk, which is Process, or this verb with walk_disk set: then it is
+// queued, walks every enabled library first and records what it finds without
+// writing to any audio file (see process.DiscoverAll).
 func (a *API) scanCollection(c *gin.Context) {
+	if walkDiskRequested(c) {
+		if a.Scan == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+			return
+		}
+		if err := a.Scan.DiscoverAll(); err != nil {
+			if errors.Is(err, process.ErrNothingToProcess) {
+				c.JSON(http.StatusConflict, gin.H{"error": "no enabled libraries to walk"})
+				return
+			}
+			logger.Log.Error("failed to queue a disk-walking scan. error: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to queue the scan"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"status": "scan queued"})
+		return
+	}
 	stats, err := collection.RecordScan(a.DB, "Collection scan", collection.RebuildScope{}, nil)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan the library"})
@@ -521,6 +541,16 @@ func ignoreCacheRequested(c *gin.Context) bool {
 	}
 	_ = c.ShouldBindJSON(&in)
 	return in.IgnoreCache
+}
+
+// walkDiskRequested reads the Scan dialog's opt-in disk walk, tolerant of an absent
+// body for the same reason as ignoreCacheRequested: off is the ordinary inline Scan.
+func walkDiskRequested(c *gin.Context) bool {
+	var in struct {
+		WalkDisk bool `json:"walk_disk"`
+	}
+	_ = c.ShouldBindJSON(&in)
+	return in.WalkDisk
 }
 
 // startLidarrSync runs a mirror pass in the background under its own Activity event.

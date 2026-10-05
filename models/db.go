@@ -86,6 +86,12 @@ const (
 	// between artists is news either way, and it was the one verb of the four that
 	// reported nothing at all.
 	EventTypeCollectionScan = "collection_scan"
+	// EventTypeDiscoverFiles is a Scan asked to walk the disk as well: find files the
+	// index does not hold, carry moved files' identities to their new paths, and ask the
+	// manager about the rest — writing no audio file. It is the parent of the ordinary
+	// collection scan that follows it, which is the same verb doing its usual work on
+	// what the walk just recorded.
+	EventTypeDiscoverFiles = "discover_files"
 	// EventTypeTagFiles is every pass that writes tags to files, whether a user
 	// pressed *Tag files* or a processing run reached its tagging stage. One type,
 	// one emitter, one rendering: a cascading activity and a hand-pressed one are the

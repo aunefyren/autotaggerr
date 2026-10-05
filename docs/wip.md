@@ -94,6 +94,14 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   the per-event limit by design: the drift rows are adopted whole (`DetailCollector.Adopt`) so a
   big walk cannot starve them.
 
+- **A disk-walking Scan only finds moves inside its own scope.** The artist-scoped walk covers the
+  artist's folders as indexed (see [scanning.md](scanning.md#scan-can-walk-the-disk-when-asked)), so
+  an album a manager moved under a *different* artist folder is pruned there and found only by a
+  collection-wide walk or a Process — where it is resolved again rather than carried, since the
+  vanished row was deleted first. Move detection also rests on size and modification time, so a
+  cross-filesystem move that resets the mtime is resolved through the manager instead of carried.
+  Both fail safe (a lookup, not a mistag); neither has been seen in production.
+
 ## Tagging — what is left
 
 Multi-value tags and the four "match what Lidarr writes" flags are both done; the reference lives

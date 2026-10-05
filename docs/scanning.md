@@ -10,18 +10,20 @@ A library is acted on by exactly four verbs, each available at whatever scope yo
 | Verb | Reads | Writes files | Owner |
 | --- | --- | --- | --- |
 | **Process** | disk + MusicBrainz | **yes** | `process.Runner` |
-| **Scan** | the local database + a stat per indexed file | no | `collection.Rebuild` |
+| **Scan** | the local database + a stat per indexed file (+ a disk walk, when ticked) | no | `collection.Rebuild` |
 | **Refresh metadata** | MusicBrainz | no | `mirror.Runner` |
 | **Tag files** | the local database | **yes** | `process.Runner` |
 
 **Process** is the full pipeline the app exists for: walk the folders, resolve each file's
 metadata, write its tags. It is the only verb that *discovers* a file — one added, moved, or
-renamed into a library needs a directory walk to be found at all, and Scan does not do one.
+renamed into a library needs a directory walk to be found at all, and Scan does one only when asked
+(see [below](#scan-can-walk-the-disk-when-asked)).
 
 **Scan** re-derives what the collection holds from the files *already indexed* — no directory walk,
 no network, no file writes. It is the cheapest of the four, and it is what makes the collection view
 agree with the disk when the two have drifted apart. Processing ends with one, so the button is for
-when the view looks stale without a run having happened.
+when the view looks stale without a run having happened. Ticking the disk walk adds a directory walk
+and manager lookups for files without an identity — still no file writes.
 
 Agreeing with the disk means proving each row is still there, not just re-aggregating what the index
 last said — see [pruneGoneFiles](#a-scan-proves-its-own-rows), the reason Scan is no longer purely a
@@ -45,7 +47,8 @@ Only the file-writing verbs are gated on a running job (`409`). A metadata refre
 queues alongside, which is the point of keying mutual exclusion on whether a job writes files
 rather than on which runner owns it. Scan is not queued at all — it is a database pass measured in
 milliseconds, so it answers inline with what it found instead of sending the caller to the
-Activity feed.
+Activity feed. The exception is a Scan with the disk walk ticked, which is minutes of work and
+queues like the others.
 
 **No verb triggers another.** Each does what its label says and stops. Two of the four rewrite
 the user's audio files, so a button that quietly does more than it claims is the wrong place to be
@@ -59,6 +62,41 @@ This also means the verbs behave identically whether a cron job or a person invo
 is no "scheduled runs do more" mode to explain after the fact when reading the Activity feed.
 
 See [mirror.md](mirror.md) for the refresh verb and the drift stage.
+
+### Scan can walk the disk, when asked
+
+Scan on its own proves each indexed file is still at its path and deletes the rows it cannot
+find, so it sees a file *leave* and never where it went. That asymmetry emptied an album in
+production: *Tag files* rewrote twenty files, Lidarr re-imported and renamed them, and the next
+Scan deleted twenty rows for files that were intact one folder over. Every later Scan had nothing
+left to look at, and a Lidarr sync does not walk either, so the album stayed empty until something
+ran Process over the artist.
+
+Both Scan buttons therefore open a dialog (`ScanDialog.tsx`) with one option, **Look for new and
+moved files on disk**, unticked by default. Ticked, the request carries `{"walk_disk": true}` and
+the pass is queued (`process.DiscoverAll` / `DiscoverArtist`, `202`) instead of answered inline. It
+records a `discover_files` event, with the ordinary collection scan as its child stage:
+
+1. **Walk** the scope — every enabled library, or the artist's folders as derived for an artist
+   Process (`collection.ArtistTargets`).
+2. **Carry moved rows.** An indexed row whose file is gone and an unindexed file that share a
+   size and modification second are the same bytes at a new path, and the row moves whole —
+   identity, pin and processed version included — without asking anyone. Only a pairing that is
+   **unique on both sides** is taken; anything ambiguous falls through to step 3, because carrying
+   an identity onto the wrong file is a mistag, and resolving costs one lookup.
+3. **Resolve the rest** — unindexed files, and rows with no release or an `unmatched` status —
+   through the library's manager. Pinned rows are never asked about.
+4. **Scan**, as it always does, on what the walk recorded. Its prune now only deletes rows that
+   really are gone. The order is the point: run the other way round, the prune deletes a moved
+   file's row before the walk can carry it.
+
+It **writes no audio file**, which is what keeps it Scan rather than a second Process. A file it
+resolves is recorded with a blank `processed_version`, so the next Process will not skip it as
+unchanged and tags it then (`shouldSkip`). Moved files keep their version: their bytes, and so
+their tags, did not change.
+
+The job is ordered ahead of pending metadata jobs like the file-writing verbs (`aheadOfMetadata`
+in `queue.go`), because it is what someone presses when an album has gone missing.
 
 ### A verb that does nothing says why
 

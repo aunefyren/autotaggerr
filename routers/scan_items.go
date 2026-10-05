@@ -222,9 +222,26 @@ func (a *API) processArtist(c *gin.Context) {
 // so it answers inline with what it found. It does stat each of the artist's indexed
 // files and drop the rows it proves gone (see collection.pruneGoneFiles) — a handful
 // of files at this scope, so still inline-cheap.
+//
+// With walk_disk set it is queued instead: the artist's folders are walked first, so
+// files that moved or arrived are found before the scan decides what is gone (see
+// process.DiscoverArtist). Still no audio file is written.
 func (a *API) scanArtist(c *gin.Context) {
 	artist, ok := a.artistAction(c)
 	if !ok {
+		return
+	}
+	if walkDiskRequested(c) {
+		if err := a.Scan.DiscoverArtist(artist.MBID); err != nil {
+			if errors.Is(err, process.ErrNothingToProcess) {
+				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+				return
+			}
+			logger.Log.Error("failed to queue a disk-walking scan of an artist. error: " + err.Error())
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to scan"})
+			return
+		}
+		c.JSON(http.StatusAccepted, gin.H{"status": "scan queued", "artist": artist.Name})
 		return
 	}
 	stats, err := collection.RecordScan(a.DB, "Collection scan for "+artist.Name,
