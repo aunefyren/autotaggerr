@@ -1,7 +1,9 @@
 package modules
 
 import (
+	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -28,6 +30,27 @@ func TestTagDispatchersRejectUnsupportedExtension(t *testing.T) {
 	}
 	if _, err := DiffFileTags(path, models.FileTags{}, models.TaggerSettings{}); err == nil {
 		t.Error("DiffFileTags accepted an unsupported extension")
+	}
+}
+
+// A failed tag write must surface the writer's own error rather than a fixed string — it
+// used to report "failed to set FLAC artist tags" for every format, MP3 included (#11).
+func TestProcessTrackFileAfterMatchWrapsWriteError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "01 Track.mp3") // never created, so the read fails
+
+	track := models.Track{Position: 1, Title: "Track"}
+	resp := models.MusicBrainzReleaseResponse{
+		Title:        "Album",
+		ArtistCredit: []models.ArtistCredit{{Name: "Artist", Artist: models.Artist{ID: "art-1", Name: "Artist"}}},
+		Media:        []models.MusicBrainzMedia{{Position: 1, Tracks: []models.Track{track}}},
+	}
+
+	_, _, _, err := ProcessTrackFileAfterMatch(path, nil, nil, nil, filepath.Dir(path), models.TaggerSettings{}, track, resp.Media[0], resp)
+	if err == nil {
+		t.Fatal("expected an error writing tags to a missing file")
+	}
+	if msg := err.Error(); strings.Contains(msg, "FLAC") || !strings.Contains(msg, "read mp3 tags failed") {
+		t.Errorf("error = %q, want the MP3 writer's cause wrapped", msg)
 	}
 }
 

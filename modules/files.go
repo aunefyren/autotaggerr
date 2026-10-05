@@ -394,7 +394,7 @@ func ProcessTrackFileAfterMatch(
 	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, tagger)
 	if err != nil {
 		logger.Log.Error("failed to set file tags. error: " + err.Error())
-		return unchanged, tagsWritten, changed, errors.New("failed to set FLAC artist tags")
+		return unchanged, tagsWritten, changed, fmt.Errorf("failed to set file tags: %w", err)
 	} else {
 		logger.Log.Debug("file tagger finished")
 	}
