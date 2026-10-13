@@ -6,6 +6,9 @@
 package components
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -153,18 +156,62 @@ func NewManager(row models.Manager) (Manager, error) {
 // --- Tagger -----------------------------------------------------------------
 
 // Tagger applies a TaggerProfile's settings when writing tags. There is one
-// built-in engine (modules' FLAC/MP3 writers); the profile only tunes it.
+// built-in engine (modules' FLAC/MP3 writers); the profile only tunes it. The BPM
+// settings are the library's, merged in by ForLibrary.
 type Tagger struct {
-	profile models.TaggerProfile
+	profile          models.TaggerProfile
+	bpmWrite         string
+	bpmMinConfidence float64
 }
 
-// NewTagger builds a Tagger from its profile row.
+// NewTagger builds a Tagger from its profile row. It writes no BPM until ForLibrary
+// gives it a library's BPM settings.
 func NewTagger(profile models.TaggerProfile) *Tagger {
-	return &Tagger{profile: profile}
+	return &Tagger{profile: profile, bpmMinConfidence: models.DefaultBPMMinConfidence}
+}
+
+// ForLibrary takes the library's BPM settings. Every path that tags a library's files
+// builds its tagger through this, so the settings cannot be dropped by one of them.
+func (t *Tagger) ForLibrary(library models.Library) *Tagger {
+	t.bpmWrite = library.BPMWrite
+	t.bpmMinConfidence = library.BPMMinConfidence
+	if t.bpmMinConfidence <= 0 {
+		t.bpmMinConfidence = models.DefaultBPMMinConfidence
+	}
+	return t
 }
 
 // WriteEnabled reports whether this profile writes tags at all.
 func (t *Tagger) WriteEnabled() bool { return t.profile.WriteTags }
 
-// Settings is what the tag writers read: the profile's knobs, and nothing else.
-func (t *Tagger) Settings() models.TaggerSettings { return t.profile.Settings() }
+// Settings is what the tag writers read: the profile's knobs plus the library's BPM
+// settings.
+func (t *Tagger) Settings() models.TaggerSettings {
+	s := t.profile.Settings()
+	s.BPMWrite = t.bpmWrite
+	s.BPMMinConfidence = t.bpmMinConfidence
+	return s
+}
+
+// WritesBPM reports whether this tagger puts the stored tempo into files at all.
+func (t *Tagger) WritesBPM() bool { return t.WriteEnabled() && t.bpmWrite != models.BPMWriteOff }
+
+// Fingerprint identifies everything that decides what this tagger writes: whether it
+// writes, and every setting the writers read. Skip-unchanged compares it with the one
+// recorded on the file (LibraryItem.TaggedWith), so a file is not walked past after
+// the settings that tagged it have changed. Nothing about the *file* changes when a
+// profile does, so without this only Tag files ever applied a profile edit.
+//
+// Hashed from the settings struct itself, so a setting added later is covered without
+// anyone remembering to list it here.
+func (t *Tagger) Fingerprint() string {
+	b, err := json.Marshal(struct {
+		Write    bool
+		Settings models.TaggerSettings
+	}{t.WriteEnabled(), t.Settings()})
+	if err != nil {
+		return "" // never matches a stored fingerprint, so the file is processed
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:8])
+}

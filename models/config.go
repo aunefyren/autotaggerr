@@ -17,8 +17,8 @@ type DatabaseConfig struct {
 // which a genre list still reads as a description rather than a dump.
 const DefaultMaxGenres = 5
 
-// How a tagger profile writes the stored tempo (TaggerProfile.BPMWrite). The empty
-// string is off, so a profile row predating the column writes nothing — upgrading
+// How a library writes the stored tempo (Library.BPMWrite). The empty
+// string is off, so a row predating the column writes nothing — upgrading
 // never starts touching a tag nobody asked for.
 const (
 	BPMWriteOff       = ""

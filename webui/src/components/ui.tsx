@@ -27,6 +27,17 @@ export function Pill({ kind, children }: { kind: string; children: ReactNode }) 
   );
 }
 
+// Note is the inline note (.note): an outcome or a warning that stays on screen,
+// with a one-word title and a line of detail.
+export function Note({ kind, title, children }: { kind: "ok" | "warn"; title: string; children: ReactNode }) {
+  return (
+    <div className={`note note-${kind}`}>
+      <strong>{title}</strong>
+      <span>{children}</span>
+    </div>
+  );
+}
+
 // IdChip shows a middle-truncated identifier; click copies the full value.
 export function IdChip({ value }: { value: string }) {
   if (!value) return <span className="dim mono" style={{ fontSize: 11 }}>—</span>;

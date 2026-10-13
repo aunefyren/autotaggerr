@@ -63,3 +63,19 @@ func SeedMusicBrainzEntityForTest(t *testing.T, entity, mbid string, value any) 
 	t.Helper()
 	mbCachePut(entity, mbid, value)
 }
+
+// SetMetaflacAvailableForTest makes MetaflacAvailable answer ok, whatever is on PATH,
+// restoring the real lookup on cleanup. CI installs flac, so the missing case cannot
+// otherwise be reached.
+func SetMetaflacAvailableForTest(t *testing.T, ok bool) {
+	t.Helper()
+	metaflacMu.Lock()
+	checked, found := metaflacChecked, metaflacFound
+	metaflacChecked, metaflacFound = true, ok
+	metaflacMu.Unlock()
+	t.Cleanup(func() {
+		metaflacMu.Lock()
+		metaflacChecked, metaflacFound = checked, found
+		metaflacMu.Unlock()
+	})
+}

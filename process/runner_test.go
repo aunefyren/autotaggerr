@@ -2,9 +2,11 @@ package process
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,6 +87,12 @@ func TestRunnerRunAll(t *testing.T) {
 	}
 	if errs, ok := ev.Details["errors"].(float64); !ok || errs != 1 {
 		t.Errorf("event details errors = %#v, want 1", ev.Details["errors"])
+	}
+
+	// The library has no manager, so the run says so — and goes ahead regardless.
+	warnings, _ := ev.Details[models.EventDetailWarnings].([]any)
+	if len(warnings) != 1 || !strings.Contains(fmt.Sprint(warnings[0]), "has no manager") {
+		t.Errorf("warnings = %#v, want one no-manager warning", ev.Details[models.EventDetailWarnings])
 	}
 
 	// The flusher should have counted the one file and left the final progress on the
@@ -379,5 +387,23 @@ func TestPathInScope(t *testing.T) {
 				t.Errorf("pathInScope(%q, %v) = %v, want %v", tc.path, tc.roots, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAddWarningsKeepsEarlierOnes: a run collects warnings from more than one place —
+// a library without a manager, a missing metaflac — and none may replace another.
+func TestAddWarningsKeepsEarlierOnes(t *testing.T) {
+	details := map[string]any{}
+	addWarnings(details, "first", "")
+	addWarnings(details, "second")
+	got, _ := details[models.EventDetailWarnings].([]string)
+	if strings.Join(got, "|") != "first|second" {
+		t.Errorf("warnings = %#v", details[models.EventDetailWarnings])
+	}
+
+	none := map[string]any{}
+	addWarnings(none, "")
+	if _, present := none[models.EventDetailWarnings]; present {
+		t.Error("an empty warning was recorded")
 	}
 }

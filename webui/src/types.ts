@@ -62,10 +62,6 @@ export interface TaggerProfile {
   custom_artist_delimiter: string;
   max_genres: number;
   mp3_multi_value_tags: boolean;
-  /** How the stored tempo reaches the BPM tag. "" is off — the default. */
-  bpm_write: BPMWrite;
-  /** Confidence a tempo needs to be written; 0 or less means the server default (0.5). */
-  bpm_min_confidence: number;
 }
 
 export type BPMWrite = "" | "fill_empty" | "overwrite";
@@ -84,6 +80,10 @@ export interface Library {
   use_acoustid: boolean;
   /** Per-library opt-in to tempo (BPM) analysis. Off by default. */
   analyse_tempo: boolean;
+  /** How the stored tempo reaches the BPM tag. "" is off — the default. */
+  bpm_write: BPMWrite;
+  /** Confidence a tempo needs to be written; 0 or less means the server default (0.5). */
+  bpm_min_confidence: number;
 }
 
 export interface LibraryItem {
@@ -787,7 +787,9 @@ export interface TrackTempo {
 export interface ItemTempo {
   tempo: TrackTempo | null;
   library_analyses: boolean;
-  /** What the library's profile does with a tempo; "" when it writes none. */
+  /** Whether the library's tagger profile writes tags at all. */
+  writes_tags: boolean;
+  /** What the library does with a tempo; "" when it writes none. */
   bpm_write: BPMWrite;
   /** The effective floor, default already applied. */
   min_confidence: number;

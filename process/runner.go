@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -582,6 +583,37 @@ func (r *Runner) ForceRecorrelateLibrary(libraryID uuid.UUID) error {
 	return nil
 }
 
+// managerWarnings returns, and logs, the warning for each library in scope that has
+// no manager. The run goes ahead — embedded tags are a legitimate way to identify
+// files — but a library processed that way by accident looks, without this, exactly
+// like one that was processed and simply matched little.
+func managerWarnings(scope Scope) []string {
+	var warnings []string
+	for _, target := range scope.Targets {
+		if components.HasManager(target.Library) {
+			continue
+		}
+		w := components.NoManagerWarning(target.Library)
+		logger.Log.Warn(w)
+		warnings = append(warnings, w)
+	}
+	return warnings
+}
+
+// addWarnings records the non-empty warnings on an event's details, after any already
+// there (models.EventDetailWarnings).
+func addWarnings(details map[string]any, warnings ...string) {
+	existing, _ := details[models.EventDetailWarnings].([]string)
+	for _, w := range warnings {
+		if w != "" {
+			existing = append(existing, w)
+		}
+	}
+	if len(existing) > 0 {
+		details[models.EventDetailWarnings] = existing
+	}
+}
+
 // forceTitle labels a re-correlate run "Re-correlate <name>", or a generic fallback when
 // the name is unknown.
 func forceTitle(name, kind string) string {
@@ -882,6 +914,8 @@ func (r *Runner) runScope(scope Scope) {
 	// walk's counters beside a row whose only content was a list of release MBIDs the
 	// metadata stage had already listed. One activity, two phases in its detail.
 	r.setPhase(PhaseScanning)
+	warnings := managerWarnings(scope)
+	var libraryErrors []string
 	tagEvent := events.BeginChild(r.db, event, models.EventTypeTagFiles, taggingActivityTitle)
 	for _, target := range scope.Targets {
 		library := target.Library
@@ -901,6 +935,13 @@ func (r *Runner) runScope(scope Scope) {
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library.Path + "'. error: " + err.Error())
 			r.setStatus(func(s *Summary) { s.LastError = err.Error() })
+			// On the event too. A library skipped whole — its manager disabled or
+			// deleted — used to leave a run that read as a clean one over the others.
+			msg := err.Error()
+			if !strings.Contains(msg, strconv.Quote(library.Name)) {
+				msg = library.Name + ": " + msg
+			}
+			libraryErrors = append(libraryErrors, msg)
 			continue
 		}
 		processed += c
@@ -994,7 +1035,7 @@ func (r *Runner) runScope(scope Scope) {
 
 	// Record the scan as an Activity event.
 	status := models.EventStatusOK
-	if len(errorFiles) > 0 {
+	if len(errorFiles) > 0 || len(libraryErrors) > 0 {
 		status = models.EventStatusError
 	}
 	recorded := errorFiles
@@ -1061,6 +1102,10 @@ func (r *Runner) runScope(scope Scope) {
 			"relinked":         refreshResult.Relinked,
 			"files_retagged":   drift.retagged,
 		},
+	}
+	addWarnings(details, append(warnings, components.MetaflacWarning(detail))...)
+	if len(libraryErrors) > 0 {
+		details[models.EventDetailLibraryErrors] = libraryErrors
 	}
 	// What narrowed the scan, when something did. A partial scan otherwise reads in
 	// the feed as a full one that mysteriously found forty files.
@@ -1216,7 +1261,7 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 	stats = append(stats, models.EventStat{Label: "Failed", Value: len(res.errorFiles), Kind: models.EventStatBad, Filter: models.EventItemStatusError})
 	ev.Stats = stats
 
-	events.Finish(r.db, ev, status, summary, map[string]any{
+	details := map[string]any{
 		"processed":        res.processed,
 		"unchanged":        res.unchanged,
 		"changed":          changed,
@@ -1228,7 +1273,9 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 		"releases_changed": res.drift.changedReleases,
 		"files_retagged":   res.drift.retagged,
 		"detail":           detailSummary(detail),
-	})
+	}
+	addWarnings(details, components.MetaflacWarning(detail))
+	events.Finish(r.db, ev, status, summary, details)
 
 	// The release rows go on last: they are few, they are the tie between a metadata
 	// change and the files it rewrote, and they must not be lost to a walk that filled
@@ -2046,6 +2093,7 @@ func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseR
 		{Label: "Files re-tagged", Value: res.retagged, Filter: models.EventItemStatusChanged},
 		{Label: "Failed", Value: len(res.errorFiles), Kind: models.EventStatBad, Filter: models.EventItemStatusError},
 	}
+	addWarnings(details, components.MetaflacWarning(detail))
 	events.Finish(r.db, event, status, summary, details)
 	events.AddItems(r.db, event, detail.Items())
 	events.Prune(r.db, r.eventRetention)
@@ -2096,6 +2144,9 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 	updates := map[string]any{
 		"last_scanned_at":   now,
 		"processed_version": r.version,
+		// Written under the library's current settings, so the next Process need not
+		// re-tag it (components.shouldSkip).
+		"tagged_with": tagger.Fingerprint(),
 		// The file is written and its identity holds, which is the whole of what a
 		// status says. Clearing the dated error with it is the same rule the manual
 		// attach applies (routers.saveCorrelation): a failure that has been repaired
@@ -2258,13 +2309,15 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 		{Label: "Already correct", Value: unchanged, Kind: models.EventStatMuted},
 		{Label: "Failed", Value: failed, Kind: models.EventStatBad, Filter: models.EventItemStatusError},
 	}
-	events.Finish(r.db, event, status, summary, map[string]any{
+	details := map[string]any{
 		"files_in_scope":  len(itemIDs),
 		"files_retagged":  written,
 		"files_unchanged": unchanged,
 		"errors":          failed,
 		"detail":          detailSummary(detail),
-	})
+	}
+	addWarnings(details, components.MetaflacWarning(detail))
+	events.Finish(r.db, event, status, summary, details)
 	events.AddItems(r.db, event, detail.Items())
 	events.Prune(r.db, r.eventRetention)
 

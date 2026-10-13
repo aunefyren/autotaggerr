@@ -110,6 +110,12 @@ func main() {
 			adminCreds.Username, adminCreds.Password, adminCreds.APIKey)
 	}
 
+	// One-time changes to what existing rows mean (database/migrate.go).
+	if err := database.ApplyDataMigrations(db); err != nil {
+		logger.Log.Fatal("failed to migrate data. error: " + err.Error())
+		os.Exit(1)
+	}
+
 	// Link existing release-groups to their credited artist. Artist pages read the
 	// link table, so rows written before it existed would show nothing until the next
 	// rebuild. Idempotent; a no-op once every row is linked. (Called here rather than
@@ -181,6 +187,10 @@ func main() {
 	// load all on-disk caches into memory once; the per-file path works purely
 	// in-memory from here on (see modules/cache.go)
 	modules.LoadAllCaches()
+
+	// metaflac is the one required external binary. Looked up now so its absence is in
+	// the log at startup, once, rather than first appearing as the first FLAC failing.
+	modules.MetaflacAvailable()
 
 	// Apply the configured MusicBrainz request rate to the limiter.
 	components.ApplyDataSourceRateLimits(db)
@@ -285,6 +295,13 @@ func main() {
 		// Resolve the owning library's manager + tagger from the DB and run the
 		// component pipeline, which also records the correlation to library_items.
 		library, manager, tagger, buildErr := components.BuildForFile(db, *filePath, *fileRootPath)
+		if buildErr == nil && !components.HasManager(library) {
+			if library.Name == "" {
+				logger.Log.Warn("the file is in no configured library, so it has no manager: it is identified only from MusicBrainz IDs already in its tags.")
+			} else {
+				logger.Log.Warn(components.NoManagerWarning(library))
+			}
+		}
 		if buildErr != nil {
 			logger.Log.Error("failed to build pipeline for file. error: " + buildErr.Error())
 			// nil detail collector: a one-shot single-file run records no Activity event

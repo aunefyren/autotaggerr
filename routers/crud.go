@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/url"
@@ -349,31 +350,16 @@ func (a *API) updateManager(c *gin.Context) {
 // --- Tagger profiles --------------------------------------------------------
 
 type taggerProfileInput struct {
-	Name                               *string  `json:"name"`
-	WriteTags                          *bool    `json:"write_tags"`
-	RemoveValues                       *bool    `json:"remove_values"`
-	UseCurrentArtistName               *bool    `json:"use_current_artist_name"`
-	UseCustomArtistDelimiter           *bool    `json:"use_custom_artist_delimiter"`
-	CustomArtistDelimiter              *string  `json:"custom_artist_delimiter"`
-	CustomArtistDelimiterCommas        *bool    `json:"custom_artist_delimiter_commas"`
-	IgnoreRedundantContributingArtists *bool    `json:"ignore_redundant_contributing_artists"`
-	MaxGenres                          *int     `json:"max_genres"`
-	MP3MultiValueTags                  *bool    `json:"mp3_multi_value_tags"`
-	BPMWrite                           *string  `json:"bpm_write"`
-	BPMMinConfidence                   *float64 `json:"bpm_min_confidence"`
-}
-
-// validate rejects a BPM setting the writers would not understand. The mode is an
-// enum the UI offers as a select, and the confidence is a share — anything outside
-// 0–1 is a mistake rather than a stricter or looser floor.
-func (in taggerProfileInput) validate() string {
-	if in.BPMWrite != nil && !models.ValidBPMWrite(*in.BPMWrite) {
-		return "bpm_write must be one of \"\", \"" + models.BPMWriteFillEmpty + "\" or \"" + models.BPMWriteOverwrite + "\""
-	}
-	if in.BPMMinConfidence != nil && (*in.BPMMinConfidence < 0 || *in.BPMMinConfidence > 1) {
-		return "bpm_min_confidence must be between 0 and 1"
-	}
-	return ""
+	Name                               *string `json:"name"`
+	WriteTags                          *bool   `json:"write_tags"`
+	RemoveValues                       *bool   `json:"remove_values"`
+	UseCurrentArtistName               *bool   `json:"use_current_artist_name"`
+	UseCustomArtistDelimiter           *bool   `json:"use_custom_artist_delimiter"`
+	CustomArtistDelimiter              *string `json:"custom_artist_delimiter"`
+	CustomArtistDelimiterCommas        *bool   `json:"custom_artist_delimiter_commas"`
+	IgnoreRedundantContributingArtists *bool   `json:"ignore_redundant_contributing_artists"`
+	MaxGenres                          *int    `json:"max_genres"`
+	MP3MultiValueTags                  *bool   `json:"mp3_multi_value_tags"`
 }
 
 func (in taggerProfileInput) apply(p *models.TaggerProfile) {
@@ -407,12 +393,6 @@ func (in taggerProfileInput) apply(p *models.TaggerProfile) {
 	if in.MP3MultiValueTags != nil {
 		p.MP3MultiValueTags = *in.MP3MultiValueTags
 	}
-	if in.BPMWrite != nil {
-		p.BPMWrite = *in.BPMWrite
-	}
-	if in.BPMMinConfidence != nil {
-		p.BPMMinConfidence = *in.BPMMinConfidence
-	}
 }
 
 func (a *API) getTaggerProfile(c *gin.Context)    { getEntity[models.TaggerProfile](a, c) }
@@ -426,10 +406,6 @@ func (a *API) createTaggerProfile(c *gin.Context) {
 	}
 	if in.Name == nil || *in.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
-		return
-	}
-	if problem := in.validate(); problem != "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
 	p := models.TaggerProfile{WriteTags: true}
@@ -456,10 +432,6 @@ func (a *API) updateTaggerProfile(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	if problem := in.validate(); problem != "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
-		return
-	}
 	in.apply(&p)
 	if err := a.DB.Save(&p).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
@@ -471,15 +443,30 @@ func (a *API) updateTaggerProfile(c *gin.Context) {
 // --- Libraries --------------------------------------------------------------
 
 type libraryInput struct {
-	Name            *string    `json:"name"`
-	Path            *string    `json:"path"`
-	ManagerID       *uuid.UUID `json:"manager_id"`
-	DataSourceID    *uuid.UUID `json:"data_source_id"`
-	TaggerProfileID *uuid.UUID `json:"tagger_profile_id"`
-	Enabled         *bool      `json:"enabled"`
-	Cron            *string    `json:"cron"`
-	UseAcoustID     *bool      `json:"use_acoustid"`
-	AnalyseTempo    *bool      `json:"analyse_tempo"`
+	Name             *string       `json:"name"`
+	Path             *string       `json:"path"`
+	ManagerID        clearableUUID `json:"manager_id"`
+	DataSourceID     *uuid.UUID    `json:"data_source_id"`
+	TaggerProfileID  *uuid.UUID    `json:"tagger_profile_id"`
+	Enabled          *bool         `json:"enabled"`
+	Cron             *string       `json:"cron"`
+	UseAcoustID      *bool         `json:"use_acoustid"`
+	AnalyseTempo     *bool         `json:"analyse_tempo"`
+	BPMWrite         *string       `json:"bpm_write"`
+	BPMMinConfidence *float64      `json:"bpm_min_confidence"`
+}
+
+// validate rejects a BPM setting the writers would not understand. The mode is an
+// enum the UI offers as a select, and the confidence is a share — anything outside
+// 0–1 is a mistake rather than a stricter or looser floor.
+func (in libraryInput) validate() string {
+	if in.BPMWrite != nil && !models.ValidBPMWrite(*in.BPMWrite) {
+		return "bpm_write must be one of \"\", \"" + models.BPMWriteFillEmpty + "\" or \"" + models.BPMWriteOverwrite + "\""
+	}
+	if in.BPMMinConfidence != nil && (*in.BPMMinConfidence < 0 || *in.BPMMinConfidence > 1) {
+		return "bpm_min_confidence must be between 0 and 1"
+	}
+	return ""
 }
 
 func (in libraryInput) apply(l *models.Library) {
@@ -489,8 +476,8 @@ func (in libraryInput) apply(l *models.Library) {
 	if in.Path != nil {
 		l.Path = *in.Path
 	}
-	if in.ManagerID != nil {
-		l.ManagerID = in.ManagerID
+	if in.ManagerID.Set {
+		l.ManagerID = in.ManagerID.Value
 	}
 	if in.DataSourceID != nil {
 		l.DataSourceID = in.DataSourceID
@@ -510,6 +497,35 @@ func (in libraryInput) apply(l *models.Library) {
 	if in.AnalyseTempo != nil {
 		l.AnalyseTempo = *in.AnalyseTempo
 	}
+	if in.BPMWrite != nil {
+		l.BPMWrite = *in.BPMWrite
+	}
+	if in.BPMMinConfidence != nil {
+		l.BPMMinConfidence = *in.BPMMinConfidence
+	}
+}
+
+// clearableUUID is an optional reference that can also be cleared: absent leaves the
+// field alone, null clears it, a UUID sets it. A plain *uuid.UUID cannot tell absent
+// from null, and for a library's manager the difference is the setting itself —
+// "no manager" is a choice, and an edit making it was silently ignored.
+type clearableUUID struct {
+	Set   bool
+	Value *uuid.UUID
+}
+
+func (c *clearableUUID) UnmarshalJSON(b []byte) error {
+	c.Set = true
+	if string(b) == "null" {
+		c.Value = nil
+		return nil
+	}
+	var id uuid.UUID
+	if err := json.Unmarshal(b, &id); err != nil {
+		return err
+	}
+	c.Value = &id
+	return nil
 }
 
 func (a *API) getLibrary(c *gin.Context)    { getEntity[models.Library](a, c) }
@@ -549,6 +565,10 @@ func (a *API) createLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name and path are required"})
 		return
 	}
+	if problem := in.validate(); problem != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
+		return
+	}
 	if !a.checkLibraryDataSource(c, in.DataSourceID) {
 		return
 	}
@@ -574,6 +594,10 @@ func (a *API) updateLibrary(c *gin.Context) {
 	var in libraryInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if problem := in.validate(); problem != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
 	if !a.checkLibraryDataSource(c, in.DataSourceID) {

@@ -1,8 +1,8 @@
 import { FormEvent, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { DataSource, Library, Manager, TaggerProfile, TempoStatus, dataSourceCategory } from "../types";
-import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
+import { BPMWrite, DataSource, Library, Manager, TaggerProfile, TempoStatus, dataSourceCategory } from "../types";
+import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { TempoAnalysis } from "../components/TempoAnalysis";
 import { useToast } from "../toast";
@@ -35,6 +35,34 @@ export default function Libraries() {
     profiles: profiles.data ?? [],
   };
   const managerName = (id: string | null) => (id ? options.managers.find((m) => m.id === id)?.name : undefined);
+  // Only once the managers have loaded: before that every assigned manager would read
+  // as missing for a frame.
+  const managerCell = (l: Library) => {
+    if (!l.manager_id) {
+      return (
+        <span title="Files are identified only from MusicBrainz IDs already in their tags; the rest stay unmatched. Assign a manager under Edit.">
+          <Pill kind="warn">No manager</Pill>
+        </span>
+      );
+    }
+    if (!managers.data) return null;
+    const m = options.managers.find((x) => x.id === l.manager_id);
+    if (!m) {
+      return (
+        <span title="The assigned manager has been deleted. Processing skips this library until it is assigned another.">
+          <Pill kind="err">Manager missing</Pill>
+        </span>
+      );
+    }
+    if (!m.enabled) {
+      return (
+        <span title="The assigned manager is disabled. Processing skips this library until it is re-enabled or another is assigned.">
+          {m.name} <Pill kind="err">Disabled</Pill>
+        </span>
+      );
+    }
+    return m.name;
+  };
 
   // The same three verbs the artist page offers, aimed at one library. None of
   // them cascades into another: each does what its label says and stops.
@@ -117,14 +145,18 @@ export default function Libraries() {
                 <tr key={l.id}>
                   <td style={{ color: "var(--text)" }}>{l.name}</td>
                   <td><span className="path">{l.path}</span></td>
-                  <td>{managerName(l.manager_id) ?? <span className="dim">— fallback</span>}</td>
+                  <td>{managerCell(l)}</td>
                   <td>
                     {/* The opt-in is a fact about the library, so it is stated here rather
                         than only inside the edit form — "which of my libraries are
                         analysed?" should not take a modal per row to answer. */}
                     <div className="stack" style={{ gap: 2 }}>
                       {l.enabled ? <Pill kind="ok">Enabled</Pill> : <Pill kind="off">Disabled</Pill>}
-                      {l.analyse_tempo && <span className="dim" style={{ fontSize: 11 }}>Tempo analysed</span>}
+                      {l.analyse_tempo && (
+                        <span className="dim" style={{ fontSize: 11 }}>
+                          Tempo analysed{l.bpm_write ? ` · BPM ${BPM_WRITE_SHORT[l.bpm_write]}` : " · BPM not written"}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="mono dim" style={{ fontSize: 11 }}>
@@ -220,6 +252,8 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const [taggerProfileId, setTaggerProfileId] = useState(initial?.tagger_profile_id ?? "");
   const [useAcoustID, setUseAcoustID] = useState(initial?.use_acoustid ?? false);
   const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
+  const [bpmWrite, setBPMWrite] = useState<BPMWrite>(initial?.bpm_write ?? "");
+  const [bpmFloor, setBPMFloor] = useState(initial?.bpm_min_confidence ?? 0);
   const [busy, setBusy] = useState(false);
   // Only to say so when the server cannot act on the switch. The switch itself stays
   // live: a library can opt in before aubio is installed, and is picked up once it is.
@@ -229,10 +263,14 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
     e.preventDefault();
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { name, path, use_acoustid: useAcoustID, analyse_tempo: analyseTempo };
+      const body: Record<string, unknown> = {
+        name, path, use_acoustid: useAcoustID, analyse_tempo: analyseTempo,
+        bpm_write: bpmWrite, bpm_min_confidence: bpmFloor,
+      };
       if (editing) body.cron = cron;
-      // Only send an ID when one is chosen; "None" leaves the field unset.
-      if (managerId) body.manager_id = managerId;
+      // Null, not absent: "No manager" is a choice, and absent would keep the old one.
+      body.manager_id = managerId || null;
+      // Only send these when one is chosen; "Default" leaves the field unset.
       if (dataSourceId) body.data_source_id = dataSourceId;
       if (taggerProfileId) body.tagger_profile_id = taggerProfileId;
 
@@ -261,13 +299,24 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
         <div className="field">
           <label className="flabel">Manager</label>
           <select className="select" value={managerId} onChange={(e) => setManagerId(e.target.value)}>
-            <option value="">Default (first configured manager)</option>
+            <option value="">No manager</option>
             {options.managers.map((m) => (
-              <option key={m.id} value={m.id}>{m.name} ({m.type})</option>
+              <option key={m.id} value={m.id}>{m.name} ({m.type}){m.enabled ? "" : " — disabled"}</option>
             ))}
           </select>
           <span className="dim" style={{ fontSize: 11 }}>Decides which MusicBrainz release each file maps to.</span>
         </div>
+        {/* Allowed, because embedded tags are a legitimate source — a library tagged
+            with Picard needs nothing else. But it is the setting a fresh install lands
+            on without choosing it, and processing then matches little and says nothing,
+            so the cost is stated where the choice is made. */}
+        {!managerId && (
+          <Note kind="warn" title="No manager">
+            Files are identified only from MusicBrainz IDs already in their tags, and the rest stay unmatched.
+            Lidarr does not write those IDs into MP3s.{" "}
+            {options.managers.length === 0 ? "No manager exists yet — add one under Managers." : "Choose one above to have it decide."}
+          </Note>
+        )}
 
         {/* Metadata providers only. Fingerprinting and artwork sources live in the same
             table but cannot supply tags, and offering them here was the reason this
@@ -309,13 +358,55 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
           <span style={{ fontSize: 12 }}>Analyse tempo (BPM)</span>
         </label>
         <span className="dim" style={{ fontSize: 11, marginTop: -6 }}>
-          Measures each file's BPM from the audio on the tempo schedule. The result is stored, not
-          written — the tagger profile decides whether it goes into the files.
+          Measures each file's BPM from the audio on the tempo schedule and stores it.
           {tempo.data && !tempo.data.detector_available && (
             <span style={{ color: "var(--warning-text)" }}>
               {" "}aubiotrack is not installed on the server, so nothing is analysed until it is.
             </span>
           )}
+        </span>
+
+        {/* Both halves of the feature in one place. Analysing and writing stay separate
+            choices — a stored tempo is useful without touching a file — but they used to
+            live on two pages, and a library analysed under a profile that wrote nothing
+            looked like the feature not working. Disabled rather than hidden while analysis
+            is off, so the dependency is visible. */}
+        <div className="row" style={{ gap: 12, alignItems: "flex-start", marginTop: -4 }}>
+          <div className="field" style={{ flex: 2 }}>
+            <label className="flabel">Write BPM</label>
+            <select
+              className="select"
+              value={bpmWrite}
+              disabled={!analyseTempo}
+              title={analyseTempo ? undefined : "Turn on tempo analysis first."}
+              onChange={(e) => setBPMWrite(e.target.value as BPMWrite)}
+            >
+              <option value="">Don't write — store only</option>
+              <option value="fill_empty">Only where the file has none</option>
+              <option value="overwrite">Always, replacing what is there</option>
+            </select>
+          </div>
+          <div className="field" style={{ flex: 1 }}>
+            <label className="flabel">Minimum confidence</label>
+            <input
+              className="input"
+              type="number"
+              min={0.05}
+              max={1}
+              step={0.05}
+              disabled={!analyseTempo || !bpmWrite}
+              title={!bpmWrite ? "Only applies when BPM is written." : undefined}
+              value={bpmFloor > 0 ? bpmFloor : ""}
+              onChange={(e) => setBPMFloor(e.target.value === "" ? 0 : Number(e.target.value))}
+              placeholder={DEFAULT_BPM_MIN_CONFIDENCE.toFixed(2)}
+            />
+          </div>
+        </div>
+        <span className="dim" style={{ fontSize: 11, marginTop: -6 }}>
+          Written as <span className="mono">BPM</span> in FLAC and <span className="mono">TBPM</span> in MP3,
+          rounded to a whole number, by the next Process or Tag files. Confidence (0–1) is how steady the
+          beat grid was: steady dance and pop measures 0.85 and up, clearly wrong readings near 0.1. It
+          cannot tell half or double time from the real tempo. A BPM another tool wrote is never cleared.
         </span>
 
         {editing && (
@@ -335,3 +426,12 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
     </Modal>
   );
 }
+
+/** The server reads 0 or less as its default floor. */
+const DEFAULT_BPM_MIN_CONFIDENCE = 0.5;
+
+const BPM_WRITE_SHORT: Record<BPMWrite, string> = {
+  "": "not written",
+  fill_empty: "written where missing",
+  overwrite: "always written",
+};

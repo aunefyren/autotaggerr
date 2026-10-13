@@ -291,14 +291,10 @@ type TaggerProfile struct {
 	// Off by default; see TaggerSettings.MP3MultiValueTags for why it is a choice at
 	// all rather than simply correct.
 	MP3MultiValueTags bool `json:"mp3_multi_value_tags"`
-	// BPMWrite is whether and how the stored tempo reaches the BPM tag
-	// (BPMWrite*): off, only where the file has none, or always. Off by default —
-	// analysing a library and writing to it are separate decisions.
-	BPMWrite string `json:"bpm_write"`
-	// BPMMinConfidence is the confidence a stored tempo needs to be written. Zero or
-	// less means DefaultBPMMinConfidence, so a row predating the column behaves like
-	// a new one.
-	BPMMinConfidence float64 `json:"bpm_min_confidence"`
+	// The BPM settings used to live here and moved to Library, beside the analysis
+	// opt-in they depend on. Their old columns (bpm_write, bpm_min_confidence) are
+	// left in place by AutoMigrate and read once by the move_bpm_to_library data
+	// migration.
 }
 
 // TaggerSettings is the subset of a profile that the tag writers actually read: how
@@ -338,7 +334,8 @@ type TaggerSettings struct {
 	// joins repeated Vorbis comments on read, so the spec-correct form costs nothing
 	// there and is unconditional (see docs/tagging.md).
 	MP3MultiValueTags bool
-	// BPMWrite and BPMMinConfidence govern the BPM tag; see TaggerProfile.
+	// BPMWrite and BPMMinConfidence govern the BPM tag. They come from the library,
+	// not the profile (Library.BPMWrite); components.Tagger merges them in.
 	BPMWrite         string
 	BPMMinConfidence float64
 }
@@ -354,8 +351,6 @@ func (t TaggerProfile) Settings() TaggerSettings {
 		IgnoreRedundantContributingArtists: t.IgnoreRedundantContributingArtists,
 		MaxGenres:                          t.MaxGenres,
 		MP3MultiValueTags:                  t.MP3MultiValueTags,
-		BPMWrite:                           t.BPMWrite,
-		BPMMinConfidence:                   t.BPMMinConfidence,
 	}
 }
 
@@ -383,6 +378,16 @@ type Library struct {
 	// default: analysis decodes every file, so it is something a library asks for,
 	// and a library that never does behaves exactly as it did before the feature.
 	AnalyseTempo bool `json:"analyse_tempo"`
+	// BPMWrite is whether and how the stored tempo reaches the BPM tag (BPMWrite*):
+	// off, only where the file has none, or always. Off by default — analysing and
+	// writing are separate decisions, since a stored tempo is useful without touching
+	// a file. On the library rather than the tagger profile so that both halves of the
+	// feature are set in one place (docs/tempo.md).
+	BPMWrite string `json:"bpm_write"`
+	// BPMMinConfidence is the confidence a stored tempo needs to be written. Zero or
+	// less means DefaultBPMMinConfidence, so a row predating the column behaves like a
+	// new one.
+	BPMMinConfidence float64 `json:"bpm_min_confidence"`
 }
 
 // LibraryItem is the owned correlation index: one row per file, recording which
@@ -417,6 +422,11 @@ type LibraryItem struct {
 	// scan only skips an unchanged file when the running version still matches, so
 	// upgrades that change tag logic re-process everything once.
 	ProcessedVersion string `json:"processed_version"`
+	// TaggedWith fingerprints the tag settings the file was last processed under
+	// (components.Tagger.Fingerprint). Skip-unchanged requires it to match, so a
+	// changed tagger profile, or a library switched to another one, reaches every file
+	// on the next Process instead of only on Tag files.
+	TaggedWith string `json:"tagged_with"`
 	// Pinned marks a manual correlation that automatic resolution must never override.
 	Pinned bool `json:"pinned"`
 	// Status is what the *last attempt* did, not what the file is. The MB ID columns
@@ -862,6 +872,16 @@ type Event struct {
 	// than only for a filtered feed.
 	ParentTitle string `gorm:"-" json:"parent_title,omitempty"`
 }
+
+// Keys in Event.Details the Activity page renders as more than raw JSON.
+const (
+	// EventDetailWarnings: things the run went ahead despite, which the user should
+	// fix — a library without a manager. Unlike an error they do not fail the run,
+	// which is why they need their own place: a successful run reads as nothing to see.
+	EventDetailWarnings = "warnings"
+	// EventDetailLibraryErrors: libraries the run skipped whole, each with the reason.
+	EventDetailLibraryErrors = "library_errors"
+)
 
 // EventStat is one counter on an event's detail view.
 //
@@ -1453,5 +1473,14 @@ func AllDBModels() []any {
 		&CollectionDesire{},
 		&AcoustIDLookup{},
 		&TrackTempo{},
+		&DataMigration{},
 	}
+}
+
+// DataMigration records a one-time data change that has been applied. AutoMigrate
+// keeps the *schema* current on its own; a change to what existing rows mean needs
+// running exactly once, and running it again later would undo choices made since.
+type DataMigration struct {
+	Name      string    `gorm:"primaryKey" json:"name"`
+	AppliedAt time.Time `json:"applied_at"`
 }

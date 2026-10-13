@@ -56,6 +56,7 @@ func (r *Runner) discoverNow(scope Scope, rebuild collection.RebuildScope, scanT
 	event := events.Begin(r.db, models.EventTypeDiscoverFiles, scope.Title)
 	detail := components.NewDetailCollector(r.detailRetention)
 
+	warnings := managerWarnings(scope)
 	total := components.DiscoverStats{Failed: []string{}}
 	var libraryErrors []string
 	for _, target := range scope.Targets {
@@ -110,8 +111,9 @@ func (r *Runner) discoverNow(scope Scope, rebuild collection.RebuildScope, scanT
 		"detail":        detailSummary(detail),
 	}
 	if len(libraryErrors) > 0 {
-		details["library_errors"] = libraryErrors
+		details[models.EventDetailLibraryErrors] = libraryErrors
 	}
+	addWarnings(details, warnings...)
 	for k, v := range scope.Detail {
 		details[k] = v
 	}

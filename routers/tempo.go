@@ -55,9 +55,9 @@ func (a *API) cancelTempoAnalysis(c *gin.Context) {
 	c.JSON(http.StatusOK, a.Tempo.Status())
 }
 
-// itemTempo returns one file's stored tempo together with the two facts needed to
-// read it: whether its library analyses at all, and what the library's tagger profile
-// does with a result. Without those, "no tempo" and "a tempo that is not written"
+// itemTempo returns one file's stored tempo together with the facts needed to read
+// it: whether its library analyses at all, what the library does with a result, and
+// whether the library's tagger profile writes tags in the first place. Without those, "no tempo" and "a tempo that is not written"
 // would each look like the feature not working, for three different reasons.
 //
 // The BPM *tag* is not here — it is in the tag diff beside it, under the same rules a
@@ -79,15 +79,16 @@ func (a *API) itemTempo(c *gin.Context) {
 		stored = &row
 	}
 
-	analyses, bpmWrite, floor := false, models.BPMWriteOff, models.DefaultBPMMinConfidence
+	analyses, writesTags, bpmWrite, floor := false, false, models.BPMWriteOff, models.DefaultBPMMinConfidence
 	var library models.Library
 	if err := a.DB.First(&library, "id = ?", item.LibraryID).Error; err == nil {
 		analyses = library.AnalyseTempo
 		tagger := components.TaggerForLibrary(a.DB, library)
 		settings := tagger.Settings()
-		// A profile that writes no tags at all writes no BPM either, whatever its BPM
-		// setting says — report what will actually happen.
-		if tagger.WriteEnabled() {
+		// A profile that writes no tags at all writes no BPM either, whatever the
+		// library's BPM setting says — report what will actually happen.
+		writesTags = tagger.WriteEnabled()
+		if writesTags {
 			bpmWrite = settings.BPMWrite
 		}
 		if settings.BPMMinConfidence > 0 {
@@ -98,6 +99,7 @@ func (a *API) itemTempo(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"tempo":            stored,
 		"library_analyses": analyses,
+		"writes_tags":      writesTags,
 		"bpm_write":        bpmWrite,
 		"min_confidence":   floor,
 	})

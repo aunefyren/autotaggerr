@@ -204,7 +204,7 @@ func TestDiscoverResolvesANewFileWithoutMarkingItTagged(t *testing.T) {
 	if got.ProcessedVersion != "" || got.LastTaggedAt != nil {
 		t.Errorf("row claims to have been tagged: version %q, last tagged %v", got.ProcessedVersion, got.LastTaggedAt)
 	}
-	if shouldSkip(db, path, "v1", models.ManagerTypeLidarr) {
+	if shouldSkip(db, path, "v1", models.ManagerTypeLidarr, "fp") {
 		t.Error("the next Process would skip a file discovery never tagged")
 	}
 }

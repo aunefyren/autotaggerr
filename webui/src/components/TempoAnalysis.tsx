@@ -72,7 +72,7 @@ export function TempoAnalysis({ version }: { version: number }) {
           <div className="stack" style={{ gap: "var(--space-2)", minWidth: 0 }}>
             <span style={{ color: "var(--text)", fontSize: "var(--text-sm)", maxWidth: "68ch" }}>
               {blocked ??
-                `Measures each file's BPM from the audio, in ${s.libraries === 1 ? "the one library that opts in" : `the ${s.libraries} libraries that opt in`}. Stored only — a library's tagger profile decides whether it is written to the files.`}
+                `Measures each file's BPM from the audio, in ${s.libraries === 1 ? "the one library that opts in" : `the ${s.libraries} libraries that opt in`}. Each library decides whether the result is written to its files.`}
             </span>
             {!blocked && <SummaryLine status={s} />}
           </div>

@@ -1,7 +1,7 @@
 import { FormEvent, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { BPMWrite, TaggerProfile } from "../types";
+import { TaggerProfile } from "../types";
 import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
 import { useToast } from "../toast";
 
@@ -16,8 +16,9 @@ export default function TaggerProfiles() {
         <h1>Tagger profiles</h1>
       </div>
       <p className="muted" style={{ margin: 0, maxWidth: "68ch" }}>
-        How tags are written — artist delimiter, whether to remove stale values, whether a measured
-        tempo becomes a BPM tag, and more. A library uses one profile.
+        How tags are written — artist delimiter, whether to remove stale values, and more. A library
+        uses one profile. Whether a measured tempo becomes a BPM tag is set on the library, beside
+        tempo analysis.
       </p>
 
       {err && <ErrorNote message={err} />}
@@ -27,7 +28,7 @@ export default function TaggerProfiles() {
         <div className="tablewrap">
           <table className="data">
             <thead>
-              <tr><th>Name</th><th>Writes tags</th><th>Removes stale values</th><th>Artist delimiter</th><th>BPM</th><th style={{ textAlign: "right" }}>Actions</th></tr>
+              <tr><th>Name</th><th>Writes tags</th><th>Removes stale values</th><th>Artist delimiter</th><th style={{ textAlign: "right" }}>Actions</th></tr>
             </thead>
             <tbody>
               {data.map((p) => (
@@ -37,16 +38,6 @@ export default function TaggerProfiles() {
                   <td>{p.remove_values ? <Pill kind="warn">Yes</Pill> : <Pill kind="off">No</Pill>}</td>
                   <td className="mono" style={{ fontSize: 12 }}>
                     {p.use_custom_artist_delimiter ? `"${p.custom_artist_delimiter}"` : "MusicBrainz default"}
-                  </td>
-                  <td>
-                    {p.bpm_write ? (
-                      <span style={{ fontSize: 12 }}>
-                        {BPM_WRITE_LABEL[p.bpm_write]}
-                        <span className="dim mono" style={{ fontSize: 11 }}> ≥ {effectiveFloor(p).toFixed(2)}</span>
-                      </span>
-                    ) : (
-                      <Pill kind="off">Not written</Pill>
-                    )}
                   </td>
                   <td>
                     <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -70,17 +61,6 @@ export default function TaggerProfiles() {
     </div>
   );
 }
-
-const BPM_WRITE_LABEL: Record<BPMWrite, string> = {
-  "": "Not written",
-  fill_empty: "Only where missing",
-  overwrite: "Always",
-};
-
-/** The server reads 0 or less as its default floor; show what will actually apply. */
-const DEFAULT_BPM_MIN_CONFIDENCE = 0.5;
-const effectiveFloor = (p: TaggerProfile) =>
-  p.bpm_min_confidence > 0 ? p.bpm_min_confidence : DEFAULT_BPM_MIN_CONFIDENCE;
 
 function Check({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
   return (
@@ -110,8 +90,6 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
         custom_artist_delimiter: p.custom_artist_delimiter,
         max_genres: p.max_genres,
         mp3_multi_value_tags: p.mp3_multi_value_tags,
-        bpm_write: p.bpm_write ?? "",
-        bpm_min_confidence: p.bpm_min_confidence,
       });
       onSaved();
     } catch (e) {
@@ -162,41 +140,6 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
             Uses ID3v2.4's own multi-value form, which Picard, MusicBee, foobar2000 and Navidrome read
             natively. Plex reads tags through ffmpeg, which only sees the first value — so leave this
             off if Plex is your player. FLAC always uses the multi-value form; it costs nothing there.
-          </p>
-        </div>
-        <div className="field">
-          <label className="flabel">Write BPM</label>
-          <select className="select" value={p.bpm_write ?? ""} onChange={(e) => set({ bpm_write: e.target.value as BPMWrite })}>
-            <option value="">Don't write</option>
-            <option value="fill_empty">Only where the file has none</option>
-            <option value="overwrite">Always, replacing what is there</option>
-          </select>
-          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
-            Writes the tempo measured by tempo analysis (turned on per library) as <span className="mono">BPM</span> in
-            FLAC and <span className="mono">TBPM</span> in MP3, rounded to a whole number. A BPM another tool
-            wrote is never cleared when there is nothing to write. Files analysed before you turn this on
-            get their BPM on the next <em>Tag files</em>; Process picks up the ones analysed after.
-          </p>
-        </div>
-        <div className="field">
-          <label className="flabel">Minimum confidence</label>
-          <input
-            className="input"
-            type="number"
-            min={0.05}
-            max={1}
-            step={0.05}
-            disabled={!p.bpm_write}
-            title={p.bpm_write ? undefined : "Only applies when BPM is written."}
-            value={p.bpm_min_confidence > 0 ? p.bpm_min_confidence : ""}
-            onChange={(e) => set({ bpm_min_confidence: e.target.value === "" ? 0 : Number(e.target.value) })}
-            placeholder={DEFAULT_BPM_MIN_CONFIDENCE.toFixed(2)}
-          />
-          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
-            How regular the beat has to be (0–1) for the tempo to be written. Steady dance and pop
-            measures 0.85 and up; clearly wrong readings sit near 0.1. Blank uses 0.50. It measures how
-            steady the beat grid is, not whether it is the right one — half- and double-time readings
-            can still score high.
           </p>
         </div>
         <div className="modal-actions">

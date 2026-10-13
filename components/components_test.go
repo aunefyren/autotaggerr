@@ -4,8 +4,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -505,7 +507,7 @@ func TestBuildForFile(t *testing.T) {
 		t.Errorf("unexpected components: manager=%s writeEnabled=%v", manager.Type(), tagger.WriteEnabled())
 	}
 
-	// A file outside any library still builds (fallback to the first manager).
+	// A file outside any library still builds, with no manager.
 	_, manager, _, err = BuildForFile(db, "/elsewhere/x.flac", "/elsewhere")
 	if err != nil || manager == nil {
 		t.Fatalf("fallback BuildForFile failed: %v", err)
@@ -547,12 +549,19 @@ func TestResolveManagerRowRejectsDanglingManager(t *testing.T) {
 	}
 }
 
-// TestResolveManagerRowSkipsDisabledFallback: a library with *no* manager assigned
-// keeps the permissive fallback, but must not be handed a disabled manager.
-func TestResolveManagerRowSkipsDisabledFallback(t *testing.T) {
+// TestResolveManagerRowNoManagerIsNoManager: a library with no manager is not handed
+// whichever manager is enabled. It used to be — first by row order — while the
+// collection called the same library unmanaged, so the two disagreed about who
+// governed it.
+func TestResolveManagerRowNoManagerIsNoManager(t *testing.T) {
 	db := testDB(t)
-	if err := db.Create(&models.Manager{Name: "Off", Type: models.ManagerTypeLidarr, Enabled: false}).Error; err != nil {
-		t.Fatalf("manager: %v", err)
+	for _, m := range []models.Manager{
+		{Name: "Off", Type: models.ManagerTypeLidarr, Enabled: false},
+		{Name: "On", Type: models.ManagerTypeLidarr, Enabled: true},
+	} {
+		if err := db.Create(&m).Error; err != nil {
+			t.Fatalf("manager: %v", err)
+		}
 	}
 	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
@@ -563,8 +572,38 @@ func TestResolveManagerRowSkipsDisabledFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolveManagerRow: %v", err)
 	}
-	if got.Type != models.ManagerTypeAutotaggerr {
-		t.Errorf("fell back to %+v; want the native default, never a disabled manager", got)
+	if got.ID != uuid.Nil || got.Type != models.ManagerTypeAutotaggerr {
+		t.Errorf("resolved %+v; want no manager row, resolving from embedded tags", got)
+	}
+	if HasManager(lib) {
+		t.Error("HasManager = true for a library with no manager")
+	}
+	if w := NoManagerWarning(lib); !strings.Contains(w, `"L"`) {
+		t.Errorf("warning does not name the library: %q", w)
+	}
+}
+
+// TestDetailCollectorCountsMissingMetaflac: the failures that were only metaflac being
+// absent are counted — through the wrapping the pipeline adds, and through Adopt — so a
+// run can state them once.
+func TestDetailCollectorCountsMissingMetaflac(t *testing.T) {
+	walk := NewDetailCollector(1) // the count must not stop at the row limit
+	walk.AddError("/m/a.flac", fmt.Errorf("failed to set file tags: %w", modules.ErrMetaflacMissing))
+	walk.AddError("/m/b.flac", fmt.Errorf("failed to set file tags: %w", modules.ErrMetaflacMissing))
+	walk.AddError("/m/c.mp3", errors.New("something else"))
+
+	drift := NewDetailCollector(10)
+	drift.AddError("/m/d.flac", modules.ErrMetaflacMissing)
+	walk.Adopt(drift, models.EventItemPhaseDrift)
+
+	if n := walk.MetaflacMissing(); n != 3 {
+		t.Errorf("MetaflacMissing = %d, want 3", n)
+	}
+	if w := MetaflacWarning(walk); !strings.Contains(w, "3 FLAC file(s)") {
+		t.Errorf("warning = %q", w)
+	}
+	if w := MetaflacWarning(NewDetailCollector(10)); w != "" {
+		t.Errorf("warning with nothing missing = %q, want none", w)
 	}
 }
 
@@ -861,7 +900,7 @@ func TestRecordItemFailureLeavesFileRetryable(t *testing.T) {
 	if item.ProcessedVersion != "" {
 		t.Errorf("ProcessedVersion = %q after a failure; the next run would skip this file forever", item.ProcessedVersion)
 	}
-	if shouldSkip(db, path, "v-test", models.ManagerTypeAutotaggerr) {
+	if shouldSkip(db, path, "v-test", models.ManagerTypeAutotaggerr, "") {
 		t.Error("a failed file was skipped by the next run — it can never recover")
 	}
 }
@@ -949,5 +988,46 @@ func TestRecordItemFailureRespectsPin(t *testing.T) {
 	}
 	if item.MBReleaseID != "rel-manual" || item.CorrelationSource != models.CorrelationSourceManual {
 		t.Errorf("the pin was overwritten on the failure path: %+v", item)
+	}
+}
+
+// TestShouldSkipFollowsTagSettings: a file unchanged on disk is still processed when
+// the settings that would tag it have changed. Without this, editing a tagger profile
+// (or a library's BPM settings) reached no file until someone pressed Tag files.
+func TestShouldSkipFollowsTagSettings(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "L", Path: t.TempDir(), Enabled: true}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(library.Path, "a.flac")
+	if err := os.WriteFile(path, []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	before := NewTagger(models.TaggerProfile{WriteTags: true}).ForLibrary(library)
+	recordItemTagged(db, library.ID, path, correlated(), true, "v-test", models.ManagerTypeAutotaggerr, nil, before.Fingerprint())
+	if !shouldSkip(db, path, "v-test", models.ManagerTypeAutotaggerr, before.Fingerprint()) {
+		t.Fatal("an unchanged file under unchanged settings was not skipped")
+	}
+
+	library.BPMWrite = models.BPMWriteFillEmpty
+	after := NewTagger(models.TaggerProfile{WriteTags: true}).ForLibrary(library)
+	if after.Fingerprint() == before.Fingerprint() {
+		t.Fatal("turning BPM writing on did not change the fingerprint")
+	}
+	if shouldSkip(db, path, "v-test", models.ManagerTypeAutotaggerr, after.Fingerprint()) {
+		t.Error("a file was skipped after its library's tag settings changed")
+	}
+
+	profileEdit := NewTagger(models.TaggerProfile{WriteTags: true, MaxGenres: 2}).ForLibrary(library)
+	if profileEdit.Fingerprint() == after.Fingerprint() {
+		t.Error("a profile edit did not change the fingerprint")
+	}
+
+	// Discovery records without tagging, and must not wipe the stamp.
+	recordItem(db, library.ID, path, correlated(), true, "v-test", models.ManagerTypeAutotaggerr, nil)
+	if !shouldSkip(db, path, "v-test", models.ManagerTypeAutotaggerr, before.Fingerprint()) {
+		t.Error("recording without a fingerprint cleared the stored one")
 	}
 }

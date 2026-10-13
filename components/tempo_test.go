@@ -54,9 +54,21 @@ func TestTempoPending(t *testing.T) {
 	}
 }
 
-func TestTaggerSettingsCarryTheBPMPolicy(t *testing.T) {
-	settings := models.TaggerProfile{BPMWrite: models.BPMWriteFillEmpty, BPMMinConfidence: 0.7}.Settings()
+// The BPM policy is the library's, merged into what the writers read, and a floor of
+// zero means the default — a row predating the column behaves like a new one.
+func TestTaggerSettingsCarryTheLibraryBPMPolicy(t *testing.T) {
+	profile := models.TaggerProfile{WriteTags: true}
+	settings := NewTagger(profile).ForLibrary(models.Library{BPMWrite: models.BPMWriteFillEmpty, BPMMinConfidence: 0.7}).Settings()
 	if settings.BPMWrite != models.BPMWriteFillEmpty || settings.BPMMinConfidence != 0.7 {
 		t.Fatalf("settings = %+v", settings)
+	}
+	if got := NewTagger(profile).ForLibrary(models.Library{}).Settings().BPMMinConfidence; got != models.DefaultBPMMinConfidence {
+		t.Errorf("unset floor = %v, want the default", got)
+	}
+	if NewTagger(profile).WritesBPM() {
+		t.Error("a tagger without a library writes BPM")
+	}
+	if NewTagger(models.TaggerProfile{}).ForLibrary(models.Library{BPMWrite: models.BPMWriteOverwrite}).WritesBPM() {
+		t.Error("a profile that writes no tags writes BPM")
 	}
 }

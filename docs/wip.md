@@ -239,6 +239,12 @@ repair in flight, and names its source rather than assuming one. What that left 
 
 ## Known issues / limitations
 
+- **The library form cannot clear its metadata source or tagger profile.** `manager_id` was fixed
+  (null clears it; [media-manager.md](media-manager.md#a-library-without-a-manager)). But
+  `data_source_id` and `tagger_profile_id` are still plain `*uuid.UUID`, and the form omits them when
+  set back to *Default*, so an edit back to *Default* keeps the old choice. The fix is the same:
+  `clearableUUID` in `routers/crud.go`, with the form sending null.
+
 - **A search hit's track count still includes video tracks.** The video rule
   ([collection.md](collection.md#a-video-track-is-not-a-track-you-are-missing)) governs the
   collection's own counts, but a row that came from the MusicBrainz *search* API carries

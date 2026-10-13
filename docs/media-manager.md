@@ -55,14 +55,50 @@ behind a panel that renders only the first match.
 
 ### Manager resolution is strict on purpose
 
-A library with an **explicitly assigned** manager gets that manager or a **hard error** — never a
-silent fallback — when the row is disabled or gone. The manager decides which MB IDs are written
-into your files, so swapping it behind your back changes the tags themselves. A library with **no**
-manager assigned keeps the permissive path but only ever resolves to an *enabled* manager, falling
-back to the native default.
+A library with an **explicitly assigned** manager gets that manager. If that manager is disabled or
+has been deleted, the library fails with a **hard error** rather than falling back to something
+else. The manager decides which MusicBrainz IDs are written into your files, so swapping it behind
+your back would change the tags themselves. The run records the skipped library
+([scanning.md](scanning.md#warnings-and-skipped-libraries)), and the Libraries table marks it.
+
+### A library without a manager
+
+**No manager means no manager.** A library with none assigned is not handed whichever manager is
+enabled. Its files are identified only from the MusicBrainz IDs already in their tags, which is all
+there is to go on without a manager. That is a legitimate setup for a library tagged with Picard,
+and a costly one for a Lidarr library, because Lidarr does not write those IDs into MP3s.
+
+It is also where a fresh install ends up without anyone choosing it: `database.Seed` creates no
+manager. So the choice is allowed, but it is never silent:
+
+- **Every *Process* run and disk-walking *Scan* records a warning** for each such library
+  (`components.NoManagerWarning`). The run goes ahead and its status stays `ok`, but the feed reads
+  *Done, with warnings*. The single-file `--file` path logs the same warning.
+- **The Libraries table shows a *No manager* pill**, plus *Manager missing* or *Disabled* for the two
+  states that make a library fail. The edit form names the option *No manager* and shows the cost
+  below it whenever it is selected.
+- **The form can actually choose it.** `PUT /libraries/:id` treats `"manager_id": null` as "clear"
+  and an absent `manager_id` as "unchanged" (`routers.clearableUUID`). The form sends null. Before
+  this, choosing the empty option while editing kept the old manager.
+
+Internally the library resolves to a manager row with no ID, of the native type. Native is the type
+because the resolution is the same, embedded tags only, and because it is what files correlated
+this way have always recorded. Assigning a native manager later therefore does not re-correlate a
+whole library just to reach the same answer. The collection agrees: it has always treated a library
+without a manager as native. Before this change, the tagger and the collection disagreed whenever a
+Lidarr manager was enabled.
+
+**Upgrading.** Until this change, such a library silently got the first enabled manager (by row id),
+and the form called that option *Default (first configured manager)*. Dropping the fallback in place
+would have re-correlated every such library from embedded tags, and stripped Lidarr's MP3s of their
+identity. So a one-time data migration, `pin_fallback_manager` (`database/migrate.go`), assigns each
+such library the manager it was already using. It is recorded in `data_migrations`, so it never runs
+again: a library set to *No manager* afterwards is a choice the migration does not undo. On a
+database with no enabled manager it assigns nothing, and it is still recorded.
 
 Guarded by `TestResolveManagerRowRejectsDisabled`, `…RejectsDanglingManager`,
-`…SkipsDisabledFallback`.
+`…NoManagerIsNoManager`, `TestPinFallbackManagerRunsOnce`, `…WithoutManagers`,
+`TestLibraryManagerCanBeCleared`, and the warning assertion in `TestRunnerRunAll`.
 
 ## Pipeline
 

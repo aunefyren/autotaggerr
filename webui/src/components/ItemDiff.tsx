@@ -52,7 +52,7 @@ export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: (
  * The file's measured tempo, and what becomes of it, in one line.
  *
  * Above the diff rather than in it: the diff is tags, and a stored tempo is not a tag
- * until a profile writes one — when it does, the BPM row appears below under the same
+ * until the library writes one — when it does, the BPM row appears below under the same
  * rules a write applies. This line answers the question the row cannot: *why* there is
  * no BPM row, which has three different answers (not analysed, nothing measured, not
  * written) with three different fixes.
@@ -72,7 +72,8 @@ function TempoLine({ itemId }: { itemId: string }) {
   } else {
     const written = Math.round(t.bpm);
     let fate;
-    if (!data.bpm_write) fate = "not written — the tagger profile does not write BPM";
+    if (!data.writes_tags) fate = "not written — this library's tagger profile writes no tags";
+    else if (!data.bpm_write) fate = "not written — this library does not write BPM (Libraries → edit)";
     else if (t.confidence < data.min_confidence)
       fate = <>not written — below this profile's <span className="mono">{data.min_confidence.toFixed(2)}</span> floor</>;
     else

@@ -323,27 +323,36 @@ when nothing is owned.
 ## Skip-unchanged
 
 A file is skipped when its index row is `ok`, its size and mtime are unchanged, the running app
-version still matches `ProcessedVersion`, **and** the correlation came from the library's current
-manager (`CorrelatedByManager`). This is what makes repeat runs cheap.
+version still matches `ProcessedVersion`, the correlation came from the library's current manager
+(`CorrelatedByManager`), **and** it was tagged under the library's current tag settings
+(`TaggedWith`). This is what makes repeat runs cheap.
 
-Two of those four are deliberate escape hatches, because nothing about the *file* changes when the
+Three of those five are deliberate escape hatches, because nothing about the *file* changes when the
 app's behaviour does:
 
 - **Version gate** — an upgrade that changes tag logic re-processes everything exactly once.
 - **Manager gate** — swapping or disabling a library's manager re-correlates its files, so
   `correlation_source` stops reporting the manager that is no longer in the loop. Without it a
   run walked straight past those files forever.
+- **Tag-settings gate** — `components.Tagger.Fingerprint` hashes whether the tagger writes and every
+  setting the writers read: the tagger profile's, and the library's BPM settings. Editing a profile,
+  pointing a library at another one, or turning *Write BPM* on therefore reaches every file on the
+  next Process. Without it Process walked past them all and only *Tag files* applied the change —
+  which reads as Process being broken, since it is the verb whose job is to tag. The fingerprint is
+  stamped by Process on success (`recordItemTagged`) and by every re-tag, and hashed from the
+  settings struct itself, so a setting added later is covered without being listed anywhere.
 
-Both gates cost one full re-process of the library the first time they trip, which is the intended
-trade: correctness once, speed thereafter. Adding the manager column has the same effect as a
-version bump on first run after upgrading, since existing rows have no manager recorded.
+Each gate costs one full re-process of the library the first time it trips, which is the intended
+trade: correctness once, speed thereafter. Adding a gate's column has the same effect as a version
+bump on the first run after upgrading, since existing rows have nothing recorded. The re-process
+reads MusicBrainz and Lidarr through their caches, so it costs disk, not rate limit.
 
 **Pinned items are exempt from the manager gate.** A manual attachment (`routers.saveCorrelation`
 sets `pinned`) is not the manager's to redo, and re-correlating one would overwrite the MB IDs the
 user chose by hand.
 
 **A newly analysed tempo is a reason not to skip.** Tempo analysis stores a result without touching
-the file, so for a library whose tagger profile writes BPM, a file whose stored tempo is newer than
+the file, so for a library that writes BPM, a file whose stored tempo is newer than
 its `last_scanned_at` is processed once more (`tempoPending`). See
 [tempo.md](tempo.md#reaching-the-file).
 
@@ -755,6 +764,23 @@ counters are what may be missing, because zero-valued stats are dropped and a st
 be all zeroes — a refresh with nothing due checked nothing, fetched nothing and changed nothing.
 Opening it used to show a blank panel, having thrown away the one sentence the feed row was already
 stating.
+
+### Warnings and skipped libraries
+
+Two `Details` keys are rendered rather than left to *Raw details*, because both are about the run's
+configuration rather than its files, and neither shows up in a counter:
+
+- **`warnings`** (`models.EventDetailWarnings`) — something the run went ahead despite. The status
+  stays `ok`, but the feed shows *Done, with warnings* instead of a green *Done*, and the modal leads
+  with each one as an inline note above the counters. Two exist today: a library with no manager
+  ([media-manager.md](media-manager.md#a-library-without-a-manager)), written by *Process* runs and
+  disk-walking *Scan*s, and FLAC files left untagged because `metaflac` is missing
+  ([tagging.md](tagging.md#engines)), written by every event that writes tags. `addWarnings` in
+  `process/runner.go` appends, so one never replaces another.
+- **`library_errors`** (`models.EventDetailLibraryErrors`) — libraries the run skipped entirely, such
+  as one whose assigned manager is disabled or deleted. These fail the run. A *Process* run used to
+  log the error and carry on, so a run that skipped a library looked like a clean run over the
+  others.
 
 ### Per-file detail
 

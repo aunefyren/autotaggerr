@@ -89,24 +89,24 @@ func TestTempoAnalyseQueuesForAnOptedInLibrary(t *testing.T) {
 	}
 }
 
-// The BPM policy is an ordinary profile field: saved when valid, refused when the
+// The BPM policy is an ordinary library field: saved when valid, refused when the
 // writers would not understand it.
-func TestTaggerProfileBPMPolicy(t *testing.T) {
+func TestLibraryBPMPolicy(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 
-	w := do(r, "POST", "/api/v1/tagger-profiles", token, map[string]any{
-		"name": "Running", "bpm_write": models.BPMWriteFillEmpty, "bpm_min_confidence": 0.6,
+	w := do(r, "POST", "/api/v1/libraries", token, map[string]any{
+		"name": "Running", "path": "/run", "analyse_tempo": true, "bpm_write": models.BPMWriteFillEmpty, "bpm_min_confidence": 0.6,
 	})
 	if w.Code != http.StatusCreated {
 		t.Fatalf("create = %d %s", w.Code, w.Body.String())
 	}
-	var created models.TaggerProfile
+	var created models.Library
 	_ = json.Unmarshal(w.Body.Bytes(), &created)
-	var saved models.TaggerProfile
+	var saved models.Library
 	api.DB.First(&saved, "id = ?", created.ID)
 	if saved.BPMWrite != models.BPMWriteFillEmpty || saved.BPMMinConfidence != 0.6 {
-		t.Fatalf("saved profile = %+v", saved)
+		t.Fatalf("saved library = %+v", saved)
 	}
 
 	for _, body := range []map[string]any{
@@ -114,15 +114,15 @@ func TestTaggerProfileBPMPolicy(t *testing.T) {
 		{"bpm_min_confidence": 1.5},
 		{"bpm_min_confidence": -0.1},
 	} {
-		if w := do(r, "PUT", "/api/v1/tagger-profiles/"+created.ID.String(), token, body); w.Code != http.StatusBadRequest {
+		if w := do(r, "PUT", "/api/v1/libraries/"+created.ID.String(), token, body); w.Code != http.StatusBadRequest {
 			t.Errorf("update %v = %d, want 400", body, w.Code)
 		}
 	}
-	if w := do(r, "POST", "/api/v1/tagger-profiles", token, map[string]any{"name": "Bad", "bpm_write": "sometimes"}); w.Code != http.StatusBadRequest {
+	if w := do(r, "POST", "/api/v1/libraries", token, map[string]any{"name": "Bad", "path": "/bad", "bpm_write": "sometimes"}); w.Code != http.StatusBadRequest {
 		t.Errorf("create with an unknown mode = %d, want 400", w.Code)
 	}
 
-	if w := do(r, "PUT", "/api/v1/tagger-profiles/"+created.ID.String(), token, map[string]any{"bpm_write": models.BPMWriteOff}); w.Code != http.StatusOK {
+	if w := do(r, "PUT", "/api/v1/libraries/"+created.ID.String(), token, map[string]any{"bpm_write": models.BPMWriteOff}); w.Code != http.StatusOK {
 		t.Fatalf("turning BPM off = %d %s", w.Code, w.Body.String())
 	}
 }
@@ -133,9 +133,10 @@ func TestItemTempoExplainsItself(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
 
-	profile := models.TaggerProfile{Name: "Running", WriteTags: true, BPMWrite: models.BPMWriteFillEmpty, BPMMinConfidence: 0.7}
+	profile := models.TaggerProfile{Name: "Running", WriteTags: true}
 	api.DB.Create(&profile)
-	library := models.Library{Name: "Music", Path: "/music", Enabled: true, AnalyseTempo: true, TaggerProfileID: &profile.ID}
+	library := models.Library{Name: "Music", Path: "/music", Enabled: true, AnalyseTempo: true, TaggerProfileID: &profile.ID,
+		BPMWrite: models.BPMWriteFillEmpty, BPMMinConfidence: 0.7}
 	api.DB.Create(&library)
 	item := models.LibraryItem{LibraryID: library.ID, Path: "/music/a.flac"}
 	api.DB.Create(&item)
@@ -163,9 +164,9 @@ func TestItemTempoExplainsItself(t *testing.T) {
 		t.Fatalf("after analysis: %v", body)
 	}
 
-	// A profile that writes no tags writes no BPM, whatever its BPM setting says.
+	// A profile that writes no tags writes no BPM, whatever the library's BPM setting says.
 	api.DB.Model(&profile).Update("write_tags", false)
-	if body = read(); body["bpm_write"] != "" {
+	if body = read(); body["bpm_write"] != "" || body["writes_tags"] != false {
 		t.Fatalf("bpm_write = %v for a profile that writes no tags, want off", body["bpm_write"])
 	}
 

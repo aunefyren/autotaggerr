@@ -8,17 +8,24 @@ is a number you can build on — running playlists at a cadence, say — so the 
 touches a file. A stored tempo reaches a file's tags through the next tagging pass, the same
 handover a release that changed upstream uses
 ([scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)) — and only if the
-library's tagger profile writes BPM. How it is written, and when it is not, is in
+library writes BPM. How it is written, and when it is not, is in
 [tagging.md](tagging.md#tempo-is-the-one-tag-musicbrainz-does-not-supply).
 
 ### Reaching the file
 
-Analysis changes nothing about a file, so skip-unchanged would walk past it forever.
-`components.tempoPending` is the one exception added to the skip test: a file whose stored tempo is
-newer than its `last_scanned_at` is processed once more, which writes the BPM and re-stamps
-`last_scanned_at`, so the run after that skips it again. It is only asked when the library's profile
-writes BPM, so a library that analyses without writing pays nothing for it. *Tag files* needs no such
-rule — it re-tags every indexed file anyway.
+Neither analysing a file nor changing a library's BPM settings touches the file, so skip-unchanged
+alone would walk past it forever. Two rules in the skip test cover the two cases:
+
+- **A tempo analysed since the file was last processed** (`components.tempoPending`): processed
+  once more, which writes the BPM and re-stamps `last_scanned_at`. Only asked when the library writes
+  BPM, so a library that analyses without writing pays nothing for it.
+- **BPM settings changed since the file was last processed**: the tag-settings fingerprint
+  (`LibraryItem.TaggedWith`) covers the library's BPM settings along with the profile's, so turning
+  *Write BPM* on reaches every file on the next Process — including files analysed long before
+  ([scanning.md](scanning.md#skip-unchanged)). Before that check existed, those files only got their
+  BPM from *Tag files*, and Process reported nothing to do.
+
+*Tag files* needs neither rule: it re-tags every indexed file anyway.
 
 The BPM write itself then changes the file's size and mtime, which the next analysis pass recognises
 as *tags changed, audio did not* and re-stamps — the loop closes without a second decode.
@@ -34,8 +41,8 @@ feature existed.
 2. **Per-library opt-in.** *Libraries → edit → Analyse tempo* (`analyse_tempo`). Off by default:
    analysis decodes every file, which a library should ask for rather than be surprised by.
 
-Writing the result into files is a third, separate decision: the tagger profile's `bpm_write`
-(off by default) and `bpm_min_confidence` — see
+Writing the result into files is a third, separate decision, on the same form: the library's
+`bpm_write` (off by default) and `bpm_min_confidence` — see
 [tagging.md](tagging.md#tempo-is-the-one-tag-musicbrainz-does-not-supply).
 
 **Settings → Tempo analysis** holds the schedule (`autotaggerr_tempo_cron_schedule`, nightly at
@@ -154,8 +161,11 @@ with the reason rather than recorded.
   of thing. When the pass could do nothing, the sentence says which of the two reasons applies —
   no detector, or no library opted in — since each has its fix somewhere else. No confirm dialog: a
   pass writes no file and stopping it loses nothing.
-- **Tagger profiles** gain *Write BPM* and *Minimum confidence* (disabled, not hidden, while BPM is
-  not written), and a *BPM* column.
+- **Libraries → edit** also holds *Write BPM* and *Minimum confidence*, disabled (not hidden) until
+  analysis is on — they used to be on the tagger profile, which put the two halves of one feature on
+  two pages, and a library analysed under a profile that wrote nothing looked broken. The table
+  says *Tempo analysed · BPM written where missing* (or *not written*).
+- **Tagger profiles** no longer carry BPM settings.
 - **The item view** states the file's tempo above its tag diff — `104.96 BPM · confidence 0.96 ·
   written as 105`, or why there is none: not analysed, nothing measured, or not written and by which
   rule. The BPM row in the diff itself appears only when a write would carry one. Served by
@@ -171,10 +181,10 @@ with the reason rather than recorded.
 | `POST /api/v1/tempo/cancel` | Stop the running pass. |
 
 `analyse_tempo` is an ordinary field on `PUT /api/v1/libraries/:id`, and `bpm_write` /
-`bpm_min_confidence` on `PUT /api/v1/tagger-profiles/:id` (a 400 for an unknown mode or a confidence
+`bpm_min_confidence` on the same route (a 400 for an unknown mode or a confidence
 outside 0–1). `GET /api/v1/library-items/:id/tempo` returns one file's stored result with
-`library_analyses`, `bpm_write` (off when the profile writes no tags at all) and the effective
-`min_confidence`.
+`library_analyses`, `writes_tags` (whether the library's tagger profile writes tags at all),
+`bpm_write` (off when it does not) and the effective `min_confidence`.
 
 ## Related
 

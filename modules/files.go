@@ -402,7 +402,11 @@ func ProcessTrackFileAfterMatch(
 	// re-tag file with new information
 	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, tagger)
 	if err != nil {
-		logger.Log.Error("failed to set file tags. error: " + err.Error())
+		// A missing metaflac was logged once already; per file it is the same line
+		// thousands of times.
+		if !errors.Is(err, ErrMetaflacMissing) {
+			logger.Log.Error("failed to set file tags. error: " + err.Error())
+		}
 		return unchanged, tagsWritten, changed, fmt.Errorf("failed to set file tags: %w", err)
 	} else {
 		logger.Log.Debug("file tagger finished")
@@ -768,7 +772,11 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 
 			unchanged, tagsWritten, procErr := process(path)
 			if procErr != nil {
-				logger.Log.Error("failed to process file '" + path + "'. error: " + procErr.Error())
+				if errors.Is(procErr, ErrMetaflacMissing) {
+					logger.Log.Debug("not tagged, metaflac is missing: " + path)
+				} else {
+					logger.Log.Error("failed to process file '" + path + "'. error: " + procErr.Error())
+				}
 				resultMu.Lock()
 				errorFiles = append(errorFiles, path)
 				resultMu.Unlock()

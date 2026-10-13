@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+	"sync"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
@@ -12,6 +13,37 @@ import (
 	"github.com/mewkiz/flac"
 	"github.com/mewkiz/flac/meta"
 )
+
+// ErrMetaflacMissing is a FLAC tag write that could not happen because metaflac is not
+// installed. Reading needs nothing external (mewkiz/flac), so only a FLAC whose tags
+// actually change fails with it — and since the file is recorded as an error rather
+// than as tagged, the next run after installing it picks the file up again.
+var ErrMetaflacMissing = errors.New("metaflac is not installed, so FLAC tags cannot be written (install the flac package)")
+
+var (
+	metaflacMu      sync.Mutex
+	metaflacChecked bool
+	metaflacFound   bool
+)
+
+// MetaflacAvailable reports whether metaflac is on PATH. It is looked up once and its
+// absence logged once, as an error: unlike fpcalc and aubiotrack it is not optional.
+// Without the check every FLAC failed on its own with exec's "executable file not
+// found", once per file, which on a fresh setup is the whole library.
+func MetaflacAvailable() bool {
+	metaflacMu.Lock()
+	defer metaflacMu.Unlock()
+	if !metaflacChecked {
+		metaflacChecked = true
+		if _, err := exec.LookPath("metaflac"); err != nil {
+			logger.Log.Error("metaflac not found on PATH: FLAC files cannot be tagged until it is installed " +
+				"(the flac package — apt install flac; the Docker image already has it). MP3s are unaffected.")
+		} else {
+			metaflacFound = true
+		}
+	}
+	return metaflacFound
+}
 
 // ExtractFLACTag returns the value of a Vorbis comment key (case-insensitive).
 // If key is empty, it will resolve from metadataType (e.g., "release" => MUSICBRAINZ_ALBUMID).
@@ -191,6 +223,10 @@ func SetFlacTags(filePath string, metadata models.FileTags, tagger models.Tagger
 	if !hasChanges {
 		logger.Log.Debug("no tag changes needed: " + filePath)
 		return true, tagsWritten, nil, nil
+	}
+
+	if !MetaflacAvailable() {
+		return false, 0, nil, ErrMetaflacMissing
 	}
 
 	// --no-utf8-convert tells metaflac the tag arguments are already UTF-8 and must be

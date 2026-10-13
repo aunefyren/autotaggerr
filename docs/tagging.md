@@ -12,6 +12,15 @@ Dispatched by extension in `SetFileTags`:
 `metaflac` is the only binary required at runtime (bundled in the Docker image, otherwise on
 `PATH`). Other formats are not supported yet — see [wip.md](wip.md).
 
+**Without `metaflac`, FLAC writes fail on purpose.** Reading needs nothing external, so an unchanged
+FLAC is unaffected; one whose tags need changing fails with `modules.ErrMetaflacMissing`. It is
+recorded as an error, not as tagged, so the first run after installing it picks the file up again.
+The absence is logged once at startup (`modules.MetaflacAvailable`), not per file, and every event
+that writes tags (Process, Tag files, attaching) counts these failures in its `DetailCollector` and
+carries one warning naming how many there were (`components.MetaflacWarning`;
+[scanning.md](scanning.md#warnings-and-skipped-libraries)). Before this, a fresh setup without
+`metaflac` logged exec's `executable file not found` twice for every FLAC in the library.
+
 MP3 used to go through `ffmpeg` / `ffprobe`, which cost more than it looked. Writing one tag
 demuxed and remuxed the whole file; frames could only be addressed through ffmpeg's metadata-key
 translation, so `UFID` was unreachable and the ISRC ended up in a frame *described* `TXXX`; and the
@@ -186,11 +195,14 @@ the release. `BuildFileTags` knows nothing about them; `modules.TempoTagValue` f
 `FileTags.BPM` afterwards, on the write path and in the tag-diff preview alike, so the preview shows
 the BPM a scan would write.
 
-The tagger profile decides, per library:
+The library decides (*Libraries → edit*, beside the analysis opt-in). These settings used to be on
+the tagger profile; they moved so both halves of the feature are set in one place, and the
+`move_bpm_to_library` data migration copied each profile's values onto its libraries. The tagger
+still has the last word in one direction: a profile that writes no tags writes no BPM either.
 
 | `bpm_write` | What happens |
 |---|---|
-| `""` (off, the default) | Nothing. An analysed library is not written to until its profile says so. |
+| `""` (off, the default) | Nothing. The tempo is stored only. |
 | `fill_empty` | Written only where the file has no BPM. `0` counts as none — several tools write it to mean "not analysed". |
 | `overwrite` | Always written; another tool's value is replaced. |
 
