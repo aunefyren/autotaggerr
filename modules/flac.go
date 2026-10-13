@@ -110,7 +110,7 @@ func renderFLACTags(desired map[string][]string) map[string][]string {
 // silently carried fewer genres than the same albums as MP3 for no reason anyone
 // chose.
 func buildFLACDesiredTags(metadata models.FileTags) map[string][]string {
-	return map[string][]string{
+	desired := map[string][]string{
 		"ARTIST":      single(metadata.Artist),
 		"ARTISTS":     metadata.Artists,
 		"ALBUMARTIST": single(metadata.AlbumArtist),
@@ -156,6 +156,13 @@ func buildFLACDesiredTags(metadata models.FileTags) map[string][]string {
 		// relations) and ASIN (on the release) if they are ever wanted for real —
 		// that is a fetch and a mapping, and it starts with models.FileTags.
 	}
+	// Only when there is one: an absent key is one the diff never looks at, so a
+	// profile that does not write tempo — or a file below its confidence floor —
+	// cannot have remove_values clear a BPM some other tool wrote.
+	if metadata.BPM != "" {
+		desired[TempoTagKey] = single(metadata.BPM)
+	}
+	return desired
 }
 
 // SetFlacTags updates multiple Vorbis comment tags on a FLAC file. The returned
@@ -179,6 +186,7 @@ func SetFlacTags(filePath string, metadata models.FileTags, tagger models.Tagger
 		return unchanged, tagsWritten, nil, err
 	}
 
+	applyTempoPolicy(desired, existing, tagger)
 	changes, hasChanges := utilities.DiffFlacTags(existing, desired, tagger)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes needed: " + filePath)

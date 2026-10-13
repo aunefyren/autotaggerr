@@ -291,6 +291,14 @@ type TaggerProfile struct {
 	// Off by default; see TaggerSettings.MP3MultiValueTags for why it is a choice at
 	// all rather than simply correct.
 	MP3MultiValueTags bool `json:"mp3_multi_value_tags"`
+	// BPMWrite is whether and how the stored tempo reaches the BPM tag
+	// (BPMWrite*): off, only where the file has none, or always. Off by default —
+	// analysing a library and writing to it are separate decisions.
+	BPMWrite string `json:"bpm_write"`
+	// BPMMinConfidence is the confidence a stored tempo needs to be written. Zero or
+	// less means DefaultBPMMinConfidence, so a row predating the column behaves like
+	// a new one.
+	BPMMinConfidence float64 `json:"bpm_min_confidence"`
 }
 
 // TaggerSettings is the subset of a profile that the tag writers actually read: how
@@ -330,6 +338,9 @@ type TaggerSettings struct {
 	// joins repeated Vorbis comments on read, so the spec-correct form costs nothing
 	// there and is unconditional (see docs/tagging.md).
 	MP3MultiValueTags bool
+	// BPMWrite and BPMMinConfidence govern the BPM tag; see TaggerProfile.
+	BPMWrite         string
+	BPMMinConfidence float64
 }
 
 // Settings projects the stored profile onto the values the tag writers read.
@@ -343,6 +354,8 @@ func (t TaggerProfile) Settings() TaggerSettings {
 		IgnoreRedundantContributingArtists: t.IgnoreRedundantContributingArtists,
 		MaxGenres:                          t.MaxGenres,
 		MP3MultiValueTags:                  t.MP3MultiValueTags,
+		BPMWrite:                           t.BPMWrite,
+		BPMMinConfidence:                   t.BPMMinConfidence,
 	}
 }
 

@@ -17,6 +17,7 @@ const TYPE_LABELS: Record<string, string> = {
   count_files: "Counting files",
   mb_mirror: "Metadata refresh",
   artwork_refresh: "Artwork refresh",
+  tempo_analysis: "Tempo analysis",
   // Every pass that writes tags, whether a user pressed Tag files or a run reached its
   // tagging stage. One name, because it is one kind of work — the row says which run it
   // came from, which is the part that actually differs.
@@ -55,6 +56,8 @@ const TYPE_NOTES: Record<string, string> = {
     "A metadata refresh re-reads MusicBrainz and writes no files. Releases that changed upstream are re-tagged by the next processing run, or immediately with Tag files.",
   artwork_refresh:
     "Fetches covers and artist images into the local cache so the browsing pages paint from disk. Its own activity rather than part of a metadata refresh: artwork comes from separate providers on a separate budget, so none of its numbers is comparable with the MusicBrainz ones. Most rows come from a new artist or album fetching its own artwork as it arrives; the scheduled pass tops up what has expired. Nothing in your library is written.",
+  tempo_analysis:
+    "Measures each file's BPM from the audio, in the libraries that opt in. It reads audio and writes only its own table — no file is touched; the tagger profile decides whether the next processing run or Tag files writes the result. A file is decoded once: one whose tags changed but whose audio did not is recognised and skipped, as is one that only moved. It pauses while files are being written. Only failures are listed below.",
   count_files:
     "Sizes the run before it starts: every folder walked once to count the files it will visit. It reads no tags and changes nothing.",
   collection_scan:

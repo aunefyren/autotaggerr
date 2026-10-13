@@ -7,7 +7,21 @@ is a number you can build on — running playlists at a cadence, say — so the 
 **It stores; tagging writes.** *Analyse tempo* reads audio and writes one database table. It never
 touches a file. A stored tempo reaches a file's tags through the next tagging pass, the same
 handover a release that changed upstream uses
-([scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)).
+([scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)) — and only if the
+library's tagger profile writes BPM. How it is written, and when it is not, is in
+[tagging.md](tagging.md#tempo-is-the-one-tag-musicbrainz-does-not-supply).
+
+### Reaching the file
+
+Analysis changes nothing about a file, so skip-unchanged would walk past it forever.
+`components.tempoPending` is the one exception added to the skip test: a file whose stored tempo is
+newer than its `last_scanned_at` is processed once more, which writes the BPM and re-stamps
+`last_scanned_at`, so the run after that skips it again. It is only asked when the library's profile
+writes BPM, so a library that analyses without writing pays nothing for it. *Tag files* needs no such
+rule — it re-tags every indexed file anyway.
+
+The BPM write itself then changes the file's size and mtime, which the next analysis pass recognises
+as *tags changed, audio did not* and re-stamps — the loop closes without a second decode.
 
 ## Setup
 
@@ -19,6 +33,10 @@ feature existed.
    `PATH`. If it is missing, Autotaggerr logs that once and reports the feature as unavailable.
 2. **Per-library opt-in.** *Libraries → edit → Analyse tempo* (`analyse_tempo`). Off by default:
    analysis decodes every file, which a library should ask for rather than be surprised by.
+
+Writing the result into files is a third, separate decision: the tagger profile's `bpm_write`
+(off by default) and `bpm_min_confidence` — see
+[tagging.md](tagging.md#tempo-is-the-one-tag-musicbrainz-does-not-supply).
 
 **Settings → Tempo analysis** holds the schedule (`autotaggerr_tempo_cron_schedule`, nightly at
 01:00) and the worker count (`autotaggerr_tempo_concurrency`, 2). There is no global on/off: with
@@ -124,6 +142,26 @@ tempo* and *Failed*. Detail rows are **failures only** — a row per analysed fi
 of rows on a first pass saying the expected thing happened. A press with nothing to do is refused
 with the reason rather than recorded.
 
+## UI
+
+- **Libraries → edit → Analyse tempo (BPM)** is the opt-in, and the table says *Tempo analysed*
+  under a library's state so the question "which of my libraries are analysed?" does not take a modal
+  per row. The checkbox stays live when `aubiotrack` is missing — a library can opt in first — and
+  the help under it says that nothing will happen until the binary is installed.
+- **A *Tempo analysis* card under the libraries table** carries the verb: one sentence, one summary
+  line (files with a tempo, the last run, failures) or a progress bar while a pass runs, and *Analyse
+  tempo* / *Stop*. It is shaped like the artwork control on Data sources because it is the same kind
+  of thing. When the pass could do nothing, the sentence says which of the two reasons applies —
+  no detector, or no library opted in — since each has its fix somewhere else. No confirm dialog: a
+  pass writes no file and stopping it loses nothing.
+- **Tagger profiles** gain *Write BPM* and *Minimum confidence* (disabled, not hidden, while BPM is
+  not written), and a *BPM* column.
+- **The item view** states the file's tempo above its tag diff — `104.96 BPM · confidence 0.96 ·
+  written as 105`, or why there is none: not analysed, nothing measured, or not written and by which
+  rule. The BPM row in the diff itself appears only when a write would carry one. Served by
+  `GET /api/v1/library-items/:id/tempo`.
+- **Settings → Tempo analysis** renders from the schema like every other section.
+
 ## API
 
 | Route | Purpose |
@@ -132,7 +170,11 @@ with the reason rather than recorded.
 | `POST /api/v1/tempo/analyse` | Queue a pass. `202`; `409` with the reason when the detector is missing or nothing is opted in. |
 | `POST /api/v1/tempo/cancel` | Stop the running pass. |
 
-`analyse_tempo` is an ordinary field on `PUT /api/v1/libraries/:id`.
+`analyse_tempo` is an ordinary field on `PUT /api/v1/libraries/:id`, and `bpm_write` /
+`bpm_min_confidence` on `PUT /api/v1/tagger-profiles/:id` (a 400 for an unknown mode or a confidence
+outside 0–1). `GET /api/v1/library-items/:id/tempo` returns one file's stored result with
+`library_analyses`, `bpm_write` (off when the profile writes no tags at all) and the effective
+`min_confidence`.
 
 ## Related
 

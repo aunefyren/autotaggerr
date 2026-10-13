@@ -1,9 +1,10 @@
 import { FormEvent, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { DataSource, Library, Manager, TaggerProfile, dataSourceCategory } from "../types";
+import { DataSource, Library, Manager, TaggerProfile, TempoStatus, dataSourceCategory } from "../types";
 import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
+import { TempoAnalysis } from "../components/TempoAnalysis";
 import { useToast } from "../toast";
 
 interface Options {
@@ -23,6 +24,10 @@ export default function Libraries() {
   const [editing, setEditing] = useState<Library | null>(null);
   const [recorrelating, setRecorrelating] = useState<Library | null>(null);
   const [busy, setBusy] = useState(false);
+  // Bumped whenever a library changes, so the tempo card re-reads how many libraries
+  // opt in rather than contradicting the table above it.
+  const [tempoVersion, setTempoVersion] = useState(0);
+  const changed = () => { libs.reload(); setTempoVersion((v) => v + 1); };
 
   const options: Options = {
     managers: managers.data ?? [],
@@ -62,7 +67,7 @@ export default function Libraries() {
   const toggle = async (l: Library) => {
     try {
       await api.put(`/libraries/${l.id}`, { enabled: !l.enabled });
-      libs.reload();
+      changed();
     } catch (e) {
       toast("err", errMsg(e));
     }
@@ -72,7 +77,7 @@ export default function Libraries() {
     try {
       await api.del(`/libraries/${l.id}`);
       toast("ok", `Removed ${l.name}`);
-      libs.reload();
+      changed();
     } catch (e) {
       toast("err", errMsg(e));
     }
@@ -113,7 +118,15 @@ export default function Libraries() {
                   <td style={{ color: "var(--text)" }}>{l.name}</td>
                   <td><span className="path">{l.path}</span></td>
                   <td>{managerName(l.manager_id) ?? <span className="dim">— fallback</span>}</td>
-                  <td>{l.enabled ? <Pill kind="ok">Enabled</Pill> : <Pill kind="off">Disabled</Pill>}</td>
+                  <td>
+                    {/* The opt-in is a fact about the library, so it is stated here rather
+                        than only inside the edit form — "which of my libraries are
+                        analysed?" should not take a modal per row to answer. */}
+                    <div className="stack" style={{ gap: 2 }}>
+                      {l.enabled ? <Pill kind="ok">Enabled</Pill> : <Pill kind="off">Disabled</Pill>}
+                      {l.analyse_tempo && <span className="dim" style={{ fontSize: 11 }}>Tempo analysed</span>}
+                    </div>
+                  </td>
                   <td className="mono dim" style={{ fontSize: 11 }}>
                     {l.last_scan ? new Date(l.last_scan).toLocaleString() : "never"}
                   </td>
@@ -160,6 +173,8 @@ export default function Libraries() {
         </div>
       )}
 
+      {libs.data && libs.data.length > 0 && <TempoAnalysis version={tempoVersion} />}
+
       {recorrelating && (
         <RecorrelateDialog
           scope={recorrelating.name}
@@ -179,7 +194,7 @@ export default function Libraries() {
         <LibraryForm
           options={options}
           onClose={() => setCreating(false)}
-          onSaved={() => { setCreating(false); libs.reload(); toast("ok", "Library added"); }}
+          onSaved={() => { setCreating(false); changed(); toast("ok", "Library added"); }}
         />
       )}
       {editing && (
@@ -187,7 +202,7 @@ export default function Libraries() {
           initial={editing}
           options={options}
           onClose={() => setEditing(null)}
-          onSaved={() => { setEditing(null); libs.reload(); toast("ok", "Library saved"); }}
+          onSaved={() => { setEditing(null); changed(); toast("ok", "Library saved"); }}
         />
       )}
     </div>
@@ -204,13 +219,17 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const [dataSourceId, setDataSourceId] = useState(initial?.data_source_id ?? "");
   const [taggerProfileId, setTaggerProfileId] = useState(initial?.tagger_profile_id ?? "");
   const [useAcoustID, setUseAcoustID] = useState(initial?.use_acoustid ?? false);
+  const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
   const [busy, setBusy] = useState(false);
+  // Only to say so when the server cannot act on the switch. The switch itself stays
+  // live: a library can opt in before aubio is installed, and is picked up once it is.
+  const tempo = useFetch<TempoStatus>(() => api.get("/tempo/status"));
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { name, path, use_acoustid: useAcoustID };
+      const body: Record<string, unknown> = { name, path, use_acoustid: useAcoustID, analyse_tempo: analyseTempo };
       if (editing) body.cron = cron;
       // Only send an ID when one is chosen; "None" leaves the field unset.
       if (managerId) body.manager_id = managerId;
@@ -283,6 +302,20 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
         <span className="dim" style={{ fontSize: 11, marginTop: -6 }}>
           Lets you identify an unmatched file from its audio when attaching it. Needs an AcoustID
           data source and fpcalc on the server; it only ever suggests, never tags on its own.
+        </span>
+
+        <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={analyseTempo} onChange={(e) => setAnalyseTempo(e.target.checked)} />
+          <span style={{ fontSize: 12 }}>Analyse tempo (BPM)</span>
+        </label>
+        <span className="dim" style={{ fontSize: 11, marginTop: -6 }}>
+          Measures each file's BPM from the audio on the tempo schedule. The result is stored, not
+          written — the tagger profile decides whether it goes into the files.
+          {tempo.data && !tempo.data.detector_available && (
+            <span style={{ color: "var(--warning-text)" }}>
+              {" "}aubiotrack is not installed on the server, so nothing is analysed until it is.
+            </span>
+          )}
         </span>
 
         {editing && (

@@ -395,6 +395,9 @@ func ProcessTrackFileAfterMatch(
 	if err != nil {
 		return false, 0, nil, err
 	}
+	// The one field that is not MusicBrainz's: the stored tempo analysis, if the
+	// profile writes it (docs/tempo.md).
+	metadata.BPM = TempoTagValue(filePath, tagger)
 
 	// re-tag file with new information
 	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, tagger)
@@ -609,6 +612,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 			return nil, err
 		}
 		existing = m
+		applyTempoPolicy(desired, existing, tagger)
 		changed, _ = utilities.DiffFlacTags(existing, desired, tagger)
 	case ".mp3":
 		desired = renderMP3Tags(buildMP3DesiredTags(metadata), tagger)
@@ -617,6 +621,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 			return nil, err
 		}
 		existing = m
+		applyTempoPolicy(desired, existing, tagger)
 		changed, _ = utilities.DiffID3Tags(existing, desired, tagger)
 	default:
 		return nil, errors.New("unsupported file type")

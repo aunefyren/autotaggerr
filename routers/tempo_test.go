@@ -88,3 +88,88 @@ func TestTempoAnalyseQueuesForAnOptedInLibrary(t *testing.T) {
 		t.Fatalf("cancel = %d, want 200", w.Code)
 	}
 }
+
+// The BPM policy is an ordinary profile field: saved when valid, refused when the
+// writers would not understand it.
+func TestTaggerProfileBPMPolicy(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	w := do(r, "POST", "/api/v1/tagger-profiles", token, map[string]any{
+		"name": "Running", "bpm_write": models.BPMWriteFillEmpty, "bpm_min_confidence": 0.6,
+	})
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create = %d %s", w.Code, w.Body.String())
+	}
+	var created models.TaggerProfile
+	_ = json.Unmarshal(w.Body.Bytes(), &created)
+	var saved models.TaggerProfile
+	api.DB.First(&saved, "id = ?", created.ID)
+	if saved.BPMWrite != models.BPMWriteFillEmpty || saved.BPMMinConfidence != 0.6 {
+		t.Fatalf("saved profile = %+v", saved)
+	}
+
+	for _, body := range []map[string]any{
+		{"bpm_write": "always"},
+		{"bpm_min_confidence": 1.5},
+		{"bpm_min_confidence": -0.1},
+	} {
+		if w := do(r, "PUT", "/api/v1/tagger-profiles/"+created.ID.String(), token, body); w.Code != http.StatusBadRequest {
+			t.Errorf("update %v = %d, want 400", body, w.Code)
+		}
+	}
+	if w := do(r, "POST", "/api/v1/tagger-profiles", token, map[string]any{"name": "Bad", "bpm_write": "sometimes"}); w.Code != http.StatusBadRequest {
+		t.Errorf("create with an unknown mode = %d, want 400", w.Code)
+	}
+
+	if w := do(r, "PUT", "/api/v1/tagger-profiles/"+created.ID.String(), token, map[string]any{"bpm_write": models.BPMWriteOff}); w.Code != http.StatusOK {
+		t.Fatalf("turning BPM off = %d %s", w.Code, w.Body.String())
+	}
+}
+
+// The item view's tempo line rests on three facts, and each of the three "no BPM
+// tag" answers has to be distinguishable from the response alone.
+func TestItemTempoExplainsItself(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	profile := models.TaggerProfile{Name: "Running", WriteTags: true, BPMWrite: models.BPMWriteFillEmpty, BPMMinConfidence: 0.7}
+	api.DB.Create(&profile)
+	library := models.Library{Name: "Music", Path: "/music", Enabled: true, AnalyseTempo: true, TaggerProfileID: &profile.ID}
+	api.DB.Create(&library)
+	item := models.LibraryItem{LibraryID: library.ID, Path: "/music/a.flac"}
+	api.DB.Create(&item)
+
+	read := func() map[string]any {
+		t.Helper()
+		w := do(r, "GET", "/api/v1/library-items/"+item.ID.String()+"/tempo", token, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("item tempo = %d %s", w.Code, w.Body.String())
+		}
+		var body map[string]any
+		_ = json.Unmarshal(w.Body.Bytes(), &body)
+		return body
+	}
+
+	body := read()
+	if body["tempo"] != nil || body["library_analyses"] != true || body["bpm_write"] != models.BPMWriteFillEmpty || body["min_confidence"] != 0.7 {
+		t.Fatalf("before analysis: %v", body)
+	}
+
+	api.DB.Create(&models.TrackTempo{Path: item.Path, BPM: 160.2, Confidence: 0.9, Beats: 400})
+	body = read()
+	stored, _ := body["tempo"].(map[string]any)
+	if stored == nil || stored["bpm"] != 160.2 {
+		t.Fatalf("after analysis: %v", body)
+	}
+
+	// A profile that writes no tags writes no BPM, whatever its BPM setting says.
+	api.DB.Model(&profile).Update("write_tags", false)
+	if body = read(); body["bpm_write"] != "" {
+		t.Fatalf("bpm_write = %v for a profile that writes no tags, want off", body["bpm_write"])
+	}
+
+	if w := do(r, "GET", "/api/v1/library-items/01900000-0000-7000-8000-000000000000/tempo", token, nil); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown item = %d, want 404", w.Code)
+	}
+}

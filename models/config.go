@@ -17,6 +17,30 @@ type DatabaseConfig struct {
 // which a genre list still reads as a description rather than a dump.
 const DefaultMaxGenres = 5
 
+// How a tagger profile writes the stored tempo (TaggerProfile.BPMWrite). The empty
+// string is off, so a profile row predating the column writes nothing — upgrading
+// never starts touching a tag nobody asked for.
+const (
+	BPMWriteOff       = ""
+	BPMWriteFillEmpty = "fill_empty"
+	BPMWriteOverwrite = "overwrite"
+)
+
+// DefaultBPMMinConfidence is the confidence below which a stored tempo is not
+// written. Measured on a real library, clearly wrong results scored 0.10–0.14 and
+// steady dance and pop 0.85 and up; 0.5 keeps the first out without losing much of
+// the second (docs/tempo.md).
+const DefaultBPMMinConfidence = 0.5
+
+// ValidBPMWrite reports whether a value is one of the BPMWrite modes.
+func ValidBPMWrite(mode string) bool {
+	switch mode {
+	case BPMWriteOff, BPMWriteFillEmpty, BPMWriteOverwrite:
+		return true
+	}
+	return false
+}
+
 // Activity retention. Both figures are shared by every emitter that prunes or writes
 // the event tables — the processing runner and the metadata mirror — because they
 // write the same two tables and a feed pruned to two different depths would drop

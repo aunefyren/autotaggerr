@@ -36,6 +36,7 @@ import (
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/models"
 )
 
 const (
@@ -338,4 +339,80 @@ func audioPayloadEnd(file io.ReaderAt, size int64) (int64, error) {
 		}
 	}
 	return end, nil
+}
+
+// TempoTagKey is the tag the tempo is written to, under the same key on both engines:
+// the Vorbis comment `BPM` on FLAC (the de facto spelling — Picard's, Mixxx's), and
+// the standard TBPM frame on MP3 through id3TextFrameForKey.
+const TempoTagKey = "BPM"
+
+// TempoTagValue is the BPM a file should carry under a profile, or "" for "nothing to
+// say": the profile does not write tempo, the file has no stored result, the result
+// is below the profile's confidence floor, or it no longer describes the file's audio.
+//
+// The value is a whole number. That is what every consumer reads (TBPM is defined as
+// an integer), and a stored 104.96 written as "105" round-trips exactly, so the diff
+// converges on the first write.
+//
+// A stored row whose size or mtime no longer match the file is checked against the
+// audio hash before it is trusted. A mismatch there almost always means tags were
+// written since the last analysis — the audio is the same, and the value stands — but
+// a replaced or re-encoded file would otherwise be tagged with the old file's tempo
+// until the next pass caught up.
+func TempoTagValue(filePath string, tagger models.TaggerSettings) string {
+	if tagger.BPMWrite == models.BPMWriteOff || cacheDB == nil {
+		return ""
+	}
+	var stored models.TrackTempo
+	if cacheDB.Where("path = ?", filePath).Limit(1).Find(&stored).RowsAffected == 0 {
+		return ""
+	}
+	floor := tagger.BPMMinConfidence
+	if floor <= 0 {
+		floor = models.DefaultBPMMinConfidence
+	}
+	if stored.BPM <= 0 || stored.Confidence < floor {
+		return ""
+	}
+
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return ""
+	}
+	sameStamp := stored.Size == info.Size() && stored.ModTime != nil && stored.ModTime.Equal(info.ModTime())
+	if !sameStamp {
+		hash, err := AudioPayloadHash(filePath)
+		if err != nil || hash == "" || hash != stored.AudioHash {
+			return ""
+		}
+	}
+	return strconv.Itoa(int(math.Round(stored.BPM)))
+}
+
+// applyTempoPolicy is the fill-empty half of the profile's BPM setting, applied once
+// the file's current tags are known. In fill-empty mode an existing BPM — another
+// tagger's, a DJ tool's, a hand-entered one — is left exactly as it is, by taking the
+// key out of what is wanted. "0" counts as empty: several tools write it to mean
+// "not analysed".
+//
+// Removing the key, rather than wanting the existing value, is also what keeps
+// remove_values away from it — and the builders only add the key when there is a
+// value to write, for the same reason: an empty BPM must never become a request to
+// clear the tag.
+func applyTempoPolicy(desired, existing map[string][]string, tagger models.TaggerSettings) {
+	if _, wanted := desired[TempoTagKey]; !wanted {
+		return
+	}
+	if tagger.BPMWrite != models.BPMWriteOverwrite && hasTempo(existing[TempoTagKey]) {
+		delete(desired, TempoTagKey)
+	}
+}
+
+func hasTempo(values []string) bool {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" && value != "0" {
+			return true
+		}
+	}
+	return false
 }

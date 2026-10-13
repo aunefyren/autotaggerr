@@ -349,16 +349,31 @@ func (a *API) updateManager(c *gin.Context) {
 // --- Tagger profiles --------------------------------------------------------
 
 type taggerProfileInput struct {
-	Name                               *string `json:"name"`
-	WriteTags                          *bool   `json:"write_tags"`
-	RemoveValues                       *bool   `json:"remove_values"`
-	UseCurrentArtistName               *bool   `json:"use_current_artist_name"`
-	UseCustomArtistDelimiter           *bool   `json:"use_custom_artist_delimiter"`
-	CustomArtistDelimiter              *string `json:"custom_artist_delimiter"`
-	CustomArtistDelimiterCommas        *bool   `json:"custom_artist_delimiter_commas"`
-	IgnoreRedundantContributingArtists *bool   `json:"ignore_redundant_contributing_artists"`
-	MaxGenres                          *int    `json:"max_genres"`
-	MP3MultiValueTags                  *bool   `json:"mp3_multi_value_tags"`
+	Name                               *string  `json:"name"`
+	WriteTags                          *bool    `json:"write_tags"`
+	RemoveValues                       *bool    `json:"remove_values"`
+	UseCurrentArtistName               *bool    `json:"use_current_artist_name"`
+	UseCustomArtistDelimiter           *bool    `json:"use_custom_artist_delimiter"`
+	CustomArtistDelimiter              *string  `json:"custom_artist_delimiter"`
+	CustomArtistDelimiterCommas        *bool    `json:"custom_artist_delimiter_commas"`
+	IgnoreRedundantContributingArtists *bool    `json:"ignore_redundant_contributing_artists"`
+	MaxGenres                          *int     `json:"max_genres"`
+	MP3MultiValueTags                  *bool    `json:"mp3_multi_value_tags"`
+	BPMWrite                           *string  `json:"bpm_write"`
+	BPMMinConfidence                   *float64 `json:"bpm_min_confidence"`
+}
+
+// validate rejects a BPM setting the writers would not understand. The mode is an
+// enum the UI offers as a select, and the confidence is a share — anything outside
+// 0–1 is a mistake rather than a stricter or looser floor.
+func (in taggerProfileInput) validate() string {
+	if in.BPMWrite != nil && !models.ValidBPMWrite(*in.BPMWrite) {
+		return "bpm_write must be one of \"\", \"" + models.BPMWriteFillEmpty + "\" or \"" + models.BPMWriteOverwrite + "\""
+	}
+	if in.BPMMinConfidence != nil && (*in.BPMMinConfidence < 0 || *in.BPMMinConfidence > 1) {
+		return "bpm_min_confidence must be between 0 and 1"
+	}
+	return ""
 }
 
 func (in taggerProfileInput) apply(p *models.TaggerProfile) {
@@ -392,6 +407,12 @@ func (in taggerProfileInput) apply(p *models.TaggerProfile) {
 	if in.MP3MultiValueTags != nil {
 		p.MP3MultiValueTags = *in.MP3MultiValueTags
 	}
+	if in.BPMWrite != nil {
+		p.BPMWrite = *in.BPMWrite
+	}
+	if in.BPMMinConfidence != nil {
+		p.BPMMinConfidence = *in.BPMMinConfidence
+	}
 }
 
 func (a *API) getTaggerProfile(c *gin.Context)    { getEntity[models.TaggerProfile](a, c) }
@@ -405,6 +426,10 @@ func (a *API) createTaggerProfile(c *gin.Context) {
 	}
 	if in.Name == nil || *in.Name == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name is required"})
+		return
+	}
+	if problem := in.validate(); problem != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
 	p := models.TaggerProfile{WriteTags: true}
@@ -429,6 +454,10 @@ func (a *API) updateTaggerProfile(c *gin.Context) {
 	var in taggerProfileInput
 	if err := c.ShouldBindJSON(&in); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	if problem := in.validate(); problem != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
 	in.apply(&p)

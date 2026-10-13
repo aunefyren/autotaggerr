@@ -8,20 +8,7 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 [collection.md](collection.md), [attach.md](attach.md), [scanning.md](scanning.md),
 [tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md),
 [mb-migration.md](mb-migration.md), [mirror.md](mirror.md), [artwork.md](artwork.md),
-[authentication.md](authentication.md) and [settings.md](settings.md).
-
-## In flight: tempo (BPM) detection
-
-Built in three phases, each left compiling with its tests passing for the maintainer to commit:
-
-1. **Detection + storage** — `aubiotrack` (aubio) as an optional binary detected like `fpcalc`, a
-   `track_tempos` table keyed by path, and its own verb (*Analyse tempo*) on its own runner,
-   opted into per library. See [tempo.md](tempo.md).
-2. **Tag writing** — `TBPM` (MP3) / `BPM` (FLAC) from the stored result, governed by the tagger
-   profile (off / fill empty / overwrite, minimum confidence). Analysis never writes a file; the
-   next *Process* or *Tag files* carries the value in.
-3. **UI** — the library opt-in, *Analyse tempo* / *Cancel*, the profile fields, BPM in the item
-   view, Activity labels.
+[authentication.md](authentication.md), [settings.md](settings.md) and [tempo.md](tempo.md).
 
 ## Open work
 

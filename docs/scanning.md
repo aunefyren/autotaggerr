@@ -342,6 +342,11 @@ version bump on first run after upgrading, since existing rows have no manager r
 sets `pinned`) is not the manager's to redo, and re-correlating one would overwrite the MB IDs the
 user chose by hand.
 
+**A newly analysed tempo is a reason not to skip.** Tempo analysis stores a result without touching
+the file, so for a library whose tagger profile writes BPM, a file whose stored tempo is newer than
+its `last_scanned_at` is processed once more (`tempoPending`). See
+[tempo.md](tempo.md#reaching-the-file).
+
 ## Pruning files that are gone
 
 `library_items` is keyed by **path**, and a run only ever writes rows for files it finds — so for a

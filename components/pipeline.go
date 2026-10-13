@@ -254,10 +254,11 @@ func ScanLibraryRoots(
 	}
 
 	managerType := manager.Type()
+	writesTempo := tagger.WriteEnabled() && tagger.Settings().BPMWrite != models.BPMWriteOff
 	errorFiles = []string{}
 	for _, root := range roots {
 		c, u, tw, errs, walkErr := modules.WalkAndProcess(root, workers, func(path string) (bool, int, error) {
-			if !force && shouldSkip(db, path, processedVersion, managerType) {
+			if !force && shouldSkip(db, path, processedVersion, managerType) && !(writesTempo && tempoPending(db, path)) {
 				return true, 0, nil // counts as unchanged
 			}
 			return ProcessFile(db, library, manager, tagger, plexClient, refreshSet, detail, path, library.Path, processedVersion)
@@ -309,6 +310,30 @@ func shouldSkip(db *gorm.DB, filePath, processedVersion, managerType string) boo
 	}
 	// Compare to the second: SQLite time round-tripping can drop sub-second precision.
 	return item.Size == fi.Size() && item.ModTime.Unix() == fi.ModTime().Unix()
+}
+
+// tempoPending reports whether a file has a tempo analysed since it was last
+// processed. Nothing about the file changes when the tempo analysis stores a result —
+// that verb only reads audio — so without this an unchanged file would be skipped
+// forever and its BPM never written. It is the drift stage's handover in miniature:
+// one verb records a fact, the next processing run puts it in the file, and the
+// re-stamped LastScannedAt makes the run after that skip it again.
+//
+// Only asked when the library's profile writes BPM, so a library that analyses but
+// does not write pays nothing for it.
+func tempoPending(db *gorm.DB, filePath string) bool {
+	if db == nil {
+		return false
+	}
+	var stored models.TrackTempo
+	if db.Where("path = ? AND bpm > 0", filePath).Limit(1).Find(&stored).RowsAffected == 0 {
+		return false
+	}
+	var item models.LibraryItem
+	if db.Where("path = ?", filePath).Limit(1).Find(&item).RowsAffected == 0 || item.LastScannedAt == nil {
+		return true
+	}
+	return stored.AnalysedAt.After(*item.LastScannedAt)
 }
 
 // pinnedCorrelation returns a file's stored correlation when its index row is pinned

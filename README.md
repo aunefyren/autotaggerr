@@ -45,8 +45,9 @@ There are other solutions that try to fix this, like a Beets plugin that can run
 - 🥁 **Tempo (BPM) Detection** *(optional)*  
   Opt a library in under **Libraries → edit** and Autotaggerr measures each file's BPM from the
   audio with [aubio](https://aubio.org), on its own schedule, and stores it with a confidence.
-  Files are only ever analysed once — a tag write, or a move, does not count as new audio. See
-  [docs/tempo.md](docs/tempo.md).
+  Files are only ever analysed once — a tag write, or a move, does not count as new audio. The
+  tagger profile decides whether the result is written (`BPM` on FLAC, `TBPM` on MP3), only where
+  a file has none or always, and above which confidence. See [docs/tempo.md](docs/tempo.md).
 
 - 🧠 **Rate-Limited & Cached API Calls**  
   Avoid API abuse and repeated lookups with built-in caching and configurable request throttling.

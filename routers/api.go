@@ -141,6 +141,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// Library items (the correlation index)
 		protected.GET("/library-items", a.listLibraryItems)
 		protected.GET("/library-items/:id/tags", a.itemTags)
+		protected.GET("/library-items/:id/tempo", a.itemTempo)
 
 		// Manual attach — identify a file MusicBrainz/Lidarr could not
 		protected.GET("/search/releases", a.searchReleases)

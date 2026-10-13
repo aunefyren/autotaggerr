@@ -111,6 +111,7 @@ above). The differences that remain are ones the formats force:
 | ISRC | `ISRC` | `TSRC` |
 | Release date | `DATE` + `RELEASEDATE` | `TDRC` |
 | Disc total | `DISCTOTAL` + `TOTALDISCS` | half of the paired `TPOS` |
+| Tempo | `BPM` | `TBPM` |
 
 Dates are written at the precision MusicBrainz gives them — `1983`, `1983-10` or `1983-10-05` —
 never padded to an invented day; both `DATE` and `TDRC` accept the shorter forms
@@ -177,6 +178,35 @@ happens exactly once.
 
 `ASIN`, `COMPOSER` and `AUTHOR` are written by neither. `BuildFileTags` has never populated them,
 so listing them only ever cleared another tagger's value once `remove_values` was on.
+
+## Tempo is the one tag MusicBrainz does not supply
+
+`BPM` (FLAC) and `TBPM` (MP3) come from the stored tempo analysis ([tempo.md](tempo.md)), not from
+the release. `BuildFileTags` knows nothing about them; `modules.TempoTagValue` fills
+`FileTags.BPM` afterwards, on the write path and in the tag-diff preview alike, so the preview shows
+the BPM a scan would write.
+
+The tagger profile decides, per library:
+
+| `bpm_write` | What happens |
+|---|---|
+| `""` (off, the default) | Nothing. An analysed library is not written to until its profile says so. |
+| `fill_empty` | Written only where the file has no BPM. `0` counts as none — several tools write it to mean "not analysed". |
+| `overwrite` | Always written; another tool's value is replaced. |
+
+`bpm_min_confidence` (default 0.5) is the confidence a result needs to be written at all.
+
+- **A whole number**, on both engines. `TBPM` is defined as an integer, every reader expects one, and
+  a stored 104.96 written as `105` reads back exactly, so the diff converges on the first write
+  (`TestBPMRoundTrip`).
+- **No value means no key**, not an empty one. The builders add `BPM` only when there is a value,
+  and fill-empty works by *removing* the key once the file is seen to have one
+  (`applyTempoPolicy`). Either way the diff never looks at a BPM it has nothing to say about — so
+  `remove_values`, which turns an empty wanted value into a deletion, can never clear a BPM another
+  tool wrote (`TestBPMWriteModesOnRealFiles`).
+- **A stored result is checked against the audio** before it is written, when the file's size or
+  mtime have moved since the analysis. That is almost always a tag write, and the value stands; but a
+  replaced file would otherwise be tagged with its predecessor's tempo.
 
 ## Genres
 
