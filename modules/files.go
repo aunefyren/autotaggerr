@@ -288,13 +288,13 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 		// file path, so no separate log line is needed here
 		return false, 0, nil, fmt.Errorf("failed to get MB release data: %w", err)
 	}
-	logger.Log.Debug("MB title response: " + response.Title)
+	logger.Log.Debug("tagging from release: " + response.Title)
 
 	// Go through API response for information
 	for _, media := range response.Media {
 		for _, track := range media.Tracks {
 			if track.ID == correlation.MBReleaseTrackID {
-				logger.Log.Debug("release track ID found in MB response")
+				logger.Log.Debug("release track ID found in the release")
 				if err := verifyDiscFolder(filePath, correlation, track, media, response); err != nil {
 					logger.Log.Warnf("refusing to tag '%s': %s", filePath, err.Error())
 					return false, 0, nil, err
@@ -410,6 +410,11 @@ func ProcessTrackFileAfterMatch(
 		return unchanged, tagsWritten, changed, fmt.Errorf("failed to set file tags: %w", err)
 	} else {
 		logger.Log.Debug("file tagger finished")
+	}
+	// A BPM to write means the stored tempo was just confirmed to describe this audio;
+	// the write changed tags only, so keep the row matching the file.
+	if !unchanged && metadata.BPM != "" {
+		RestampTempoAfterWrite(filePath)
 	}
 
 	changeString := "unchanged"

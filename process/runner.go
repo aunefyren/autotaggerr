@@ -600,6 +600,19 @@ func managerWarnings(scope Scope) []string {
 	return warnings
 }
 
+// mbLookupsClause states where a tagging pass got its releases from. Tag files is
+// meant to write from the cache and touch MusicBrainz only for a release it does not
+// hold, and the summary is where that is visible without reading the debug log —
+// which logs every cached read and so looks, at a glance, like a run querying
+// MusicBrainz once per file.
+func mbLookupsClause(s modules.MusicbrainzFetchStats) string {
+	cached := s.CacheHits + s.Coalesced
+	if cached == 0 && s.Fetches == 0 {
+		return ""
+	}
+	return fmt.Sprintf(" · releases: %d from cache, %d fetched", cached, s.Fetches)
+}
+
 // addWarnings records the non-empty warnings on an event's details, after any already
 // there (models.EventDetailWarnings).
 func addWarnings(details map[string]any, warnings ...string) {
@@ -1798,6 +1811,7 @@ func (r *Runner) retagAllNow() {
 	}
 
 	logger.Log.Infof("re-tagging %d files across %d library(ies)", len(items), len(libraries))
+	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in every library")
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(r.detailRetention)
@@ -1838,6 +1852,7 @@ func (r *Runner) retagLibraryNow(libraryID uuid.UUID) {
 	}
 
 	logger.Log.Infof("re-tagging %d files for library: %s", len(items), library.Name)
+	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in "+library.Name)
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(r.detailRetention)
@@ -1882,6 +1897,7 @@ func (r *Runner) retagArtistNow(artistMBID string) {
 	}
 
 	logger.Log.Infof("re-tagging %d files for artist: %s", len(items), artist.Name)
+	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files for "+artist.Name)
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(r.detailRetention)
@@ -2058,6 +2074,8 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 // finishRefresh records the Activity event shared by every re-tagging run, with
 // `extra` carrying whatever narrowed it.
 func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseRefresh, detail *components.DetailCollector, extra map[string]any) {
+	mbStats := modules.MusicbrainzStatsSnapshot()
+	summary += mbLookupsClause(mbStats)
 	status := models.EventStatusOK
 	if len(res.errorFiles) > 0 {
 		status = models.EventStatusError
@@ -2076,6 +2094,7 @@ func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseR
 		"releases_gone":     res.goneReleases,
 		"releases_relinked": res.relinked,
 		"migrations":        res.migrations,
+		"mb_lookups":        mbStats,
 	}
 	for k, v := range extra {
 		details[k] = v
@@ -2257,6 +2276,7 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	// Opened before the first write and finished after the Plex hand-off, so an
 	// interactive re-tag is one run in the feed however many files it touched — the
 	// same shape the queued re-tags have.
+	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
 	event := events.Begin(r.db, models.EventTypeTagFiles, retagItemsTitle(len(itemIDs)))
 	detail := components.NewDetailCollector(r.detailRetention)
 
@@ -2302,8 +2322,9 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	if failed > 0 {
 		status = models.EventStatusError
 	}
+	mbStats := modules.MusicbrainzStatsSnapshot()
 	summary := fmt.Sprintf("%d of %d files re-tagged · %d unchanged · %d errors",
-		written, len(itemIDs), unchanged, failed)
+		written, len(itemIDs), unchanged, failed) + mbLookupsClause(mbStats)
 	event.Stats = []models.EventStat{
 		{Label: "Files re-tagged", Value: written, Kind: models.EventStatNotable, Filter: models.EventItemStatusChanged},
 		{Label: "Already correct", Value: unchanged, Kind: models.EventStatMuted},
@@ -2315,6 +2336,7 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 		"files_unchanged": unchanged,
 		"errors":          failed,
 		"detail":          detailSummary(detail),
+		"mb_lookups":      mbStats,
 	}
 	addWarnings(details, components.MetaflacWarning(detail))
 	events.Finish(r.db, event, status, summary, details)

@@ -98,6 +98,14 @@ func TestTempoTagValueChecksTheAudioWhenTheStampMoved(t *testing.T) {
 	if got := TempoTagValue(path, writeTempo); got != "160" {
 		t.Fatalf("after a tag write: TempoTagValue = %q, want 160", got)
 	}
+	// Confirmed once, then re-stamped: the next tagging run must not hash the file
+	// again to reach the same answer.
+	var row models.TrackTempo
+	cacheDB.Where("path = ?", path).First(&row)
+	info, _ := os.Stat(path)
+	if row.Size != info.Size() || row.ModTime == nil || !row.ModTime.Equal(info.ModTime()) {
+		t.Errorf("stamp not moved onto the file: stored %d/%v, file %d/%v", row.Size, row.ModTime, info.Size(), info.ModTime())
+	}
 
 	replaced := append(append([]byte(nil), audioFrames...), 0x01, 0x02)
 	if err := os.WriteFile(path, replaced, 0o644); err != nil {
@@ -289,4 +297,29 @@ func TestDiffFileTagsPreviewsBPM(t *testing.T) {
 		}
 	}
 	t.Fatalf("no BPM row in the preview: %+v", entries)
+}
+
+// TestRestampTempoAfterWrite: Autotaggerr's own tag write keeps the stored tempo
+// matching the file, so the BPM it just wrote does not cost a full audio hash on
+// every tagging run after.
+func TestRestampTempoAfterWrite(t *testing.T) {
+	dbForCache(t)
+	path := writeFile(t, "a.mp3", audioFrames)
+	storeTempo(t, path, 120, 0.9)
+	later := time.Now().Add(time.Hour).Truncate(time.Second)
+	if err := os.WriteFile(path, append(id3v2Tag(make([]byte, 50), false), audioFrames...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, later, later); err != nil {
+		t.Fatal(err)
+	}
+
+	RestampTempoAfterWrite(path)
+
+	var row models.TrackTempo
+	cacheDB.Where("path = ?", path).First(&row)
+	info, _ := os.Stat(path)
+	if row.Size != info.Size() || row.ModTime == nil || !row.ModTime.Equal(info.ModTime()) {
+		t.Errorf("stored %d/%v, file %d/%v", row.Size, row.ModTime, info.Size(), info.ModTime())
+	}
 }

@@ -386,8 +386,33 @@ func TempoTagValue(filePath string, tagger models.TaggerSettings) string {
 		if err != nil || hash == "" || hash != stored.AudioHash {
 			return ""
 		}
+		// Same audio, so the row describes this file: re-stamp it, or every tagging run
+		// after a tag write re-reads the whole file again to reach the same answer. On
+		// a large library behind a slow filesystem that was minutes per run.
+		restampTempo(filePath, info)
 	}
 	return strconv.Itoa(int(math.Round(stored.BPM)))
+}
+
+// RestampTempoAfterWrite moves a file's stored tempo onto the file's new size and
+// mtime after Autotaggerr wrote its tags. Only for a row TempoTagValue has just
+// confirmed describes this audio — the write between the two touched tags, not audio,
+// so the stored result still holds. Without it the write itself makes the stamp stale,
+// and the next tagging run pays a full audio hash per file to find that out.
+func RestampTempoAfterWrite(filePath string) {
+	if info, err := os.Stat(filePath); err == nil {
+		restampTempo(filePath, info)
+	}
+}
+
+func restampTempo(filePath string, info os.FileInfo) {
+	if cacheDB == nil {
+		return
+	}
+	if err := cacheDB.Model(&models.TrackTempo{}).Where("path = ?", filePath).
+		Updates(map[string]any{"size": info.Size(), "mod_time": info.ModTime()}).Error; err != nil {
+		logger.Log.Debugf("could not re-stamp the stored tempo of %q: %s", filePath, err.Error())
+	}
 }
 
 // applyTempoPolicy is the fill-empty half of the library's BPM setting, applied once

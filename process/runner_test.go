@@ -13,6 +13,7 @@ import (
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/sirupsen/logrus"
 )
 
@@ -405,5 +406,17 @@ func TestAddWarningsKeepsEarlierOnes(t *testing.T) {
 	addWarnings(none, "")
 	if _, present := none[models.EventDetailWarnings]; present {
 		t.Error("an empty warning was recorded")
+	}
+}
+
+// TestMBLookupsClause: a Tag files summary says where its releases came from, so a
+// run that read everything from the cache cannot be mistaken for one that queried
+// MusicBrainz per file.
+func TestMBLookupsClause(t *testing.T) {
+	if got := mbLookupsClause(modules.MusicbrainzFetchStats{CacheHits: 100, Coalesced: 4, Fetches: 2}); got != " · releases: 104 from cache, 2 fetched" {
+		t.Errorf("clause = %q", got)
+	}
+	if got := mbLookupsClause(modules.MusicbrainzFetchStats{}); got != "" {
+		t.Errorf("clause with no lookups = %q, want none", got)
 	}
 }

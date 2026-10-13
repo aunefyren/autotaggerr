@@ -101,6 +101,12 @@ test first (`tempo.Runner.analyseOne`):
 3. **Another path has the same audio hash** → a moved or copied file. The result is carried over.
 4. Otherwise, run the detector.
 
+Tagging keeps the stamp current too. When `TempoTagValue` finds a moved stamp and the hash confirms
+the audio, it re-stamps the row, and `RestampTempoAfterWrite` re-stamps it again after Autotaggerr's
+own BPM write. Without both, every tagging run after a BPM write hashed every analysed file to
+reach the same answer: on a library behind a slow mount (WSL's `/mnt/c`) that was 3.6 GB read and two
+minutes per *Tag files* over about a hundred files, and it looked like the run was querying MusicBrainz.
+
 Step 2 is what makes the feature affordable. The BPM tag write changes size and mtime, so with a
 size/mtime key alone every write would cost a re-analysis — of every file, once, the first time
 tags are written. `modules.AudioPayloadHash` hashes the bytes between the tags instead: a leading
