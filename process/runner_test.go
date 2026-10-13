@@ -2,15 +2,18 @@ package process
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/sirupsen/logrus"
 )
 
@@ -85,6 +88,12 @@ func TestRunnerRunAll(t *testing.T) {
 	}
 	if errs, ok := ev.Details["errors"].(float64); !ok || errs != 1 {
 		t.Errorf("event details errors = %#v, want 1", ev.Details["errors"])
+	}
+
+	// The library has no manager, so the run says so — and goes ahead regardless.
+	warnings, _ := ev.Details[models.EventDetailWarnings].([]any)
+	if len(warnings) != 1 || !strings.Contains(fmt.Sprint(warnings[0]), "has no manager") {
+		t.Errorf("warnings = %#v, want one no-manager warning", ev.Details[models.EventDetailWarnings])
 	}
 
 	// The flusher should have counted the one file and left the final progress on the
@@ -379,5 +388,35 @@ func TestPathInScope(t *testing.T) {
 				t.Errorf("pathInScope(%q, %v) = %v, want %v", tc.path, tc.roots, got, tc.want)
 			}
 		})
+	}
+}
+
+// TestAddWarningsKeepsEarlierOnes: a run collects warnings from more than one place —
+// a library without a manager, a missing metaflac — and none may replace another.
+func TestAddWarningsKeepsEarlierOnes(t *testing.T) {
+	details := map[string]any{}
+	addWarnings(details, "first", "")
+	addWarnings(details, "second")
+	got, _ := details[models.EventDetailWarnings].([]string)
+	if strings.Join(got, "|") != "first|second" {
+		t.Errorf("warnings = %#v", details[models.EventDetailWarnings])
+	}
+
+	none := map[string]any{}
+	addWarnings(none, "")
+	if _, present := none[models.EventDetailWarnings]; present {
+		t.Error("an empty warning was recorded")
+	}
+}
+
+// TestMBLookupsClause: a Tag files summary says where its releases came from, so a
+// run that read everything from the cache cannot be mistaken for one that queried
+// MusicBrainz per file.
+func TestMBLookupsClause(t *testing.T) {
+	if got := mbLookupsClause(modules.MusicbrainzFetchStats{CacheHits: 100, Coalesced: 4, Fetches: 2}); got != " · releases: 104 from cache, 2 fetched" {
+		t.Errorf("clause = %q", got)
+	}
+	if got := mbLookupsClause(modules.MusicbrainzFetchStats{}); got != "" {
+		t.Errorf("clause with no lookups = %q, want none", got)
 	}
 }

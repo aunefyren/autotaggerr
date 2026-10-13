@@ -16,7 +16,9 @@ export default function TaggerProfiles() {
         <h1>Tagger profiles</h1>
       </div>
       <p className="muted" style={{ margin: 0, maxWidth: "68ch" }}>
-        How tags are written — artist delimiter, whether to remove stale values, and more. A library uses one profile.
+        How tags are written — artist delimiter, whether to remove stale values, and more. A library
+        uses one profile. Whether a measured tempo becomes a BPM tag is set on the library, beside
+        tempo analysis.
       </p>
 
       {err && <ErrorNote message={err} />}

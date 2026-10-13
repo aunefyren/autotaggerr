@@ -42,6 +42,13 @@ There are other solutions that try to fix this, like a Beets plugin that can run
   monogram tiles. All artwork is proxied and cached by Autotaggerr, so nothing is hot-linked and your
   key never reaches the browser.
 
+- 🥁 **Tempo (BPM) Detection** *(optional)*  
+  Opt a library in under **Libraries → edit** and Autotaggerr measures each file's BPM from the
+  audio with [aubio](https://aubio.org), on its own schedule, and stores it with a confidence.
+  Files are only ever analysed once — a tag write, or a move, does not count as new audio. The
+  same form decides whether the result is written (`BPM` on FLAC, `TBPM` on MP3), only where a
+  file has none or always, and above which confidence. See [docs/tempo.md](docs/tempo.md).
+
 - 🧠 **Rate-Limited & Cached API Calls**  
   Avoid API abuse and repeated lookups with built-in caching and configurable request throttling.
 
@@ -94,6 +101,20 @@ Used to read/write Vorbis comments in `.flac` files.
 MP3 tagging needs nothing installed — ID3 frames are read and written in-process.
 [`fpcalc`](https://acoustid.org/chromaprint) is optional, for AcoustID fingerprinting.
 
+### 🥁 [aubio](https://aubio.org) *(optional, for tempo detection)*
+
+Provides `aubiotrack`, which tempo analysis runs over each file. Without it the feature reports
+itself as unavailable and nothing else changes. The Docker image includes it.
+
+- **Ubuntu/Debian**  
+  `sudo apt install aubio-tools`
+- **Alpine**  
+  `apk add aubio`
+- **macOS (Homebrew)**  
+  `brew install aubio`
+
+Only `aubiotrack` is used — not the Python `aubio` command, so no Python is needed.
+
 ---
 
 ## 🐳 Docker Compose Example
@@ -142,6 +163,8 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"autotaggerr_port": 8080,
 	"autotaggerr_process_concurrency": 4,
 	"autotaggerr_process_cron_schedule": "0 0 18 * * 7",
+	"autotaggerr_tempo_concurrency": 2,
+	"autotaggerr_tempo_cron_schedule": "0 0 1 * * *",
 	"autotaggerr_test_email": "",
 	"autotaggerr_version": "v1.0.0",
 	"database": {
@@ -196,6 +219,8 @@ starts.
 | `autotaggerr_mirror_cron_schedule` | — | — | string | 6-field cron for the mirror refresh. Default `0 0 3 * * *` (nightly 03:00). |
 | `autotaggerr_artwork_disabled` | — | — | bool | Turn the scheduled artwork fetch — and the automatic one for newly added artists and albums — off entirely. Images are still fetched on demand when a page asks. Default `false` (artwork is fetched ahead). |
 | `autotaggerr_artwork_cron_schedule` | — | — | string | 6-field cron for the artwork fetch. Default `0 0 5 * * *` (nightly 05:00). New rows fetch their own artwork as they arrive, so this is a backstop for expiry. |
+| `autotaggerr_tempo_cron_schedule` | — | — | string | 6-field cron for tempo analysis. Default `0 0 1 * * *` (nightly 01:00). Which libraries are analysed is set per library (**Libraries → edit**); with none opted in the pass does nothing. Editable on **Settings → Tempo analysis**. |
+| `autotaggerr_tempo_concurrency` | — | — | int | Files analysed in parallel. Default `2`. Analysis is CPU-bound, and a pass pauses while files are being written regardless. Editable on **Settings → Tempo analysis**. |
 | `autotaggerr_migration_review_releases` | — | — | bool | Hold merged **releases** for manual approval instead of re-pointing records automatically. Default `false` (apply). |
 | `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |
 | `autotaggerr_migration_review_pinned` | — | — | bool | Hold any migration that would rewrite a **manually attached** file's MB ID, whatever its type. Default `false` (apply). |

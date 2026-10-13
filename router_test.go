@@ -13,6 +13,7 @@ import (
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/process"
+	"github.com/aunefyren/autotaggerr/tempo"
 	"github.com/aunefyren/autotaggerr/web"
 	"github.com/gin-gonic/gin"
 )
@@ -35,7 +36,7 @@ func testRouter(t *testing.T) *gin.Engine {
 	}
 	cfg := models.ConfigStruct{AutotaggerrName: "Autotaggerr", AutotaggerrVersion: "test"}
 	scanRunner := process.NewRunner(db, nil, cfg)
-	return initRouter(db, scanRunner, mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, cfg), artwork.NewRunner(db, cfg), cfg)
+	return initRouter(db, scanRunner, mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, cfg), artwork.NewRunner(db, cfg), tempo.NewRunner(db, scanRunner.WritingFiles, cfg), cfg)
 }
 
 func routerGet(t *testing.T, r *gin.Engine, path string) *httptest.ResponseRecorder {

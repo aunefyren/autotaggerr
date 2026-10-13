@@ -58,7 +58,7 @@ func encodeID3FrameValue(values []string) string {
 // pure (no I/O) so the field-to-tag wiring can be unit-tested. Values are carried as
 // the several values they are; renderMP3Values decides how they reach the file.
 func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
-	return map[string][]string{
+	desired := map[string][]string{
 		"ARTIST":      single(metadata.Artist),
 		"ARTISTS":     metadata.Artists,
 		"ALBUMARTIST": single(metadata.AlbumArtist),
@@ -121,6 +121,12 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
 		// under its own key for the reason ufidTagKey explains.
 		ufidTagKey: single(metadata.MBRecordingID),
 	}
+	// TBPM, through id3TextFrameForKey. Only when there is a value, for the reason
+	// buildFLACDesiredTags gives.
+	if metadata.BPM != "" {
+		desired[TempoTagKey] = single(metadata.BPM)
+	}
+	return desired
 }
 
 // pairedFrameValue renders the "n/total" halves of a paired ID3 frame (track, disc).
@@ -168,6 +174,8 @@ var id3TextFrameForKey = map[string]string{
 	// described by legacyISRCFrameDescription; being in this map gives it the read
 	// direction for free, through id3KeyForTextFrame.
 	"ISRC": "TSRC",
+	// TBPM is the standard tempo frame, an integer by definition.
+	TempoTagKey: "TBPM",
 }
 
 // id3PairedFrames are the two frames that carry a number and a total in one value.
@@ -249,6 +257,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags, tagger models.TaggerS
 		return false, 0, nil, fmt.Errorf("read mp3 tags failed: %w", err)
 	}
 
+	applyTempoPolicy(desired, existing, tagger)
 	changes, hasChanges := utilities.DiffID3Tags(existing, desired, tagger)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes, returning")

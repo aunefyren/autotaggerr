@@ -12,6 +12,15 @@ Dispatched by extension in `SetFileTags`:
 `metaflac` is the only binary required at runtime (bundled in the Docker image, otherwise on
 `PATH`). Other formats are not supported yet — see [wip.md](wip.md).
 
+**Without `metaflac`, FLAC writes fail on purpose.** Reading needs nothing external, so an unchanged
+FLAC is unaffected; one whose tags need changing fails with `modules.ErrMetaflacMissing`. It is
+recorded as an error, not as tagged, so the first run after installing it picks the file up again.
+The absence is logged once at startup (`modules.MetaflacAvailable`), not per file, and every event
+that writes tags (Process, Tag files, attaching) counts these failures in its `DetailCollector` and
+carries one warning naming how many there were (`components.MetaflacWarning`;
+[scanning.md](scanning.md#warnings-and-skipped-libraries)). Before this, a fresh setup without
+`metaflac` logged exec's `executable file not found` twice for every FLAC in the library.
+
 MP3 used to go through `ffmpeg` / `ffprobe`, which cost more than it looked. Writing one tag
 demuxed and remuxed the whole file; frames could only be addressed through ffmpeg's metadata-key
 translation, so `UFID` was unreachable and the ISRC ended up in a frame *described* `TXXX`; and the
@@ -111,6 +120,7 @@ above). The differences that remain are ones the formats force:
 | ISRC | `ISRC` | `TSRC` |
 | Release date | `DATE` + `RELEASEDATE` | `TDRC` |
 | Disc total | `DISCTOTAL` + `TOTALDISCS` | half of the paired `TPOS` |
+| Tempo | `BPM` | `TBPM` |
 
 Dates are written at the precision MusicBrainz gives them — `1983`, `1983-10` or `1983-10-05` —
 never padded to an invented day; both `DATE` and `TDRC` accept the shorter forms
@@ -177,6 +187,38 @@ happens exactly once.
 
 `ASIN`, `COMPOSER` and `AUTHOR` are written by neither. `BuildFileTags` has never populated them,
 so listing them only ever cleared another tagger's value once `remove_values` was on.
+
+## Tempo is the one tag MusicBrainz does not supply
+
+`BPM` (FLAC) and `TBPM` (MP3) come from the stored tempo analysis ([tempo.md](tempo.md)), not from
+the release. `BuildFileTags` knows nothing about them; `modules.TempoTagValue` fills
+`FileTags.BPM` afterwards, on the write path and in the tag-diff preview alike, so the preview shows
+the BPM a scan would write.
+
+The library decides (*Libraries → edit*, beside the analysis opt-in). These settings used to be on
+the tagger profile; they moved so both halves of the feature are set in one place, and the
+`move_bpm_to_library` data migration copied each profile's values onto its libraries. The tagger
+still has the last word in one direction: a profile that writes no tags writes no BPM either.
+
+| `bpm_write` | What happens |
+|---|---|
+| `""` (off, the default) | Nothing. The tempo is stored only. |
+| `fill_empty` | Written only where the file has no BPM. `0` counts as none — several tools write it to mean "not analysed". |
+| `overwrite` | Always written; another tool's value is replaced. |
+
+`bpm_min_confidence` (default 0.5) is the confidence a result needs to be written at all.
+
+- **A whole number**, on both engines. `TBPM` is defined as an integer, every reader expects one, and
+  a stored 104.96 written as `105` reads back exactly, so the diff converges on the first write
+  (`TestBPMRoundTrip`).
+- **No value means no key**, not an empty one. The builders add `BPM` only when there is a value,
+  and fill-empty works by *removing* the key once the file is seen to have one
+  (`applyTempoPolicy`). Either way the diff never looks at a BPM it has nothing to say about — so
+  `remove_values`, which turns an empty wanted value into a deletion, can never clear a BPM another
+  tool wrote (`TestBPMWriteModesOnRealFiles`).
+- **A stored result is checked against the audio** before it is written, when the file's size or
+  mtime have moved since the analysis. That is almost always a tag write, and the value stands; but a
+  replaced file would otherwise be tagged with its predecessor's tempo.
 
 ## Genres
 

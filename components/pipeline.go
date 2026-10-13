@@ -2,6 +2,7 @@ package components
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"sync"
 	"time"
@@ -29,6 +30,9 @@ type DetailCollector struct {
 	items   []models.EventItem
 	changed int // total changed files seen, including any past the limit
 	failed  int // total failed files seen, including any past the limit
+	// noMetaflac counts the failures that were only metaflac being missing, so the
+	// run can say so once instead of leaving it to be read off every row.
+	noMetaflac int
 }
 
 // NewDetailCollector returns a collector holding at most limit entries. A limit < 1
@@ -61,6 +65,9 @@ func (d *DetailCollector) AddError(path string, err error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.failed++
+	if errors.Is(err, modules.ErrMetaflacMissing) {
+		d.noMetaflac++
+	}
 	d.append(models.EventItem{
 		Path:   path,
 		Status: models.EventItemStatusError,
@@ -85,11 +92,13 @@ func (d *DetailCollector) Adopt(other *DetailCollector, phase string) {
 	}
 	items := other.Items()
 	changed, failed := other.Totals()
+	noMetaflac := other.MetaflacMissing()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.changed += changed
 	d.failed += failed
+	d.noMetaflac += noMetaflac
 	for _, item := range items {
 		item.Phase = phase
 		d.items = append(d.items, item)
@@ -133,6 +142,26 @@ func (d *DetailCollector) Totals() (changed, failed int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.changed, d.failed
+}
+
+// MetaflacMissing is how many of the failed files failed only because metaflac is
+// not installed.
+func (d *DetailCollector) MetaflacMissing() int {
+	if d == nil {
+		return 0
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.noMetaflac
+}
+
+// MetaflacWarning is the run-level warning for those files, or "" when there are none.
+func MetaflacWarning(d *DetailCollector) string {
+	n := d.MetaflacMissing()
+	if n == 0 {
+		return ""
+	}
+	return fmt.Sprintf("metaflac is not installed, so %d FLAC file(s) that needed new tags were not written. Install the flac package (apt install flac; the Docker image already has it) — the next run retries them. MP3s are unaffected.", n)
 }
 
 // ProcessFile runs the per-file pipeline for one library: the Manager resolves
@@ -189,7 +218,7 @@ func ProcessFile(
 		}
 	}
 
-	recordItem(db, library.ID, filePath, correlation, unchanged, processedVersion, managerType, nil)
+	recordItemTagged(db, library.ID, filePath, correlation, unchanged, processedVersion, managerType, nil, tagger.Fingerprint())
 	return unchanged, tagsWritten, nil
 }
 
@@ -254,10 +283,12 @@ func ScanLibraryRoots(
 	}
 
 	managerType := manager.Type()
+	taggedWith := tagger.Fingerprint()
+	writesTempo := tagger.WritesBPM()
 	errorFiles = []string{}
 	for _, root := range roots {
 		c, u, tw, errs, walkErr := modules.WalkAndProcess(root, workers, func(path string) (bool, int, error) {
-			if !force && shouldSkip(db, path, processedVersion, managerType) {
+			if !force && shouldSkip(db, path, processedVersion, managerType, taggedWith) && !(writesTempo && tempoPending(db, path)) {
 				return true, 0, nil // counts as unchanged
 			}
 			return ProcessFile(db, library, manager, tagger, plexClient, refreshSet, detail, path, library.Path, processedVersion)
@@ -280,11 +311,16 @@ func ScanLibraryRoots(
 // second). It deliberately does not detect upstream MusicBrainz changes — that is
 // the drift sync's job (M4).
 //
+// The tag-settings check does the same for the tagger: a profile edit, a library
+// moved to another profile, or the library's BPM settings changing all leave the
+// file byte-identical, so without it Process walked past every file and only Tag
+// files applied the change.
+//
 // The manager check is what makes a manager swap take effect: without it a file
 // keeps reporting the old correlation_source forever, because nothing else about
 // it changed. Pinned items are exempt — a manual correlation is not the manager's
 // to redo, and re-correlating one would overwrite the pin's MB IDs.
-func shouldSkip(db *gorm.DB, filePath, processedVersion, managerType string) bool {
+func shouldSkip(db *gorm.DB, filePath, processedVersion, managerType, taggedWith string) bool {
 	if db == nil {
 		return false
 	}
@@ -302,6 +338,9 @@ func shouldSkip(db *gorm.DB, filePath, processedVersion, managerType string) boo
 	if !item.Pinned && item.CorrelatedByManager != managerType {
 		return false // manager changed (or predates this column) -> re-correlate
 	}
+	if item.TaggedWith != taggedWith {
+		return false // tag settings changed (or predate this column) -> re-tag
+	}
 
 	fi, err := os.Stat(filePath)
 	if err != nil {
@@ -309,6 +348,30 @@ func shouldSkip(db *gorm.DB, filePath, processedVersion, managerType string) boo
 	}
 	// Compare to the second: SQLite time round-tripping can drop sub-second precision.
 	return item.Size == fi.Size() && item.ModTime.Unix() == fi.ModTime().Unix()
+}
+
+// tempoPending reports whether a file has a tempo analysed since it was last
+// processed. Nothing about the file changes when the tempo analysis stores a result —
+// that verb only reads audio — so without this an unchanged file would be skipped
+// forever and its BPM never written. It is the drift stage's handover in miniature:
+// one verb records a fact, the next processing run puts it in the file, and the
+// re-stamped LastScannedAt makes the run after that skip it again.
+//
+// Only asked when the library writes BPM, so a library that analyses but
+// does not write pays nothing for it.
+func tempoPending(db *gorm.DB, filePath string) bool {
+	if db == nil {
+		return false
+	}
+	var stored models.TrackTempo
+	if db.Where("path = ? AND bpm > 0", filePath).Limit(1).Find(&stored).RowsAffected == 0 {
+		return false
+	}
+	var item models.LibraryItem
+	if db.Where("path = ?", filePath).Limit(1).Find(&item).RowsAffected == 0 || item.LastScannedAt == nil {
+		return true
+	}
+	return stored.AnalysedAt.After(*item.LastScannedAt)
 }
 
 // pinnedCorrelation returns a file's stored correlation when its index row is pinned
@@ -338,7 +401,7 @@ func pinnedCorrelation(db *gorm.DB, filePath string) (models.Correlation, bool) 
 // TaggerForLibrary returns just the tagger a library is configured with (no
 // manager construction) — used by the drift sync's re-tag path.
 func TaggerForLibrary(db *gorm.DB, library models.Library) *Tagger {
-	return NewTagger(resolveTaggerProfile(db, library, true))
+	return NewTagger(resolveTaggerProfile(db, library, true)).ForLibrary(library)
 }
 
 // BuildForLibrary assembles the manager and tagger a library is configured with,
@@ -353,7 +416,7 @@ func BuildForLibrary(db *gorm.DB, library models.Library) (Manager, *Tagger, err
 	if err != nil {
 		return nil, nil, err
 	}
-	return manager, NewTagger(resolveTaggerProfile(db, library, true)), nil
+	return manager, TaggerForLibrary(db, library), nil
 }
 
 // recordItem upserts the library_items row for a file: its correlation, on-disk
@@ -361,6 +424,14 @@ func BuildForLibrary(db *gorm.DB, library models.Library) (Manager, *Tagger, err
 // but never abort processing — the index is a cache of decisions, not the source
 // of truth for whether a file was tagged.
 func recordItem(db *gorm.DB, libraryID uuid.UUID, filePath string, correlation models.Correlation, unchanged bool, processedVersion, managerType string, procErr error) {
+	recordItemTagged(db, libraryID, filePath, correlation, unchanged, processedVersion, managerType, procErr, "")
+}
+
+// recordItemTagged is recordItem for a file that went through the tagger: on success
+// it also stamps the tag settings it was processed under (LibraryItem.TaggedWith),
+// which skip-unchanged compares. Empty leaves the stamp alone — discovery records
+// files without tagging them.
+func recordItemTagged(db *gorm.DB, libraryID uuid.UUID, filePath string, correlation models.Correlation, unchanged bool, processedVersion, managerType string, procErr error, taggedWith string) {
 	if db == nil {
 		return
 	}
@@ -419,6 +490,9 @@ func recordItem(db *gorm.DB, libraryID uuid.UUID, filePath string, correlation m
 		// with no queue, no backoff and no bookkeeping. Stamping it on a failure
 		// path would silently turn a transient outage into a permanent skip.
 		item.ProcessedVersion = processedVersion
+		if taggedWith != "" {
+			item.TaggedWith = taggedWith
+		}
 		if !unchanged {
 			item.LastTaggedAt = &now
 		}

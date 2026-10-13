@@ -10,8 +10,9 @@ still open) before making changes.
 - Node `^20.19.0 || >=22.12.0` — vite 8's engine requirement, and a hard one: npm refuses the
   install on anything older. CI and the Docker `web` stage both run Node 22. `make check` reports a
   version that will not work rather than letting npm say it in passing.
-- Runtime binaries must be on `PATH`: `metaflac` (FLAC). Without it, FLAC tag reads/writes fail at
-  runtime even though the build succeeds. MP3 needs nothing — ID3 is read and written in-process.
+- Runtime binaries must be on `PATH`: `metaflac` (FLAC). The build succeeds without it, but FLAC
+  tag *writes* fail (reads are in-process). Startup logs its absence once, and each run that hits it
+  carries one warning instead of a per-file error log ([tagging.md](tagging.md#engines)). MP3 needs nothing — ID3 is read and written in-process.
   `ffmpeg` is still needed to *run the tests*, which synthesize their audio fixtures with it.
 - `./config` must be writable; `files.LoadConfig` creates `config/config.json` on first run.
 
@@ -291,6 +292,11 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
   The legacy `config/*.json` files are read once for a one-time import
   (`providerCacheImportJSON`), never written, and deleted once their contents are in the database. MusicBrainz requests go through `RateLimit()` — route any new MusicBrainz call through
   it, and cache the result via `mbCachePut` so the mirror can keep it warm. See `docs/mirror.md`.
+- **Schema vs. data migrations**: `AutoMigrate` keeps the schema current by itself. A change to what
+  existing *rows mean* goes in `database/migrate.go` (`ApplyDataMigrations`, run at startup after
+  `Seed`). Each migration runs exactly once and is recorded in `data_migrations`, because re-running
+  it later would undo choices users made since. A fresh database runs each one against no rows and
+  records it.
 - **UI follows the style guide.** Once `docs/style-guide.md` exists, *every* UI change must consult it
   and either follow it or deliberately reshape it (updating the guide in the same change). Reuse the
   shared design tokens, colors, elements, and principles as much as possible — do not introduce
@@ -327,5 +333,6 @@ Feature docs:
 - `mirror.md` — the local MusicBrainz mirror: what is cached where, TTLs, and the refresh pass.
 - `artwork.md` — covers and artist images: warming them ahead of the page, and why it is its own verb.
 - `fingerprinting.md` — optional AcoustID identification.
+- `tempo.md` — optional BPM analysis: the detector, why a file is analysed once, its own runner.
 - `authentication.md` — local login, API keys, OIDC.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.

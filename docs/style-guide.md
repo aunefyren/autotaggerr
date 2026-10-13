@@ -436,7 +436,10 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Inline note** (`.note`, `.note-ok` / `.note-warn`) — the non-transient half of the toast/alert
   spec: a tinted panel with a 3px status bar on its leading edge, a bold one-word title and a line of
   detail. Used for outcomes that must stay on screen after the toast has gone — what a save applied
-  now, and what is waiting for a restart.
+  now, and what is waiting for a restart — and for a warning that has to be read in place: the cost
+  of a choice under the field that makes it (a library with *No manager*), or a run's warnings at the
+  top of its Activity modal. `Note` in `components/ui.tsx`. A run that finished with warnings reads
+  *Done, with warnings* in a `warn` pill rather than a green *Done*.
 - **Labelled divider** (`.or-divider`) — hairline `--border` rules flanking an eyebrow-styled label
   (11px, uppercase, `.06em`, `--text-dim`). Separates alternative paths that are equally valid, not
   a section boundary — currently password login vs. external identity providers.

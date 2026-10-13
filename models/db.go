@@ -119,7 +119,11 @@ const (
 	// data source spending a different budget, and folding the two together put
 	// counters measured in images beside counters measured in MusicBrainz requests.
 	EventTypeArtwork = "artwork_refresh"
-	EventTypeHealth  = "health_check"
+	// EventTypeTempo is a pass of the *Analyse tempo* verb: BPM detection over the
+	// files of the libraries that opted in. It reads audio and writes only the
+	// track_tempos table — the tags are written by the next tagging pass.
+	EventTypeTempo  = "tempo_analysis"
+	EventTypeHealth = "health_check"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -287,6 +291,10 @@ type TaggerProfile struct {
 	// Off by default; see TaggerSettings.MP3MultiValueTags for why it is a choice at
 	// all rather than simply correct.
 	MP3MultiValueTags bool `json:"mp3_multi_value_tags"`
+	// The BPM settings used to live here and moved to Library, beside the analysis
+	// opt-in they depend on. Their old columns (bpm_write, bpm_min_confidence) are
+	// left in place by AutoMigrate and read once by the move_bpm_to_library data
+	// migration.
 }
 
 // TaggerSettings is the subset of a profile that the tag writers actually read: how
@@ -326,6 +334,10 @@ type TaggerSettings struct {
 	// joins repeated Vorbis comments on read, so the spec-correct form costs nothing
 	// there and is unconditional (see docs/tagging.md).
 	MP3MultiValueTags bool
+	// BPMWrite and BPMMinConfidence govern the BPM tag. They come from the library,
+	// not the profile (Library.BPMWrite); components.Tagger merges them in.
+	BPMWrite         string
+	BPMMinConfidence float64
 }
 
 // Settings projects the stored profile onto the values the tag writers read.
@@ -362,6 +374,20 @@ type Library struct {
 	// "use_acoust_id", which reads like a typo and silently breaks any raw column
 	// reference written from the Go field or JSON name.
 	UseAcoustID bool `gorm:"column:use_acoustid" json:"use_acoustid"`
+	// AnalyseTempo opts this library in to BPM detection (see docs/tempo.md). Off by
+	// default: analysis decodes every file, so it is something a library asks for,
+	// and a library that never does behaves exactly as it did before the feature.
+	AnalyseTempo bool `json:"analyse_tempo"`
+	// BPMWrite is whether and how the stored tempo reaches the BPM tag (BPMWrite*):
+	// off, only where the file has none, or always. Off by default — analysing and
+	// writing are separate decisions, since a stored tempo is useful without touching
+	// a file. On the library rather than the tagger profile so that both halves of the
+	// feature are set in one place (docs/tempo.md).
+	BPMWrite string `json:"bpm_write"`
+	// BPMMinConfidence is the confidence a stored tempo needs to be written. Zero or
+	// less means DefaultBPMMinConfidence, so a row predating the column behaves like a
+	// new one.
+	BPMMinConfidence float64 `json:"bpm_min_confidence"`
 }
 
 // LibraryItem is the owned correlation index: one row per file, recording which
@@ -396,6 +422,11 @@ type LibraryItem struct {
 	// scan only skips an unchanged file when the running version still matches, so
 	// upgrades that change tag logic re-process everything once.
 	ProcessedVersion string `json:"processed_version"`
+	// TaggedWith fingerprints the tag settings the file was last processed under
+	// (components.Tagger.Fingerprint). Skip-unchanged requires it to match, so a
+	// changed tagger profile, or a library switched to another one, reaches every file
+	// on the next Process instead of only on Tag files.
+	TaggedWith string `json:"tagged_with"`
 	// Pinned marks a manual correlation that automatic resolution must never override.
 	Pinned bool `json:"pinned"`
 	// Status is what the *last attempt* did, not what the file is. The MB ID columns
@@ -842,6 +873,16 @@ type Event struct {
 	ParentTitle string `gorm:"-" json:"parent_title,omitempty"`
 }
 
+// Keys in Event.Details the Activity page renders as more than raw JSON.
+const (
+	// EventDetailWarnings: things the run went ahead despite, which the user should
+	// fix — a library without a manager. Unlike an error they do not fail the run,
+	// which is why they need their own place: a successful run reads as nothing to see.
+	EventDetailWarnings = "warnings"
+	// EventDetailLibraryErrors: libraries the run skipped whole, each with the reason.
+	EventDetailLibraryErrors = "library_errors"
+)
+
 // EventStat is one counter on an event's detail view.
 //
 // Kind is *semantic emphasis*, not a colour: the emitter says whether a number is
@@ -1271,6 +1312,45 @@ type AcoustIDLookup struct {
 	FetchedAt  time.Time  `json:"fetched_at"`
 }
 
+// TrackTempo is one file's BPM analysis (see docs/tempo.md). Keyed by path, like
+// AcoustIDLookup, because analysis is about the audio on disk rather than about
+// which release it was matched to — an unidentified file has a tempo too.
+//
+// BPM is stored raw. A detector that halves or doubles a tempo is wrong in a way
+// only the *use* of the number can resolve (a 160 steps/min playlist accepts 80 as
+// half-time), so nothing here corrects it.
+type TrackTempo struct {
+	Path string `gorm:"primarykey" json:"path"`
+
+	// Size and ModTime are the cheap identity check: unchanged means fresh, with no
+	// read of the file at all. When they differ, AudioHash decides — it covers the
+	// audio payload only, with every tag block excluded, so a tag write (ours
+	// included, which is exactly what the BPM tag causes) is recognised as the same
+	// audio and re-stamped instead of re-analysed. It is also what lets a moved file
+	// keep its result.
+	Size      int64      `json:"size"`
+	ModTime   *time.Time `json:"mod_time"`
+	AudioHash string     `gorm:"index" json:"audio_hash"`
+
+	// BPM is the detector's tempo; Confidence is how regular the beat grid behind it
+	// was, 0–1. Both are zero when analysis failed or found too few beats.
+	BPM        float64 `json:"bpm"`
+	Confidence float64 `json:"confidence"`
+	Beats      int     `json:"beats"`
+
+	// Detector names the binary and DetectorVersion pins the result to the analysis
+	// that produced it: when either changes, every row is stale and is redone.
+	Detector        string `json:"detector"`
+	DetectorVersion string `json:"detector_version"`
+
+	// Error is why the last analysis produced no tempo. A file that fails is not
+	// retried until it, or the detector, changes — a corrupt file failing every night
+	// would be noise, not information.
+	Error string `json:"error,omitempty"`
+
+	AnalysedAt time.Time `json:"analysed_at"`
+}
+
 // CollectionRelease is one *edition* you own files of, under a release-group.
 //
 // It exists because collapsing a release-group to its best-owned edition throws
@@ -1392,5 +1472,15 @@ func AllDBModels() []any {
 		&CollectionRelease{},
 		&CollectionDesire{},
 		&AcoustIDLookup{},
+		&TrackTempo{},
+		&DataMigration{},
 	}
+}
+
+// DataMigration records a one-time data change that has been applied. AutoMigrate
+// keeps the *schema* current on its own; a change to what existing rows mean needs
+// running exactly once, and running it again later would undo choices made since.
+type DataMigration struct {
+	Name      string    `gorm:"primaryKey" json:"name"`
+	AppliedAt time.Time `json:"applied_at"`
 }

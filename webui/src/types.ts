@@ -64,6 +64,8 @@ export interface TaggerProfile {
   mp3_multi_value_tags: boolean;
 }
 
+export type BPMWrite = "" | "fill_empty" | "overwrite";
+
 export interface Library {
   id: string;
   name: string;
@@ -76,6 +78,12 @@ export interface Library {
   last_scan: string | null;
   /** Per-library opt-in to audio fingerprint identification. Off by default. */
   use_acoustid: boolean;
+  /** Per-library opt-in to tempo (BPM) analysis. Off by default. */
+  analyse_tempo: boolean;
+  /** How the stored tempo reaches the BPM tag. "" is off — the default. */
+  bpm_write: BPMWrite;
+  /** Confidence a tempo needs to be written; 0 or less means the server default (0.5). */
+  bpm_min_confidence: number;
 }
 
 export interface LibraryItem {
@@ -735,4 +743,54 @@ export interface SettingsSaveResult {
   changed: string[];
   applied: string[];
   restart_required: string[];
+}
+
+/** GET /tempo/status — the *Analyse tempo* verb. See docs/tempo.md. */
+export interface TempoStatus {
+  running: boolean;
+  /** Waiting between files while a file-writing job runs. */
+  paused: boolean;
+  started_at?: string;
+  finished_at?: string;
+  total: number;
+  done: number;
+  analysed: number;
+  fresh: number;
+  restamped: number;
+  carried: number;
+  no_tempo: number;
+  failed: number;
+  last_error?: string;
+  /**
+   * Whether a pass could do anything: the detector installed, and how many enabled
+   * libraries opted in. Without these, "nothing to do" and "cannot do it" look alike.
+   */
+  detector_available: boolean;
+  libraries: number;
+  /** Files with a tempo on record, between passes too. */
+  stored: number;
+}
+
+/** One file's stored analysis (models.TrackTempo). */
+export interface TrackTempo {
+  path: string;
+  bpm: number;
+  confidence: number;
+  beats: number;
+  detector: string;
+  detector_version: string;
+  error?: string;
+  analysed_at: string;
+}
+
+/** GET /library-items/:id/tempo — the stored result plus what will happen to it. */
+export interface ItemTempo {
+  tempo: TrackTempo | null;
+  library_analyses: boolean;
+  /** Whether the library's tagger profile writes tags at all. */
+  writes_tags: boolean;
+  /** What the library does with a tempo; "" when it writes none. */
+  bpm_write: BPMWrite;
+  /** The effective floor, default already applied. */
+  min_confidence: number;
 }

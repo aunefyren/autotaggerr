@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useDebounced, useFetch } from "../hooks";
 import { EntityRef, Event, EventItem, EventStat, EventsPage, JobView, MBFilesPage, ScanStatus } from "../types";
-import { EmptyState, ErrorNote, IdChip, Modal, Pill } from "../components/ui";
+import { EmptyState, ErrorNote, IdChip, Modal, Note, Pill } from "../components/ui";
 import { ProgressBar } from "../components/ProgressBar";
 import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
 import { FilterChip, Pager, TableToolbar, useBrowse, usePaging } from "../components/browse";
@@ -17,6 +17,7 @@ const TYPE_LABELS: Record<string, string> = {
   count_files: "Counting files",
   mb_mirror: "Metadata refresh",
   artwork_refresh: "Artwork refresh",
+  tempo_analysis: "Tempo analysis",
   // Every pass that writes tags, whether a user pressed Tag files or a run reached its
   // tagging stage. One name, because it is one kind of work — the row says which run it
   // came from, which is the part that actually differs.
@@ -55,6 +56,8 @@ const TYPE_NOTES: Record<string, string> = {
     "A metadata refresh re-reads MusicBrainz and writes no files. Releases that changed upstream are re-tagged by the next processing run, or immediately with Tag files.",
   artwork_refresh:
     "Fetches covers and artist images into the local cache so the browsing pages paint from disk. Its own activity rather than part of a metadata refresh: artwork comes from separate providers on a separate budget, so none of its numbers is comparable with the MusicBrainz ones. Most rows come from a new artist or album fetching its own artwork as it arrives; the scheduled pass tops up what has expired. Nothing in your library is written.",
+  tempo_analysis:
+    "Measures each file's BPM from the audio, in the libraries that opt in. It reads audio and writes only its own table — no file is touched; the tagger profile decides whether the next processing run or Tag files writes the result. A file is decoded once: one whose tags changed but whose audio did not is recognised and skipped, as is one that only moved. It pauses while files are being written. Only failures are listed below.",
   count_files:
     "Sizes the run before it starts: every folder walked once to count the files it will visit. It reads no tags and changes nothing.",
   collection_scan:
@@ -153,9 +156,12 @@ function durationTitle(ev: Event): string {
   return ev.status === "running" ? `Running since ${from}` : `Started ${from}, never finished`;
 }
 
-function EventStatus({ status }: { status: string }) {
+function EventStatus({ status, warned }: { status: string; warned?: boolean }) {
   if (status === "running") return <Pill kind="scan">Running</Pill>;
   if (status === "error") return <Pill kind="err">Failed</Pill>;
+  // A run that went ahead despite something the user should fix. Not a failure, but
+  // "Done" in green is exactly what let a library without a manager go unnoticed.
+  if (warned) return <Pill kind="warn">Done, with warnings</Pill>;
   return <Pill kind="ok">Done</Pill>;
 }
 
@@ -603,7 +609,7 @@ function FeedRow({
           </div>
         )}
       </td>
-      <td><EventStatus status={event.status} /></td>
+      <td><EventStatus status={event.status} warned={strings(event.details, "warnings").length > 0} /></td>
       <td className="num dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={durationTitle(event)}>
         {eventDuration(event)}
       </td>
@@ -612,6 +618,12 @@ function FeedRow({
       </td>
     </tr>
   );
+}
+
+/** A string-list entry of an event's details, or an empty list. */
+function strings(details: Record<string, unknown> | null | undefined, key: string): string[] {
+  const v = details?.[key];
+  return Array.isArray(v) ? (v as string[]) : [];
 }
 
 function num(details: Record<string, unknown> | null, key: string): number {
@@ -759,11 +771,13 @@ function EventDetail({
   const errorFiles = Array.isArray(d?.error_files) ? (d!.error_files as string[]) : [];
   const libraries = Array.isArray(d?.libraries) ? (d!.libraries as string[]) : [];
   const failures = Array.isArray(d?.failures) ? (d!.failures as string[]) : [];
+  const warnings = strings(d, "warnings");
+  const libraryErrors = strings(d, "library_errors");
 
   return (
     <Modal title={event.title || TYPE_LABELS[event.type] || event.type} onClose={onClose} wide>
       <div className="row" style={{ gap: 10, marginBottom: 14, flexWrap: "wrap" }}>
-        <EventStatus status={event.status} />
+        <EventStatus status={event.status} warned={warnings.length > 0} />
         <span className="dim mono" style={{ fontSize: 11 }} title={durationTitle(event)}>
           {new Date(event.started_at).toLocaleString()} · {eventDuration(event)}
         </span>
@@ -790,6 +804,23 @@ function EventDetail({
             modal. It leads, because for the short activities it is the whole story. */}
         {(full.data?.summary ?? event.summary) && (
           <div style={{ fontSize: 13, color: "var(--text)" }}>{full.data?.summary ?? event.summary}</div>
+        )}
+
+        {/* Above the counters: they are what the counters have to be read against. A
+            run over a library with no manager matched little, and the numbers alone
+            look like a library that is simply untagged. */}
+        {warnings.map((w, i) => (
+          <Note key={i} kind="warn" title="Warning">{w}</Note>
+        ))}
+        {libraryErrors.length > 0 && (
+          <div>
+            <div className="eyebrow" style={{ marginBottom: 6 }}>Libraries skipped</div>
+            <div className="stack" style={{ gap: 2 }}>
+              {libraryErrors.map((e, i) => (
+                <div key={i} style={{ fontSize: 12, color: "var(--danger-text)", wordBreak: "break-word" }}>{e}</div>
+              ))}
+            </div>
+          </div>
         )}
 
         <StatRow stats={stats} items={items} active={filter} onFilter={setFilter} />

@@ -17,6 +17,30 @@ type DatabaseConfig struct {
 // which a genre list still reads as a description rather than a dump.
 const DefaultMaxGenres = 5
 
+// How a library writes the stored tempo (Library.BPMWrite). The empty
+// string is off, so a row predating the column writes nothing — upgrading
+// never starts touching a tag nobody asked for.
+const (
+	BPMWriteOff       = ""
+	BPMWriteFillEmpty = "fill_empty"
+	BPMWriteOverwrite = "overwrite"
+)
+
+// DefaultBPMMinConfidence is the confidence below which a stored tempo is not
+// written. Measured on a real library, clearly wrong results scored 0.10–0.14 and
+// steady dance and pop 0.85 and up; 0.5 keeps the first out without losing much of
+// the second (docs/tempo.md).
+const DefaultBPMMinConfidence = 0.5
+
+// ValidBPMWrite reports whether a value is one of the BPMWrite modes.
+func ValidBPMWrite(mode string) bool {
+	switch mode {
+	case BPMWriteOff, BPMWriteFillEmpty, BPMWriteOverwrite:
+		return true
+	}
+	return false
+}
+
 // Activity retention. Both figures are shared by every emitter that prunes or writes
 // the event tables — the processing runner and the metadata mirror — because they
 // write the same two tables and a feed pruned to two different depths would drop
@@ -31,6 +55,15 @@ const (
 	// exists to show *what* happened, which the first few hundred rows do, so the
 	// rest are counted and dropped rather than turned into a table nobody reads.
 	DefaultEventDetailRetention = 500
+)
+
+// Tempo analysis defaults. Two workers rather than the scan's four: analysis is
+// CPU-bound decoding, and the machine running Autotaggerr is usually also serving the
+// music. Nightly at 01:00 keeps it clear of the evening scan and of the metadata
+// refresh at 03:00.
+const (
+	DefaultTempoCronSchedule = "0 0 1 * * *"
+	DefaultTempoConcurrency  = 2
 )
 
 // How the SMTP connection is encrypted. The default is Auto, which infers the answer
@@ -109,6 +142,15 @@ type ConfigStruct struct {
 	// false has to mean the default behaviour.
 	AutotaggerrArtworkDisabled     bool   `json:"autotaggerr_artwork_disabled"`
 	AutotaggerrArtworkCronSchedule string `json:"autotaggerr_artwork_cron_schedule"`
+
+	// Tempo analysis. Whether a library is analysed at all is a per-library opt-in
+	// (Library.AnalyseTempo), so there is no on/off key here: with no library opted
+	// in, the scheduled pass finds nothing to do. Concurrency is its own knob rather
+	// than the scan's, because analysis is CPU-bound decoding while a scan is disk-
+	// and network-bound — and the pass already pauses while file work runs. See
+	// docs/tempo.md.
+	AutotaggerrTempoCronSchedule string `json:"autotaggerr_tempo_cron_schedule"`
+	AutotaggerrTempoConcurrency  int    `json:"autotaggerr_tempo_concurrency"`
 
 	// Health-check schedule for the configured Lidarr/Plex connections. Checks are
 	// cheap and only record an Activity event when a service's health changes, so a

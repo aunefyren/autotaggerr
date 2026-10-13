@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -227,6 +228,23 @@ func TestExtractFromID3v2(t *testing.T) {
 // test used to seed COMPOSER, which buildFLACDesiredTags does not list at all — so
 // the seed wrote nothing, the "cleared" assertion read a tag that had never existed,
 // and the whole test passed without touching the branch it names.
+// TestSetFlacTagsWithoutMetaflac: a FLAC whose tags need changing fails with the
+// sentinel rather than exec's "executable file not found", so a run can say it once
+// instead of once per file.
+func TestSetFlacTagsWithoutMetaflac(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "track.flac")
+	synthInto(t, path)
+	SetMetaflacAvailableForTest(t, false)
+
+	_, written, _, err := SetFlacTags(path, models.FileTags{Artist: "A", Title: "C"}, models.TaggerSettings{})
+	if !errors.Is(err, ErrMetaflacMissing) {
+		t.Fatalf("err = %v, want ErrMetaflacMissing", err)
+	}
+	if written != 0 {
+		t.Errorf("tagsWritten = %d, want 0", written)
+	}
+}
+
 func TestSetFlacTagsRemoveValues(t *testing.T) {
 	requireTool(t, "metaflac")
 	path := filepath.Join(t.TempDir(), "track.flac")

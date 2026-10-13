@@ -1,8 +1,8 @@
-import { ReactNode, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { SettingsField, SettingsSaveResult, SettingsView } from "../types";
-import { ErrorNote, Pill } from "../components/ui";
+import { ErrorNote, Note, Pill } from "../components/ui";
 import { useToast } from "../toast";
 
 /** A pending edit. Only touched fields are held, so a save sends only what changed. */
@@ -356,15 +356,6 @@ function SecretControl({ field, onChange }: { field: SettingsField; onChange: (v
           Saving an empty box removes the stored value.
         </span>
       )}
-    </div>
-  );
-}
-
-function Note({ kind, title, children }: { kind: string; title: string; children: ReactNode }) {
-  return (
-    <div className={`note note-${kind}`}>
-      <strong>{title}</strong>
-      <span>{children}</span>
     </div>
   );
 }

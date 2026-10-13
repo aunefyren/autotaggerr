@@ -230,6 +230,45 @@ func TestLibraryValidation(t *testing.T) {
 	}
 }
 
+// TestLibraryManagerCanBeCleared: an edit that leaves manager_id out keeps the
+// manager; one that sends null removes it. "No manager" is a setting, and the form
+// choosing it used to be ignored because absent and null decoded alike.
+func TestLibraryManagerCanBeCleared(t *testing.T) {
+	r, api := setupAPI(t)
+	tok := loginToken(t, r)
+	mgr := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true}
+	if err := api.DB.Create(&mgr).Error; err != nil {
+		t.Fatal(err)
+	}
+	lib := models.Library{Name: "L", Path: "/l", Enabled: true, ManagerID: &mgr.ID}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatal(err)
+	}
+	read := func() *uuid.UUID {
+		var got models.Library
+		api.DB.First(&got, "id = ?", lib.ID)
+		return got.ManagerID
+	}
+
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"name": "Renamed"}); w.Code != http.StatusOK {
+		t.Fatalf("update = %d: %s", w.Code, w.Body.String())
+	}
+	if got := read(); got == nil || *got != mgr.ID {
+		t.Fatalf("an edit without manager_id changed it to %v", got)
+	}
+
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"manager_id": nil}); w.Code != http.StatusOK {
+		t.Fatalf("clear = %d: %s", w.Code, w.Body.String())
+	}
+	if got := read(); got != nil {
+		t.Errorf("manager_id null left %v", got)
+	}
+
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"manager_id": "not-a-uuid"}); w.Code != http.StatusBadRequest {
+		t.Errorf("bad manager_id = %d, want 400", w.Code)
+	}
+}
+
 func TestScanEndpoints(t *testing.T) {
 	r, _ := setupAPI(t)
 	tok := loginToken(t, r)

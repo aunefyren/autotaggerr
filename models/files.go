@@ -68,6 +68,11 @@ type FileTags struct {
 	Media                 string   `json:"media"`
 	Barcode               string   `json:"barcode"`
 	CatalogNumbers        []string `json:"catalog_numbers"`
+	// BPM is the stored tempo rounded to a whole number, or "" when the profile does
+	// not write it or there is nothing good enough to write. It does not come from
+	// MusicBrainz: modules.TempoTagValue fills it from track_tempos after the rest of
+	// the tags are built.
+	BPM string `json:"bpm"`
 	// ASIN, Composer and Author used to sit here. Nothing ever populated them —
 	// BuildFileTags hardcoded all three to "" — and neither tag map reads them, so
 	// they were three fields whose only possible effect was clearing another

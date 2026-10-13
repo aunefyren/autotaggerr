@@ -13,6 +13,7 @@ import (
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/process"
 	"github.com/aunefyren/autotaggerr/settings"
+	"github.com/aunefyren/autotaggerr/tempo"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -26,6 +27,10 @@ type API struct {
 	// providers are a different kind of data source spending a different budget; it
 	// may be nil, in which case the artwork routes report unavailable.
 	Artwork *artwork.Runner
+	// Tempo is the BPM analysis verb. Its own runner for the reason artwork has one:
+	// it spends nothing the scan queue serialises. May be nil, in which case the
+	// tempo routes report unavailable.
+	Tempo *tempo.Runner
 	// Rebuilder re-derives the collection after a handler changes the file index.
 	// May be nil, in which case requests are dropped (see collection.Rebuilder).
 	Rebuilder *collection.Rebuilder
@@ -136,6 +141,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// Library items (the correlation index)
 		protected.GET("/library-items", a.listLibraryItems)
 		protected.GET("/library-items/:id/tags", a.itemTags)
+		protected.GET("/library-items/:id/tempo", a.itemTempo)
 
 		// Manual attach — identify a file MusicBrainz/Lidarr could not
 		protected.GET("/search/releases", a.searchReleases)
@@ -172,6 +178,12 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artwork/status", a.artworkStatus)
 		protected.POST("/artwork/refresh", a.triggerArtworkRefresh)
 		protected.POST("/artwork/cancel", a.cancelArtworkRefresh)
+
+		// Tempo: BPM detection over opted-in libraries. Stores results only; tagging
+		// writes them — see docs/tempo.md.
+		protected.GET("/tempo/status", a.tempoStatus)
+		protected.POST("/tempo/analyse", a.triggerTempoAnalysis)
+		protected.POST("/tempo/cancel", a.cancelTempoAnalysis)
 
 		// Activity events
 		protected.GET("/events", a.listEvents)

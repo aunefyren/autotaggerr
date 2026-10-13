@@ -10,9 +10,9 @@ import (
 
 // BuildForFile assembles the pipeline (owning library + manager + tagger) for a
 // single file, resolving components from the database. When no configured library
-// contains the file it falls back to the first configured manager/tagger (or a
-// native Autotaggerr manager + default tagger when the DB is empty), so the
-// single-file path always works.
+// contains the file there is no manager — the file is identified from its own tags,
+// as in a library without one — and the first tagger profile (or plain defaults),
+// so the single-file path always works.
 func BuildForFile(db *gorm.DB, filePath, fileRoot string) (models.Library, Manager, *Tagger, error) {
 	library, found := findLibraryForFile(db, filePath, fileRoot)
 
@@ -25,7 +25,7 @@ func BuildForFile(db *gorm.DB, filePath, fileRoot string) (models.Library, Manag
 		return library, nil, nil, err
 	}
 
-	tagger := NewTagger(resolveTaggerProfile(db, library, found))
+	tagger := NewTagger(resolveTaggerProfile(db, library, found)).ForLibrary(library)
 	return library, manager, tagger, nil
 }
 
@@ -70,27 +70,39 @@ func findLibraryForFile(db *gorm.DB, filePath, fileRoot string) (models.Library,
 // Disabling a manager is a deliberate act, so a loud, recoverable failure is the
 // honest response; re-enable it or point the library elsewhere.
 //
-// A library with no manager assigned keeps the permissive behavior: the first
-// enabled manager, or the native default when none is configured.
+// A library with no manager has no manager. It is not handed whichever manager
+// happens to be enabled — that used to happen, picked by row order, while the
+// collection treated the same library as unmanaged, so the two disagreed about who
+// governed it. Its files are identified from the MusicBrainz IDs already in their
+// tags, which is all there is without an authority to ask, and the run says so
+// (NoManagerWarning). The row returned has no ID; HasManager tells it apart.
 func resolveManagerRow(db *gorm.DB, library models.Library, found bool) (models.Manager, error) {
-	if db != nil {
-		if found && library.ManagerID != nil {
-			var m models.Manager
-			if err := db.First(&m, "id = ?", *library.ManagerID).Error; err != nil {
-				return models.Manager{}, fmt.Errorf("library %q is assigned a manager that no longer exists (%s) — reassign or remove it", library.Name, *library.ManagerID)
-			} else if !m.Enabled {
-				return models.Manager{}, fmt.Errorf("library %q is assigned the disabled manager %q — re-enable it, or assign the library a different manager", library.Name, m.Name)
-			} else {
-				return m, nil
-			}
+	if db != nil && found && library.ManagerID != nil {
+		var m models.Manager
+		if err := db.First(&m, "id = ?", *library.ManagerID).Error; err != nil {
+			return models.Manager{}, fmt.Errorf("library %q is assigned a manager that no longer exists (%s) — reassign or remove it", library.Name, *library.ManagerID)
 		}
-		var first models.Manager
-		if err := db.Where("enabled = ?", true).Order("id").First(&first).Error; err == nil {
-			return first, nil
+		if !m.Enabled {
+			return models.Manager{}, fmt.Errorf("library %q is assigned the disabled manager %q — re-enable it, or assign the library a different manager", library.Name, m.Name)
 		}
+		return m, nil
 	}
-	// No enabled managers configured — default to the native Autotaggerr manager.
+	// The type is the native one because the resolution is the same — embedded tags
+	// only — and because it is what files correlated this way have always recorded,
+	// so assigning a native manager later does not re-correlate a whole library to
+	// arrive at the identical answer.
 	return models.Manager{Type: models.ManagerTypeAutotaggerr, Enabled: true}, nil
+}
+
+// HasManager reports whether a library is assigned a manager at all.
+func HasManager(library models.Library) bool { return library.ManagerID != nil }
+
+// NoManagerWarning is what a run says about a library with no manager. Stated on
+// every run rather than once: it is a configuration choice with a cost, and a fresh
+// install that never created a manager otherwise processes its whole library with no
+// sign that most files had nothing to be identified by.
+func NoManagerWarning(library models.Library) string {
+	return fmt.Sprintf("Library %q has no manager. Files were identified only from MusicBrainz IDs already in their tags; files without them are left unmatched. Lidarr does not write those IDs into MP3s. Assign a manager under Libraries → edit.", library.Name)
 }
 
 func resolveTaggerProfile(db *gorm.DB, library models.Library, found bool) models.TaggerProfile {

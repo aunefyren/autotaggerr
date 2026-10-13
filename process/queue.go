@@ -127,6 +127,17 @@ func (r *Runner) enqueue(j job) {
 	}
 }
 
+// WritingFiles reports whether the job running right now rewrites audio files. It is
+// what work outside this queue yields to: the tempo analysis pass decodes audio on the
+// same machine, and a scan someone is waiting on should not share the CPU and the disk
+// with it. A metadata refresh does not count — it is network-bound and spends a
+// budget analysis never touches.
+func (r *Runner) WritingFiles() bool {
+	r.queueMu.Lock()
+	defer r.queueMu.Unlock()
+	return r.current != nil && r.current.kind.fileWriting()
+}
+
 // queueViewsLocked snapshots the pending queue. The caller must hold queueMu.
 func (r *Runner) queueViewsLocked() []JobView {
 	if len(r.queue) == 0 {

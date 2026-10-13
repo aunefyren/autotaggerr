@@ -288,13 +288,13 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 		// file path, so no separate log line is needed here
 		return false, 0, nil, fmt.Errorf("failed to get MB release data: %w", err)
 	}
-	logger.Log.Debug("MB title response: " + response.Title)
+	logger.Log.Debug("tagging from release: " + response.Title)
 
 	// Go through API response for information
 	for _, media := range response.Media {
 		for _, track := range media.Tracks {
 			if track.ID == correlation.MBReleaseTrackID {
-				logger.Log.Debug("release track ID found in MB response")
+				logger.Log.Debug("release track ID found in the release")
 				if err := verifyDiscFolder(filePath, correlation, track, media, response); err != nil {
 					logger.Log.Warnf("refusing to tag '%s': %s", filePath, err.Error())
 					return false, 0, nil, err
@@ -395,14 +395,26 @@ func ProcessTrackFileAfterMatch(
 	if err != nil {
 		return false, 0, nil, err
 	}
+	// The one field that is not MusicBrainz's: the stored tempo analysis, if the
+	// profile writes it (docs/tempo.md).
+	metadata.BPM = TempoTagValue(filePath, tagger)
 
 	// re-tag file with new information
 	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, tagger)
 	if err != nil {
-		logger.Log.Error("failed to set file tags. error: " + err.Error())
+		// A missing metaflac was logged once already; per file it is the same line
+		// thousands of times.
+		if !errors.Is(err, ErrMetaflacMissing) {
+			logger.Log.Error("failed to set file tags. error: " + err.Error())
+		}
 		return unchanged, tagsWritten, changed, fmt.Errorf("failed to set file tags: %w", err)
 	} else {
 		logger.Log.Debug("file tagger finished")
+	}
+	// A BPM to write means the stored tempo was just confirmed to describe this audio;
+	// the write changed tags only, so keep the row matching the file.
+	if !unchanged && metadata.BPM != "" {
+		RestampTempoAfterWrite(filePath)
 	}
 
 	changeString := "unchanged"
@@ -609,6 +621,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 			return nil, err
 		}
 		existing = m
+		applyTempoPolicy(desired, existing, tagger)
 		changed, _ = utilities.DiffFlacTags(existing, desired, tagger)
 	case ".mp3":
 		desired = renderMP3Tags(buildMP3DesiredTags(metadata), tagger)
@@ -617,6 +630,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 			return nil, err
 		}
 		existing = m
+		applyTempoPolicy(desired, existing, tagger)
 		changed, _ = utilities.DiffID3Tags(existing, desired, tagger)
 	default:
 		return nil, errors.New("unsupported file type")
@@ -763,7 +777,11 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 
 			unchanged, tagsWritten, procErr := process(path)
 			if procErr != nil {
-				logger.Log.Error("failed to process file '" + path + "'. error: " + procErr.Error())
+				if errors.Is(procErr, ErrMetaflacMissing) {
+					logger.Log.Debug("not tagged, metaflac is missing: " + path)
+				} else {
+					logger.Log.Error("failed to process file '" + path + "'. error: " + procErr.Error())
+				}
 				resultMu.Lock()
 				errorFiles = append(errorFiles, path)
 				resultMu.Unlock()
