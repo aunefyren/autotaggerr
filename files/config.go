@@ -137,6 +137,19 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrTempoCronSchedule == "" {
+		// set new value — 01:00, ahead of the metadata refresh at 03:00. Analysis reads
+		// no network, so the hour only has to keep it off the evening scan.
+		ConfigFile.AutotaggerrTempoCronSchedule = models.DefaultTempoCronSchedule
+		anythingChanged = true
+	}
+
+	if ConfigFile.AutotaggerrTempoConcurrency < 1 {
+		// set new value (files analysed in parallel)
+		ConfigFile.AutotaggerrTempoConcurrency = models.DefaultTempoConcurrency
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrHealthCronSchedule == "" {
 		// set new value — every five minutes; cheap, and only records an event when a
 		// connection's health actually changes
@@ -213,6 +226,9 @@ func CreateConfigFile() error {
 
 	ConfigFile.AutotaggerrArtworkDisabled = false
 	ConfigFile.AutotaggerrArtworkCronSchedule = "0 0 5 * * *"
+
+	ConfigFile.AutotaggerrTempoCronSchedule = models.DefaultTempoCronSchedule
+	ConfigFile.AutotaggerrTempoConcurrency = models.DefaultTempoConcurrency
 
 	ConfigFile.AutotaggerrHealthCronSchedule = "0 */5 * * * *"
 

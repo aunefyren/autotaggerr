@@ -327,5 +327,6 @@ Feature docs:
 - `mirror.md` — the local MusicBrainz mirror: what is cached where, TTLs, and the refresh pass.
 - `artwork.md` — covers and artist images: warming them ahead of the page, and why it is its own verb.
 - `fingerprinting.md` — optional AcoustID identification.
+- `tempo.md` — optional BPM analysis: the detector, why a file is analysed once, its own runner.
 - `authentication.md` — local login, API keys, OIDC.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.

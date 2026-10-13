@@ -119,7 +119,11 @@ const (
 	// data source spending a different budget, and folding the two together put
 	// counters measured in images beside counters measured in MusicBrainz requests.
 	EventTypeArtwork = "artwork_refresh"
-	EventTypeHealth  = "health_check"
+	// EventTypeTempo is a pass of the *Analyse tempo* verb: BPM detection over the
+	// files of the libraries that opted in. It reads audio and writes only the
+	// track_tempos table — the tags are written by the next tagging pass.
+	EventTypeTempo  = "tempo_analysis"
+	EventTypeHealth = "health_check"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -362,6 +366,10 @@ type Library struct {
 	// "use_acoust_id", which reads like a typo and silently breaks any raw column
 	// reference written from the Go field or JSON name.
 	UseAcoustID bool `gorm:"column:use_acoustid" json:"use_acoustid"`
+	// AnalyseTempo opts this library in to BPM detection (see docs/tempo.md). Off by
+	// default: analysis decodes every file, so it is something a library asks for,
+	// and a library that never does behaves exactly as it did before the feature.
+	AnalyseTempo bool `json:"analyse_tempo"`
 }
 
 // LibraryItem is the owned correlation index: one row per file, recording which
@@ -1271,6 +1279,45 @@ type AcoustIDLookup struct {
 	FetchedAt  time.Time  `json:"fetched_at"`
 }
 
+// TrackTempo is one file's BPM analysis (see docs/tempo.md). Keyed by path, like
+// AcoustIDLookup, because analysis is about the audio on disk rather than about
+// which release it was matched to — an unidentified file has a tempo too.
+//
+// BPM is stored raw. A detector that halves or doubles a tempo is wrong in a way
+// only the *use* of the number can resolve (a 160 steps/min playlist accepts 80 as
+// half-time), so nothing here corrects it.
+type TrackTempo struct {
+	Path string `gorm:"primarykey" json:"path"`
+
+	// Size and ModTime are the cheap identity check: unchanged means fresh, with no
+	// read of the file at all. When they differ, AudioHash decides — it covers the
+	// audio payload only, with every tag block excluded, so a tag write (ours
+	// included, which is exactly what the BPM tag causes) is recognised as the same
+	// audio and re-stamped instead of re-analysed. It is also what lets a moved file
+	// keep its result.
+	Size      int64      `json:"size"`
+	ModTime   *time.Time `json:"mod_time"`
+	AudioHash string     `gorm:"index" json:"audio_hash"`
+
+	// BPM is the detector's tempo; Confidence is how regular the beat grid behind it
+	// was, 0–1. Both are zero when analysis failed or found too few beats.
+	BPM        float64 `json:"bpm"`
+	Confidence float64 `json:"confidence"`
+	Beats      int     `json:"beats"`
+
+	// Detector names the binary and DetectorVersion pins the result to the analysis
+	// that produced it: when either changes, every row is stale and is redone.
+	Detector        string `json:"detector"`
+	DetectorVersion string `json:"detector_version"`
+
+	// Error is why the last analysis produced no tempo. A file that fails is not
+	// retried until it, or the detector, changes — a corrupt file failing every night
+	// would be noise, not information.
+	Error string `json:"error,omitempty"`
+
+	AnalysedAt time.Time `json:"analysed_at"`
+}
+
 // CollectionRelease is one *edition* you own files of, under a release-group.
 //
 // It exists because collapsing a release-group to its best-owned edition throws
@@ -1392,5 +1439,6 @@ func AllDBModels() []any {
 		&CollectionRelease{},
 		&CollectionDesire{},
 		&AcoustIDLookup{},
+		&TrackTempo{},
 	}
 }

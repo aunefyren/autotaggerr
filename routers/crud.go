@@ -450,6 +450,7 @@ type libraryInput struct {
 	Enabled         *bool      `json:"enabled"`
 	Cron            *string    `json:"cron"`
 	UseAcoustID     *bool      `json:"use_acoustid"`
+	AnalyseTempo    *bool      `json:"analyse_tempo"`
 }
 
 func (in libraryInput) apply(l *models.Library) {
@@ -476,6 +477,9 @@ func (in libraryInput) apply(l *models.Library) {
 	}
 	if in.UseAcoustID != nil {
 		l.UseAcoustID = *in.UseAcoustID
+	}
+	if in.AnalyseTempo != nil {
+		l.AnalyseTempo = *in.AnalyseTempo
 	}
 }
 

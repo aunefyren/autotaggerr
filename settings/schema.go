@@ -234,6 +234,29 @@ func Sections() []Section {
 			},
 		},
 		{
+			// No on/off switch: whether a library is analysed is a property of that
+			// library (Libraries → edit), so the switch lives there. With nothing opted
+			// in, the scheduled pass finds nothing to do and records nothing.
+			ID:          "tempo",
+			Title:       "Tempo analysis",
+			Description: "Detecting each file's BPM from the audio, for the libraries that opt in on the Libraries page. The result is stored, not written: the next processing run or Tag files puts it into the files, as the tagger profile says.",
+			Fields: []Field{
+				{
+					Key: "autotaggerr_tempo_cron_schedule", Label: "Analysis schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "Default is nightly at 01:00. Files analysed before are skipped, so a pass after the first only costs what is new.",
+					Placeholder: models.DefaultTempoCronSchedule,
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrTempoCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrTempoCronSchedule = v }, validCron),
+				},
+				{
+					Key: "autotaggerr_tempo_concurrency", Label: "Files in parallel", Type: TypeInt, Tier: TierLive,
+					Help: "Analysis decodes the whole file and is CPU-bound. Applies from the next pass. A pass pauses while files are being written, whatever this says.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrTempoConcurrency },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrTempoConcurrency = v }, intRange(1, 16)),
+				},
+			},
+		},
+		{
 			// Named for what the setting governs, not for who supplies the data. A
 			// metadata source is a component you configure zero, one or several of, and
 			// only MusicBrainz is implemented today — but *whether an identity change

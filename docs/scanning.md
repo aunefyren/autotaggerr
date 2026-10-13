@@ -503,7 +503,8 @@ hand-pressed activity as well as for a run's. If that turns out not to carry it,
 segmented band is a run's own modal, over the cascade it spawned — not the feed.
 
 Emitted today: `process`, `count_files`, `tag_files`, `collection_scan`, `lidarr_sync`,
-`mb_mirror`, `mb_migration`, `plex_refresh`, `health_check`.
+`mb_mirror`, `mb_migration`, `plex_refresh`, `health_check`, `artwork_refresh`
+([artwork.md](artwork.md)) and `tempo_analysis` ([tempo.md](tempo.md)).
 
 ### A run spawns activities; each one is a row
 

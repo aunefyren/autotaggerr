@@ -112,6 +112,10 @@ func (r *Runtime) Apply(cfg models.ConfigStruct, changed []string) []string {
 				r.setConcurrency(cfg.AutotaggerrProcessConcurrency)
 				applied = append(applied, "new scans will use the new worker count")
 			}
+		case "autotaggerr_tempo_concurrency":
+			// Nothing to push: the tempo runner reads the worker count from the config
+			// at the start of each pass, so saving it is applying it.
+			applied = append(applied, "new tempo analysis passes will use the new worker count")
 		}
 	}
 
@@ -135,6 +139,7 @@ func (r *Runtime) applySchedules(cfg models.ConfigStruct, changed []string) []st
 		"autotaggerr_mirror_enabled":        "metadata refresh",
 		"autotaggerr_artwork_cron_schedule": "artwork refresh",
 		"autotaggerr_artwork_enabled":       "artwork refresh",
+		"autotaggerr_tempo_cron_schedule":   "tempo analysis",
 	}
 
 	needed := map[string]bool{}

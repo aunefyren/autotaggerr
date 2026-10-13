@@ -10,6 +10,19 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 [mb-migration.md](mb-migration.md), [mirror.md](mirror.md), [artwork.md](artwork.md),
 [authentication.md](authentication.md) and [settings.md](settings.md).
 
+## In flight: tempo (BPM) detection
+
+Built in three phases, each left compiling with its tests passing for the maintainer to commit:
+
+1. **Detection + storage** — `aubiotrack` (aubio) as an optional binary detected like `fpcalc`, a
+   `track_tempos` table keyed by path, and its own verb (*Analyse tempo*) on its own runner,
+   opted into per library. See [tempo.md](tempo.md).
+2. **Tag writing** — `TBPM` (MP3) / `BPM` (FLAC) from the stored result, governed by the tagger
+   profile (off / fill empty / overwrite, minimum confidence). Analysis never writes a file; the
+   next *Process* or *Tag files* carries the value in.
+3. **UI** — the library opt-in, *Analyse tempo* / *Cancel*, the profile fields, BPM in the item
+   view, Activity labels.
+
 ## Open work
 
 - **What failed?** cannot be asked about *files*. Activity answers it for events, but the rows on the
@@ -276,6 +289,28 @@ repair in flight, and names its source rather than assuming one. What that left 
   behaviour a fixture would be pinning.
 
 ## Roadmap / ideas
+
+- **BPM playlists in Plex** (postponed from the tempo work, optional). Plex ignores BPM tags, so
+  running playlists at a cadence (e.g. 160 steps/min) have to reach Plexamp as playlists. The design
+  as agreed so far:
+  - *Definitions are database rows on their own page* (name, target BPM, tolerance default ±4,
+    include half-time default on — `target/2 ± tolerance/2`, minimum confidence, optional max
+    track count), not `config.json` keys — they describe a collection, not the process.
+  - *Match by file path only*, through a `plex_path_mappings` key (Autotaggerr prefix → Plex
+    prefix) on **Settings → Plex**. `/library/sections/:id/all?type=10` carries each track's
+    `Media/Part@file` and `viewCount`. The existing client matches by *names*
+    (`ResolveAlbumKeyInSection`), and Plex does not reliably expose recording MBIDs, so there is no
+    fallback — an unmatched track is listed in Activity rather than guessed.
+  - *Ownership by ID.* A row stores the Plex playlist `ratingKey` it created; sync touches only
+    that. A same-named playlist Autotaggerr did not create is reported, not adopted. Updates are an
+    add/remove diff (`PUT /playlists/:id/items?uri=…`, `DELETE /playlists/:id/items/:itemID`) so
+    the playlist keeps its ID in Plexamp.
+  - *Its own verb* with a preview (the diff, applied to nothing) — not a cascade off analysis.
+  - *Raw values are never corrected* at analysis time; half/double-tempo is handled here. Measured
+    on a real library, hip-hop near 88 BPM is often detected at ~176, and ballads can land anywhere
+    with a regular beat grid — see [tempo.md](tempo.md#how-good-the-numbers-are).
+  - Ordering by play count was asked about and deferred with the rest: it needs Plex's move-item
+    API on top of add/remove.
 
 - **Additional audio formats** (OGG, M4A/AAC, …). Tagging covers FLAC (`metaflac`) and MP3
   (`bogem/id3v2`) only.

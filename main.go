@@ -38,6 +38,7 @@ import (
 	"github.com/aunefyren/autotaggerr/process"
 	"github.com/aunefyren/autotaggerr/routers"
 	"github.com/aunefyren/autotaggerr/settings"
+	"github.com/aunefyren/autotaggerr/tempo"
 	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/aunefyren/autotaggerr/web"
 	"github.com/gin-contrib/cors"
@@ -51,6 +52,7 @@ var (
 	scanRunner    *process.Runner
 	mirrorRunner  *mirror.Runner
 	artworkRunner *artwork.Runner
+	tempoRunner   *tempo.Runner
 	// settingsRuntime owns the recurring schedules and re-applies settings saved in
 	// the UI to this running process.
 	settingsRuntime *settings.Runtime
@@ -216,6 +218,12 @@ func main() {
 	artworkRunner = artwork.NewRunner(db, files.ConfigFile)
 	collection.SetArtworkWarmer(artworkRunner)
 
+	// Tempo analysis has its own runner for the same reason, and one more: it decodes
+	// audio for hours on a first pass, and on the scan queue every scan would wait
+	// behind it. Instead it pauses between files while a file-writing job runs, so the
+	// job someone is waiting on gets the CPU and the disk. See docs/tempo.md.
+	tempoRunner = tempo.NewRunner(db, scanRunner.WritingFiles, files.ConfigFile)
+
 	// Scheduled health checks for the configured connections. A baseline runs at
 	// startup (off the main goroutine, so a slow endpoint cannot stall boot); the cron
 	// then re-checks and records an event only when a connection's health changes.
@@ -249,6 +257,13 @@ func main() {
 			Run:      func() { artworkRunner.RefreshCollection(false) },
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrArtworkCronSchedule },
 			Enabled:  func(c models.ConfigStruct) bool { return !c.AutotaggerrArtworkDisabled },
+		},
+		settings.CronJob{
+			// No Enabled switch: the opt-in is per library, and Scheduled does nothing
+			// (and records nothing) when no library has asked for analysis.
+			Name:     "tempo analysis",
+			Run:      tempoRunner.Scheduled,
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrTempoCronSchedule },
 		},
 		settings.CronJob{
 			Name:     "health check",
@@ -287,7 +302,7 @@ func main() {
 	}
 
 	// Initialize Router
-	router := initRouter(db, scanRunner, mirrorRunner, artworkRunner, files.ConfigFile)
+	router := initRouter(db, scanRunner, mirrorRunner, artworkRunner, tempoRunner, files.ConfigFile)
 
 	logger.Log.Info("router initialized. starting Autotaggerr at http://*:" + strconv.Itoa(files.ConfigFile.AutotaggerrPort))
 
@@ -346,7 +361,7 @@ func shutdown(server *http.Server, runner *process.Runner, schedules *settings.R
 	logger.Log.Info("Autotaggerr stopped")
 }
 
-func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Runner, artworkRunner *artwork.Runner, cfg models.ConfigStruct) *gin.Engine {
+func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Runner, artworkRunner *artwork.Runner, tempoRunner *tempo.Runner, cfg models.ConfigStruct) *gin.Engine {
 	router := gin.Default()
 
 	router.Use(cors.New(cors.Config{
@@ -369,6 +384,7 @@ func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Ru
 		Scan:       scanRunner,
 		Mirror:     mirrorRunner,
 		Artwork:    artworkRunner,
+		Tempo:      tempoRunner,
 		Rebuilder:  collection.NewRebuilder(db),
 		Meta:       modules.NewMetadataSource(),
 		Settings:   settingsRuntime,

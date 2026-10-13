@@ -258,3 +258,22 @@ func TestShutdownGivesUpOnADeadline(t *testing.T) {
 		t.Errorf("Shutdown = %v, want a deadline error", err)
 	}
 }
+
+// TestWritingFilesNamesOnlyFileWork: work outside the queue (tempo analysis) yields to
+// a job that rewrites audio, and not to a metadata pass that never touches a file.
+func TestWritingFilesNamesOnlyFileWork(t *testing.T) {
+	r := &Runner{}
+	if r.WritingFiles() {
+		t.Fatal("an idle runner reports file work")
+	}
+	r.current = &job{kind: jobRefreshAll}
+	if r.WritingFiles() {
+		t.Fatal("a metadata refresh reported as file work")
+	}
+	for _, kind := range []jobKind{jobProcessAll, jobRetagLibrary, jobForceRecorrelate} {
+		r.current = &job{kind: kind}
+		if !r.WritingFiles() {
+			t.Errorf("%s not reported as file work", kind)
+		}
+	}
+}

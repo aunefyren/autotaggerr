@@ -33,6 +33,15 @@ const (
 	DefaultEventDetailRetention = 500
 )
 
+// Tempo analysis defaults. Two workers rather than the scan's four: analysis is
+// CPU-bound decoding, and the machine running Autotaggerr is usually also serving the
+// music. Nightly at 01:00 keeps it clear of the evening scan and of the metadata
+// refresh at 03:00.
+const (
+	DefaultTempoCronSchedule = "0 0 1 * * *"
+	DefaultTempoConcurrency  = 2
+)
+
 // How the SMTP connection is encrypted. The default is Auto, which infers the answer
 // from the port and is right for every hosted provider; the explicit modes exist for
 // the self-hosted relay that gets it wrong — one that offers STARTTLS and fails the
@@ -109,6 +118,15 @@ type ConfigStruct struct {
 	// false has to mean the default behaviour.
 	AutotaggerrArtworkDisabled     bool   `json:"autotaggerr_artwork_disabled"`
 	AutotaggerrArtworkCronSchedule string `json:"autotaggerr_artwork_cron_schedule"`
+
+	// Tempo analysis. Whether a library is analysed at all is a per-library opt-in
+	// (Library.AnalyseTempo), so there is no on/off key here: with no library opted
+	// in, the scheduled pass finds nothing to do. Concurrency is its own knob rather
+	// than the scan's, because analysis is CPU-bound decoding while a scan is disk-
+	// and network-bound — and the pass already pauses while file work runs. See
+	// docs/tempo.md.
+	AutotaggerrTempoCronSchedule string `json:"autotaggerr_tempo_cron_schedule"`
+	AutotaggerrTempoConcurrency  int    `json:"autotaggerr_tempo_concurrency"`
 
 	// Health-check schedule for the configured Lidarr/Plex connections. Checks are
 	// cheap and only record an Activity event when a service's health changes, so a

@@ -44,7 +44,8 @@ runtime dependency). Go 1.26 is the module target.
 
 MP3 needs nothing external: ID3 is read and written in-process with
 `github.com/bogem/id3v2`. `ffmpeg` is still a *test* dependency (the fixtures are synthesized
-with it) and `fpcalc` (chromaprint) is optional, for AcoustID.
+with it) and `fpcalc` (chromaprint) is optional, for AcoustID. `aubiotrack` (aubio) is optional
+too, for tempo analysis — tests fake it, so it is never needed to run them.
 
 ## Configuration
 

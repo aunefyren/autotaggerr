@@ -50,7 +50,11 @@ WORKDIR /app
 # without it Autotaggerr logs the absence once and behaves exactly as before.
 # ffmpeg was dropped once ID3 moved in-process: `flac` (metaflac) is the only tag
 # binary left. chromaprint still pulls the ffmpeg *libraries* it needs.
-RUN apk add --no-cache flac chromaprint ca-certificates tzdata su-exec
+# aubio provides aubiotrack, used only by the optional tempo analysis (docs/tempo.md).
+# It reuses chromaprint's ffmpeg libraries for decoding and adds about 5 MiB
+# (libsndfile, libsamplerate, jack). The C tools only — not py3-aubio, which would
+# bring Python and numpy for a front end that reports less than aubiotrack does.
+RUN apk add --no-cache flac chromaprint aubio ca-certificates tzdata su-exec
 COPY --from=builder /app/autotaggerr /app/autotaggerr
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /app/web/ /app/web/
