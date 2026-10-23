@@ -154,7 +154,9 @@ matrix leaves open:
 
   Whether that matters depends on where the correlation came from, and the exposure is narrower than
   it first looks. Under a manager, `ResolveMetadataDetailsFromLidarr` (`modules/files.go:216`)
-  supplies fresh track IDs on every scan, so the condition clears on its own within a cache TTL. The
+  supplies fresh track IDs on every scan, so the condition clears on its own within a cache TTL —
+  except after a release *merge*, where Lidarr's lagging metadata keeps the old pair; that case is
+  now matched by recording ([mb-migration.md](mb-migration.md)). The
   exposed case is a **manager-less install** — FLACs carrying their own MB IDs — because the fallback
   at `:240` reads the stale ID out of the tags of the very file it is trying to repair. That is the
   only place in the pipeline where the input is the artefact being corrected, and it is why the

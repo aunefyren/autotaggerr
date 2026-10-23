@@ -290,32 +290,92 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 	}
 	logger.Log.Debug("tagging from release: " + response.Title)
 
-	// Go through API response for information
+	track, media, ok := matchCorrelatedTrack(response, correlation)
+	if !ok {
+		logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", correlation.MBReleaseTrackID, correlation.MBReleaseID, correlation.TrackTitle, response.ID)
+		if response.ID != correlation.MBReleaseID {
+			// Re-correlating cannot help here: the manager is what still holds the
+			// merged-away IDs, so it hands the same stale pair back on every pass.
+			return false, 0, nil, fmt.Errorf("%w: track %s belongs to release %s, which MusicBrainz merged into %s, and no track there has the same recording or title — this clears once the manager's metadata picks up the merge", ErrTrackNotInRelease, correlation.MBReleaseTrackID, correlation.MBReleaseID, response.ID)
+		}
+		logger.Log.Warn("the manager's release selection and track mapping disagree; a force re-correlate may reconcile them")
+		return false, 0, nil, fmt.Errorf("%w: track %s is not in release %s — the manager's release and track mapping disagree; force re-correlate this artist to reconcile", ErrTrackNotInRelease, correlation.MBReleaseTrackID, response.ID)
+	}
+
+	if err := verifyDiscFolder(filePath, correlation, track, media, response); err != nil {
+		logger.Log.Warnf("refusing to tag '%s': %s", filePath, err.Error())
+		return false, 0, nil, err
+	}
+	return ProcessTrackFileAfterMatch(
+		filePath,
+		nil,
+		plexClient,
+		refreshSet,
+		rootDir,
+		tagger,
+		track,
+		media,
+		response)
+}
+
+// matchCorrelatedTrack locates the correlation's track in the fetched release.
+//
+// The exact track ID is the only match for a release fetched under its own ID. The
+// fallback exists for the one case where a miss is expected rather than a sign of
+// drift: the correlation names a release MusicBrainz has merged away. MusicBrainz
+// follows the redirect and answers with the survivor, whose tracks carry the
+// survivor's IDs — the merged-away track IDs are redirects now and appear nowhere
+// in the payload. A manager whose metadata lags MusicBrainz (Lidarr's does) keeps
+// handing out the old pair, so an exact match fails on every pass and re-correlating
+// only fetches the same pair again.
+//
+// A merge renames, it does not substitute, so the same song is in the survivor: by
+// recording first, since merges keep recordings, and by title when the recording
+// was merged as well. Either has to name exactly one track. A recording or title
+// that repeats is the multi-disc ambiguity verifyDiscFolder guards against, and
+// choosing between the candidates here would be a guess — so a repeat refuses
+// rather than picks.
+func matchCorrelatedTrack(response models.MusicBrainzReleaseResponse, correlation models.Correlation) (models.Track, models.MusicBrainzMedia, bool) {
 	for _, media := range response.Media {
 		for _, track := range media.Tracks {
 			if track.ID == correlation.MBReleaseTrackID {
 				logger.Log.Debug("release track ID found in the release")
-				if err := verifyDiscFolder(filePath, correlation, track, media, response); err != nil {
-					logger.Log.Warnf("refusing to tag '%s': %s", filePath, err.Error())
-					return false, 0, nil, err
-				}
-				return ProcessTrackFileAfterMatch(
-					filePath,
-					nil,
-					plexClient,
-					refreshSet,
-					rootDir,
-					tagger,
-					track,
-					media,
-					response)
+				return track, media, true
 			}
 		}
 	}
+	if response.ID == correlation.MBReleaseID {
+		return models.Track{}, models.MusicBrainzMedia{}, false
+	}
 
-	logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", correlation.MBReleaseTrackID, correlation.MBReleaseID, correlation.TrackTitle, response.ID)
-	logger.Log.Warn("the manager's release selection and track mapping disagree; a force re-correlate may reconcile them")
-	return false, 0, nil, fmt.Errorf("%w: track %s is not in release %s — the manager's release and track mapping disagree; force re-correlate this artist to reconcile", ErrTrackNotInRelease, correlation.MBReleaseTrackID, response.ID)
+	match := func(same func(models.Track) bool) (models.Track, models.MusicBrainzMedia, bool) {
+		var found models.Track
+		var foundMedia models.MusicBrainzMedia
+		hits := 0
+		for _, media := range response.Media {
+			for _, track := range media.Tracks {
+				if same(track) {
+					found, foundMedia = track, media
+					hits++
+				}
+			}
+		}
+		return found, foundMedia, hits == 1
+	}
+
+	if correlation.MBRecordingID != "" {
+		if track, media, ok := match(func(t models.Track) bool { return t.Recording.ID == correlation.MBRecordingID }); ok {
+			logger.Log.Infof("release %s was merged into %s; matched track %s by recording %s", correlation.MBReleaseID, response.ID, track.ID, correlation.MBRecordingID)
+			return track, media, true
+		}
+	}
+	if correlation.TrackTitle != "" {
+		if track, media, ok := match(func(t models.Track) bool { return strings.EqualFold(t.Title, correlation.TrackTitle) }); ok {
+			logger.Log.Infof("release %s was merged into %s; matched track %s by title %q", correlation.MBReleaseID, response.ID, track.ID, correlation.TrackTitle)
+			return track, media, true
+		}
+	}
+	return models.Track{}, models.MusicBrainzMedia{}, false
 }
 
 // verifyDiscFolder is the last check before a write: it refuses a correlation that

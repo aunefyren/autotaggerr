@@ -55,12 +55,24 @@ option: the merged ID still answers 200, and the editions browse asks for a grou
 than for the group, so there is no `id` to compare. What happens instead is
 [re-linking plus pruning](#release-groups-re-linked-not-remapped).
 
-**A release-track change is the gap.** `files.go:290` matches by exact track ID inside the payload,
-and `ErrTrackNotInRelease` — the error it raises when that ID is gone — currently has no consumer.
-Under a manager the correlation supplies fresh IDs each scan and the problem never appears; without
-one, the fallback reads the stale ID from the tags of the very file it is trying to repair, and
-fails identically forever. Recorded in [wip.md](wip.md); the remedy the error message names (force
-re-correlate) works, but it is manual.
+**A release-track change is the gap.** `TagResolvedFile` matches by exact track ID inside the
+payload, and `ErrTrackNotInRelease` — the error it raises when that ID is gone — currently has no
+consumer. Without a manager, the fallback reads the stale ID from the tags of the very file it is
+trying to repair, and fails identically forever. Recorded in [wip.md](wip.md); the remedy the error
+message names (force re-correlate) works, but it is manual.
+
+**A release merge under a manager is matched by recording.** A manager does *not* always supply
+fresh IDs: Lidarr's metadata server lags MusicBrainz, so after a release merge it keeps reporting
+the merged-away release and that release's track IDs. MusicBrainz answers the old release ID with
+the survivor, whose tracklist carries only the survivor's track IDs, so the exact match misses on
+every pass — and applying the migration does not help, because the next pass reads the stale pair
+from the manager again. When the fetched release's `id` differs from the one asked for,
+`matchCorrelatedTrack` (`modules/files.go`) therefore falls back to the correlation's recording ID,
+then its track title, each required to name exactly one track. The file is written with the
+survivor's IDs. A miss under a redirect fails with its own message — re-correlating would only
+fetch the same stale pair again. The index row still stores the manager's (old) IDs, since
+`recordItem` records the correlation as the manager supplied it; that converges once the manager
+catches up.
 
 ## Detection is separate from application
 
@@ -212,7 +224,9 @@ The tables divide into two kinds, and the division drives every rule below:
   no longer exists — and nothing in the transaction can derive replacements without fetching the new
   release and re-matching every track, under the rate limiter, mid-sync. Blanking the version trips
   the existing skip-unchanged escape hatch instead: the next scan re-correlates exactly these files
-  and writes the correct track IDs.
+  and writes the correct track IDs. Under a manager that re-correlation hands back the manager's
+  IDs, which can still be the merged-away pair; the tag write then matches by recording instead
+  ([coverage](#coverage-which-entity-which-change-which-mechanism)).
 - `collection_releases` moves to the new MBID, or is **dropped** if a row already exists there — the
   common case, since files were owned under both IDs. The column is uniquely indexed, so this is a
   merge, not an update.

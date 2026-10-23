@@ -793,6 +793,10 @@ The boundary is enforced by a single predicate and four mechanisms:
   (common mid-migration), tagging returns `modules.ErrTrackNotInRelease` wrapped with an actionable
   message pointing at force re-correlate, and the file lands as a visible `error` item on the next run
   re-attempts — rather than silently keeping its old tags.
+  The exception is a release MusicBrainz has merged away while Lidarr still reports it: there the
+  track is matched in the survivor by recording ID (then title), and a miss says the manager's
+  metadata has not caught up rather than pointing at re-correlate
+  ([mb-migration.md](mb-migration.md#coverage-which-entity-which-change-which-mechanism)).
 
 ### The UI under a manager
 
