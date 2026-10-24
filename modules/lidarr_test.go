@@ -909,31 +909,39 @@ func TestLidarrInvalidateArtistCaches(t *testing.T) {
 	resetLidarrCaches()
 	t.Cleanup(resetLidarrCaches)
 
+	client := NewLidarrClient("http://lidarr:8686", "k", nil)
+	other := NewLidarrClient("http://lidarr-lossless:8686", "k", nil)
 	now := time.Now()
-	lidarrArtistsCache["1"] = models.CachedLidarrArtistRelease{Timestamp: now}
-	lidarrArtistsCache["2"] = models.CachedLidarrArtistRelease{Timestamp: now}
-	lidarrTrackFilesCache["1"] = models.CachedLidarrTrackFilesRelease{Timestamp: now}
-	lidarrTrackFilesCache["2"] = models.CachedLidarrTrackFilesRelease{Timestamp: now}
-	lidarrAlbumsCache["10"] = models.CachedLidarrAlbumRelease{Timestamp: now}
-	lidarrAlbumsCache["20"] = models.CachedLidarrAlbumRelease{Timestamp: now}
-	lidarrTracksCache["10"] = models.CachedLidarrTracksRelease{Timestamp: now}
-	lidarrTracksCache["20"] = models.CachedLidarrTracksRelease{Timestamp: now}
+	for _, c := range []*LidarrClient{client, other} {
+		lidarrArtistsCache[c.cacheKey(1)] = models.CachedLidarrArtistRelease{Timestamp: now}
+		lidarrArtistsCache[c.cacheKey(2)] = models.CachedLidarrArtistRelease{Timestamp: now}
+		lidarrTrackFilesCache[c.cacheKey(1)] = models.CachedLidarrTrackFilesRelease{Timestamp: now}
+		lidarrTrackFilesCache[c.cacheKey(2)] = models.CachedLidarrTrackFilesRelease{Timestamp: now}
+		lidarrAlbumsCache[c.cacheKey(10)] = models.CachedLidarrAlbumRelease{Timestamp: now}
+		lidarrAlbumsCache[c.cacheKey(20)] = models.CachedLidarrAlbumRelease{Timestamp: now}
+		lidarrTracksCache[c.cacheKey(10)] = models.CachedLidarrTracksRelease{Timestamp: now}
+		lidarrTracksCache[c.cacheKey(20)] = models.CachedLidarrTracksRelease{Timestamp: now}
+	}
 
-	LidarrInvalidateArtistCaches(1, []int64{10})
+	client.InvalidateArtistCaches(1, []int64{10})
 
 	for _, tc := range []struct {
 		name    string
 		present bool
 		got     bool
 	}{
-		{"artist 1", false, mapHas(lidarrArtistsCache, "1")},
-		{"artist 2", true, mapHas(lidarrArtistsCache, "2")},
-		{"trackfiles 1", false, mapHas(lidarrTrackFilesCache, "1")},
-		{"trackfiles 2", true, mapHas(lidarrTrackFilesCache, "2")},
-		{"album 10", false, mapHas(lidarrAlbumsCache, "10")},
-		{"album 20", true, mapHas(lidarrAlbumsCache, "20")},
-		{"tracks 10", false, mapHas(lidarrTracksCache, "10")},
-		{"tracks 20", true, mapHas(lidarrTracksCache, "20")},
+		{"artist 1", false, mapHas(lidarrArtistsCache, client.cacheKey(1))},
+		{"artist 2", true, mapHas(lidarrArtistsCache, client.cacheKey(2))},
+		{"trackfiles 1", false, mapHas(lidarrTrackFilesCache, client.cacheKey(1))},
+		{"trackfiles 2", true, mapHas(lidarrTrackFilesCache, client.cacheKey(2))},
+		{"album 10", false, mapHas(lidarrAlbumsCache, client.cacheKey(10))},
+		{"album 20", true, mapHas(lidarrAlbumsCache, client.cacheKey(20))},
+		{"tracks 10", false, mapHas(lidarrTracksCache, client.cacheKey(10))},
+		{"tracks 20", true, mapHas(lidarrTracksCache, client.cacheKey(20))},
+		// The same IDs in another Lidarr are another artist and album entirely.
+		{"other Lidarr's artist 1", true, mapHas(lidarrArtistsCache, other.cacheKey(1))},
+		{"other Lidarr's trackfiles 1", true, mapHas(lidarrTrackFilesCache, other.cacheKey(1))},
+		{"other Lidarr's album 10", true, mapHas(lidarrAlbumsCache, other.cacheKey(10))},
 	} {
 		if tc.got != tc.present {
 			t.Errorf("%s present = %t, want %t", tc.name, tc.got, tc.present)

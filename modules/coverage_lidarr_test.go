@@ -164,14 +164,14 @@ func TestLidarrTrackFilesAndTracksAreCached(t *testing.T) {
 func TestLidarrGetMonitoredAlbumMBIDCachedButUnmonitored(t *testing.T) {
 	resetLidarrCaches()
 	t.Cleanup(resetLidarrCaches)
+	cli := lidarrRoutesServer(t, pinkFloydRoutes())
 	lidarrAlbumsCacheMu.Lock()
-	lidarrAlbumsCache["42"] = models.CachedLidarrAlbumRelease{
+	lidarrAlbumsCache[cli.cacheKey(42)] = models.CachedLidarrAlbumRelease{
 		Album:     models.LidarrAlbum{ID: 42, Releases: []models.LidarrAlbumRel{{ID: 1, ForeignReleaseID: "old"}}},
 		Timestamp: time.Now(),
 	}
 	lidarrAlbumsCacheMu.Unlock()
 
-	cli := lidarrRoutesServer(t, pinkFloydRoutes())
 	got, err := cli.GetMonitoredAlbumMBID(2, 42)
 	if err != nil || got == nil || *got != "mbrelease-1" {
 		t.Errorf("GetMonitoredAlbumMBID = (%v, %v), want the freshly monitored release", got, err)

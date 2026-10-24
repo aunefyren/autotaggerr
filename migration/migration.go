@@ -205,8 +205,8 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 	var candidates []models.MusicbrainzMigration
 	if err := db.
 		Where("status = ?", models.MigrationStatusPending).
-		Or("status = ? AND entity_type = ? AND kind = ?",
-			models.MigrationStatusFailed, models.MigrationEntityReleaseGroup, models.MigrationKindDeleted).
+		Or("status = ? AND entity_type = ?",
+			models.MigrationStatusFailed, models.MigrationEntityReleaseGroup).
 		Find(&candidates).Error; err != nil {
 		return res, err
 	}
@@ -313,8 +313,13 @@ func mootReason(db *gorm.DB, m models.MusicbrainzMigration) (string, bool) {
 	switch m.EntityType {
 	case models.MigrationEntityReleaseGroup:
 		// A retirement's whole content is deleting this row. Without it there is no
-		// retirement to perform, whoever removed it.
+		// retirement to perform, whoever removed it. A re-key also carries the
+		// album's wants, so it is not moot while one still points at the old ID.
 		if countRows(db, &models.CollectionReleaseGroup{}, "mb_id = ?", m.OldMBID) > 0 {
+			return "", false
+		}
+		if m.Kind == models.MigrationKindRedirect &&
+			countRows(db, &models.CollectionDesire{}, "release_group_mb_id = ?", m.OldMBID) > 0 {
 			return "", false
 		}
 		return "the album is no longer in the collection — a manager re-keyed it, or it " +
@@ -369,7 +374,11 @@ func closeExternally(db *gorm.DB, m *models.MusicbrainzMigration, detail string)
 // would succeed now. A read error is treated as "still blocked": the next run asks
 // again, which is the harmless direction to be wrong in.
 func retirementUnblocked(db *gorm.DB, m models.MusicbrainzMigration) bool {
-	ok, _, err := collection.ReleaseGroupRetirable(db, m.OldMBID)
+	retirable := collection.ReleaseGroupRetirable
+	if m.Kind == models.MigrationKindRedirect {
+		retirable = collection.ReleaseGroupRetirableAfterRekey
+	}
+	ok, _, err := retirable(db, m.OldMBID)
 	if err != nil {
 		logger.Log.Warnf("could not re-check retirement for %s: %s", m.OldMBID, err.Error())
 		return false
@@ -585,7 +594,7 @@ func MarkRepairQueued(db *gorm.DB, artistMBID string) (int64, error) {
 	res := db.Model(&models.MusicbrainzMigration{}).
 		Where("status IN ?", []string{models.MigrationStatusPending, models.MigrationStatusFailed}).
 		Where("old_mb_id IN (?)", releaseGroupsOfArtist(db, artistMBID)).
-		Where("entity_type = ?", models.MigrationEntityReleaseGroup).
+		Where("entity_type = ? AND kind = ?", models.MigrationEntityReleaseGroup, models.MigrationKindDeleted).
 		Update("repair_queued_at", time.Now())
 	return res.RowsAffected, res.Error
 }
@@ -731,6 +740,8 @@ func describe(db *gorm.DB, m models.MusicbrainzMigration) string {
 type applyCounts struct {
 	files     int
 	unmatched int
+	// desires is wants re-pointed at a re-keyed album's new ID.
+	desires int
 	// retired is release-groups withdrawn from the catalogue. Counted apart from
 	// files because nothing on disk moved: the run's summary would otherwise report a
 	// retirement as "0 files remapped, 0 unmatched" and read as having done nothing.
@@ -748,6 +759,8 @@ func apply(db *gorm.DB, m *models.MusicbrainzMigration, resolution string) (appl
 		switch {
 		case m.Kind == models.MigrationKindDeleted:
 			counts, err = applyDeletion(tx, *m)
+		case m.EntityType == models.MigrationEntityReleaseGroup:
+			counts, err = applyReleaseGroupRedirect(tx, *m)
 		case m.EntityType == models.MigrationEntityArtist:
 			counts, err = applyArtistRedirect(tx, *m)
 		default:
@@ -805,6 +818,16 @@ func appliedDetail(m models.MusicbrainzMigration, counts applyCounts) string {
 	source := m.SourceLabel()
 
 	switch {
+	case m.EntityType == models.MigrationEntityReleaseGroup && m.Kind == models.MigrationKindRedirect:
+		detail := source + " moved this album to another ID, so "
+		if counts.desires > 0 {
+			detail += fmt.Sprintf("%s followed it and ", plural(counts.desires, "want", "wants"))
+		}
+		if counts.retired == 0 {
+			return detail + "there was no old row left to remove. No files were touched."
+		}
+		return detail + "the old row was removed from your collection view. No files were touched."
+
 	case m.EntityType == models.MigrationEntityReleaseGroup:
 		if counts.retired == 0 {
 			return "There was nothing left to remove — the album had already left the collection."
@@ -1096,6 +1119,52 @@ func applyDeletion(tx *gorm.DB, m models.MusicbrainzMigration) (applyCounts, err
 	// would otherwise keep the release counting towards a complete album.
 	if err := tx.Where("mb_id = ?", m.OldMBID).Delete(&models.CollectionRelease{}).Error; err != nil {
 		return counts, err
+	}
+	return counts, nil
+}
+
+// applyReleaseGroupRedirect follows an album its manager moved to another valid ID
+// (collection.detectRekeys): the wants on the old ID move to the new one, and the old
+// row is retired.
+//
+// Wants first, because a want is one of the claims that stops a retirement — and the
+// want is exactly what this migration exists to carry, so leaving it behind would
+// block the retirement on the very thing being rescued. A chosen edition is kept as
+// chosen: a re-key is the album's identity moving, and the edition's release is
+// re-linked to its group when its own payload is next read (RelinkRelease).
+//
+// The retirement keeps every other guard. Files still resolving to the old album (the
+// manager's old ID is in their tags until the next run re-correlates them) refuse it,
+// the whole transaction — wants included — is rolled back, and the row is retried on
+// a later run once the files have moved.
+func applyReleaseGroupRedirect(tx *gorm.DB, m models.MusicbrainzMigration) (applyCounts, error) {
+	counts := applyCounts{}
+	if m.NewMBID == "" {
+		return counts, errors.New("redirect has no target MBID")
+	}
+
+	res := tx.Model(&models.CollectionDesire{}).
+		Where("release_group_mb_id = ?", m.OldMBID).
+		Update("release_group_mb_id", m.NewMBID)
+	if res.Error != nil {
+		return counts, res.Error
+	}
+	counts.desires = int(res.RowsAffected)
+	if counts.desires > 0 {
+		if err := dedupeDesires(tx); err != nil {
+			return counts, err
+		}
+	}
+
+	removed, reason, err := collection.RetireReleaseGroup(tx, m.OldMBID)
+	if err != nil {
+		return counts, err
+	}
+	if !removed && reason != "" {
+		return counts, errors.New(reason)
+	}
+	if removed {
+		counts.retired = 1
 	}
 	return counts, nil
 }

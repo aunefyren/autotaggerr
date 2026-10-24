@@ -2163,7 +2163,7 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 	if correlation.MBReleaseID == "" {
 		return 0, nil, nil
 	}
-	unchanged, written, changes, err := modules.TagResolvedFile(item.Path, correlation, r.plex, refreshSet, library.Path, tagger.Settings())
+	unchanged, written, changes, err := modules.TagCorrelatedFile(item.Path, &correlation, r.plex, refreshSet, library.Path, tagger.Settings())
 	if err != nil {
 		r.recordRetagFailure(item, err)
 		return 0, nil, err
@@ -2187,6 +2187,13 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 	}
 	if !unchanged {
 		updates["last_tagged_at"] = now
+	}
+	// A track re-matched in a rebuilt release was written under its new IDs; the row
+	// follows the file (modules.rematchRebuiltTrack).
+	if correlation.Source == models.CorrelationSourceRematched && !item.Pinned {
+		updates["mb_release_track_id"] = correlation.MBReleaseTrackID
+		updates["mb_recording_id"] = correlation.MBRecordingID
+		updates["correlation_source"] = correlation.Source
 	}
 	if fi, statErr := os.Stat(item.Path); statErr == nil {
 		mod := fi.ModTime()

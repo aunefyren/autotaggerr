@@ -31,6 +31,7 @@ import (
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -1644,6 +1645,12 @@ type SyncStats struct {
 	// reports the standing total rather than only what this pass happened to touch.
 	Ghosts []string `json:"ghosts,omitempty"`
 
+	// Rekeyed is the albums this pass saw the manager move to another valid ID: one
+	// left the artist's catalog while one with the same title and type entered it.
+	// Each became a release-group redirect migration (detectRekeys), which carries the
+	// album's wants to the new ID and retires the old row once nothing holds it.
+	Rekeyed []string `json:"rekeyed,omitempty"`
+
 	// Failures are the lookups that errored, one line each. Every one of these used to
 	// be a `continue` with a log line: Lidarr going down mid-pass produced an Activity
 	// row identical to a healthy one, just with smaller numbers.
@@ -1664,6 +1671,7 @@ func SyncEventStats(stats SyncStats) []models.EventStat {
 		{Label: "Albums", Value: stats.Groups},
 		{Label: "Not in Lidarr", Value: len(stats.Unknown), Kind: models.EventStatNotable, Filter: models.EventItemStatusUnknown},
 		{Label: "Not in MusicBrainz", Value: len(stats.Ghosts), Kind: models.EventStatNotable, Filter: models.EventItemStatusGone},
+		{Label: "Re-keyed", Value: len(stats.Rekeyed), Kind: models.EventStatNotable},
 		{Label: "Lookups failed", Value: len(stats.Failures), Kind: models.EventStatBad},
 	}
 }
@@ -1723,6 +1731,9 @@ func SyncSummaryLine(stats SyncStats) string {
 	}
 	if n := len(stats.Ghosts); n > 0 {
 		line += fmt.Sprintf(" · %d not in MusicBrainz", n)
+	}
+	if n := len(stats.Rekeyed); n > 0 {
+		line += fmt.Sprintf(" · %d re-keyed", n)
 	}
 	if n := len(stats.Failures); n > 0 {
 		line += fmt.Sprintf(" · %d lookup(s) failed", n)
@@ -1854,11 +1865,12 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 				for _, al := range albums {
 					albumIDs = append(albumIDs, al.ID)
 				}
-				modules.LidarrInvalidateArtistCaches(la.ID, albumIDs)
+				client.InvalidateArtistCaches(la.ID, albumIDs)
 			}
 			// Drop the previous catalog view for this artist so albums removed from
 			// Lidarr stop being listed. Done only after the fetch succeeded, and it
 			// leaves the disk columns intact.
+			before := catalogSnapshot(db, la.ForeignArtistID)
 			clearCatalogView(db, la.ForeignArtistID, la.Name)
 
 			for _, al := range albums {
@@ -1877,6 +1889,11 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 					},
 				})
 				stats.Groups++
+			}
+			for _, rk := range detectRekeys(before, albums) {
+				if recordRekey(db, rk) {
+					stats.Rekeyed = append(stats.Rekeyed, rk.oldMBID)
+				}
 			}
 			// Records that this artist has actually been put to a manager. It is what
 			// CatalogChecked reads, so an album with no catalog row can be reported as
@@ -1937,6 +1954,147 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 		stats.Ghosts = ghosts
 	}
 	return stats, nil
+}
+
+// catalogEntry is one album an artist's catalog held before a pass re-mirrored it.
+type catalogEntry struct {
+	mbid, title, primaryType string
+}
+
+// catalogSnapshot is what the manager listed for an artist as of the last pass, read
+// just before clearCatalogView wipes it — the "before" half of the diff detectRekeys
+// needs. A read failure yields nothing, which detects nothing: the safe direction.
+func catalogSnapshot(db *gorm.DB, artistMBID string) []catalogEntry {
+	var rows []models.CollectionReleaseGroup
+	if err := db.Where("artist_mb_id = ? AND in_catalog = ?", artistMBID, true).Find(&rows).Error; err != nil {
+		logger.Log.Warnf("failed to read the catalog of %s before syncing it: %s", artistMBID, err.Error())
+		return nil
+	}
+	out := make([]catalogEntry, 0, len(rows))
+	for _, rg := range rows {
+		out = append(out, catalogEntry{mbid: rg.MBID, title: rg.Title, primaryType: rg.PrimaryType})
+	}
+	return out
+}
+
+// rekey is one album a manager moved from one ID to another.
+type rekey struct {
+	oldMBID, newMBID, title string
+}
+
+// rekeyMatchKey is what a re-keyed album keeps: its title and its type. The title is
+// folded loosely (typography, accents, punctuation, spacing), because a re-key is
+// often the manager adopting another metadata record whose title is spelled a little
+// differently. That looseness is safe only because of what else a pairing needs: the
+// same type, one album leaving and one arriving under the key, in the same pass, for
+// the same artist.
+func rekeyMatchKey(title, primaryType string) string {
+	return utilities.CanonLoose(title) + "\x00" + strings.ToLower(strings.TrimSpace(primaryType))
+}
+
+// detectRekeys finds albums the manager moved to another *valid* ID between two
+// passes: an album that left the artist's catalog while one with the same title and
+// type entered it.
+//
+// A dead old ID is caught elsewhere (a 404 records a deletion, and the repair pass
+// asks the manager about it). A valid one never errors, so the old row survived as a
+// real release-group with no files and no catalog entry beside the new one — a silent
+// duplicate on the artist page, and a want pointing at it stranded there.
+//
+// Only one-to-one pairings are taken. Two albums leaving with the same title, or two
+// arriving, could pair either way, and pairing the wrong way would hand one album's
+// wants to another. Those are left alone, which is the state before this existed.
+func detectRekeys(before []catalogEntry, listed []models.LidarrAlbum) []rekey {
+	listedIDs := map[string]bool{}
+	for _, al := range listed {
+		listedIDs[al.ForeignAlbumID] = true
+	}
+	beforeIDs := map[string]bool{}
+	for _, e := range before {
+		beforeIDs[e.mbid] = true
+	}
+
+	left := map[string][]catalogEntry{}
+	for _, e := range before {
+		if !listedIDs[e.mbid] {
+			key := rekeyMatchKey(e.title, e.primaryType)
+			left[key] = append(left[key], e)
+		}
+	}
+	if len(left) == 0 {
+		return nil
+	}
+	entered := map[string][]models.LidarrAlbum{}
+	for _, al := range listed {
+		if al.ForeignAlbumID != "" && !beforeIDs[al.ForeignAlbumID] {
+			key := rekeyMatchKey(al.Title, al.AlbumType)
+			entered[key] = append(entered[key], al)
+		}
+	}
+
+	var out []rekey
+	for key, gone := range left {
+		arrived := entered[key]
+		if len(gone) != 1 || len(arrived) != 1 {
+			continue
+		}
+		out = append(out, rekey{oldMBID: gone[0].mbid, newMBID: arrived[0].ForeignAlbumID, title: arrived[0].Title})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].oldMBID < out[j].oldMBID })
+	return out
+}
+
+// recordRekey queues a re-key as a release-group redirect migration and reports
+// whether it queued one.
+//
+// A pending or failed *deletion* of the same old ID is turned into the redirect. That
+// is the case the repair pass exists for — the old ID resolved nowhere, the manager
+// was asked, and it re-keyed the album — and the deletion would retire the old row
+// while stranding its wants. A row already settled is left as it is: someone decided
+// about this ID, and re-raising it would ask them twice.
+func recordRekey(db *gorm.DB, rk rekey) bool {
+	var existing models.MusicbrainzMigration
+	err := db.Where("entity_type = ? AND old_mb_id = ?", models.MigrationEntityReleaseGroup, rk.oldMBID).
+		Limit(1).Find(&existing).Error
+	if err != nil {
+		logger.Log.Warnf("failed to check for a migration of %s: %s", rk.oldMBID, err.Error())
+		return false
+	}
+	now := time.Now()
+	if existing.ID != uuid.Nil {
+		open := existing.Status == models.MigrationStatusPending || existing.Status == models.MigrationStatusFailed
+		if !open || existing.Kind != models.MigrationKindDeleted {
+			return false
+		}
+		existing.Kind = models.MigrationKindRedirect
+		existing.NewMBID = rk.newMBID
+		existing.Source = models.ManagerTypeLidarr
+		existing.Status = models.MigrationStatusPending
+		existing.Error = ""
+		if err := db.Save(&existing).Error; err != nil {
+			logger.Log.Warnf("failed to record that %s was re-keyed: %s", rk.oldMBID, err.Error())
+			return false
+		}
+		logger.Log.Infof("Lidarr re-keyed %q from %s to %s; its pending removal is now a redirect", rk.title, rk.oldMBID, rk.newMBID)
+		return true
+	}
+
+	row := models.MusicbrainzMigration{
+		EntityType: models.MigrationEntityReleaseGroup,
+		OldMBID:    rk.oldMBID,
+		NewMBID:    rk.newMBID,
+		Kind:       models.MigrationKindRedirect,
+		Status:     models.MigrationStatusPending,
+		Source:     models.ManagerTypeLidarr,
+		Name:       rk.title,
+		DetectedAt: now,
+	}
+	if err := db.Create(&row).Error; err != nil {
+		logger.Log.Warnf("failed to record that %s was re-keyed: %s", rk.oldMBID, err.Error())
+		return false
+	}
+	logger.Log.Infof("Lidarr re-keyed %q from %s to %s", rk.title, rk.oldMBID, rk.newMBID)
+	return true
 }
 
 // clearCatalogView retires everything a manager wrote about one artist's albums,

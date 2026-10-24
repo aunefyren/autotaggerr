@@ -8,6 +8,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // ApplyDataMigrations runs each one-time data change not yet recorded in
@@ -20,6 +21,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 	}{
 		{"pin_fallback_manager", pinFallbackManager},
 		{"move_bpm_to_library", moveBPMToLibrary},
+		{"scope_lidarr_cache", scopeLidarrCache},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -99,6 +101,29 @@ func moveBPMToLibrary(db *gorm.DB) error {
 		if err := q.Updates(set).Error; err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// scopeLidarrCache drops the Lidarr cache rows written before their keys named the
+// Lidarr they came from. Those keys are bare Lidarr IDs, which two instances share,
+// and nothing reads them any more (modules.LidarrClient.cacheKey); left alone they
+// would sit in provider_cache forever, since only a fetch under the same key ever
+// overwrites a row. Everything in them is at most an hour old and is re-asked on the
+// next lookup.
+//
+// The key column goes through clause.Like rather than a raw fragment so GORM quotes
+// it: `key` is a reserved word in MySQL.
+func scopeLidarrCache(db *gorm.DB) error {
+	res := db.Where("source IN ?", []string{
+		models.ProviderCacheLidarrArtists, models.ProviderCacheLidarrAlbums,
+		models.ProviderCacheLidarrTracks, models.ProviderCacheLidarrTrackFiles,
+	}).Not(clause.Like{Column: clause.Column{Name: "key"}, Value: "%|%"}).Delete(&models.ProviderCache{})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		logger.Log.Infof("dropped %d Lidarr cache row(s) that did not say which Lidarr they came from", res.RowsAffected)
 	}
 	return nil
 }

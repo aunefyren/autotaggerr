@@ -297,6 +297,14 @@ func resolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 // TagResolvedFile writes tags for an already-correlated file. changed is the
 // field-level diff applied, for the Activity feed's per-file detail.
 func TagResolvedFile(filePath string, correlation models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+	return TagCorrelatedFile(filePath, &correlation, plexClient, refreshSet, rootDir, tagger)
+}
+
+// TagCorrelatedFile is TagResolvedFile for a caller that records the correlation
+// afterwards: when the track had to be re-matched (rematchRebuiltTrack), the
+// correlation is updated to the track the file was actually tagged as, so the index
+// stores the identity now in the file rather than the one that no longer exists.
+func TagCorrelatedFile(filePath string, correlation *models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(correlation.MBReleaseID)
 	if err != nil {
@@ -306,7 +314,17 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 	}
 	logger.Log.Debug("tagging from release: " + response.Title)
 
-	track, media, ok := matchCorrelatedTrack(response, correlation)
+	track, media, ok := matchCorrelatedTrack(response, *correlation)
+	if !ok && response.ID == correlation.MBReleaseID && rematchable(correlation.Source) {
+		if track, media, ok = rematchRebuiltTrack(filePath, response, *correlation); ok {
+			logger.Log.Warnf("track %s is no longer in release %s; re-matched '%s' to track %s",
+				correlation.MBReleaseTrackID, response.ID, filePath, track.ID)
+			correlation.MBReleaseTrackID = track.ID
+			correlation.MBRecordingID = track.Recording.ID
+			correlation.TrackTitle = track.Title
+			correlation.Source = models.CorrelationSourceRematched
+		}
+	}
 	if !ok {
 		logger.Log.Errorf("failed to tag file, track (track ID %s, release ID %s, title %s) not found in release data for '%s'", correlation.MBReleaseTrackID, correlation.MBReleaseID, correlation.TrackTitle, response.ID)
 		if response.ID != correlation.MBReleaseID {
@@ -314,11 +332,16 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 			// merged-away IDs, so it hands the same stale pair back on every pass.
 			return false, 0, nil, fmt.Errorf("%w: track %s belongs to release %s, which MusicBrainz merged into %s, and no track there has the same recording or title — this clears once the manager's metadata picks up the merge", ErrTrackNotInRelease, correlation.MBReleaseTrackID, correlation.MBReleaseID, response.ID)
 		}
+		if rematchable(correlation.Source) {
+			// Nothing upstream supplies a fresher pair for a file identified by its own
+			// tags, so say why the re-match refused rather than point at a manager.
+			return false, 0, nil, fmt.Errorf("%w: track %s is no longer in release %s, and neither its recording nor its disc and position (with the same title) identify one track there — attach the file by hand", ErrTrackNotInRelease, correlation.MBReleaseTrackID, response.ID)
+		}
 		logger.Log.Warn("the manager's release selection and track mapping disagree; a force re-correlate may reconcile them")
 		return false, 0, nil, fmt.Errorf("%w: track %s is not in release %s — the manager's release and track mapping disagree; force re-correlate this artist to reconcile", ErrTrackNotInRelease, correlation.MBReleaseTrackID, response.ID)
 	}
 
-	if err := verifyDiscFolder(filePath, correlation, track, media, response); err != nil {
+	if err := verifyDiscFolder(filePath, *correlation, track, media, response); err != nil {
 		logger.Log.Warnf("refusing to tag '%s': %s", filePath, err.Error())
 		return false, 0, nil, err
 	}
@@ -425,7 +448,10 @@ func verifyDiscFolder(
 	}
 
 	disc := discFromFolder(filePath)
-	if disc == 0 || disc == media.Position {
+	if disc == 0 {
+		return verifyDiscByDuration(filePath, track, media, response)
+	}
+	if disc == media.Position {
 		return nil
 	}
 
@@ -450,6 +476,85 @@ func verifyDiscFolder(
 	}
 
 	return nil
+}
+
+// verifyDiscByDuration is the disc guard for a file whose folder names no disc — a
+// flat album folder, or one named something discFolderPattern does not read. The
+// look-alike case is the same: another disc holds a track at the same position that
+// is the same recording or has the same title, so nothing about the resolution could
+// tell the two apart. What can is the audio: the file plays for as long as one of
+// them, and MusicBrainz states both lengths.
+//
+// The comparison is relative, never a tolerance. Encodes drift from the stated length
+// by seconds (a production file played 4:19 against a stated 4:12), so "within N
+// seconds" tight enough to matter would refuse right answers. What decides is which
+// candidate is closer: the resolved track is refused only when a look-alike is
+// clearly closer — less than half the gap, and at least lengthMarginSeconds nearer.
+// Jerry Goldsmith's *Alien*, whose two discs open with a 4:12 and a 3:34 "Main
+// Title", is that case exactly.
+//
+// Every unknown is a pass: no look-alike, no stated length, or a file whose duration
+// cannot be read. The guard only ever adds a refusal it has evidence for.
+func verifyDiscByDuration(filePath string, track models.Track, media models.MusicBrainzMedia, response models.MusicBrainzReleaseResponse) error {
+	if track.Length <= 0 {
+		return nil
+	}
+	var lookAlikes []models.Track
+	var lookAlikeDiscs []int
+	for _, other := range response.Media {
+		if other.Position == media.Position {
+			continue
+		}
+		for _, candidate := range other.Tracks {
+			if candidate.Position != track.Position || candidate.Length <= 0 {
+				continue
+			}
+			sameRecording := candidate.Recording.ID != "" && candidate.Recording.ID == track.Recording.ID
+			if !sameRecording && !strings.EqualFold(candidate.Title, track.Title) {
+				continue
+			}
+			lookAlikes = append(lookAlikes, candidate)
+			lookAlikeDiscs = append(lookAlikeDiscs, other.Position)
+		}
+	}
+	if len(lookAlikes) == 0 {
+		return nil
+	}
+
+	seconds, ok := audioDuration(filePath)
+	if !ok {
+		return nil
+	}
+	gap := func(lengthMS int) float64 {
+		d := seconds - float64(lengthMS)/1000
+		if d < 0 {
+			return -d
+		}
+		return d
+	}
+	resolvedGap := gap(track.Length)
+	for i, candidate := range lookAlikes {
+		candidateGap := gap(candidate.Length)
+		if candidateGap*2 < resolvedGap && resolvedGap-candidateGap >= lengthMarginSeconds {
+			return fmt.Errorf(
+				"%w: the file plays %s, but was resolved to track %s on disc %d of release %s (%s), "+
+					"while disc %d carries the same track at %s — correct the file's track in the manager, "+
+					"or put the file in a folder named for its disc",
+				ErrDiscMismatch, clock(seconds), track.ID, media.Position, response.ID, clock(float64(track.Length)/1000),
+				lookAlikeDiscs[i], clock(float64(candidate.Length)/1000))
+		}
+	}
+	return nil
+}
+
+// lengthMarginSeconds is how much nearer a look-alike's stated length has to be before
+// the duration check believes it over the resolution. Below it, two candidates are
+// both within ordinary encoder drift and neither is evidence.
+const lengthMarginSeconds = 5
+
+func clock(seconds float64) string {
+	total := int(seconds + 0.5)
+	return fmt.Sprintf("%d:%02d", total/60, total%60)
 }
 
 func ProcessTrackFileAfterMatch(
@@ -926,4 +1031,115 @@ func ReleaseToAlbumType(release models.MusicBrainzReleaseResponse) string {
 	}
 
 	return ""
+}
+
+// rematchable reports whether a correlation's source may be re-matched when its track
+// has gone from its release. Only identities read from the file itself: a manager
+// hands out a fresh pair on every pass (so its miss clears without guessing), and a
+// manual correlation is a person's decision, which a re-match must never overwrite.
+func rematchable(source string) bool {
+	switch source {
+	case models.CorrelationSourceTags, models.CorrelationSourceFingerprint, models.CorrelationSourceRematched:
+		return true
+	}
+	return false
+}
+
+// rematchRebuiltTrack finds the track a file is, in a release whose tracklist
+// MusicBrainz rebuilt under the same release ID — the case that otherwise has no way
+// out for a file identified by its own tags, since every pass re-reads the vanished
+// track ID from the very file it is trying to repair.
+//
+// Two ways, both refusing anything short of one answer, because a wrong match here
+// mistags a file and the file then carries the mistake as its identity:
+//
+//  1. **By recording**, when exactly one track has the file's recording. A rebuild
+//     re-issues track IDs and keeps recordings.
+//  2. **By position, confirmed by title**: the disc and track number in the file's own
+//     tags name a track, and that track has the file's title. Position alone is not
+//     enough — a rebuild can reorder or insert tracks — and title alone repeats on
+//     plenty of albums ("Interlude"). Together they are one track or none.
+func rematchRebuiltTrack(filePath string, response models.MusicBrainzReleaseResponse, correlation models.Correlation) (models.Track, models.MusicBrainzMedia, bool) {
+	if correlation.MBRecordingID != "" {
+		var found models.Track
+		var foundMedia models.MusicBrainzMedia
+		hits := 0
+		for _, media := range response.Media {
+			for _, track := range media.Tracks {
+				if track.Recording.ID == correlation.MBRecordingID {
+					found, foundMedia = track, media
+					hits++
+				}
+			}
+		}
+		if hits == 1 {
+			return found, foundMedia, true
+		}
+	}
+
+	tags, err := readTagMap(filePath)
+	if err != nil {
+		logger.Log.Debugf("could not read the tags of '%s' to re-match it: %s", filePath, err.Error())
+		return models.Track{}, models.MusicBrainzMedia{}, false
+	}
+	position := leadingInt(firstTagValue(tags, "TRACKNUMBER"))
+	if position < 1 {
+		return models.Track{}, models.MusicBrainzMedia{}, false
+	}
+	disc := leadingInt(firstTagValue(tags, "DISCNUMBER"))
+	if disc < 1 {
+		disc = 1
+	}
+	title := correlation.TrackTitle
+	if title == "" {
+		title = firstTagValue(tags, "TITLE")
+	}
+	if strings.TrimSpace(title) == "" {
+		return models.Track{}, models.MusicBrainzMedia{}, false
+	}
+	for _, media := range response.Media {
+		if media.Position != disc {
+			continue
+		}
+		for _, track := range media.Tracks {
+			if track.Position == position && strings.EqualFold(strings.TrimSpace(track.Title), strings.TrimSpace(title)) {
+				return track, media, true
+			}
+		}
+	}
+	return models.Track{}, models.MusicBrainzMedia{}, false
+}
+
+// readTagMap reads a file's tags under the canonical keys both writers use.
+func readTagMap(filePath string) (map[string][]string, error) {
+	switch strings.ToLower(filepath.Ext(filePath)) {
+	case ".flac":
+		return getFlacTagsMap(filePath)
+	case ".mp3":
+		return GetMP3Tags(filePath)
+	default:
+		return nil, errors.New("unsupported file type")
+	}
+}
+
+func firstTagValue(tags map[string][]string, key string) string {
+	if values := tags[key]; len(values) > 0 {
+		return values[0]
+	}
+	return ""
+}
+
+// leadingInt reads the number a "5", "05" or "5/12" tag value starts with; 0 when it
+// starts with none.
+func leadingInt(value string) int {
+	value = strings.TrimSpace(value)
+	end := 0
+	for end < len(value) && value[end] >= '0' && value[end] <= '9' {
+		end++
+	}
+	n, err := strconv.Atoi(value[:end])
+	if err != nil {
+		return 0
+	}
+	return n
 }

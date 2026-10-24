@@ -900,6 +900,12 @@ imply one.
   last of those pays the limiter, which is what makes a cold-vs-warm comparison meaningful.
 - `FindTrackFileByPath` is cached per artist rather than refetching an artist's whole track-file
   list per track.
+- **Every Lidarr cache key names its Lidarr** (`LidarrClient.cacheKey`: base URL + Lidarr ID). The
+  caches are process-wide and Lidarr's IDs are only unique within one instance, so with two Lidarr
+  managers artist 12 in one used to be answered with the other's artist 12 — its track files, its
+  edition — and the artist lookup scanned every instance's cached artists. Two managers pointing at
+  the same Lidarr share a scope, which is right. Rows from before the change are dropped once
+  (`scope_lidarr_cache`).
 - **A miss against the Lidarr cache is asked again, once, uncached** — see
   [A cached miss is not Lidarr saying no](#a-cached-miss-is-not-lidarr-saying-no).
 
@@ -953,7 +959,7 @@ on a schedule (`autotaggerr_lidarr_follow_cron_schedule`, every ten minutes by d
    An upgrade is several records over a minute or two; processing the artist halfway through would
    see half an album. `trackFileRetagged` is left out on purpose: Lidarr wrote tags, nothing moved,
    and following it would loop with a Lidarr that writes tags.
-3. **Per artist named**, drop their cached Lidarr answers (`LidarrInvalidateArtistCaches`, with the
+3. **Per artist named**, drop their cached Lidarr answers (`LidarrClient.InvalidateArtistCaches`, with the
    albums the records named) and queue a Process over their folders (`ArtistScope` → `Run`, deduped
    on the artist like the button). An artist the collection cannot answer for — new to Lidarr, or
    with nothing indexed yet, which is every artist's first import — is looked for **on disk by

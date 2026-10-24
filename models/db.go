@@ -45,6 +45,12 @@ const (
 	CorrelationSourceTags        = "tags"
 	CorrelationSourceFingerprint = "fingerprint"
 	CorrelationSourceManual      = "manual"
+	// CorrelationSourceRematched is a file whose track ID had gone from its release
+	// (MusicBrainz rebuilt the tracklist under the same release ID) and was matched
+	// to the rebuilt track by recording, or by disc and position with the title
+	// agreeing (modules.rematchRebuiltTrack). Its own source so a re-match can be
+	// found and checked afterwards.
+	CorrelationSourceRematched = "rematched"
 
 	LibraryItemStatusOK        = "ok"
 	LibraryItemStatusUnmatched = "unmatched"
@@ -218,6 +224,10 @@ func DataSourceLabel(sourceType string) string {
 		return "Cover Art Archive"
 	case DataSourceTypeFanart:
 		return "fanart.tv"
+	// Not a data source, but a migration's source can be a manager: Lidarr re-keying
+	// an album is reported the same way MusicBrainz merging one is.
+	case ManagerTypeLidarr:
+		return "Lidarr"
 	}
 	return sourceType
 }

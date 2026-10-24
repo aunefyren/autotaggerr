@@ -2,6 +2,7 @@ package database
 
 import (
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/google/uuid"
@@ -138,5 +139,37 @@ func TestMoveBPMToLibrary(t *testing.T) {
 	db.Raw("SELECT bpm_write, bpm_min_confidence FROM tagger_profiles WHERE id = ?", second.ID).Row().Scan(&want.mode, &want.conf)
 	if got := read(onSecond.ID); got.BPMWrite != want.mode || got.BPMMinConfidence != want.conf {
 		t.Errorf("library on the second profile = %q/%v, want %q/%v", got.BPMWrite, got.BPMMinConfidence, want.mode, want.conf)
+	}
+}
+
+// TestScopeLidarrCache: Lidarr cache rows keyed by a bare ID are dropped once; rows
+// that name their Lidarr, and other providers' rows, are left alone.
+func TestScopeLidarrCache(t *testing.T) {
+	db := testDB(t)
+	now := time.Now()
+	rows := []models.ProviderCache{
+		{Source: models.ProviderCacheLidarrArtists, Key: "12", Payload: "{}", FetchedAt: now, ExpiresAt: now.Add(time.Hour)},
+		{Source: models.ProviderCacheLidarrTrackFiles, Key: "12", Payload: "{}", FetchedAt: now, ExpiresAt: now.Add(time.Hour)},
+		{Source: models.ProviderCacheLidarrArtists, Key: "http://lidarr:8686|12", Payload: "{}", FetchedAt: now, ExpiresAt: now.Add(time.Hour)},
+		{Source: models.ProviderCachePlexAlbumKeys, Key: "12", Payload: "{}", FetchedAt: now, ExpiresAt: now.Add(time.Hour)},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := ApplyDataMigrations(db); err != nil {
+		t.Fatalf("ApplyDataMigrations: %v", err)
+	}
+
+	var left []models.ProviderCache
+	if err := db.Order("source, key").Find(&left).Error; err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, r := range left {
+		got[r.Source+" "+r.Key] = true
+	}
+	if len(left) != 2 || !got[models.ProviderCacheLidarrArtists+" http://lidarr:8686|12"] || !got[models.ProviderCachePlexAlbumKeys+" 12"] {
+		t.Errorf("rows left = %v, want the scoped Lidarr row and the Plex row", got)
 	}
 }

@@ -152,7 +152,7 @@ func TestResolveRechecksTracksThatPointAtAReplacedTrackfile(t *testing.T) {
 	ageLidarrCaches(2 * lidarrRecheckAfter)
 	// The trackfile list expired on its own and was refetched; the track list did not.
 	lidarrTrackFilesCacheMu.Lock()
-	delete(lidarrTrackFilesCache, "2")
+	delete(lidarrTrackFilesCache, client.cacheKey(2))
 	lidarrTrackFilesCacheMu.Unlock()
 
 	d, err := ResolveMetadataDetailsFromLidarr(client, wallPath(root, ".flac"), root)
@@ -307,5 +307,39 @@ func TestLidarrTagWritingAdvice(t *testing.T) {
 	}
 	if advice := LidarrTagWritingAdvice(models.LidarrWriteAudioTagsNewFiles); advice != "" {
 		t.Errorf("advice for the recommended setting = %q, want none", advice)
+	}
+}
+
+// Two Lidarrs number their artists and albums independently, and the caches are
+// process-wide. Each instance's answers must stay its own: resolving a file through
+// one must never be answered from what the other said about the same IDs.
+func TestLidarrCachesAreSeparatePerInstance(t *testing.T) {
+	resetLidarrCaches()
+	t.Cleanup(resetLidarrCaches)
+	root := filepath.Join("/", "music")
+
+	main := newUpgradableLidarr(t)
+	main.upgrade(100, lidarrAlbumPath+recheckTrack+".flac")
+	lossless := newUpgradableLidarr(t)
+	lossless.upgrade(100, lidarrAlbumPath+recheckTrack+".flac")
+	lossless.mu.Lock()
+	lossless.tracks[0].ForeignTrackID = "mbtrack-lossless-edition"
+	lossless.mu.Unlock()
+
+	mainClient := NewLidarrClient(main.server.URL, "k", nil)
+	losslessClient := NewLidarrClient(lossless.server.URL, "k", nil)
+
+	d, err := ResolveMetadataDetailsFromLidarr(mainClient, wallPath(root, ".flac"), root)
+	if err != nil || d == nil || d.MBTrackID != "mbtrack-1" {
+		t.Fatalf("main Lidarr resolved %+v, %v", d, err)
+	}
+	d, err = ResolveMetadataDetailsFromLidarr(losslessClient, wallPath(root, ".flac"), root)
+	if err != nil || d == nil || d.MBTrackID != "mbtrack-lossless-edition" {
+		t.Fatalf("lossless Lidarr resolved %+v, %v — answered from the other instance's cache", d, err)
+	}
+	for name, l := range map[string]*upgradableLidarr{"main": main, "lossless": lossless} {
+		if got := l.hitCount("/api/v1/artist"); got != 1 {
+			t.Errorf("%s Lidarr's artist list fetched %d times, want 1 (each asked once, for itself)", name, got)
+		}
 	}
 }

@@ -162,6 +162,18 @@ func RetireReleaseGroup(db *gorm.DB, releaseGroupMBID string) (removed bool, rea
 // An absent row reports retirable: there is nothing to remove and nothing blocking, so
 // a caller retrying will succeed and can stop carrying the row as failed.
 func ReleaseGroupRetirable(db *gorm.DB, releaseGroupMBID string) (bool, string, error) {
+	return releaseGroupRetirable(db, releaseGroupMBID, false)
+}
+
+// ReleaseGroupRetirableAfterRekey is ReleaseGroupRetirable for an album its manager
+// re-keyed, whose retirement moves the album's wants to the new ID first. A want is
+// then not a claim on the old row — it is what the migration carries — so asking with
+// it counted would hold the row forever on the thing it is about to move.
+func ReleaseGroupRetirableAfterRekey(db *gorm.DB, releaseGroupMBID string) (bool, string, error) {
+	return releaseGroupRetirable(db, releaseGroupMBID, true)
+}
+
+func releaseGroupRetirable(db *gorm.DB, releaseGroupMBID string, wantsMove bool) (bool, string, error) {
 	if db == nil || releaseGroupMBID == "" {
 		return false, "no release-group given", nil
 	}
@@ -172,6 +184,13 @@ func ReleaseGroupRetirable(db *gorm.DB, releaseGroupMBID string) (bool, string, 
 	reason, err := releaseGroupRetirementBlock(db, rg)
 	if err != nil {
 		return false, "", err
+	}
+	if wantsMove && reason == wantedClaim {
+		// Every other claim is still checked: the want was the first one asked.
+		reason, err = releaseGroupEditionClaim(db, rg.MBID)
+		if err != nil {
+			return false, "", err
+		}
 	}
 	return reason == "", reason, nil
 }
@@ -230,9 +249,17 @@ func releaseGroupClaim(db *gorm.DB, releaseGroupMBID string) (string, error) {
 		return "", err
 	}
 	if desires > 0 {
-		return "you have marked this album as wanted — clear that first", nil
+		return wantedClaim, nil
 	}
+	return releaseGroupEditionClaim(db, releaseGroupMBID)
+}
 
+// wantedClaim is the refusal for an album someone wants. A constant so the re-key
+// check can recognise it and look past it (ReleaseGroupRetirableAfterRekey).
+const wantedClaim = "you have marked this album as wanted — clear that first"
+
+// releaseGroupEditionClaim is the edition half of releaseGroupClaim.
+func releaseGroupEditionClaim(db *gorm.DB, releaseGroupMBID string) (string, error) {
 	// An edition row pointing at this group means files resolved to it at some point,
 	// even if the group's own owned flag has not caught up yet.
 	var editions int64

@@ -136,19 +136,6 @@ still open:
   MusicBrainz can supply composer via work relations and ASIN on the release. That is a fetch and a
   mapping — a field on `models.FileTags`, a key in both tag maps, and the work-relation include on
   the release fetch.
-- **The disc guard has no signal but the folder.** `verifyDiscFolder` refuses a correlation only
-  when the file's media folder names a disc number that disagrees with the resolved medium
-  ([tagging.md](tagging.md#the-disc-guard)). A flat album folder, or one named something
-  `discFolderPattern` does not recognise, leaves it with nothing to check — and the look-alike case
-  it exists for is precisely where the two candidates are otherwise indistinguishable. MusicBrainz
-  supplies `track.Length` (`models/musicbrainz.go:91`) and nothing reads it, which is the missing
-  second signal: Jerry Goldsmith's *Alien* opens both discs with a "Main Title" of 4:12 and 3:34, a
-  gap no tagger could confuse. The comparison has to be **relative, not absolute** — that same file
-  is 4:19 on disk against a stated 4:12, so a tolerance tight enough to be useful would refuse the
-  correct answer. What discriminates is which candidate is *closer*: refuse when the track the file
-  resolved to is much further from the file's duration than the track at the same position on the
-  disc the folder names. Needs the file's duration at the point of the check, which nothing on the
-  tagging path reads today.
 - **AAC/M4A is where the separator choice starts to matter.** ffmpeg never gained multi-value
   support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
   setting's reasoning applies, and the format work should reuse it rather than re-litigate the
@@ -163,54 +150,17 @@ and deletion, release-group for deletion (and for merges by subtraction), and re
 [mb-migration.md](mb-migration.md#coverage-which-entity-which-change-which-mechanism). What that
 matrix leaves open:
 
-- **A release-track that is no longer in its release is a dead end.** This is the one identity change
-  with no recovery path at all, automatic or otherwise, short of a manual force re-correlate.
-
-  `ProcessTrackFile` locates the track by exact ID inside the release payload
-  (`modules/files.go:290`). When MusicBrainz rebuilds a release's tracklist without changing the
-  *release* ID, that lookup misses and the function returns `ErrTrackNotInRelease`
-  (`modules/files.go:29`, raised at `:312`) — **which nothing in the repo consumes.** No handler, no
-  migration row, no fallback. It surfaces as a per-file error and stays one.
-
-  Whether that matters depends on where the correlation came from, and the exposure is narrower than
-  it first looks. Under a manager, `ResolveMetadataDetailsFromLidarr` (`modules/files.go:216`)
-  supplies fresh track IDs on every scan, so the condition clears on its own within a cache TTL —
-  except after a release *merge*, where Lidarr's lagging metadata keeps the old pair; that case is
-  now matched by recording ([mb-migration.md](mb-migration.md)). The
-  exposed case is a **manager-less install** — FLACs carrying their own MB IDs — because the fallback
-  at `:240` reads the stale ID out of the tags of the very file it is trying to repair. That is the
-  only place in the pipeline where the input is the artefact being corrected, and it is why the
-  failure is permanent rather than merely slow: every subsequent scan reproduces it exactly.
-
-  The fix is a positional fallback: when the ID match misses, re-match on disc plus track position
-  and treat a hit as a re-correlation, writing the new track ID. `MapFilesToTracks`
-  (`modules/track_mapping.go:56`) already implements exactly this logic for bulk attach, including
-  the all-or-nothing rule that stops a partial number match from silently mixing strategies.
-
-  It wants care rather than speed. A wrong positional match mistags a file, which is the one failure
-  this codebase most consistently designs against — so the fallback should refuse ambiguity the way
-  `mapByNumber` does, should record itself as a distinct `CorrelationSource` so it is auditable
-  afterwards, and should almost certainly not apply to `Pinned` items, whose whole point is that a
-  person chose them by hand.
-
-- **A manager re-keying an album to another *valid* MusicBrainz ID is undetected.** The repair path
-  shipped this week only catches the case where the old ID is *dead*
-  ([mb-migration.md](mb-migration.md#groups-that-resolve-nowhere)). If Lidarr moves an album from
-  valid ID A to valid ID B, nothing 404s: the sync clears `in_catalog` on A and creates B, and A
-  survives — it is a real release-group in the artist's discography, so `PruneOrphanReleaseGroups`
-  will not take it either. The result is a silent duplicate on the artist page, one of them with no
-  files and no catalog entry.
-
-  Detectable from the same before/after sync diff that would carry a want across a repair (the entry
-  above), which is an argument for building the two together: an album vanishing from a manager's
-  catalog in the same pass that an equivalent one appears is the signal in both cases.
-
 - **A manager re-keying an *artist* is reported but not adopted.** The old MBID stops being listed,
   so it lands in `SyncStats.Unknown` and shows as *Not in Lidarr*; the new MBID is never picked up,
   because `SyncManagers` only asks about artists the collection already holds. Reporting it is
   arguably correct — the collection is not obliged to follow a manager's re-identification — but the
-  user is left to work out that the two rows are the same artist. Lowest priority of the three: it is
-  visible, it is explained, and nothing is lost.
+  user is left to work out that the two rows are the same artist. Low priority: it is visible, it is
+  explained, and nothing is lost.
+- **Album re-keys are seen only in the pass that makes them.** `detectRekeys` diffs one artist's
+  catalog across a single sync, one-to-one by title and type. A re-key that lands while a sync fails,
+  or that renames the album at the same time, or that collides with a second same-titled album, is
+  not paired and leaves the old duplicate as before. Fails safe (no wrong pairing); a manual
+  "these two are the same album" action on the artist page would cover the rest.
 
 Residual open work on what has shipped:
 
@@ -220,14 +170,6 @@ Residual open work on what has shipped:
   lookup.
 - **Repair by manager refresh has shipped**; see
   [mb-migration.md](mb-migration.md#repairing-through-the-manager). Residual:
-  - **A repaired album's want does not follow it.** When a manager re-keys an album, the old ID's
-    row is retired and the live-ID album arrives as a new row, so a `CollectionDesire` pointing at
-    the old ID is stranded. MusicBrainz cannot help here — these IDs were never MusicBrainz's, so
-    there is no merge to detect, and release-group merges are the one category detection does not
-    cover anyway. The before/after diff across a refresh (dead ID gone, new ID present, same artist
-    and title) is a far stronger basis for a `MigrationKindRedirect` than any search would be.
-    Deferred because no desire in the collection measured pointed at a ghost — build it when one
-    does.
   - **The repair stage has no button of its own.** Approving a blocked album now triggers a scoped
     repair (see [mb-migration.md](mb-migration.md#approving-a-blocked-album)), so the only gap left
     is the *artist-page* entry point: "3 albums here have IDs that do not resolve — ask Lidarr", for
@@ -256,8 +198,9 @@ repair in flight, and names its source rather than assuming one. What that left 
   would make "one press covers these" visible rather than stated.
 - **`resolution_detail` is a sentence, not a link.** *"a manager re-keyed it"* is the right words and
   the wrong affordance: the album it was re-keyed *to* is usually in the collection under its new ID,
-  and nothing points at it. Needs the before/after diff described under *A repaired album's want does
-  not follow it* above — the same evidence would carry both.
+  and nothing points at it. A re-key the Lidarr sync observed is now a redirect row carrying the new
+  ID ([mb-migration.md](mb-migration.md#a-manager-re-keying-an-album)), so those rows could link it;
+  a ghost closed as resolved-elsewhere still has no target to point at.
 
 ## Known issues / limitations
 

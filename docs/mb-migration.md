@@ -35,9 +35,9 @@ by mechanisms that predate this package and are the better answer for them.
 |--------|--------|---------|
 | **Artist** | migration — id comparison on lookup (`musicbrainz_artist.go:210`) | migration — 404 (`:104`, `:182`) |
 | **Release** | migration — id comparison on lookup (`musicbrainz.go:366`) | migration — 404 (`:339`) |
-| **Release-group** | *no row*: handled by subtraction — see [below](#release-groups-re-linked-not-remapped) | migration — confirmed 404 (`musicbrainz_search.go:322`) |
+| **Release-group** | *no row* for a MusicBrainz merge: handled by subtraction — see [below](#release-groups-re-linked-not-remapped). A **manager re-key** gets a redirect row — see [below](#a-manager-re-keying-an-album) | migration — confirmed 404 (`musicbrainz_search.go:322`) |
 | **Recording** | *no row needed*: self-heals through the release payload | same |
-| **Release-track** | *not handled* — see [wip.md](wip.md) | same |
+| **Release-track** | *no row*: re-matched in place — see [tagging.md](tagging.md#a-track-that-left-its-release) | same |
 
 Three of those deserve their reasoning stated, because "no migration row" means something different
 in each.
@@ -55,11 +55,10 @@ option: the merged ID still answers 200, and the editions browse asks for a grou
 than for the group, so there is no `id` to compare. What happens instead is
 [re-linking plus pruning](#release-groups-re-linked-not-remapped).
 
-**A release-track change is the gap.** `TagResolvedFile` matches by exact track ID inside the
-payload, and `ErrTrackNotInRelease` — the error it raises when that ID is gone — currently has no
-consumer. Without a manager, the fallback reads the stale ID from the tags of the very file it is
-trying to repair, and fails identically forever. Recorded in [wip.md](wip.md); the remedy the error
-message names (force re-correlate) works, but it is manual.
+**A release-track change needs no row either.** It is re-matched where it is found, by recording or
+by position confirmed by title, for files identified by their own tags — the only ones it used to
+strand ([tagging.md](tagging.md#a-track-that-left-its-release)). A manager supplies the fresh pair
+itself.
 
 **A release merge under a manager is matched by recording.** A manager does *not* always supply
 fresh IDs: Lidarr's metadata server lags MusicBrainz, so after a release merge it keeps reporting
@@ -459,6 +458,35 @@ rows a refresh repairs. Searching MusicBrainz by title and taking the best hit w
 the manager can state — and badly: on these rows the correct matches scored 78–90, below any
 sensible confidence floor, with titles differing by Unicode punctuation and case (`Alien (M‐22
 remix)` with U+2010 against `Alien (M-22 Remix)`).
+
+### A manager re-keying an album
+
+A manager can move an album from one **valid** ID to another. Nothing 404s, so nothing above caught
+it: the sync cleared `in_catalog` on the old row and created the new one, and the old row survived as
+a real release-group with no files and no catalog entry — a silent duplicate on the artist page,
+with any want for the album stranded on it.
+
+`collection.detectRekeys` catches it in the Lidarr sync, from the one place both halves are visible:
+the artist's catalog before the pass (`catalogSnapshot`, read just before it is cleared) against what
+the manager lists now. An album that **left** while one with the **same title and type entered** —
+title folded loosely, since a re-key is often the manager adopting a differently spelled record — is
+a re-key, but only one-to-one: two albums leaving under one title could pair either way, and pairing
+wrongly would hand one album's wants to another.
+
+Each becomes a release-group **redirect** row (`Source = lidarr`, labelled *re-keyed* on the
+Migrations page). It is a row rather than an immediate rewrite because it may have to wait: files
+still carrying the old ID resolve to the old album until the next run re-correlates them. Applying it
+(`applyReleaseGroupRedirect`) moves the wants to the new ID — deduplicated, authored intent
+outranking derived — then retires the old row through `RetireReleaseGroup`, every guard included.
+Files on disk refuse it, the transaction (wants and all) rolls back, and the row is retried on a
+later run; the retry check (`ReleaseGroupRetirableAfterRekey`) looks past the want claim, since the
+want is what the migration carries. A redirect is never moot while a want still points at the old ID,
+even once the row is gone.
+
+A pending or failed **deletion** of the same old ID is turned into the redirect. That is the repair
+pass's success case — the ID resolved nowhere, the manager was asked, and it re-keyed the album — and
+the deletion would have retired the row while stranding its wants. A settled row is left alone.
+Ghost-only machinery (the repair cooldown, the *asking the manager* mark) ignores redirects.
 
 ### Approving a blocked album
 

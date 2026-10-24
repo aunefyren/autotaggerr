@@ -367,7 +367,7 @@ album loses a track from its disk view in the meantime. So the option drops the 
 Lidarr responses for the benefit of the *next scan*, not this pass — repair, not mirroring, which is
 why it is a checkbox rather than the default.
 
-`modules.LidarrInvalidateArtistCaches` is the scoped drop it uses. The whole-cache flush
+`LidarrClient.InvalidateArtistCaches` is the scoped drop it uses, scoped to the Lidarr it is called on. The whole-cache flush
 (`LidarrInvalidateCaches`, what force re-correlate calls) exists because the album and track caches
 are keyed by Lidarr's own album IDs, which cannot be derived from an artist — but a mirror pass has
 *just listed the artist's albums*, so it holds exactly the mapping that is otherwise missing and

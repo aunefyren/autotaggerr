@@ -193,7 +193,11 @@ func (r *Review) fillReleaseGroup(db *gorm.DB) {
 	// Asked of collection rather than re-derived, for the same reason the apply path
 	// asks: two implementations of "may this be retired" would eventually disagree,
 	// and the one shown to the user would be the wrong one to trust.
-	retirable, reason, err := collection.ReleaseGroupRetirable(db, r.OldMBID)
+	check := collection.ReleaseGroupRetirable
+	if r.Kind == models.MigrationKindRedirect {
+		check = collection.ReleaseGroupRetirableAfterRekey
+	}
+	retirable, reason, err := check(db, r.OldMBID)
 	if err != nil {
 		return
 	}
@@ -219,6 +223,24 @@ func (r Review) sentences() (problem, effect string) {
 	source := r.SourceLabel()
 
 	switch {
+	case r.EntityType == models.MigrationEntityReleaseGroup && r.Kind == models.MigrationKindRedirect:
+		problem = source + " moved this album to another ID. The old ID still names a real " +
+			"album, so nothing flagged it — the old row would stay beside the new one, with " +
+			"no catalog entry and any want you had for it stranded there."
+		problem += " " + r.diskSentence()
+		switch {
+		case r.Blocker != "" && r.Owned:
+			effect = "Approving would not remove anything yet: files on disk still resolve to " +
+				"the old album. The next processing run re-reads them from the manager, and " +
+				"this is retried after it."
+		case r.Blocker != "":
+			effect = "Approving would not remove anything right now: " + r.Blocker + "."
+		default:
+			effect = "Approving moves your wants to the new ID and removes the old row from " +
+				"your collection view. No files are touched."
+		}
+		return problem, effect
+
 	case r.EntityType == models.MigrationEntityReleaseGroup:
 		problem = source + " does not have this album under the ID Autotaggerr holds. " +
 			"That is usually a manager holding an ID its metadata service has since " +

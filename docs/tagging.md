@@ -344,9 +344,45 @@ the disagreement comes with a look-alike — the medium the folder names holds a
 position with the same recording (or the same title). Manual correlations are exempt: someone looked
 at the file and said which track it is, and that outranks the folder it sits in.
 
+**A folder that names no disc** — a flat album folder, or one `discFolderPattern` does not read —
+used to leave the guard with nothing to check, and the look-alike case is precisely where nothing
+else tells the candidates apart. There the guard falls back to the audio
+(`verifyDiscByDuration`): MusicBrainz states each track's length, and the file's own duration
+(`modules/duration.go` — FLAC's STREAMINFO, or a count of MP3 Layer III frames) says which look-alike
+it is. The comparison is **relative, never a tolerance**: encodes drift from the stated length by
+seconds (Jerry Goldsmith's *Alien* plays 4:19 against a stated 4:12), so a tolerance tight enough
+to matter would refuse right answers. The resolved track is refused only when a look-alike is
+clearly closer — under half the gap, and at least 5 seconds nearer. *Alien*'s two "Main Title"
+cues, 4:12 and 3:34, are that case exactly. Every unknown passes: no look-alike, no stated length,
+or a file whose duration cannot be read. A folder that does name a disc keeps deciding by itself.
+
 A refusal surfaces as a failed file in Activity naming both discs and the release, which is the
 point: the fix is in the manager's link (or the folder's name), and neither is Autotaggerr's to
-guess. Tests: `modules/disc_guard_test.go`, `TestLidarrFindTrackFileByPath*`.
+guess. Tests: `modules/disc_guard_test.go`, `modules/disc_duration_test.go`,
+`TestLidarrFindTrackFileByPath*`.
+
+## A track that left its release
+
+When MusicBrainz rebuilds a release's tracklist without changing the release ID, the track ID a file
+carries is in the payload no more. Under a manager that clears itself — the manager hands out the
+new pair on the next pass. A file identified by its **own tags** had no way out: every pass re-read
+the vanished ID from the very file it was trying to repair, and failed identically forever.
+
+`rematchRebuiltTrack` (`modules/files.go`) re-matches those files, and only those —
+`CorrelationSourceTags`, `Fingerprint`, or a previous re-match. Never a manual correlation (a person
+chose it) and never a manager's. Two ways, each refusing anything short of one answer:
+
+1. **By recording**, when exactly one track has the file's recording. A rebuild re-issues track IDs
+   and keeps recordings.
+2. **By position, confirmed by title**: the disc and track number in the file's own tags name a
+   track, and that track has the file's title. Position alone is not enough — a rebuild can insert
+   or reorder tracks — and title alone repeats on plenty of albums.
+
+A hit is written under the new IDs and recorded as `CorrelationSourceRematched`, so re-matches can be
+found and checked afterwards. `TagCorrelatedFile` hands the updated correlation back, which is what
+lets the index (Process and Tag files alike) store the identity now in the file rather than the one
+that no longer exists. A refusal fails with a message saying neither signal named one track, and to
+attach the file by hand. Tests: `modules/track_rematch_test.go`.
 
 ## Related
 

@@ -275,6 +275,9 @@ func inCooldown(db *gorm.DB, artistMBID string) bool {
 	var rows []models.MusicbrainzMigration
 	err := db.Joins("JOIN collection_release_groups ON collection_release_groups.mb_id = musicbrainz_migrations.old_mb_id").
 		Where("musicbrainz_migrations.entity_type = ?", models.MigrationEntityReleaseGroup).
+		// Ghosts only: a re-key waiting on files is not something a manager refresh
+		// answers, and counting it as never-attempted would refresh the artist every pass.
+		Where("musicbrainz_migrations.kind = ?", models.MigrationKindDeleted).
 		Where("collection_release_groups.artist_mb_id = ?", artistMBID).
 		Find(&rows).Error
 	if err != nil || len(rows) == 0 {

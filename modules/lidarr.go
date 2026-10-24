@@ -74,8 +74,8 @@ func LidarrInvalidateCaches() {
 	logger.Log.Debug("invalidated Lidarr caches (artists, albums, tracks, trackfiles)")
 }
 
-// LidarrInvalidateArtistCaches drops the cached Lidarr responses for one artist and
-// the albums given, in memory and in the database. It is the narrow counterpart to
+// InvalidateArtistCaches drops this Lidarr's cached responses for one artist and the
+// albums given, in memory and in the database. It is the narrow counterpart to
 // LidarrInvalidateCaches, for a per-artist action that should not cost every other
 // artist their cache.
 //
@@ -84,8 +84,8 @@ func LidarrInvalidateCaches() {
 // caller that has *just listed the artist's albums* has exactly the mapping that is
 // missing, which is why this takes the IDs rather than trying to find them: the Lidarr
 // mirror pass knows them, and nothing else needs to.
-func LidarrInvalidateArtistCaches(lidarrArtistID int64, albumIDs []int64) {
-	artistKey := strconv.FormatInt(lidarrArtistID, 10)
+func (c *LidarrClient) InvalidateArtistCaches(lidarrArtistID int64, albumIDs []int64) {
+	artistKey := c.cacheKey(lidarrArtistID)
 
 	lidarrArtistsCacheMu.Lock()
 	delete(lidarrArtistsCache, artistKey)
@@ -102,7 +102,7 @@ func LidarrInvalidateArtistCaches(lidarrArtistID int64, albumIDs []int64) {
 	providerCacheDrop(models.ProviderCacheLidarrTrackFiles, artistKey)
 
 	for _, albumID := range albumIDs {
-		albumKey := strconv.FormatInt(albumID, 10)
+		albumKey := c.cacheKey(albumID)
 
 		lidarrAlbumsCacheMu.Lock()
 		delete(lidarrAlbumsCache, albumKey)
@@ -133,6 +133,21 @@ type LidarrClient struct {
 	HTTP      *http.Client
 	RateLimit func(func() error) error // optional: your 1 rps limiter
 	Cookie    *string
+}
+
+// cacheScope identifies which Lidarr a cached answer came from. The four caches are
+// process-wide and Lidarr's IDs are only unique within one instance, so two managers
+// pointing at two Lidarrs — a main one and a lossless one, say — would otherwise
+// share entries: artist 12 in one answered with the other's artist 12's track files,
+// and the file resolved against another instance's edition. Two managers pointing at
+// the same Lidarr share a scope, which is right: they would get the same answers.
+func (c *LidarrClient) cacheScope() string {
+	return strings.ToLower(strings.TrimRight(c.BaseURL, "/"))
+}
+
+// cacheKey is a Lidarr ID's cache key within this client's scope.
+func (c *LidarrClient) cacheKey(id int64) string {
+	return c.cacheScope() + "|" + strconv.FormatInt(id, 10)
 }
 
 // create new Lidarr client with url, api key...
@@ -271,9 +286,11 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 	// file the fresh path would not match, and, far more often, missed on every lookup
 	// and re-fetched the whole of /api/v1/artist per file.
 	foundCachedArtist := []models.LidarrArtist{}
+	scope := c.cacheScope() + "|"
 	lidarrArtistsCacheMu.RLock()
-	for _, cachedArtist := range lidarrArtistsCache {
-		if lidarrArtistFolderMatches(cachedArtist.Artist, want) &&
+	for key, cachedArtist := range lidarrArtistsCache {
+		if strings.HasPrefix(key, scope) &&
+			lidarrArtistFolderMatches(cachedArtist.Artist, want) &&
 			time.Since(cachedArtist.Timestamp) < lidarrArtistsCacheDuration {
 			foundCachedArtist = append(foundCachedArtist, cachedArtist.Artist)
 		}
@@ -300,7 +317,7 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 	lidarrArtistsCacheMu.Lock()
 	for i := range artists {
 		// add artist to cache
-		key := strconv.FormatInt(artists[i].ID, 10)
+		key := c.cacheKey(artists[i].ID)
 		entry := models.CachedLidarrArtistRelease{
 			Artist:    artists[i],
 			Timestamp: time.Now(),
@@ -341,17 +358,17 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 // library (each call returns the artist's entire track file list), which is a
 // major driver of full-library scan time.
 func (c *LidarrClient) getTrackFilesByArtist(artistID int64) ([]models.LidarrTrackFile, error) {
-	key := strconv.FormatInt(artistID, 10)
+	key := c.cacheKey(artistID)
 
 	lidarrTrackFilesCacheMu.RLock()
 	cached, ok := lidarrTrackFilesCache[key]
 	lidarrTrackFilesCacheMu.RUnlock()
 	if ok && time.Since(cached.Timestamp) < lidarrTrackFilesCacheDuration {
-		logger.Log.Debug("returning cached Lidarr track files for artist ID: " + key)
+		logger.Log.Debugf("returning cached Lidarr track files for artist ID: %d", artistID)
 		return cached.TrackFiles, nil
 	}
 
-	logger.Log.Debug("cached track files not found for artist ID: " + key)
+	logger.Log.Debugf("cached track files not found for artist ID: %d", artistID)
 
 	var files []models.LidarrTrackFile
 	if err := c.getJSON(fmt.Sprintf("/api/v1/trackfile?artistId=%d", artistID), &files); err != nil {
@@ -541,7 +558,7 @@ func LidarrTagWritingAdvice(mode models.LidarrWriteAudioTags) string {
 
 // retrieves the Lidarr album object from a Lidarr artist ID and album ID
 func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, error) {
-	albumKey := strconv.FormatInt(albumID, 10)
+	albumKey := c.cacheKey(albumID)
 
 	lidarrAlbumsCacheMu.RLock()
 	cached, ok := lidarrAlbumsCache[albumKey]
@@ -553,7 +570,7 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 		if time.Since(cached.Timestamp) < lidarrAlbumsCacheDuration {
 			for _, r := range cached.Album.Releases {
 				if r.Monitored && r.ForeignReleaseID != "" {
-					logger.Log.Debug("returning cached album release: " + albumKey)
+					logger.Log.Debugf("returning cached album release: %d", albumID)
 					return &r.ForeignReleaseID, nil
 				}
 			}
@@ -575,7 +592,7 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 	now := time.Now()
 	stored := make([]providerCacheItem, 0, len(albums))
 	for _, a := range albums {
-		key := strconv.FormatInt(a.ID, 10)
+		key := c.cacheKey(a.ID)
 		entry := models.CachedLidarrAlbumRelease{
 			Album:     a,
 			Timestamp: now,
@@ -609,17 +626,17 @@ func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, 
 }
 
 func (c *LidarrClient) GetTracksByAlbumAndArtistID(artistID int64, albumID int64) ([]models.LidarrTrack, error) {
-	albumKey := strconv.FormatInt(albumID, 10)
+	albumKey := c.cacheKey(albumID)
 
 	lidarrTracksCacheMu.RLock()
 	cached, ok := lidarrTracksCache[albumKey]
 	lidarrTracksCacheMu.RUnlock()
 	if ok && time.Since(cached.Timestamp) < lidarrTracksCacheDuration {
-		logger.Log.Debug("returning cached tracks for album: " + albumKey)
+		logger.Log.Debugf("returning cached tracks for album: %d", albumID)
 		return cached.Tracks, nil
 	}
 
-	logger.Log.Debug("cached tracks not found for album ID: " + albumKey)
+	logger.Log.Debugf("cached tracks not found for album ID: %d", albumID)
 
 	var t []models.LidarrTrack
 	if err := c.getJSON(fmt.Sprintf("/api/v1/track?artistId=%d&albumId=%d", artistID, albumID), &t); err != nil {
@@ -724,15 +741,15 @@ func (c *LidarrClient) HealthCheck() (health bool, err error) {
 // age entries past it without sleeping.
 var lidarrRecheckAfter = 2 * time.Minute
 
-// lidarrDropCachedBefore drops the cached Lidarr entries a file's resolution leaned on
+// dropCachedBefore drops the cached Lidarr entries a file's resolution leaned on
 // — the artist's trackfile list, and when the file was found in it, its album's track
 // list and edition — that were fetched before cutoff, and reports whether it dropped
 // any. Entries fetched since are kept: they are already the answer a recheck would get.
 // An absent entry was not leaned on, so it does not count.
-func lidarrDropCachedBefore(artistID, albumID int64, cutoff time.Time) bool {
+func (c *LidarrClient) dropCachedBefore(artistID, albumID int64, cutoff time.Time) bool {
 	dropped := false
 
-	artistKey := strconv.FormatInt(artistID, 10)
+	artistKey := c.cacheKey(artistID)
 	lidarrTrackFilesCacheMu.Lock()
 	if files, ok := lidarrTrackFilesCache[artistKey]; ok && files.Timestamp.Before(cutoff) {
 		delete(lidarrTrackFilesCache, artistKey)
@@ -746,7 +763,7 @@ func lidarrDropCachedBefore(artistID, albumID int64, cutoff time.Time) bool {
 		return dropped
 	}
 
-	albumKey := strconv.FormatInt(albumID, 10)
+	albumKey := c.cacheKey(albumID)
 	lidarrTracksCacheMu.Lock()
 	tracks, ok := lidarrTracksCache[albumKey]
 	staleTracks := ok && tracks.Timestamp.Before(cutoff)
@@ -830,7 +847,7 @@ func resolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 		// A fresh resolve rechecks a hit as well as a miss: see
 		// ResolveMetadataDetailsFromLidarrFresh.
 		cutoff := time.Now().Add(-lidarrRecheckAfter)
-		for attempt := 0; (details == nil || fresh) && attempt < 2 && lidarrDropCachedBefore(artist.ID, albumID, cutoff); attempt++ {
+		for attempt := 0; (details == nil || fresh) && attempt < 2 && cli.dropCachedBefore(artist.ID, albumID, cutoff); attempt++ {
 			logger.Log.Infof("cached Lidarr answers for %s do not account for %s; asking Lidarr again", artist.Name, trackPath)
 			details, albumID, err = resolveFromLidarrArtist(cli, artist, trackPath, rootDir)
 			if err != nil {

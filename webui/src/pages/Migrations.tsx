@@ -75,6 +75,9 @@ function isWorking(m: MusicbrainzMigration): boolean {
  * that it resolves nowhere.
  */
 function kindLabel(m: MusicbrainzMigration): string {
+  // A manager moving an album to another valid ID: nothing was merged, the album's
+  // identity changed hands.
+  if (m.kind === "redirect" && m.entity_type === "release_group") return "re-keyed";
   if (m.kind !== "deleted") return "merged";
   return m.entity_type === "release_group" ? "ID does not resolve" : "no longer exists";
 }

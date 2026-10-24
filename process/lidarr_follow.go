@@ -52,7 +52,7 @@ const (
 )
 
 // followedArtist is one artist a history window named, with the albums it named for
-// them — which is what LidarrInvalidateArtistCaches needs to drop the album-keyed
+// them — which is what InvalidateArtistCaches needs to drop the album-keyed
 // caches as well as the artist-keyed one.
 type followedArtist struct {
 	lidarrID int64
@@ -134,7 +134,7 @@ func (r *Runner) followManager(m models.Manager, upTo time.Time) {
 		for id := range a.albums {
 			albumIDs = append(albumIDs, id)
 		}
-		modules.LidarrInvalidateArtistCaches(a.lidarrID, albumIDs)
+		client.InvalidateArtistCaches(a.lidarrID, albumIDs)
 
 		item := models.EventItem{Path: a.mbid, Kind: models.EventItemKindEntity, Status: models.EventItemStatusQueued}
 		if reason := r.queueFollowedArtist(m, a); reason != "" {

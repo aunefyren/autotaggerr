@@ -299,7 +299,9 @@ func ProcessFile(
 	unchanged = true // no tag write unless the profile enables it
 	if tagger.WriteEnabled() {
 		var changes []models.TagChange
-		unchanged, tagsWritten, changes, err = modules.TagResolvedFile(filePath, correlation, plexClient, refreshSet, rootDir, tagger.Settings())
+		// By pointer: a track re-matched in a rebuilt release comes back with its new
+		// IDs, and the index records those rather than the ones that no longer exist.
+		unchanged, tagsWritten, changes, err = modules.TagCorrelatedFile(filePath, &correlation, plexClient, refreshSet, rootDir, tagger.Settings())
 		if err != nil {
 			recordItem(db, library.ID, filePath, correlation, false, processedVersion, managerType, err)
 			detail.AddError(filePath, err)
