@@ -149,6 +149,21 @@ func Sections() []Section {
 					get:         func(c models.ConfigStruct) any { return c.AutotaggerrHealthCronSchedule },
 					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrHealthCronSchedule = v }, validCron),
 				},
+				{
+					// Stored as "disabled", shown as "enabled" — the same inversion, for the
+					// same reason, as the metadata refresh switch.
+					Key: "autotaggerr_lidarr_follow_enabled", Label: "Follow Lidarr's changes", Type: TypeBool, Tier: TierLive,
+					Help: "Reads each Lidarr manager's history for files it imported, upgraded, deleted or renamed, and processes those artists again. Off leaves them to the scheduled scan.",
+					get:  func(c models.ConfigStruct) any { return !c.AutotaggerrLidarrFollowDisabled },
+					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrLidarrFollowDisabled = !v }),
+				},
+				{
+					Key: "autotaggerr_lidarr_follow_cron_schedule", Label: "Lidarr follow schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "How often Lidarr's history is read. A pass that finds nothing records nothing.",
+					Placeholder: models.DefaultLidarrFollowCronSchedule,
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrLidarrFollowCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrLidarrFollowCronSchedule = v }, validCron),
+				},
 			},
 		},
 		{

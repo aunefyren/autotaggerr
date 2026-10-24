@@ -276,6 +276,14 @@ func main() {
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrTempoCronSchedule },
 		},
 		settings.CronJob{
+			// Reads Lidarr's history and queues a Process per artist whose files Lidarr
+			// changed. Not queued itself — see process.Runner.FollowLidarr.
+			Name:     "Lidarr follow",
+			Run:      scanRunner.FollowLidarr,
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrLidarrFollowCronSchedule },
+			Enabled:  func(c models.ConfigStruct) bool { return !c.AutotaggerrLidarrFollowDisabled },
+		},
+		settings.CronJob{
 			Name:     "health check",
 			Run:      healthChecker.Run,
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrHealthCronSchedule },

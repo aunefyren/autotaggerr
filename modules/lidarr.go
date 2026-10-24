@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -501,6 +502,20 @@ func (c *LidarrClient) GetArtistAlbums(artistID int64) ([]models.LidarrAlbum, er
 	return albums, nil
 }
 
+// GetHistorySince returns Lidarr's history recorded at or after since, with each
+// record's artist included so it names a MusicBrainz artist. Uncached: it is a feed,
+// and the whole point of reading it is to learn what the caches do not know yet.
+func (c *LidarrClient) GetHistorySince(since time.Time) ([]models.LidarrHistoryRecord, error) {
+	q := url.Values{}
+	q.Set("date", since.UTC().Format(time.RFC3339))
+	q.Set("includeArtist", "true")
+	var records []models.LidarrHistoryRecord
+	if err := c.getJSON("/api/v1/history/since?"+q.Encode(), &records); err != nil {
+		return nil, err
+	}
+	return records, nil
+}
+
 // retrieves the Lidarr album object from a Lidarr artist ID and album ID
 func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, error) {
 	albumKey := strconv.FormatInt(albumID, 10)
@@ -668,6 +683,72 @@ func (c *LidarrClient) HealthCheck() (health bool, err error) {
 	return true, nil
 }
 
+// lidarrRecheckAfter is how old a cached Lidarr answer has to be before a file it does
+// not account for is asked about again, uncached.
+//
+// A miss against a cache is not Lidarr saying no. The four Lidarr caches are an hour
+// long and cross-reference each other by Lidarr's own IDs, and an upgrade changes those
+// IDs: the old file is deleted, the new one imported under a new trackfile ID and often
+// a new path (MP3 → FLAC changes the extension). Until the caches expire, the new file
+// is either absent from the cached trackfile list, or present in a fresh list but
+// pointing at an ID the cached track list has never heard of — and either way it went
+// `unmatched`, which drops its album from the collection's disk view.
+//
+// The floor is what keeps the recheck cheap. A file Lidarr genuinely does not know
+// about misses on every pass, and a folder of them would otherwise re-download the
+// artist's whole trackfile list once per file; with the floor, one refetch makes the
+// entries fresh and every further miss in the window is believed. A var so tests can
+// age entries past it without sleeping.
+var lidarrRecheckAfter = 2 * time.Minute
+
+// lidarrDropCachedBefore drops the cached Lidarr entries a file's resolution leaned on
+// — the artist's trackfile list, and when the file was found in it, its album's track
+// list and edition — that were fetched before cutoff, and reports whether it dropped
+// any. Entries fetched since are kept: they are already the answer a recheck would get.
+// An absent entry was not leaned on, so it does not count.
+func lidarrDropCachedBefore(artistID, albumID int64, cutoff time.Time) bool {
+	dropped := false
+
+	artistKey := strconv.FormatInt(artistID, 10)
+	lidarrTrackFilesCacheMu.Lock()
+	if files, ok := lidarrTrackFilesCache[artistKey]; ok && files.Timestamp.Before(cutoff) {
+		delete(lidarrTrackFilesCache, artistKey)
+		dropped = true
+	}
+	lidarrTrackFilesCacheMu.Unlock()
+	if dropped {
+		providerCacheDrop(models.ProviderCacheLidarrTrackFiles, artistKey)
+	}
+	if albumID == 0 {
+		return dropped
+	}
+
+	albumKey := strconv.FormatInt(albumID, 10)
+	lidarrTracksCacheMu.Lock()
+	tracks, ok := lidarrTracksCache[albumKey]
+	staleTracks := ok && tracks.Timestamp.Before(cutoff)
+	if staleTracks {
+		delete(lidarrTracksCache, albumKey)
+	}
+	lidarrTracksCacheMu.Unlock()
+	if staleTracks {
+		providerCacheDrop(models.ProviderCacheLidarrTracks, albumKey)
+	}
+
+	lidarrAlbumsCacheMu.Lock()
+	album, ok := lidarrAlbumsCache[albumKey]
+	staleAlbum := ok && album.Timestamp.Before(cutoff)
+	if staleAlbum {
+		delete(lidarrAlbumsCache, albumKey)
+	}
+	lidarrAlbumsCacheMu.Unlock()
+	if staleAlbum {
+		providerCacheDrop(models.ProviderCacheLidarrAlbums, albumKey)
+	}
+
+	return dropped || staleTracks || staleAlbum
+}
+
 // try to retrieve the MB release from Lidarr
 func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootDir string) (*models.LidarrTrackMetadataDetails, error) {
 	// derive the artist from the path folder
@@ -686,65 +767,99 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 
 	for _, artist := range artists {
 		logger.Log.Debugf("checking for artist: %s (%d)", artist.Name, artist.ID)
-		lidarrTrackMetadataDetails := models.LidarrTrackMetadataDetails{}
 
-		tf, err := cli.FindTrackFileByPath(artist.ID, trackPath, rootDir)
+		details, albumID, err := resolveFromLidarrArtist(cli, artist, trackPath, rootDir)
 		if err != nil {
-			return nil, fmt.Errorf("track file lookup for artist %q (Lidarr ID %d) failed: %w", artist.Name, artist.ID, err)
-		} else if tf == nil {
-			logger.Log.Warn("tracks not found in Lidarr by file path")
-			continue
+			return details, err
 		}
 
-		logger.Log.Tracef("Lidarr track file found: %d", tf.ID)
-
-		tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
-		if err != nil {
-			return &lidarrTrackMetadataDetails, fmt.Errorf("track list lookup for album %d (artist %q, Lidarr ID %d) failed: %w", tf.AlbumID, artist.Name, artist.ID, err)
-		} else if tracks == nil {
-			logger.Log.Warn("tracks not found in Lidarr by album and artist")
-			continue
-		} else if len(tracks) < 1 {
-			logger.Log.Warn("tracks list found in Lidarr by album and artist is empty")
-		}
-
-		found := false
-		for _, track := range tracks {
-			// Deref only after the nil check: Lidarr omits trackFileId on a track it has
-			// no file for, and logging args are evaluated whether or not trace is on.
-			if track.TrackFileID == nil {
-				continue
-			}
-			logger.Log.Tracef("comparing track ID %d, file ID %d", track.ID, *track.TrackFileID)
-			if *track.TrackFileID == tf.ID {
-				logger.Log.Tracef("Lidarr track found: %d", track.ID)
-				lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
-				lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
-				lidarrTrackMetadataDetails.TrackTitle = track.Title
-				found = true
-				break
+		// A miss against cached answers is asked again, uncached — see
+		// lidarrRecheckAfter. Only the stale entries this file leaned on are dropped,
+		// so a recheck costs at most one artist's trackfile list and one album's tracks
+		// and edition, never the whole cache.
+		//
+		// At most twice, because the second can only be learned from the first: a
+		// file missing from a stale trackfile list names no album, and once the fresh
+		// list finds it, the album it names may have a stale track list still pointing
+		// at the trackfile the upgrade replaced. Each pass leaves what it dropped fresh,
+		// so the condition cannot hold a third time.
+		cutoff := time.Now().Add(-lidarrRecheckAfter)
+		for attempt := 0; details == nil && attempt < 2 && lidarrDropCachedBefore(artist.ID, albumID, cutoff); attempt++ {
+			logger.Log.Infof("cached Lidarr answers for %s do not account for %s; asking Lidarr again", artist.Name, trackPath)
+			details, albumID, err = resolveFromLidarrArtist(cli, artist, trackPath, rootDir)
+			if err != nil {
+				return details, err
 			}
 		}
 
-		if !found {
-			logger.Log.Warn("track not found in tracks returned by Lidarr")
-			continue
+		if details != nil {
+			logger.Log.Debug("found Lidarr details")
+			return details, nil
 		}
-
-		mbReleaseID, err := cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
-		if err != nil {
-			return &lidarrTrackMetadataDetails, fmt.Errorf("monitored release lookup for album %d (artist %q, Lidarr ID %d) failed: %w", tf.AlbumID, artist.Name, artist.ID, err)
-		} else if mbReleaseID == nil {
-			logger.Log.Warn("MusicBrainz Release ID not found in Lidarr by album ID")
-			continue
-		}
-
-		lidarrTrackMetadataDetails.MBReleaseID = *mbReleaseID
-
-		logger.Log.Debug("found Lidarr details")
-		return &lidarrTrackMetadataDetails, nil
 	}
 
 	logger.Log.Warn("no artists in Lidarr had the matching tracks for file")
 	return nil, nil
+}
+
+// resolveFromLidarrArtist resolves one file against one Lidarr artist. Nil details
+// with a nil error is a miss; albumID is the Lidarr album the file's trackfile named,
+// or 0 when the file was not in the artist's trackfile list at all, so the caller
+// knows which cached entries the answer came from.
+func resolveFromLidarrArtist(cli *LidarrClient, artist models.LidarrArtist, trackPath, rootDir string) (*models.LidarrTrackMetadataDetails, int64, error) {
+	lidarrTrackMetadataDetails := models.LidarrTrackMetadataDetails{}
+
+	tf, err := cli.FindTrackFileByPath(artist.ID, trackPath, rootDir)
+	if err != nil {
+		return nil, 0, fmt.Errorf("track file lookup for artist %q (Lidarr ID %d) failed: %w", artist.Name, artist.ID, err)
+	} else if tf == nil {
+		logger.Log.Warn("tracks not found in Lidarr by file path")
+		return nil, 0, nil
+	}
+
+	logger.Log.Tracef("Lidarr track file found: %d", tf.ID)
+
+	tracks, err := cli.GetTracksByAlbumAndArtistID(artist.ID, tf.AlbumID)
+	if err != nil {
+		return &lidarrTrackMetadataDetails, tf.AlbumID, fmt.Errorf("track list lookup for album %d (artist %q, Lidarr ID %d) failed: %w", tf.AlbumID, artist.Name, artist.ID, err)
+	} else if tracks == nil {
+		logger.Log.Warn("tracks not found in Lidarr by album and artist")
+		return nil, tf.AlbumID, nil
+	} else if len(tracks) < 1 {
+		logger.Log.Warn("tracks list found in Lidarr by album and artist is empty")
+	}
+
+	found := false
+	for _, track := range tracks {
+		// Deref only after the nil check: Lidarr omits trackFileId on a track it has
+		// no file for, and logging args are evaluated whether or not trace is on.
+		if track.TrackFileID == nil {
+			continue
+		}
+		logger.Log.Tracef("comparing track ID %d, file ID %d", track.ID, *track.TrackFileID)
+		if *track.TrackFileID == tf.ID {
+			logger.Log.Tracef("Lidarr track found: %d", track.ID)
+			lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
+			lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
+			lidarrTrackMetadataDetails.TrackTitle = track.Title
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		logger.Log.Warn("track not found in tracks returned by Lidarr")
+		return nil, tf.AlbumID, nil
+	}
+
+	mbReleaseID, err := cli.GetMonitoredAlbumMBID(artist.ID, tf.AlbumID)
+	if err != nil {
+		return &lidarrTrackMetadataDetails, tf.AlbumID, fmt.Errorf("monitored release lookup for album %d (artist %q, Lidarr ID %d) failed: %w", tf.AlbumID, artist.Name, artist.ID, err)
+	} else if mbReleaseID == nil {
+		logger.Log.Warn("MusicBrainz Release ID not found in Lidarr by album ID")
+		return nil, tf.AlbumID, nil
+	}
+
+	lidarrTrackMetadataDetails.MBReleaseID = *mbReleaseID
+	return &lidarrTrackMetadataDetails, tf.AlbumID, nil
 }

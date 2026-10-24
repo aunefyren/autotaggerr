@@ -681,6 +681,10 @@ run — so leaving them would have put two entries in the type filter for one ki
   otherwise buries the feed under identical "healthy" rows. `details.services` carries per-connection
   `healthy` + `error`. Lives in `health.Checker`, which holds the last-seen state to gate the write.
 
+- **`lidarr_follow`** — a pass over a Lidarr manager's history that found files changing under
+  some artists: one entity row per artist, `queued` or `skipped` with the reason. Recorded **only when
+  there was something to follow**; see [Following Lidarr](#following-lidarr).
+
 ### Live progress
 
 Long events carry live progress so the feed can draw a bar instead of an indefinite "running":
@@ -891,6 +895,77 @@ imply one.
   last of those pays the limiter, which is what makes a cold-vs-warm comparison meaningful.
 - `FindTrackFileByPath` is cached per artist rather than refetching an artist's whole track-file
   list per track.
+- **A miss against the Lidarr cache is asked again, once, uncached** — see
+  [A cached miss is not Lidarr saying no](#a-cached-miss-is-not-lidarr-saying-no).
+
+### A cached miss is not Lidarr saying no
+
+The four Lidarr caches (artists, an artist's trackfiles, an album's tracks, an album's edition) are an
+hour long and refer to each other by Lidarr's own IDs. An upgrade changes those IDs: Lidarr deletes
+the old file and imports the new one under a new trackfile ID, often at a new path (MP3 → FLAC
+changes the extension). Until the caches expired the new file was either absent from the cached
+trackfile list, or found in a freshly expired-and-refetched one under an ID the still-cached track
+list had never heard of. Either way it went `unmatched` — and under a manager that drops its album
+from the disk view, which is the mismatch the collection then reported.
+
+`ResolveMetadataDetailsFromLidarr` therefore treats a miss as a question about the cache before it
+treats it as Lidarr's answer. When a file is not accounted for and any entry the resolution leaned on
+was fetched more than `lidarrRecheckAfter` (two minutes) ago, those stale entries — and only those —
+are dropped and the file is resolved again (`lidarrDropCachedBefore`). Up to twice, because the second
+can only be learned from the first: a file missing from a stale trackfile list names no album, and
+once the fresh list finds it, the album it names may still have a stale track list.
+
+The floor is what keeps this cheap. A file Lidarr really does not know about misses on every pass;
+without the floor, a folder of them would re-download the artist's trackfile list once per file. With
+it, one refetch makes the entries fresh and every further miss in the window is believed.
+
+What it cannot catch is a cache that is stale **and consistent**: a same-path upgrade where all four
+entries still describe the old file, so they agree with each other and nothing misses. Following Lidarr's
+history (below) is what drops those.
+
+## Following Lidarr
+
+Lidarr changes files on its own schedule, and the repair used to be manual: a scoped Lidarr sync with
+the cache dropped, a disk-walking Scan, and then a Process to actually tag what they found. Lidarr
+already records every one of those changes in its history, so `process.Runner.FollowLidarr` reads it
+on a schedule (`autotaggerr_lidarr_follow_cron_schedule`, every ten minutes by default; off with
+`autotaggerr_lidarr_follow_disabled`) and does that repair with the verb that also tags:
+
+1. **Read** each enabled Lidarr manager's `/api/v1/history/since` from its cursor
+   (`Manager.LidarrHistoryCursor`), with `includeArtist` so a record names a MusicBrainz artist.
+2. **Keep** the records that move files — `trackFileImported`, `trackFileDeleted`, `trackFileRenamed`,
+   `downloadImported`, `artistFolderImported` — and are older than `lidarrFollowSettle` (two minutes).
+   An upgrade is several records over a minute or two; processing the artist halfway through would
+   see half an album. `trackFileRetagged` is left out on purpose: Lidarr wrote tags, nothing moved,
+   and following it would loop with a Lidarr that writes tags.
+3. **Per artist named**, drop their cached Lidarr answers (`LidarrInvalidateArtistCaches`, with the
+   albums the records named) and queue a Process over their folders (`ArtistScope` → `Run`, deduped
+   on the artist like the button). An artist the collection does not hold, or with nothing indexed
+   yet, cannot be scoped; they are reported as `skipped` and left to the scheduled run, which now
+   reads them fresh.
+4. **Advance** the cursor to the end of the window — not to "now", so the unsettled records are the
+   start of the next window.
+
+It is **not a queued job**. It is a few requests and a few rows, and behind an hours-long run it would
+only learn of changes later; the Process it starts goes on the queue like any other. A `followMu`
+`TryLock` skips a tick that overlaps the previous one, and since the cursor moves only when a pass
+completes, the next tick covers the same window. Nor does it break
+[the no-cascade rule](#the-four-verbs-and-why-none-of-them-cascades): it is a schedule queuing a
+Process, as the weekly schedule does, and nothing a user pressed does more than its label says.
+
+Three choices worth knowing:
+
+- **The first pass starts from now.** A manager with no cursor gets one and nothing else — replaying
+  Lidarr's whole history would queue a run for every artist it ever touched. The cursor is persisted
+  so that what Lidarr upgraded while Autotaggerr was down is still caught up on.
+- **A failed read records nothing** and leaves the cursor alone. The health check already reports an
+  unreachable Lidarr; another row every ten minutes would bury the feed.
+- **Polling, not a webhook.** It needs nothing configured on Lidarr's side and works when Lidarr cannot
+  reach Autotaggerr. A webhook would only change who notices first; the history is the same.
+
+The window is compared against Lidarr's own timestamps, so a clock skew between the hosts larger
+than the settle window could let a record land behind the cursor. The settle window absorbs ordinary
+drift; it is not designed for hosts minutes apart.
 
 ## Concurrency
 

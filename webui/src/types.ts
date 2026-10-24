@@ -359,7 +359,7 @@ export interface EventItem {
   path: string;
   /** "" (a file) | "entity" (an MBID) | "album" (a Plex refresh target). */
   kind?: string;
-  /** "changed" | "error" | "refreshed" | "gone" | "relinked" | "unknown" */
+  /** "changed" | "error" | "refreshed" | "gone" | "relinked" | "unknown" | "queued" | "skipped" */
   status: string;
   /** Which stage of the event produced this row; groups release rows apart from files. */
   phase?: string;

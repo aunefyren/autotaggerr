@@ -34,6 +34,7 @@ const TYPE_LABELS: Record<string, string> = {
   mb_migration: "Identity changes",
   plex_refresh: "Plex refresh",
   health_check: "Health check",
+  lidarr_follow: "Follow Lidarr",
   collection_scan: "Collection scan",
   discover_files: "Scan with disk walk",
 };
@@ -66,6 +67,8 @@ const TYPE_NOTES: Record<string, string> = {
     "A Scan asked to walk the disk first. Files that moved keep their identity at the new path, matched on size and modification time; files with no identity are looked up with the manager. No tags are written — newly found files are tagged by the next processing run. The collection scan beneath it is the ordinary Scan, run on what the walk recorded.",
   lidarr_sync:
     "Mirrors the manager's catalogue over the collection. It runs after the collection scan on purpose: the mirror only covers artists the collection already knows about, including any this run just discovered. Artists Lidarr did not list are reported rather than assumed away — their wanted view has nothing behind it until they are matched or detached.",
+  lidarr_follow:
+    "Lidarr imported, upgraded, deleted or renamed files for these artists since the last check. Their cached Lidarr answers were dropped and a processing run queued for each, so the new files are identified and tagged now rather than at the next scheduled scan. Only recorded when there was something to follow.",
   plex_refresh:
     "Tells Plex to re-read the albums this run touched. One event per run rather than per album, which would flood the feed — the albums themselves are listed below.",
   tag_files:
@@ -913,6 +916,16 @@ const ENTITY_OUTCOMES: Record<string, { label: string; kind: string; note: strin
     label: "Not in Lidarr",
     kind: "warn",
     note: "The collection files this artist under Lidarr, and Lidarr did not list them. Nothing fills their catalogue until they are matched in Lidarr or detached from the manager, so their wanted view is empty rather than accurate.",
+  },
+  queued: {
+    label: "Processing queued",
+    kind: "scan",
+    note: "Lidarr changed files under this artist, so a processing run over their folders was queued. It appears as its own activity when it runs.",
+  },
+  skipped: {
+    label: "Skipped",
+    kind: "off",
+    note: "Lidarr changed files under this artist, but there was nothing to scope a run to — the row says why. Their cached Lidarr answers were still dropped, so the next scheduled run sees them fresh.",
   },
   error: {
     label: "Failed",

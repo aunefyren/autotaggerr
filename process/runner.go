@@ -138,6 +138,9 @@ type Runner struct {
 	// worker starts no further job — what is already running is left to finish.
 	stopping atomic.Bool
 	jobMu    sync.Mutex // held for the duration of each job; TryLock'd by interactive re-tags
+	// followMu keeps two Lidarr-history passes from overlapping (see FollowLidarr).
+	// Separate from jobMu because the pass is not a queued job.
+	followMu sync.Mutex
 
 	// The job queue: a single worker (started in NewRunner) drains `queue` one at a
 	// time, so every background verb is serial and visible. `current` is the executing

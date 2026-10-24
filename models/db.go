@@ -124,6 +124,11 @@ const (
 	// track_tempos table — the tags are written by the next tagging pass.
 	EventTypeTempo  = "tempo_analysis"
 	EventTypeHealth = "health_check"
+	// EventTypeLidarrFollow is a pass over Lidarr's history that found files Lidarr
+	// imported, deleted or renamed since the last one: the artists it named had their
+	// cached Lidarr answers dropped and a processing run queued. Recorded only when
+	// there was something to follow — the pass runs every few minutes.
+	EventTypeLidarrFollow = "lidarr_follow"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -262,6 +267,13 @@ type Manager struct {
 	// The switch exists for the case where the API key is deliberately read-only, or
 	// where something else owns refresh scheduling.
 	LidarrSkipArtistRefresh bool `json:"lidarr_skip_artist_refresh"`
+
+	// LidarrHistoryCursor is how far this manager's history has been followed: every
+	// file change Lidarr recorded up to it has been acted on (see
+	// process.Runner.FollowLidarr). Nil until the first pass, which starts following
+	// from that moment rather than replaying everything Lidarr ever did. Persisted
+	// so that what Lidarr upgraded while Autotaggerr was down is still caught up on.
+	LidarrHistoryCursor *time.Time `json:"lidarr_history_cursor,omitempty"`
 
 	// Autotaggerr-specific: which data source this manager resolves against.
 	DefaultDataSourceID *uuid.UUID `gorm:"type:uuid" json:"default_data_source_id,omitempty"`
@@ -1044,6 +1056,13 @@ const (
 	// source used to have it and says so) and from Error (we could not ask) — this is
 	// a complete answer that happens to be "no".
 	EventItemStatusUnknown = "unknown"
+	// EventItemStatusQueued is an artist that had work queued on their behalf — a
+	// processing run, because their manager reported files changing under them.
+	EventItemStatusQueued = "queued"
+	// EventItemStatusSkipped is an artist the same pass could not queue work for, with
+	// the reason on the row: not in the collection, or no folder of theirs indexed yet.
+	// Their cached manager answers were still dropped, so the next run sees them fresh.
+	EventItemStatusSkipped = "skipped"
 )
 
 // What an EventItem describes. Empty (EventItemKindFile) is the default and covers

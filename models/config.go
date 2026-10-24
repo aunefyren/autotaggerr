@@ -66,6 +66,11 @@ const (
 	DefaultTempoConcurrency  = 2
 )
 
+// DefaultLidarrFollowCronSchedule reads each Lidarr manager's history every ten
+// minutes. A pass that finds nothing is a request per manager and records nothing, and
+// an upgrade then reaches its files within minutes rather than at the weekly run.
+const DefaultLidarrFollowCronSchedule = "0 */10 * * * *"
+
 // How the SMTP connection is encrypted. The default is Auto, which infers the answer
 // from the port and is right for every hosted provider; the explicit modes exist for
 // the self-hosted relay that gets it wrong — one that offers STARTTLS and fails the
@@ -156,6 +161,14 @@ type ConfigStruct struct {
 	// cheap and only record an Activity event when a service's health changes, so a
 	// frequent cadence does not flood the feed. Empty falls back to the default.
 	AutotaggerrHealthCronSchedule string `json:"autotaggerr_health_cron_schedule"`
+
+	// Following Lidarr: how often each Lidarr manager's history is read for files it
+	// imported, deleted or renamed, so the artists involved are processed again without
+	// waiting for the scheduled run (see docs/scanning.md). Disabled rather than enabled
+	// for the reason the mirror key is: a bool absent from an existing config.json
+	// decodes as false, and false has to mean the default behaviour.
+	AutotaggerrLidarrFollowDisabled     bool   `json:"autotaggerr_lidarr_follow_disabled"`
+	AutotaggerrLidarrFollowCronSchedule string `json:"autotaggerr_lidarr_follow_cron_schedule"`
 
 	// MusicBrainz migration review policy. These are phrased as *review* opt-ins
 	// rather than auto-apply opt-outs on purpose: a bool absent from an existing

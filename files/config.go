@@ -157,6 +157,12 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrLidarrFollowCronSchedule == "" {
+		// set new value — every ten minutes; a pass that finds nothing records nothing
+		ConfigFile.AutotaggerrLidarrFollowCronSchedule = models.DefaultLidarrFollowCronSchedule
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrProcessConcurrency < 1 {
 		// set new value (number of files processed in parallel per scan)
 		ConfigFile.AutotaggerrProcessConcurrency = 4
@@ -231,6 +237,9 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrTempoConcurrency = models.DefaultTempoConcurrency
 
 	ConfigFile.AutotaggerrHealthCronSchedule = "0 */5 * * * *"
+
+	ConfigFile.AutotaggerrLidarrFollowDisabled = false
+	ConfigFile.AutotaggerrLidarrFollowCronSchedule = models.DefaultLidarrFollowCronSchedule
 
 	// MusicBrainz migrations apply themselves by default; these hold a category back
 	// for manual approval instead. Written explicitly so the keys are discoverable in

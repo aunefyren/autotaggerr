@@ -229,10 +229,11 @@ func TestEveryConfigKeyHasAHome(t *testing.T) {
 			homed[field.Key] = true
 		}
 	}
-	// The two "keep this refreshed" switches are stored inverted, so the page's key is
-	// not the file's.
+	// The two "keep this refreshed" switches and the Lidarr follow switch are stored
+	// inverted, so the page's key is not the file's.
 	homed["autotaggerr_mirror_disabled"] = true
 	homed["autotaggerr_artwork_disabled"] = true
+	homed["autotaggerr_lidarr_follow_disabled"] = true
 
 	structType := reflect.TypeOf(models.ConfigStruct{})
 	for i := 0; i < structType.NumField(); i++ {

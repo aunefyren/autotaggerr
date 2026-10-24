@@ -1,5 +1,11 @@
 package models
 
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+)
+
 type LidarrArtist struct {
 	ID              int64  `json:"id"`
 	ForeignArtistID string `json:"foreignArtistId"`
@@ -68,4 +74,85 @@ type LidarrCommand struct {
 	// Message is Lidarr's own progress or failure text, worth quoting in an error
 	// because it names the metadata-service problem when there is one.
 	Message string `json:"message"`
+}
+
+// LidarrHistoryRecord is one entry in Lidarr's history, as /api/v1/history/since
+// returns it. Only what following Lidarr's file changes needs is modelled: which
+// artist and album, when, and what happened. Artist is filled when the request asks
+// for includeArtist, which is how a record names the MusicBrainz artist it is about.
+type LidarrHistoryRecord struct {
+	ID          int64                  `json:"id"`
+	ArtistID    int64                  `json:"artistId"`
+	AlbumID     int64                  `json:"albumId"`
+	Date        time.Time              `json:"date"`
+	EventType   LidarrHistoryEventType `json:"eventType"`
+	SourceTitle string                 `json:"sourceTitle"`
+	Artist      *LidarrArtist          `json:"artist,omitempty"`
+}
+
+// LidarrHistoryEventType is Lidarr's EntityHistoryEventType. Lidarr serialises it as a
+// camelCase name; the numeric form is accepted too, because the enum's JSON shape is a
+// serializer setting on Lidarr's side rather than part of its API contract.
+type LidarrHistoryEventType string
+
+const (
+	LidarrHistoryGrabbed               LidarrHistoryEventType = "grabbed"
+	LidarrHistoryArtistFolderImported  LidarrHistoryEventType = "artistFolderImported"
+	LidarrHistoryTrackFileImported     LidarrHistoryEventType = "trackFileImported"
+	LidarrHistoryDownloadFailed        LidarrHistoryEventType = "downloadFailed"
+	LidarrHistoryTrackFileDeleted      LidarrHistoryEventType = "trackFileDeleted"
+	LidarrHistoryTrackFileRenamed      LidarrHistoryEventType = "trackFileRenamed"
+	LidarrHistoryAlbumImportIncomplete LidarrHistoryEventType = "albumImportIncomplete"
+	LidarrHistoryDownloadImported      LidarrHistoryEventType = "downloadImported"
+	LidarrHistoryTrackFileRetagged     LidarrHistoryEventType = "trackFileRetagged"
+	LidarrHistoryDownloadIgnored       LidarrHistoryEventType = "downloadIgnored"
+)
+
+// lidarrHistoryEventNames is EntityHistoryEventType's numeric order (0 is Unknown).
+var lidarrHistoryEventNames = []LidarrHistoryEventType{
+	"unknown",
+	LidarrHistoryGrabbed,
+	LidarrHistoryArtistFolderImported,
+	LidarrHistoryTrackFileImported,
+	LidarrHistoryDownloadFailed,
+	LidarrHistoryTrackFileDeleted,
+	LidarrHistoryTrackFileRenamed,
+	LidarrHistoryAlbumImportIncomplete,
+	LidarrHistoryDownloadImported,
+	LidarrHistoryTrackFileRetagged,
+	LidarrHistoryDownloadIgnored,
+}
+
+func (t *LidarrHistoryEventType) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		*t = LidarrHistoryEventType(name)
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("lidarr history event type %s is neither a name nor a number", string(data))
+	}
+	if n < 0 || n >= len(lidarrHistoryEventNames) {
+		*t = "unknown"
+		return nil
+	}
+	*t = lidarrHistoryEventNames[n]
+	return nil
+}
+
+// MovesFiles reports whether the event means files appeared, vanished or moved on
+// disk — which is what makes the cached Lidarr answers about the artist wrong and the
+// artist worth processing again.
+//
+// trackFileRetagged is deliberately not one of them: Lidarr wrote tags, the files did
+// not move, and the identity they carry did not change. Following it would also put
+// Autotaggerr in a loop with a Lidarr that writes tags, each re-tagging after the other.
+func (t LidarrHistoryEventType) MovesFiles() bool {
+	switch t {
+	case LidarrHistoryTrackFileImported, LidarrHistoryTrackFileDeleted, LidarrHistoryTrackFileRenamed,
+		LidarrHistoryDownloadImported, LidarrHistoryArtistFolderImported:
+		return true
+	}
+	return false
 }

@@ -29,6 +29,38 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   *collection* half: the transient Lidarr case has exactly the shape the MusicBrainz fix was written
   for, and an hour-old cache is not the manager changing its mind. `last_error_transient` already
   exists to carry that distinction and nothing reads it.
+- **Lidarr replacing files — what following it leaves open.** Recheck-on-miss and the history
+  follower have shipped ([scanning.md](scanning.md#following-lidarr)). Residual, roughly by risk:
+  - **A pin outlives the file it was made for.** `shouldSkip` re-processes a file whose size or
+    mtime changed (`components/pipeline.go:350`), but `pinnedCorrelation` (`:189`) then applies the
+    pin regardless. When Lidarr replaces a pinned file at the same path — especially with a different
+    edition — the new bytes are tagged with the identity someone chose by hand for the old ones. A pin
+    should probably record the size/mtime it was made against and be held (or flagged, the way
+    migrations are) when those no longer match.
+  - **A stale-but-consistent cache can tag the old identity, and then it sticks.** Recheck only fires
+    on a miss. A same-path upgrade to a *different edition*, processed before the caches expire and
+    before the follower drops them (follower off, or a run inside the settle window), resolves to the
+    old release cleanly; after the write the file's size/mtime match the index, so `shouldSkip` never
+    looks again. The follower closes this in practice; with it disabled the only exits are drift, a
+    version bump, or force re-correlate.
+  - **Lidarr writing its own tags.** With Lidarr's *Write audio tags* on, each upgrade becomes Lidarr
+    tagging on import, Autotaggerr re-tagging, Lidarr possibly rescanning or renaming. The follower
+    makes the second step faster, and the second Process diffs to a no-op, so it settles — but the
+    setting fights Autotaggerr by design. The health check could read Lidarr's metadata-provider
+    config and warn about it.
+  - **A new artist cannot be followed.** The follower scopes a run through the collection
+    (`ArtistScope`), so an artist Lidarr imported for the first time is `skipped` until the scheduled
+    run. Scoping by Lidarr's own artist path would need the Lidarr-root → library-root mapping that
+    nothing has today (path matching compares positions for exactly that reason).
+  - **The album still blinks out during the settle window.** A run that reaches an upgraded album
+    between the import and the follower's pass can still see a half-replaced folder; recheck makes
+    most of those files resolve, but any that land `unmatched` drop the album from the disk view until
+    the queued Process. That is the *unmatched file is dropped from the disk view* entry below.
+  - **A manager edit can rewind the cursor.** `updateManager` loads the row and `Save`s it whole, so a
+    follower pass between the load and the save is written back over. The cost is one window read
+    twice and an artist processed twice — harmless, but a column-scoped update there would end it.
+  - **Webhook.** Lidarr's *Connect → Webhook* would let an import be followed in seconds rather than
+    within ten minutes. Same history, same actions; only worth it if the polling delay is ever felt.
 - **The Lidarr mirror cannot introduce an artist**, so it cannot populate a cold collection — the
   button a Lidarr-first user reaches for first is the one that can do nothing. `CollectionArtist`
   rows do not require files (*Add artist* creates one), so nothing structural forbids it; it is a
