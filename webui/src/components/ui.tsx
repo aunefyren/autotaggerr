@@ -49,11 +49,27 @@ export function IdChip({ value }: { value: string }) {
   );
 }
 
-export function Modal({ title, children, onClose, wide }: { title: string; children: ReactNode; onClose: () => void; wide?: boolean }) {
+export function Modal({
+  title,
+  titleHint,
+  children,
+  onClose,
+  wide,
+  xl,
+}: {
+  title: string;
+  /** The title's full form, on hover — for a title shortened to fit (a path's last folder). */
+  titleHint?: string;
+  children: ReactNode;
+  onClose: () => void;
+  wide?: boolean;
+  /** Wider still, for a modal laid out in columns. */
+  xl?: boolean;
+}) {
   return (
     <div className="backdrop" onClick={onClose}>
-      <div className={`modal${wide ? " wide" : ""}`} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-        <h2>{title}</h2>
+      <div className={`modal${xl ? " xl" : wide ? " wide" : ""}`} role="dialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <h2 title={titleHint}>{title}</h2>
         {/* The body is a scroller so the modal can be bounded by the viewport without
             the title scrolling away with it — see `.modal` in app.css. */}
         <div className="modal-body">{children}</div>

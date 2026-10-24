@@ -260,7 +260,7 @@ consults the guide and either follows it or reshapes it *in the same change*.
 | M3 | Style guide + SPA | The design system, the embedded SPA, the tag-diff detail view, edit forms, first-run onboarding. |
 | M4 | Drift sync | Catching upstream MusicBrainz changes — see [scanning.md](scanning.md). |
 | M5 | Present vs wanted | The collection — see [collection.md](collection.md). |
-| M6 | Native manager | Manual attach, collection authoring, per-edition ownership, AcoustID. Pass E (file import) is still open; see [wip.md](wip.md). |
+| M6 | Native manager | Manual attach, collection authoring, per-edition ownership, AcoustID, and pass E — file import ([import.md](import.md)). |
 | — | OAuth/OIDC | Shipped ahead of schedule, standalone — see [authentication.md](authentication.md). |
 
 ## Related
@@ -270,4 +270,6 @@ consults the guide and either follows it or reshapes it *in the same change*.
 - [attach.md](attach.md) — identifying files by hand.
 - [fingerprinting.md](fingerprinting.md) — optional AcoustID identification.
 - [tagging.md](tagging.md) — what gets written to a file.
+- [naming.md](naming.md) — where a file belongs: the tagger profile's naming templates.
+- [import.md](import.md) — bringing loose files into a library.
 - [authentication.md](authentication.md) — local login, API keys, OIDC.

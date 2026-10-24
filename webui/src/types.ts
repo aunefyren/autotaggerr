@@ -62,6 +62,50 @@ export interface TaggerProfile {
   custom_artist_delimiter: string;
   max_genres: number;
   mp3_multi_value_tags: boolean;
+  /** Naming templates; empty means the default (see NamingInfo.defaults). */
+  naming_artist_folder: string;
+  naming_album_folder: string;
+  naming_media_folder: string;
+  naming_track_file: string;
+}
+
+/** The four naming templates, keyed as the Go NamingTemplates / NamingField. */
+export interface NamingTemplates {
+  artist_folder: string;
+  album_folder: string;
+  media_folder: string;
+  track_file: string;
+}
+
+export type NamingField = keyof NamingTemplates;
+
+export interface NamingToken {
+  name: string;
+  /** The first template this token may appear in. */
+  field: NamingField;
+  description: string;
+  numeric: boolean;
+}
+
+export interface NamingInfo {
+  defaults: NamingTemplates;
+  tokens: NamingToken[];
+}
+
+export interface NamingPreview {
+  check: {
+    errors?: Partial<Record<NamingField, string>>;
+    warnings?: Partial<Record<NamingField, string>>;
+  };
+  samples: { label: string; path?: string; error?: string }[];
+}
+
+/** Where a file is against where its profile's naming would put it, relative to the library root. */
+export interface PathDiff {
+  current: string;
+  desired: string;
+  changed: boolean;
+  note?: string;
 }
 
 export type BPMWrite = "" | "fill_empty" | "overwrite";
@@ -187,6 +231,57 @@ export interface BulkPreview {
   release: ReleaseTracks["release"];
   tracks: ReleaseTrack[];
   mappings: BulkMapping[];
+}
+
+/** One album's worth of loose files found under an import source. */
+export interface ImportGroup {
+  folder: string;
+  files: string[];
+  artist?: string;
+  album?: string;
+  year?: number;
+  /** Where each hint came from: the files' own tags, or the folder name. */
+  artist_from?: "tags" | "folder";
+  album_from?: "tags" | "folder";
+  year_from?: "tags" | "folder";
+  /** How many disc folders the files span; 1 for a flat album folder. */
+  discs: number;
+  /** The release every tagged file agrees on, when they carry one. */
+  release_id?: string;
+  release_ids_disagree?: boolean;
+}
+
+export interface ImportScan {
+  root: string;
+  groups: ImportGroup[];
+  max_files: number;
+}
+
+export type ImportConflict = "" | "exists" | "duplicate" | "clash";
+
+/** One file of an import, as planned by the server. An empty track ID is a skip. */
+export interface ImportRow {
+  source: string;
+  mb_release_track_id: string;
+  track_number?: string;
+  track_title?: string;
+  medium?: number;
+  how?: "number" | "order" | "";
+  target?: string;
+  target_rel?: string;
+  conflict?: ImportConflict;
+  /** Every file importing this row would remove. */
+  replaces?: string[];
+  replace?: boolean;
+  error?: string;
+}
+
+export interface ImportPreview {
+  release: ReleaseTracks["release"];
+  tracks: ReleaseTrack[];
+  rows: ImportRow[];
+  /** Why the import cannot run as it stands; empty when it can. */
+  problem: string;
 }
 
 /** Whether fingerprint identification can run at all, and if not, why. */
@@ -332,6 +427,9 @@ export interface TagDiffEntry {
 export interface ItemTags {
   item: LibraryItem;
   tags: TagDiffEntry[];
+  /** Absent when the naming could not render this file's release; path_error says why. */
+  path?: PathDiff;
+  path_error?: string;
 }
 
 /** One field's before/after from a tag write. */
@@ -389,6 +487,8 @@ export interface EventItem {
   phase?: string;
   tags_written: number;
   error?: string;
+  /** Where a file was before the activity placed it at `path` (a file import). */
+  from?: string;
   changes?: TagChange[];
   /** Present on an entity row the collection can name. */
   related?: EntityRef;

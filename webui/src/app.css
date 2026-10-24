@@ -100,6 +100,10 @@
   display: flex; flex-direction: column; overflow: hidden;
 }
 .modal.wide { width: 680px; }
+/* For a modal laid out in columns (Import's artist → album → edition): three lists of
+   names and edition notes at 680px wrapped every row to three lines. max-width: 100%
+   above still bounds it by the backdrop on a small screen. */
+.modal.xl { width: 1120px; }
 .modal .scroll { max-height: 60vh; overflow-y: auto; }
 /* Direct child only: the padding belongs to the modal's own title, and a heading a
    caller renders inside the body is not one. */

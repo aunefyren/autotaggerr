@@ -135,6 +135,10 @@ const (
 	// cached Lidarr answers dropped and a processing run queued. Recorded only when
 	// there was something to follow — the pass runs every few minutes.
 	EventTypeLidarrFollow = "lidarr_follow"
+	// EventTypeFileImport is a file import: loose files identified by hand, moved or
+	// copied into a library at the path its naming templates give them, pinned and
+	// tagged. Its items carry where each file came from (EventItem.From).
+	EventTypeFileImport = "file_import"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -319,6 +323,13 @@ type TaggerProfile struct {
 	// Off by default; see TaggerSettings.MP3MultiValueTags for why it is a choice at
 	// all rather than simply correct.
 	MP3MultiValueTags bool `json:"mp3_multi_value_tags"`
+	// The naming templates: where a file belongs under its library root, one template
+	// per path level. Empty means the default (see NamingTemplates), so a profile row
+	// predating the columns names files the way the layout convention always has.
+	NamingArtistFolder string `json:"naming_artist_folder"`
+	NamingAlbumFolder  string `json:"naming_album_folder"`
+	NamingMediaFolder  string `json:"naming_media_folder"`
+	NamingTrackFile    string `json:"naming_track_file"`
 	// The BPM settings used to live here and moved to Library, beside the analysis
 	// opt-in they depend on. Their old columns (bpm_write, bpm_min_confidence) are
 	// left in place by AutoMigrate and read once by the move_bpm_to_library data
@@ -1031,6 +1042,9 @@ type EventItem struct {
 	// drift stage re-tagged as a result of the upstream change.
 	TagsWritten int    `json:"tags_written"`
 	Error       string `json:"error,omitempty"`
+	// From is where a file was before the activity put it at Path — set by a file
+	// import, empty for everything that leaves files where they are.
+	From string `json:"from,omitempty"`
 	// Changes is the field-level diff, empty for a failure that never got as far as
 	// writing.
 	Changes []TagChange `gorm:"serializer:json" json:"changes,omitempty"`
@@ -1162,6 +1176,8 @@ const (
 	// release-group's.
 	EventItemPhaseArtists = "collection_artists"
 	EventItemPhaseAlbums  = "collection_albums"
+	// EventItemPhaseImport is a file a file import placed and tagged.
+	EventItemPhaseImport = "import"
 )
 
 // CollectionArtist is a MusicBrainz artist present in (or monitored for) the

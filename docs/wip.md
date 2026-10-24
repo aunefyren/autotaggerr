@@ -8,7 +8,8 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 [collection.md](collection.md), [attach.md](attach.md), [scanning.md](scanning.md),
 [tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md),
 [mb-migration.md](mb-migration.md), [mirror.md](mirror.md), [artwork.md](artwork.md),
-[authentication.md](authentication.md), [settings.md](settings.md) and [tempo.md](tempo.md).
+[authentication.md](authentication.md), [settings.md](settings.md), [tempo.md](tempo.md),
+[naming.md](naming.md) and [import.md](import.md).
 
 ## Open work
 
@@ -30,10 +31,10 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   wanted" with artists no file has ever been seen for. If it happens it belongs behind its own option
   on the sync dialog or a separate *Import artists from Lidarr* action, not as a change to what the
   plain Sync button does.
-- **M6 pass E — file import.** Move/copy loose files into the library layout, then hand off to
-  manual attach. The last unbuilt piece of the native manager. It has no Activity event, and the
-  event ships with the feature rather than before it — every other verb has one now, so an import
-  that reports nothing would be the only silent thing in the feed.
+- **File import — what is left** ([import.md](import.md#known-limits)). Extra files (covers, cue
+  sheets, logs) are not carried along, so the source folder survives a move; a brand-new album
+  reaches Plex only through Plex's own scan; and identification offers no AcoustID suggestion yet,
+  though the per-file fingerprint lookup already exists ([fingerprinting.md](fingerprinting.md)).
 - **The follow cutoff is per artist only.** `follow_from_year` is set on each artist
   ([collection.md](collection.md#following-can-start-at-a-year)); a *global* default — "new artists
   I follow should start from now" — would layer on top of it without a schema change, read by the
@@ -127,8 +128,13 @@ still open:
   [scanning.md](scanning.md)) on a `process.Scope` built to extend. A release-group or single-album
   scope needs a new constructor and UI, not new machinery — worth doing once the artist actions have
   been used against a real library.
-- **Folder structure.** Mapping to current content, creating folders, renaming and keeping up to
-  date. Configurable structure? Links to the file-import feature above.
+- **Organise — moving files to where their profile names them.** The templates, the renderer and
+  the per-file `PATH` preview have shipped ([naming.md](naming.md)); nothing moves a file yet. What
+  is left is the verb: a dry run over a scope listing every proposed move as a review table (the
+  style guide's *Review step*), conflicts — two files rendering one path — blocking the commit,
+  then the move itself, keeping `library_items` rows, pins and tempo keyed to the new path, and
+  pruning folders left empty. It must refuse under a Lidarr manager, which tracks its files by
+  path. A move also needs a Plex refresh of both the old and new album.
 - *Does the collection page work with several libraries?* The page seems very one-dimensional, with
   dynamic buttons. What happens with multiple libraries, some Lidarr- and some Autotaggerr-managed?
   With multiple metadata managers — do the global settings like migrations apply correctly?

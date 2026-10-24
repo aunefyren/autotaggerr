@@ -117,6 +117,90 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .input::placeholder { color: var(--text-dim); }
 .input.invalid { border-color: var(--danger); }
 .help-err { color: var(--danger-text); font-size: 11px; }
+/* A warning under a field: the value is accepted, but costs something worth reading.
+   The border stays ordinary — only an error marks the input itself. */
+.help-warn { color: var(--warning-text); font-size: 11px; }
+
+/* Tabs — underline style (style guide: Tabs). */
+.tabs { display: flex; gap: var(--space-7); border-bottom: 1px solid var(--border); }
+.tab {
+  height: 38px; padding: 0; background: none; border: 0; border-bottom: 2px solid transparent;
+  margin-bottom: -1px; color: var(--text-muted); font: inherit; cursor: pointer;
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 500; }
+.tab:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--radius-sm); }
+
+/* Step indicator for a multi-step modal (Import). A finished step is a way back. */
+.steps { display: flex; align-items: center; gap: var(--space-3); margin: 0; padding: 0; list-style: none; font-size: 12px; }
+.step { display: flex; align-items: center; gap: var(--space-3); color: var(--text-muted); }
+.step.current { color: var(--text); font-weight: 600; }
+.step-num {
+  width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+  font-size: 11px; border: 1px solid var(--border-strong);
+}
+.step.current .step-num { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.step.done .step-num { background: var(--accent-subtle); border-color: var(--accent); color: var(--accent-text); }
+.step-sep { width: 28px; height: 1px; background: var(--border-strong); }
+.step-link { background: none; border: 0; padding: 0; min-height: 28px; font: inherit; color: var(--accent-text); cursor: pointer; }
+.step-link:hover { text-decoration: underline; }
+
+/* One fact read from the files, with where it came from. */
+.fact { padding: 2px var(--space-4); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.fact b { font-weight: 500; }
+
+/* Narrowing columns: artist → album → edition (Import → Browse). */
+/* The edition column gets the most room: its rows carry a date, a country, formats,
+   a track count and MusicBrainz's notes, where an artist or album row is a name. */
+.pick-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.5fr); gap: var(--space-5); align-items: start; }
+@media (max-width: 900px) { .pick-grid { grid-template-columns: minmax(0, 1fr); } }
+.pick-col { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+.pick-list, .pick-list ul { margin: 0; padding: 0; list-style: none; }
+.pick-list { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-1); max-height: 340px; overflow-y: auto; }
+.pick-head {
+  padding: var(--space-3) var(--space-5); background: var(--surface-2); border-bottom: 1px solid var(--border);
+  font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--text-muted);
+}
+.pick-row {
+  width: 100%; min-height: 36px; padding: var(--space-3) var(--space-5); display: flex; flex-direction: column; gap: 2px;
+  text-align: left; background: none; border: 0; border-bottom: 1px solid var(--border); color: var(--text);
+  font: inherit; cursor: pointer;
+}
+.pick-list > li:last-child > .pick-row, .pick-list ul > li:last-child > .pick-row { border-bottom-color: transparent; }
+.pick-row-inline { flex-direction: row; justify-content: space-between; align-items: baseline; gap: var(--space-4); }
+.pick-row:hover { background: var(--surface-2); }
+.pick-row[aria-pressed="true"] { background: var(--accent-subtle); box-shadow: inset 2px 0 0 var(--accent); }
+.pick-row:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+.pick-sub { font-size: 11px; color: var(--text-muted); }
+.pick-match { color: var(--diff-add-text); font-size: 11px; }
+
+/* What the next step will use, stated before it is used. */
+.selected-bar {
+  display: flex; gap: var(--space-5); align-items: center; flex-wrap: wrap; font-size: 12px;
+  padding: var(--space-4) var(--space-5); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius);
+}
+.release-card {
+  display: flex; gap: var(--space-6); align-items: center; flex-wrap: wrap;
+  padding: var(--space-5) var(--space-6); background: var(--surface-1); border: 1px solid var(--border-strong); border-radius: var(--radius-lg);
+}
+.replace-consent { gap: 6px; cursor: pointer; font-size: 12px; color: var(--danger-text); }
+
+/* Path autocomplete: an overlay list under its input (PathInput.tsx). */
+.suggest { position: relative; }
+.suggest-list {
+  position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20;
+  margin: 0; padding: var(--space-2) 0; list-style: none;
+  max-height: 280px; overflow-y: auto;
+  background: var(--surface-3); border: 1px solid var(--border-strong);
+  border-radius: var(--radius); box-shadow: var(--shadow-2);
+}
+.suggest-item {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-5);
+  min-height: 28px; padding: var(--space-3) var(--space-5);
+  font-size: 12px; color: var(--text); cursor: pointer; word-break: break-all;
+}
+.suggest-item.active { background: var(--accent-subtle); box-shadow: inset 2px 0 0 var(--accent); }
+.suggest-note { font-size: 11px; white-space: nowrap; flex: none; }
 
 /* Pills */
 .pill {

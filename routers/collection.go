@@ -830,6 +830,22 @@ func (a *API) searchArtists(c *gin.Context) {
 	c.JSON(http.StatusOK, results)
 }
 
+// searchArtistReleaseGroups lists any MusicBrainz artist's release-groups, for
+// browsing from an artist search hit to an album. Unlike discography it needs no
+// collection row: an import is how an artist the collection has never seen arrives.
+func (a *API) searchArtistReleaseGroups(c *gin.Context) {
+	groups, _, err := a.meta().GetArtistReleaseGroups(c.Param("mbid"))
+	if err != nil {
+		logger.Log.Errorf("failed to list release-groups for %s: %s", c.Param("mbid"), err.Error())
+		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load the artist's albums from MusicBrainz"})
+		return
+	}
+	if groups == nil {
+		groups = []models.MusicBrainzArtistReleaseGroup{}
+	}
+	c.JSON(http.StatusOK, groups)
+}
+
 // addArtist adds an artist to the collection by MusicBrainz ID. Idempotent, so the
 // UI can offer "add" without first checking whether it is already there.
 func (a *API) addArtist(c *gin.Context) {

@@ -18,6 +18,7 @@ export const PHASE_LABELS: Record<string, string> = {
   plex: "Refreshing Plex",
   migrations: "Applying identity changes",
   collection: "Updating the collection",
+  importing: "Importing files",
   // metadata-pass phases
   artists: "Artists",
   discographies: "Discographies",
@@ -43,6 +44,7 @@ export const PHASE_LABELS: Record<string, string> = {
  */
 const PHASES_DRIVING_PROGRESS = new Set([
   "scanning",
+  "importing",
   "artists",
   "discographies",
   "editions",

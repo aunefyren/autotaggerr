@@ -130,6 +130,8 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/tagger-profiles/:id", a.getTaggerProfile)
 		protected.PUT("/tagger-profiles/:id", a.updateTaggerProfile)
 		protected.DELETE("/tagger-profiles/:id", a.deleteTaggerProfile)
+		protected.GET("/naming", a.namingInfo)
+		protected.POST("/naming/preview", a.namingPreview)
 
 		// Libraries
 		protected.GET("/libraries", a.listLibraries)
@@ -225,6 +227,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artists/:mbid/manager-candidates", a.managerArtistCandidates)
 		protected.POST("/artists/:mbid/same-as", a.markSameArtist)
 		protected.GET("/search/artists", a.searchArtists)
+		protected.GET("/search/artists/:mbid/release-groups", a.searchArtistReleaseGroups)
 		protected.POST("/artists", a.addArtist)
 		protected.GET("/release-groups/:mbid/releases", a.releaseGroupEditions)
 		protected.POST("/release-groups/:mbid/recorrelate", a.recorrelateReleaseGroup)
@@ -252,6 +255,13 @@ func (a *API) Register(rg *gin.RouterGroup) {
 			admin.PUT("/settings", a.updateSettings)
 			admin.GET("/settings/secrets/:key", a.revealSecret)
 			admin.POST("/settings/email/test", a.sendTestEmail)
+
+			// File import reads, moves and deletes files at a path the request names,
+			// anywhere on the server — admin power for the same reason as settings.
+			admin.GET("/import/scan", a.importScan)
+			admin.GET("/import/folders", a.importFolders)
+			admin.POST("/import/preview", a.importPreview)
+			admin.POST("/import", a.importFiles)
 		}
 	}
 }

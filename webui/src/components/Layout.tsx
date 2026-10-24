@@ -11,6 +11,7 @@ const NAV = [
   { to: "/data-sources", label: "Data sources", ic: "⛃" },
   { to: "/tagger-profiles", label: "Tagger profiles", ic: "✎" },
   { to: "/items", label: "Items", ic: "≣" },
+  { to: "/import", label: "Import", ic: "⇣", adminOnly: true },
   { to: "/collection", label: "Collection", ic: "♫" },
   { to: "/activity", label: "Activity", ic: "⟳" },
   { to: "/migrations", label: "Migrations", ic: "⇄" },

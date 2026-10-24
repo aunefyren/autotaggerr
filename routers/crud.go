@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/auth"
@@ -372,6 +373,10 @@ type taggerProfileInput struct {
 	IgnoreRedundantContributingArtists *bool   `json:"ignore_redundant_contributing_artists"`
 	MaxGenres                          *int    `json:"max_genres"`
 	MP3MultiValueTags                  *bool   `json:"mp3_multi_value_tags"`
+	NamingArtistFolder                 *string `json:"naming_artist_folder"`
+	NamingAlbumFolder                  *string `json:"naming_album_folder"`
+	NamingMediaFolder                  *string `json:"naming_media_folder"`
+	NamingTrackFile                    *string `json:"naming_track_file"`
 }
 
 func (in taggerProfileInput) apply(p *models.TaggerProfile) {
@@ -405,6 +410,30 @@ func (in taggerProfileInput) apply(p *models.TaggerProfile) {
 	if in.MP3MultiValueTags != nil {
 		p.MP3MultiValueTags = *in.MP3MultiValueTags
 	}
+	if in.NamingArtistFolder != nil {
+		p.NamingArtistFolder = strings.TrimSpace(*in.NamingArtistFolder)
+	}
+	if in.NamingAlbumFolder != nil {
+		p.NamingAlbumFolder = strings.TrimSpace(*in.NamingAlbumFolder)
+	}
+	if in.NamingMediaFolder != nil {
+		p.NamingMediaFolder = strings.TrimSpace(*in.NamingMediaFolder)
+	}
+	if in.NamingTrackFile != nil {
+		p.NamingTrackFile = strings.TrimSpace(*in.NamingTrackFile)
+	}
+}
+
+// checkProfileNaming rejects a profile whose naming templates would render a layout
+// the rest of the app cannot read back (modules.ValidateNamingTemplates). Warnings do
+// not block a save; the profile editor shows them from the preview.
+func checkProfileNaming(c *gin.Context, p models.TaggerProfile) bool {
+	check := modules.ValidateNamingTemplates(p.Naming())
+	if check.OK() {
+		return true
+	}
+	c.JSON(http.StatusBadRequest, gin.H{"error": check.Err().Error(), "naming": check})
+	return false
 }
 
 func (a *API) getTaggerProfile(c *gin.Context)    { getEntity[models.TaggerProfile](a, c) }
@@ -422,6 +451,9 @@ func (a *API) createTaggerProfile(c *gin.Context) {
 	}
 	p := models.TaggerProfile{WriteTags: true}
 	in.apply(&p)
+	if !checkProfileNaming(c, p) {
+		return
+	}
 	if err := a.DB.Create(&p).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "create failed"})
 		return
@@ -445,11 +477,61 @@ func (a *API) updateTaggerProfile(c *gin.Context) {
 		return
 	}
 	in.apply(&p)
+	if !checkProfileNaming(c, p) {
+		return
+	}
 	if err := a.DB.Save(&p).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 		return
 	}
 	c.JSON(http.StatusOK, p)
+}
+
+// --- Naming -----------------------------------------------------------------
+
+// namingInfo is what the profile editor needs before anyone types: the defaults an
+// empty template means, and every token with the template it may first appear in.
+func (a *API) namingInfo(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{
+		"defaults": models.DefaultNamingTemplates(),
+		"tokens":   modules.NamingTokens(),
+	})
+}
+
+type namingPreviewSample struct {
+	Label string `json:"label"`
+	Path  string `json:"path,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// namingPreview renders unsaved templates against the built-in sample releases and
+// validates them, so the editor shows what a save would accept — and what it would
+// put where — through the same renderer the save and a move use. It answers 200 for
+// templates that would be rejected: an invalid template is a successful preview.
+func (a *API) namingPreview(c *gin.Context) {
+	var in models.NamingTemplates
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	templates := models.NamingTemplates{
+		ArtistFolder: strings.TrimSpace(in.ArtistFolder),
+		AlbumFolder:  strings.TrimSpace(in.AlbumFolder),
+		MediaFolder:  strings.TrimSpace(in.MediaFolder),
+		TrackFile:    strings.TrimSpace(in.TrackFile),
+	}
+	check := modules.ValidateNamingTemplates(templates)
+	samples := []namingPreviewSample{}
+	for _, sample := range modules.NamingSamples() {
+		out := namingPreviewSample{Label: sample.Label}
+		if path, err := modules.RenderLibraryPath(templates, sample.Release, sample.TrackID, sample.Ext); err != nil {
+			out.Error = err.Error()
+		} else {
+			out.Path = filepath.ToSlash(path.Rel())
+		}
+		samples = append(samples, out)
+	}
+	c.JSON(http.StatusOK, gin.H{"check": check, "samples": samples})
 }
 
 // --- Libraries --------------------------------------------------------------

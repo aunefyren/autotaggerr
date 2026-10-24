@@ -195,6 +195,18 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Input / select / textarea** — `--surface-2` bg, `--border` border, `--text`, `--text-dim`
   placeholder, `--font-mono` when the value is an identifier/path. Focus ring. Invalid = `--danger`
   border + helper text in `--danger-text`.
+  A **warning** (`.help-warn`) is helper text in `--warning-text` with the border left ordinary:
+  the value is accepted, and only an error marks the input itself. A field shows one line under it —
+  its error, else its warning, else its help — so the three never stack.
+- **Path autocomplete** (`.suggest`, `PathInput.tsx`) — a server-path input that lists the folders
+  the typed text could name, in an overlay under it: `--surface-3`, `--border-strong`,
+  `--shadow-2`, `--radius`, 28px rows. The highlighted row takes the selection treatment
+  (`--accent-subtle` fill + 2px `--accent` inset). Each row shows the parent in `--text-dim` and the
+  folder's own name in `--text`, so a column of long paths reads by the part that differs. ↑/↓,
+  Enter/Tab to take, Esc to close; taking a folder appends the separator so the next level lists
+  at once. **Tab completes only once a row is highlighted** — otherwise it would trap anyone tabbing
+  past — and Enter with nothing highlighted still submits the form. A folder a scan would refuse (a
+  library) is still listed, as the way through to its neighbours, with a dim note naming it.
 - **Toggle / checkbox** — off = `--surface-2`/`--border`; on = `--accent`. 28px min target.
 - **Table** — `--surface-1` body, `--surface-2` sticky header (`--text-muted`, medium, `--text-xs`
   uppercase). Rows separated by `--border` hairlines (no zebra). Hover = `--surface-2`. Selected =
@@ -215,7 +227,26 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   header row with title (`--text-lg`, 600) + actions.
 - **Sidebar nav** — `--bg`, item height 34px, icon + label. Active = `--accent-subtle` fill,
   `--accent-text` label, 2px `--accent` left marker. Hover = `--surface-2`.
-- **Tabs** — underline style; active tab `--text` + 2px `--accent` underline; others `--text-muted`.
+- **Tabs** — underline style; active tab `--text` + 2px `--accent` underline; others `--text-muted`. `.tabs` / `.tab`
+  with `role="tab"` and `aria-selected`; the panels of a modal's tabs stay mounted when hidden, so
+  switching tabs never throws away a half-done search.
+- **Step indicator** (`.steps`, Import) — for a modal that is a sequence: numbered circles joined by
+  a rule, the current one `--accent` with `--on-accent`, a finished one `--accent-subtle` with a ✓
+  and its name a link back to it. Paired with **← Back** (secondary) in the footer, beside the
+  forward primary, and Cancel ghost on the far left — two ways back, because the step indicator is
+  where the eye goes to ask "where am I" and the footer is where the hand already is. Going back
+  keeps every choice made in the step being returned to.
+- **Narrowing columns** (`.pick-grid` / `.pick-row`, Import → Browse) — for a choice that is three
+  choices (artist → album → edition): side-by-side lists, each filtered by the pick to its left, a
+  selected row in the master/detail treatment (`--accent-subtle` + 2px `--accent` inset). Each row
+  carries the fact that tells it apart from its neighbours (an artist's description, an album's
+  year, an edition's format and track count), and agreement with what is already known is marked
+  in `--diff-add-text` ("matches 6 files") rather than by sorting the match to the top, so the
+  order stays the list's own. A filter that hides rows says how many. Stacks below 900px.
+- **Selected bar / release card** — what a later step will act on, stated in one line before it
+  does (`.selected-bar`, `--surface-2`), and at the head of the step that uses it
+  (`.release-card`, `--surface-1` with `--border-strong`) beside a secondary **Change …** button —
+  never a ghost link, which reads as an aside rather than as the way to undo the pick.
 - **Master/detail split** (`.rg-split`) — a two-pane grid for two-level data: the list of things
   on the left, the selected thing's contents on the right. Selection is an `--accent-subtle` fill plus
   a 2px `--accent` inset on the master row. Detail loads lazily on selection, never up front, when
@@ -417,6 +448,10 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   "apply and see what happened": the review table **is** the confirmation, so there is no second
   dialog. Conflicts (two rows claiming one target) block the commit and highlight the rows with
   `--danger` rather than silently picking a winner.
+  Where committing a row would **delete** something (an import onto an existing file), the row
+  carries its own **Replace** checkbox in `--danger-text`, with every file it removes in the
+  `title`, and the commit is refused until each such row is ticked or skipped. That tick is the
+  per-row consent the absent second dialog would otherwise have asked for, at the row it is about.
 - **Setting row** (`.setting-row`, `Settings.tsx`) — a settings page is a list of *definitions*, not
   a form filled top to bottom, so each row is two columns: name + config key + help on the left, the
   control on the right at a fixed width, so a column of inputs reads as a column. The config key is
@@ -560,7 +595,10 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Empty state** — centered, muted icon, one-line explanation, and a primary action. An empty
   screen is an invitation to act ("No libraries yet — add your first music folder").
 - **Modal** (`Modal`, `ui.tsx`) — `--surface-3`, `--shadow-2`, `--radius-lg`, backdrop
-  `rgba(13,11,20,.7)`; focus-trapped.
+  `rgba(13,11,20,.7)`; focus-trapped. Three widths: default 440px (a confirm), `wide` 680px (a list or
+  a form), `xl` 1120px (a modal laid out in columns — Import's artist → album → edition). All are
+  capped by the backdrop, so on a small screen they are the screen's width. A title shortened to fit
+  (a path's last folder) carries the full form in `titleHint`.
   **Never taller than the screen.** The dialog is capped at the backdrop's content box and split into
   a pinned title and a scrolling `.modal-body`. A centred flex item that outgrows its container
   overflows *both* ends, and the backdrop is `position: fixed` with no overflow of its own — so a
@@ -670,6 +708,11 @@ MUSICBRAINZ_ALBUMID   e28e29e0-…-a6beffd99aad   ← current (mono, --text-mute
   specificity, so it won and every absent value inherited a 48px-padded, centred empty state. A
   field a file did *not* have rendered eight times the height of one it did. A modifier class on a
   shared prefix is not namespaced by that prefix — check the whole file before naming one.
+
+- **Path row** (`PathRow` in `ItemDiff.tsx`) — where the file is against where its profile names it,
+  in the same remove/add colours, keyed `PATH`. It sits in its own `.diff` block *above* the tags,
+  not among them: a path is not a tag and no tag write changes it. A note under it (sans,
+  `--text-dim`) says when a proposed move will not be made, as under a Lidarr manager.
 
 - **File group** (`.filegroup` / `.filehead`) — one file's diff, collapsed to its heading. The path,
   its outcome and its tag count stay visible; only the fields under them collapse, so this is a

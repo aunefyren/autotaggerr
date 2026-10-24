@@ -38,6 +38,7 @@ const TYPE_LABELS: Record<string, string> = {
   lidarr_follow: "Follow Lidarr",
   collection_scan: "Collection scan",
   discover_files: "Scan with disk walk",
+  file_import: "File import",
 };
 
 /**
@@ -66,6 +67,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Re-derives the collection from the files already indexed — no disk walk, no network, no file writes. It runs after tagging on purpose: it can only describe what this run has already recorded.",
   discover_files:
     "A Scan asked to walk the disk first. Files that moved keep their identity at the new path, matched on size and modification time; files with no identity are looked up with the manager. No tags are written — newly found files are tagged by the next processing run. The collection scan beneath it is the ordinary Scan, run on what the walk recorded.",
+  file_import:
+    "Loose files identified by hand and put into a library at the path its tagger profile names them. Each is pinned to the track chosen in the review and tagged; a file whose tags could not be written is still imported, and the next processing run tags it. Files it replaced were deleted only after the new file was in place.",
   lidarr_sync:
     "Mirrors the manager's catalogue over the collection. It runs after the collection scan on purpose: the mirror only covers artists the collection already knows about, including any this run just discovered. Artists Lidarr did not list are reported rather than assumed away — their wanted view has nothing behind it until they are matched or detached.",
   lidarr_follow:
@@ -86,6 +89,7 @@ const TYPE_NOTES: Record<string, string> = {
 const ITEM_PHASE_LABELS: Record<string, string> = {
   "": "Files found on disk",
   drift: "Files re-tagged after an upstream change",
+  import: "Files imported",
   refresh: "Releases that changed upstream",
   collection_artists: "Artists",
   collection_albums: "Albums",
@@ -100,6 +104,7 @@ const ITEM_PHASE_LABELS: Record<string, string> = {
 // did something different.
 const JOB_KIND_LABELS: Record<string, string> = {
   process_all: "Processing",
+  import: "File import",
   process_library: "Processing",
   process_artist: "Processing",
   retag_all: "Tag files",
@@ -1210,6 +1215,11 @@ function FileHeading({ item }: { item: EventItem }) {
         style={{ color: item.status === "error" ? "var(--danger-text)" : "var(--text)" }}
       >
         {item.path}
+        {item.from && (
+          <span className="dim" style={{ display: "block", fontSize: 11 }} title={item.from}>
+            from {item.from}
+          </span>
+        )}
       </span>
       {item.status === "error" ? (
         <Pill kind="err">Failed</Pill>

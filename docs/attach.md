@@ -178,4 +178,5 @@ rejects the whole batch, and that an unknown item ID cannot partially apply.
 ## Related
 
 - [collection.md](collection.md) — what attaching makes visible.
+- [import.md](import.md) — the same identification for files not yet in a library.
 - [fingerprinting.md](fingerprinting.md) — autofill for the picker.

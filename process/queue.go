@@ -36,6 +36,7 @@ const (
 	jobRepairArtist     jobKind = "repair_artist"
 	jobDiscoverAll      jobKind = "discover_all"
 	jobDiscoverArtist   jobKind = "discover_artist"
+	jobImport           jobKind = "import"
 )
 
 // fileWriting reports whether a kind rewrites audio files. File-writing jobs are
@@ -43,7 +44,7 @@ const (
 // behind a hours-long refresh — but a job already running is never preempted.
 func (k jobKind) fileWriting() bool {
 	switch k {
-	case jobProcessAll, jobProcessLibrary, jobProcessArtist, jobRetagAll, jobRetagLibrary, jobRetagArtist, jobForceRecorrelate:
+	case jobProcessAll, jobProcessLibrary, jobProcessArtist, jobRetagAll, jobRetagLibrary, jobRetagArtist, jobForceRecorrelate, jobImport:
 		return true
 	}
 	return false

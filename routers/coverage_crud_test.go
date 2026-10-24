@@ -281,3 +281,46 @@ func TestLoginFailures(t *testing.T) {
 		t.Errorf("a failed issue still returned a token field: %v", body)
 	}
 }
+
+// TestTaggerProfileNaming: naming templates are stored on the profile, a template the
+// layout's readers could not read back is a 400 on create and update alike, and the
+// preview reports the same problem without refusing.
+func TestTaggerProfileNaming(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	tp := createEntity(t, r, token, "/api/v1/tagger-profiles", map[string]any{
+		"name": "Named", "naming_album_folder": " {Release Year} - {Album Title} ",
+	})
+	var stored models.TaggerProfile
+	if err := api.DB.First(&stored, "id = ?", tp["id"]).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stored.NamingAlbumFolder != "{Release Year} - {Album Title}" || stored.NamingTrackFile != "" {
+		t.Errorf("stored naming = %+v, want the album template trimmed and the rest left to the defaults", stored)
+	}
+
+	bad := map[string]any{"name": "Bad", "naming_media_folder": "Part {medium}"}
+	if w := do(r, "POST", "/api/v1/tagger-profiles", token, bad); w.Code != http.StatusBadRequest {
+		t.Errorf("create with an unreadable disc folder = %d, want 400: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "PUT", "/api/v1/tagger-profiles/"+tp["id"].(string), token, map[string]any{"naming_track_file": "{Track Title}"}); w.Code != http.StatusBadRequest {
+		t.Errorf("update without {track} = %d, want 400: %s", w.Code, w.Body.String())
+	}
+
+	info := decodeJSON[map[string]any](t, r, "GET", "/api/v1/naming", token, nil)
+	if defaults, _ := info["defaults"].(map[string]any); defaults["track_file"] != models.DefaultNamingTrackFile {
+		t.Errorf("naming info defaults = %v", info["defaults"])
+	}
+
+	preview := decodeJSON[map[string]any](t, r, "POST", "/api/v1/naming/preview", token, map[string]any{"track_file": "{Track Title}"})
+	check, _ := preview["check"].(map[string]any)
+	if errs, _ := check["errors"].(map[string]any); errs["track_file"] == nil {
+		t.Errorf("preview should report the missing {track}: %v", preview)
+	}
+	preview = decodeJSON[map[string]any](t, r, "POST", "/api/v1/naming/preview", token, map[string]any{})
+	samples, _ := preview["samples"].([]any)
+	if len(samples) == 0 || samples[0].(map[string]any)["path"] != "Fleetwood Mac/Rumours (1977)/02 Dreams.flac" {
+		t.Errorf("preview of the defaults = %v", samples)
+	}
+}

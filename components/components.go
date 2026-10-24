@@ -217,6 +217,10 @@ func (t *Tagger) ForLibrary(library models.Library) *Tagger {
 	return t
 }
 
+// Naming is the profile's naming templates, defaults filled in. It is not part of
+// Settings or the Fingerprint: where a file lives changes nothing about its tags.
+func (t *Tagger) Naming() models.NamingTemplates { return t.profile.Naming() }
+
 // WriteEnabled reports whether this profile writes tags at all.
 func (t *Tagger) WriteEnabled() bool { return t.profile.WriteTags }
 

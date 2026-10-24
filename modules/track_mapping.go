@@ -33,8 +33,14 @@ type FileTrackMapping struct {
 // two-part form is used; a bare "05" leaves it empty.
 var trackNumberPattern = regexp.MustCompile(`^(?:(\d{1,2})[-_.])?(\d{1,3})(?:[^0-9]|$)`)
 
-// discFolderPattern picks a disc number out of a folder name ("CD2", "Disc 3").
-var discFolderPattern = regexp.MustCompile(`(?i)\b(?:cd|disc|disk)\s*[-_]?\s*(\d{1,2})\b`)
+// discFolderPattern picks a disc number out of a folder name ("CD2", "Disc 3",
+// "Vinyl 02"). Besides cd/disc/disk it reads MusicBrainz's medium format names,
+// because Lidarr's default disc folder is "{Medium Format} {medium:00}" and a naming
+// template is validated by reading its disc folder back through this pattern — a
+// format it did not know would make that template unsaveable, and a Lidarr-named
+// "Vinyl 01" unreadable as a disc. "lp" is deliberately absent: an album called "LP1"
+// is not disc one of anything.
+var discFolderPattern = regexp.MustCompile(`(?i)\b(?:cd(?:-r)?|disc|disk|dvd(?:-audio|-video)?|vinyl|cassette|digital media|sacd|hdcd|minidisc|blu-ray)\s*[-_]?\s*(\d{1,2})\b`)
 
 // MapFilesToTracks proposes a pairing of files to a release's tracks.
 //

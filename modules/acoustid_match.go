@@ -70,16 +70,10 @@ func HintFromPath(path string) MatchHint {
 	return hint
 }
 
+// isMediaFolder reports whether a folder is a disc folder, by the one recogniser the
+// layout's other readers share (discNumberFromFolderName).
 func isMediaFolder(name string) bool {
-	lower := strings.ToLower(strings.TrimSpace(name))
-	for _, prefix := range []string{"cd", "disc", "disk"} {
-		if rest, ok := strings.CutPrefix(lower, prefix); ok {
-			if _, err := strconv.Atoi(strings.TrimSpace(rest)); err == nil {
-				return true
-			}
-		}
-	}
-	return false
+	return discNumberFromFolderName(name) > 0
 }
 
 // PickAcoustIDMatch ranks candidates against what the file's folder says, drops

@@ -327,6 +327,9 @@ Feature docs:
 - `attach.md` — identifying files by hand, single and per folder, plus release search.
 - `scanning.md` — scans, skip-unchanged, drift sync, activity events, caching and concurrency.
 - `tagging.md` — what gets written to a file, and why idempotency is the property that matters.
+- `import.md` — file import: loose files into a library, conflicts and replacement, the job.
+- `naming.md` — naming templates on the tagger profile: where a file belongs, and the structural
+  rules that keep any template readable by everything that parses the layout.
 - `artist-credit-tagging.md` — how MusicBrainz artist credits (incl. featuring artists) become
   the track's artist tag.
 - `mb-migration.md` — following MusicBrainz merges and deletions across Autotaggerr's own records.

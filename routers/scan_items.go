@@ -520,7 +520,15 @@ func (a *API) itemTags(c *gin.Context) {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"item": item, "tags": tags})
+	// Where the file would live is reported beside its tags, never instead of them: a
+	// release the naming cannot render is no reason to hide what the tags would be.
+	response := gin.H{"item": item, "tags": tags}
+	if path, err := components.ComputeItemPath(a.DB, a.meta(), item); err != nil {
+		response["path_error"] = err.Error()
+	} else {
+		response["path"] = path
+	}
+	c.JSON(http.StatusOK, response)
 }
 
 func parseIntDefault(s string, def int) int {

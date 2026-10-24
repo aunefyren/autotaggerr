@@ -1,6 +1,6 @@
 import { api } from "../api";
 import { useFetch } from "../hooks";
-import { ItemTags, ItemTempo, LibraryItem } from "../types";
+import { ItemTags, ItemTempo, LibraryItem, PathDiff } from "../types";
 import { Modal, StatusPill } from "./ui";
 
 // ItemDiffModal is the signature view: one monospace row per tag, showing the
@@ -17,6 +17,7 @@ export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: (
           <StatusPill status={item.status} />
           <span className="dim" style={{ fontSize: 11 }}>
             {changed > 0 ? `${changed} tag${changed > 1 ? "s" : ""} would change` : "all tags up to date"}
+            {data?.path?.changed ? " · not where this profile names it" : ""}
           </span>
         </div>
         <TempoLine itemId={item.id} />
@@ -24,6 +25,8 @@ export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: (
 
       {loading && <div className="muted">Loading…</div>}
       {err && <div className="help-err">{err}</div>}
+
+      {data && (data.path || data.path_error) && <PathRow path={data.path} error={data.path_error} />}
 
       {data && (
         <div className="scroll diff">
@@ -45,6 +48,34 @@ export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: (
         </div>
       )}
     </Modal>
+  );
+}
+
+/**
+ * Where the file is against where its profile's naming puts it, relative to the library
+ * root, in the tag diff's own language. Its own block above the tags rather than a row
+ * among them: a path is not a tag, and it is not written by a tag write.
+ */
+function PathRow({ path, error }: { path?: PathDiff; error?: string }) {
+  return (
+    <div className="diff" style={{ marginBottom: 14 }}>
+      <div className="diffrow">
+        <span className="diffkey">Path</span>
+        <div className="diffvals">
+          {!path ? (
+            <span className="diffv none">{error}</span>
+          ) : path.changed ? (
+            <>
+              <span className="diffv rem">{path.current}</span>
+              <span className="diffv add">{path.desired}</span>
+            </>
+          ) : (
+            <span className="diffv same">{path.current}</span>
+          )}
+          {path?.note && <span className="dim" style={{ fontFamily: "var(--font-sans)", fontSize: 11 }}>{path.note}</span>}
+        </div>
+      </div>
+    </div>
   );
 }
 
