@@ -526,7 +526,13 @@ export default function Collection() {
           onForce={startRefresh(true)}
         />
       )}
-      {adding && <AddArtistModal onClose={() => setAdding(false)} onAdded={() => { setAdding(false); reload(); }} />}
+      {adding && (
+        <AddArtistModal
+          existing={new Set((data ?? []).map((a) => a.mb_id))}
+          onClose={() => setAdding(false)}
+          onAdded={() => { setAdding(false); reload(); }}
+        />
+      )}
       {scanAsk && (
         <ScanDialog
           scope="the whole collection"

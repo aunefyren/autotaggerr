@@ -207,3 +207,20 @@ func TestArtistReleaseGroupsForAnyArtist(t *testing.T) {
 		t.Errorf("release groups = %v", got)
 	}
 }
+
+// Artist info is readable for an artist the collection does not hold yet, on the
+// search route; the collection route still wants the row.
+func TestSearchArtistInfoForAnyArtist(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	api.Meta = &fakeMeta{getArtist: func(id string) (models.MusicBrainzArtistLookup, error) {
+		return models.MusicBrainzArtistLookup{ID: id, Name: "Oskar", Type: "Person", Country: "NO"}, nil
+	}}
+	got := decodeJSON[map[string]any](t, r, "GET", "/api/v1/search/artists/not-in-collection/info", token, nil)
+	if got["type"] != "Person" || got["country"] != "NO" {
+		t.Errorf("info = %v", got)
+	}
+	if w := do(r, "GET", "/api/v1/artists/not-in-collection/info", token, nil); w.Code != http.StatusNotFound {
+		t.Errorf("collection route for an unknown artist = %d, want 404", w.Code)
+	}
+}

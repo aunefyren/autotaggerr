@@ -172,6 +172,19 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 .pick-row[aria-pressed="true"] { background: var(--accent-subtle); box-shadow: inset 2px 0 0 var(--accent); }
 .pick-row:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
 .pick-sub { font-size: 11px; color: var(--text-muted); }
+/* A row that is information, not a choice: the list's rhythm without its affordances. */
+.pick-static {
+  display: flex; justify-content: space-between; align-items: baseline; gap: var(--space-4);
+  min-height: 32px; padding: var(--space-3) var(--space-5); border-bottom: 1px solid var(--border);
+}
+.pick-static:last-child { border-bottom-color: transparent; }
+.pick-list.tall { max-height: 460px; }
+/* Master/detail form (Add artist): the list, and who the selected one is. */
+.pick-grid.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
+.artist-preview {
+  display: flex; flex-direction: column; gap: var(--space-4);
+  padding: var(--space-6); background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg);
+}
 .pick-match { color: var(--diff-add-text); font-size: 11px; }
 
 /* What the next step will use, stated before it is used. */

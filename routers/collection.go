@@ -1031,7 +1031,17 @@ func (a *API) artistInfo(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
 		return
 	}
+	a.writeArtistInfo(c, mbid)
+}
 
+// searchArtistInfo is artistInfo for any MusicBrainz artist, collection row or not:
+// what the Add artist dialog shows to tell twenty artists of one name apart before
+// one of them is added.
+func (a *API) searchArtistInfo(c *gin.Context) {
+	a.writeArtistInfo(c, c.Param("mbid"))
+}
+
+func (a *API) writeArtistInfo(c *gin.Context, mbid string) {
 	info, err := a.meta().GetArtist(mbid)
 	if err != nil {
 		logger.Log.Warnf("failed to load artist info for %s: %s", mbid, err.Error())

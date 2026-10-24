@@ -243,6 +243,13 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   year, an edition's format and track count), and agreement with what is already known is marked
   in `--diff-add-text` ("matches 6 files") rather than by sorting the match to the top, so the
   order stays the list's own. A filter that hides rows says how many. Stacks below 900px.
+  **Two columns** (`.pick-grid.two`, Add artist) when there is one choice to make but the list
+  cannot make it alone: twenty artists share a name, and a bracketed description does not say
+  which one you mean. The right pane says who the selected one is — type, origin, active years,
+  genres, release counts and their studio albums by year, which is what someone recognises an
+  artist by — and the footer carries **one** action for the selection, never one per row. Rows that
+  are information rather than choices (`.pick-static`) keep the list's rhythm without hover or
+  pointer. Something already in the collection is marked on its row and opened rather than added.
 - **Selected bar / release card** — what a later step will act on, stated in one line before it
   does (`.selected-bar`, `--surface-2`), and at the head of the step that uses it
   (`.release-card`, `--surface-1` with `--border-strong`) beside a secondary **Change …** button —
