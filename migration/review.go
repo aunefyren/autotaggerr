@@ -54,6 +54,13 @@ type Review struct {
 	// exactly the ones a per-page count would hide.
 	ArtistOpen int `json:"artist_open,omitempty"`
 
+	// TargetArtistMBID and TargetReleaseGroupMBID place the entity a merge or re-key
+	// moved to, when the collection holds it — what *"a manager re-keyed it"* or
+	// *"merged into"* is about, as somewhere to go rather than an ID to copy. Empty when
+	// the target is not in the collection (a deletion has none at all).
+	TargetArtistMBID       string `json:"target_artist_mb_id,omitempty"`
+	TargetReleaseGroupMBID string `json:"target_release_group_mb_id,omitempty"`
+
 	// FilesOnDisk is how many indexed files sit under this entity. It is *not*
 	// AffectedFiles: a retirement rewrites no file at all, and the honest answer to
 	// "do I have files for this?" is a different number from "how many files would
@@ -169,8 +176,32 @@ func NewReview(db *gorm.DB, m models.MusicbrainzMigration) Review {
 		}
 	}
 
+	r.fillTarget(db)
 	r.Problem, r.Effect = r.sentences()
 	return r
+}
+
+// fillTarget places the surviving entity of a merge or re-key in the collection.
+func (r *Review) fillTarget(db *gorm.DB) {
+	if r.NewMBID == "" {
+		return
+	}
+	switch r.EntityType {
+	case models.MigrationEntityArtist:
+		if countRows(db, &models.CollectionArtist{}, "mb_id = ?", r.NewMBID) > 0 {
+			r.TargetArtistMBID = r.NewMBID
+		}
+	case models.MigrationEntityReleaseGroup:
+		var rg models.CollectionReleaseGroup
+		if err := db.Where("mb_id = ?", r.NewMBID).First(&rg).Error; err == nil {
+			r.TargetArtistMBID, r.TargetReleaseGroupMBID = rg.ArtistMBID, rg.MBID
+		}
+	default:
+		var release models.CollectionRelease
+		if err := db.Where("mb_id = ?", r.NewMBID).First(&release).Error; err == nil {
+			r.TargetArtistMBID, r.TargetReleaseGroupMBID = release.ArtistMBID, release.ReleaseGroupMBID
+		}
+	}
 }
 
 // fillReleaseGroup reads the album's own row plus the blocker that decides what
@@ -259,6 +290,10 @@ func (r Review) sentences() (problem, effect string) {
 		problem = source + " moved this album to another ID. The old ID still names a real " +
 			"album, so nothing flagged it — the old row would stay beside the new one, with " +
 			"no catalog entry and any want you had for it stranded there."
+		if r.SourceType() == models.MigrationSourceManual {
+			problem = "Marked by hand as the same album as the one under the new ID: a " +
+				"leftover row from a re-key the manager made without the sync pairing them."
+		}
 		problem += " " + r.diskSentence()
 		switch {
 		case r.Blocker != "" && r.Owned:
@@ -309,6 +344,15 @@ func (r Review) sentences() (problem, effect string) {
 		effect = fmt.Sprintf("Approving marks %s as needing re-identification and drops the "+
 			"owned edition, so the album stops counting as complete. The identifiers "+
 			"stay on the files, and any want you authored is left alone.", files)
+		return problem, effect
+
+	case r.EntityType == models.MigrationEntityArtist && r.SourceType() == models.ManagerTypeLidarr:
+		problem = source + " no longer lists this artist under the ID Autotaggerr holds, and " +
+			"lists an artist of the same name under another — usually " + source + " moving " +
+			"them to a new ID. The two were paired by name, so check it is the same artist."
+		effect = "Approving re-points the artist's albums, editions and wants at the " +
+			"new ID. Monitoring and follow settings are merged, never dropped. " +
+			"No files are touched."
 		return problem, effect
 
 	case r.EntityType == models.MigrationEntityArtist:

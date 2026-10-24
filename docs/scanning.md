@@ -81,9 +81,20 @@ records a `discover_files` event, with the ordinary collection scan as its child
    Process (`collection.ArtistTargets`).
 2. **Carry moved rows.** An indexed row whose file is gone and an unindexed file that share a
    size and modification second are the same bytes at a new path, and the row moves whole —
-   identity, pin and processed version included — without asking anyone. Only a pairing that is
+   identity, pin and processed version included — without asking anyone. A move that rewrote the
+   file (across filesystems, or copy-then-delete) resets the time, so rows left unpaired are tried
+   again on **size, file name and album-folder name**: a rename keeps the time, a copy keeps the
+   names, and neither key has to be loose enough to cover the other. Only a pairing that is
    **unique on both sides** is taken; anything ambiguous falls through to step 3, because carrying
    an identity onto the wrong file is a mistag, and resolving costs one lookup.
+
+   **A scoped walk looks outside its scope for what it lost.** The artist's folders as indexed do
+   not include the folder a manager moved an album *to* when it filed it under another artist, so
+   the rows vanished without their files appearing, and the Scan after pruned them. When a narrowed
+   walk is left with vanished rows it could not pair, it lists the rest of the library and tries
+   the same two keys against the unindexed files there (`carryFromElsewhere`). It only lists and
+   stats — the whole library, but only when something vanished unpaired — and it only *carries*:
+   nothing outside the scope is resolved through the manager or indexed for any other reason.
 3. **Resolve the rest** — unindexed files, and rows with no release or an `unmatched` status —
    through the library's manager. Pinned rows are never asked about.
 4. **Scan**, as it always does, on what the walk recorded. Its prune now only deletes rows that
@@ -893,7 +904,9 @@ all of them on the entity row:
 - **Which files depend on it**, lazily. The file count is the control (a count is read as a prelude
   to *show me which ones*), and `GET /mb/:mbid/files` answers for any of the three kinds — files
   hang off releases, so an artist or release-group resolves through the collection's editions
-  first. Per row rather than up front, because an event holds hundreds of identifiers and only the
+  first. The count beside the row takes the same route (`ResolveRefs` groups by the editions'
+  release-group and artist), so it agrees with the list behind it; it used to count releases only,
+  and every album and artist row — the Scan's own *added* rows among them — read "no files on disk". Per row rather than up front, because an event holds hundreds of identifiers and only the
   one being looked at is worth its paths. An MBID nothing points at returns an empty list, not a
   404: "nothing points at it" is the answer.
 

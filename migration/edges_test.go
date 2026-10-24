@@ -226,7 +226,7 @@ func TestListSortsByEveryColumn(t *testing.T) {
 	b.Name = "Alpha"
 	db.Save(&b)
 
-	for _, sort := range []string{ListSortDetected, ListSortResolved, ListSortName, ListSortEntity, ListSortStatus} {
+	for _, sort := range []string{ListSortDetected, ListSortResolved, ListSortName, ListSortEntity, ListSortStatus, ListSortArtist} {
 		rows, total, err := List(db, ListOptions{Sort: sort, Dir: "asc"})
 		if err != nil {
 			t.Fatalf("List sorted by %s: %v", sort, err)
@@ -238,6 +238,42 @@ func TestListSortsByEveryColumn(t *testing.T) {
 	rows, _, _ := List(db, ListOptions{Sort: ListSortName, Dir: "asc"})
 	if rows[0].Name != "Alpha" {
 		t.Errorf("name order put %q first, want Alpha (case-insensitive)", rows[0].Name)
+	}
+}
+
+// TestListGroupsByArtist: the artist order puts an artist's albums side by side —
+// across entity kinds, since an album row is found through the collection and an
+// artist row is its own artist — so one manager refresh reads as one group.
+func TestListGroupsByArtist(t *testing.T) {
+	db := testDB(t)
+	for _, a := range []models.CollectionArtist{{MBID: "art-a", Name: "Abba"}, {MBID: "art-z", Name: "ZZ Top"}} {
+		if err := db.Create(&a).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rg := range []models.CollectionReleaseGroup{
+		{MBID: "rg-z1", ArtistMBID: "art-z", Title: "Eliminator"},
+		{MBID: "rg-a1", ArtistMBID: "art-a", Title: "Arrival"},
+		{MBID: "rg-z2", ArtistMBID: "art-z", Title: "Tres Hombres"},
+	} {
+		if err := db.Create(&rg).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	pendingDeletion(t, db, models.MigrationEntityReleaseGroup, "rg-z1")
+	pendingDeletion(t, db, models.MigrationEntityReleaseGroup, "rg-a1")
+	pendingDeletion(t, db, models.MigrationEntityReleaseGroup, "rg-z2")
+
+	rows, _, err := List(db, ListOptions{Sort: ListSortArtist, Dir: "asc"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string{}
+	for _, r := range rows {
+		got = append(got, r.OldMBID)
+	}
+	if len(got) != 3 || got[0] != "rg-a1" || (got[1] != "rg-z1" && got[1] != "rg-z2") || (got[2] != "rg-z1" && got[2] != "rg-z2") {
+		t.Errorf("artist order = %v, want Abba's album first and ZZ Top's two together", got)
 	}
 }
 

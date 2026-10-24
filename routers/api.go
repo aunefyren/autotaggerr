@@ -201,6 +201,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/migrations", a.listMigrations)
 		protected.GET("/migrations/policy", a.migrationPolicy)
 		protected.POST("/migrations/:id/approve", a.approveMigration)
+		protected.POST("/migrations/:id/release-files", a.releaseMigrationFiles)
 		protected.POST("/migrations/:id/dismiss", a.dismissMigration)
 		protected.POST("/migrations/verify", a.verifyIdentities)
 
@@ -215,6 +216,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/artists/:mbid/refresh", a.refreshArtist)
 		protected.POST("/artists/:mbid/retag", a.retagArtist)
 		protected.POST("/artists/:mbid/recorrelate", a.recorrelateArtist)
+		protected.POST("/artists/:mbid/repair-albums", a.repairArtistAlbums)
 		protected.GET("/search/artists", a.searchArtists)
 		protected.POST("/artists", a.addArtist)
 		protected.GET("/release-groups/:mbid/releases", a.releaseGroupEditions)
@@ -222,6 +224,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artists/:mbid/info", a.artistInfo)
 		protected.GET("/artists/:mbid/discography", a.discography)
 		protected.GET("/artists/:mbid/release-groups/:rgid", a.releaseGroupDetail)
+		protected.POST("/artists/:mbid/release-groups/:rgid/same-as", a.markSameAlbum)
 		protected.POST("/artists/:mbid/follow", a.updateFollow)
 		protected.POST("/artists/:mbid/desires", a.setDesire)
 		protected.DELETE("/artists/:mbid/desires", a.clearDesire)

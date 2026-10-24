@@ -1514,6 +1514,44 @@ func (r *Runner) RepairArtistAlbums(artistMBID string) {
 	}})
 }
 
+// RepairAlbumFiles is the repair for an album whose ID resolves nowhere while files a
+// manager governs still resolve to it. Neither half alone settles it: a refresh fixes
+// the manager's ID but the files keep the old one until they are read again, and
+// re-reading them without the refresh only hands back the dead ID. So one job does
+// both, in order — refresh and re-mirror the artist, re-read the album's files from
+// the manager with the caches and the unchanged-file skip off, then drain the queue
+// against the collection as it now stands.
+//
+// One job rather than two queued back to back, because the queue would not keep them
+// in that order: a forced re-correlate writes files, and file-writing jobs are put
+// ahead of everything else.
+func (r *Runner) RepairAlbumFiles(releaseGroupMBID, artistMBID string) {
+	r.enqueue(job{jobForceRecorrelate, "repair_files:" + releaseGroupMBID, "Re-read an album's files from the manager", func() {
+		r.repairArtistAlbumsNow(artistMBID)
+
+		scope, err := r.ReleaseGroupScope(releaseGroupMBID)
+		if err != nil {
+			// The refresh can have settled it already: a manager that re-keyed the
+			// album, followed by a rebuild, leaves no files under the old ID to scope.
+			logger.Log.Infof("no files left under %s after the manager refresh: %s", releaseGroupMBID, err.Error())
+			return
+		}
+		title, _ := scope.Detail["release_group"].(string)
+		scope.Title = forceTitle(title, "release group")
+		scope.Force = true
+		r.prepareForceRecorrelate(scope)
+		r.runScope(scope)
+
+		// runScope drains before it rebuilds, so the album still read as owned when
+		// its migration was retried. Drain once more against the rebuilt collection.
+		ev := events.Begin(r.db, models.EventTypeMigration, "Settle the album after re-reading its files")
+		res := r.applyMigrations(ev)
+		r.rebuildCollection(ev)
+		events.Finish(r.db, ev, models.EventStatusOK,
+			fmt.Sprintf("%d applied · %d retired", res.Applied, res.Retired), map[string]any{"migrations": res})
+	}})
+}
+
 func (r *Runner) repairArtistAlbumsNow(artistMBID string) {
 	if r.db == nil {
 		return

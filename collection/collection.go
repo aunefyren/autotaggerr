@@ -1702,6 +1702,14 @@ type SyncStats struct {
 	// album's wants to the new ID and retires the old row once nothing holds it.
 	Rekeyed []string `json:"rekeyed,omitempty"`
 
+	// RekeyedArtists is the same finding one level up: a collection artist no manager
+	// lists any more, and an artist of the same name the manager lists that the
+	// collection does not hold — the manager moved the artist to a new MBID. Each became
+	// an artist redirect migration (detectArtistRekeys), which carries their albums,
+	// editions and wants to the new ID; they are left out of Unknown, since they are
+	// accounted for.
+	RekeyedArtists []string `json:"rekeyed_artists,omitempty"`
+
 	// Failures are the lookups that errored and are not about any one artist — a
 	// manager that could not be listed, the wants that could not be reconciled — one
 	// line each. Every one of these used to be a `continue` with a log line: Lidarr
@@ -1741,6 +1749,7 @@ func SyncEventStats(stats SyncStats) []models.EventStat {
 		{Label: "Not in Lidarr", Value: len(stats.Unknown), Kind: models.EventStatNotable, Filter: models.EventItemStatusUnknown},
 		{Label: "Not in MusicBrainz", Value: len(stats.Ghosts), Kind: models.EventStatNotable, Filter: models.EventItemStatusGone},
 		{Label: "Re-keyed", Value: len(stats.Rekeyed), Kind: models.EventStatNotable},
+		{Label: "Artists re-keyed", Value: len(stats.RekeyedArtists), Kind: models.EventStatNotable},
 		{Label: "Lookups failed", Value: stats.FailedLookups(), Kind: models.EventStatBad, Filter: failedLookupsFilter(stats)},
 	}
 }
@@ -1821,6 +1830,9 @@ func SyncSummaryLine(stats SyncStats) string {
 	if n := len(stats.Rekeyed); n > 0 {
 		line += fmt.Sprintf(" · %d re-keyed", n)
 	}
+	if n := len(stats.RekeyedArtists); n > 0 {
+		line += fmt.Sprintf(" · %d artist(s) re-keyed", n)
+	}
 	if n := stats.FailedLookups(); n > 0 {
 		line += fmt.Sprintf(" · %d lookup(s) failed", n)
 	}
@@ -1891,6 +1903,17 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 	// Which of them a manager turned out to hold. What is wanted and never seen is the
 	// pass's finding, and it can only be computed at the end.
 	seen := map[string]bool{}
+	// Artists a manager lists that the collection does not hold at all — the other half
+	// of an artist re-key, paired against the unknowns at the end.
+	var held []string
+	if err := db.Model(&models.CollectionArtist{}).Pluck("mb_id", &held).Error; err != nil {
+		return stats, err
+	}
+	inCollection := make(map[string]bool, len(held))
+	for _, id := range held {
+		inCollection[id] = true
+	}
+	var strangers []models.LidarrArtist
 	if len(want) == 0 {
 		reason, err := syncEmptyReason(db, opts)
 		if err != nil {
@@ -1928,6 +1951,9 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			continue
 		}
 		for _, la := range lidarrArtists {
+			if la.ForeignArtistID != "" && !inCollection[la.ForeignArtistID] {
+				strangers = append(strangers, la)
+			}
 			if la.ForeignArtistID == "" || !want[la.ForeignArtistID] {
 				continue
 			}
@@ -2022,6 +2048,28 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			}
 		}
 		sort.Strings(stats.Unknown)
+
+		// An unknown artist with a same-named stranger in the manager is the manager
+		// having re-keyed them. Recorded as a redirect, and no longer reported as
+		// unknown: the finding is explained, and applying it carries them across.
+		if len(stats.Unknown) > 0 && len(strangers) > 0 {
+			paired := map[string]bool{}
+			for _, rk := range detectArtistRekeys(db, stats.Unknown, strangers) {
+				if recordArtistRekey(db, rk) {
+					stats.RekeyedArtists = append(stats.RekeyedArtists, rk.oldMBID)
+					paired[rk.oldMBID] = true
+				}
+			}
+			if len(paired) > 0 {
+				kept := stats.Unknown[:0]
+				for _, mbid := range stats.Unknown {
+					if !paired[mbid] {
+						kept = append(kept, mbid)
+					}
+				}
+				stats.Unknown = kept
+			}
+		}
 	}
 
 	// The catalog block is now current, so the wants derived from it can be. Failing
@@ -2142,6 +2190,12 @@ func detectRekeys(before []catalogEntry, listed []models.LidarrAlbum) []rekey {
 // while stranding its wants. A row already settled is left as it is: someone decided
 // about this ID, and re-raising it would ask them twice.
 func recordRekey(db *gorm.DB, rk rekey) bool {
+	return recordRekeyFrom(db, rk, models.ManagerTypeLidarr)
+}
+
+// recordRekeyFrom is recordRekey with the source named: Lidarr when a sync observed
+// the re-key, MigrationSourceManual when a person said the two rows are one album.
+func recordRekeyFrom(db *gorm.DB, rk rekey, source string) bool {
 	var existing models.MusicbrainzMigration
 	err := db.Where("entity_type = ? AND old_mb_id = ?", models.MigrationEntityReleaseGroup, rk.oldMBID).
 		Limit(1).Find(&existing).Error
@@ -2157,14 +2211,14 @@ func recordRekey(db *gorm.DB, rk rekey) bool {
 		}
 		existing.Kind = models.MigrationKindRedirect
 		existing.NewMBID = rk.newMBID
-		existing.Source = models.ManagerTypeLidarr
+		existing.Source = source
 		existing.Status = models.MigrationStatusPending
 		existing.Error = ""
 		if err := db.Save(&existing).Error; err != nil {
 			logger.Log.Warnf("failed to record that %s was re-keyed: %s", rk.oldMBID, err.Error())
 			return false
 		}
-		logger.Log.Infof("Lidarr re-keyed %q from %s to %s; its pending removal is now a redirect", rk.title, rk.oldMBID, rk.newMBID)
+		logger.Log.Infof("%s re-keyed %q from %s to %s; its pending removal is now a redirect", models.DataSourceLabel(source), rk.title, rk.oldMBID, rk.newMBID)
 		return true
 	}
 
@@ -2174,7 +2228,7 @@ func recordRekey(db *gorm.DB, rk rekey) bool {
 		NewMBID:    rk.newMBID,
 		Kind:       models.MigrationKindRedirect,
 		Status:     models.MigrationStatusPending,
-		Source:     models.ManagerTypeLidarr,
+		Source:     source,
 		Name:       rk.title,
 		DetectedAt: now,
 	}
@@ -2182,8 +2236,118 @@ func recordRekey(db *gorm.DB, rk rekey) bool {
 		logger.Log.Warnf("failed to record that %s was re-keyed: %s", rk.oldMBID, err.Error())
 		return false
 	}
-	logger.Log.Infof("Lidarr re-keyed %q from %s to %s", rk.title, rk.oldMBID, rk.newMBID)
+	logger.Log.Infof("%s re-keyed %q from %s to %s", models.DataSourceLabel(source), rk.title, rk.oldMBID, rk.newMBID)
 	return true
+}
+
+// detectArtistRekeys pairs collection artists no manager lists with manager artists
+// the collection does not hold, by name. Like detectRekeys it pairs only one-to-one:
+// two unknown artists of one name, or two strangers, could pair either way, and
+// pairing the wrong way would hand one artist's albums to another.
+func detectArtistRekeys(db *gorm.DB, unknown []string, strangers []models.LidarrArtist) []rekey {
+	var rows []models.CollectionArtist
+	if err := db.Where("mb_id IN ?", unknown).Find(&rows).Error; err != nil {
+		logger.Log.Warnf("failed to read unknown artists to pair re-keys: %s", err.Error())
+		return nil
+	}
+	gone := map[string][]models.CollectionArtist{}
+	for _, a := range rows {
+		if key := utilities.CanonLoose(a.Name); key != "" {
+			gone[key] = append(gone[key], a)
+		}
+	}
+	arrived := map[string][]models.LidarrArtist{}
+	seen := map[string]bool{}
+	for _, la := range strangers {
+		if seen[la.ForeignArtistID] {
+			continue // the same artist listed by two managers is one candidate
+		}
+		seen[la.ForeignArtistID] = true
+		if key := utilities.CanonLoose(la.Name); key != "" {
+			arrived[key] = append(arrived[key], la)
+		}
+	}
+	var out []rekey
+	for key, olds := range gone {
+		news := arrived[key]
+		if len(olds) != 1 || len(news) != 1 {
+			continue
+		}
+		out = append(out, rekey{oldMBID: olds[0].MBID, newMBID: news[0].ForeignArtistID, title: news[0].Name})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].oldMBID < out[j].oldMBID })
+	return out
+}
+
+// recordArtistRekey queues an artist re-key as an artist redirect migration — the
+// same row a MusicBrainz artist merge writes, so applying it is the same well-trodden
+// path — unless this artist already has one on record.
+func recordArtistRekey(db *gorm.DB, rk rekey) bool {
+	var n int64
+	if err := db.Model(&models.MusicbrainzMigration{}).
+		Where("entity_type = ? AND old_mb_id = ?", models.MigrationEntityArtist, rk.oldMBID).Count(&n).Error; err != nil || n > 0 {
+		return false
+	}
+	row := models.MusicbrainzMigration{
+		EntityType: models.MigrationEntityArtist,
+		OldMBID:    rk.oldMBID,
+		NewMBID:    rk.newMBID,
+		Kind:       models.MigrationKindRedirect,
+		Status:     models.MigrationStatusPending,
+		Source:     models.ManagerTypeLidarr,
+		Name:       rk.title,
+		DetectedAt: time.Now(),
+	}
+	if err := db.Create(&row).Error; err != nil {
+		logger.Log.Warnf("failed to record that artist %s was re-keyed: %s", rk.oldMBID, err.Error())
+		return false
+	}
+	logger.Log.Infof("Lidarr re-keyed artist %q from %s to %s", rk.title, rk.oldMBID, rk.newMBID)
+	return true
+}
+
+// Why MarkSameAlbum refuses. Each names what would have to change first.
+var (
+	ErrSameAlbumSelf    = errors.New("an album cannot be the same album as itself")
+	ErrSameAlbumMissing = errors.New("both albums must be in the collection")
+	ErrSameAlbumListed  = errors.New("the manager still lists this album under its own ID, so the next sync would bring it back — it has to stop listing it first")
+	ErrSameAlbumArtist  = errors.New("the two albums belong to different artists")
+	ErrSameAlbumSettled = errors.New("this album already has a settled identity change")
+)
+
+// MarkSameAlbum records, on a person's word, that two album rows are one album under
+// an old and a new ID — the pairing detectRekeys makes automatically when it can, for
+// the cases it cannot: a re-key that landed while a sync failed, one that renamed the
+// album as well, or one that collided with a second album of the same title. It is the
+// same redirect row a sync would have written, so applying it does the same thing:
+// the wants move to the new ID and the old row is retired once nothing holds it.
+//
+// The old row must not still be in the manager's catalog. If the manager lists both,
+// it has not re-keyed anything — it holds two albums — and the next sync would put
+// the old row straight back.
+func MarkSameAlbum(db *gorm.DB, oldMBID, newMBID string) (models.MusicbrainzMigration, error) {
+	var row models.MusicbrainzMigration
+	if oldMBID == newMBID {
+		return row, ErrSameAlbumSelf
+	}
+	var old, target models.CollectionReleaseGroup
+	if db.Where("mb_id = ?", oldMBID).Limit(1).Find(&old); old.MBID == "" {
+		return row, ErrSameAlbumMissing
+	}
+	if db.Where("mb_id = ?", newMBID).Limit(1).Find(&target); target.MBID == "" {
+		return row, ErrSameAlbumMissing
+	}
+	if old.InCatalog {
+		return row, ErrSameAlbumListed
+	}
+	if old.ArtistMBID != target.ArtistMBID {
+		return row, ErrSameAlbumArtist
+	}
+	if !recordRekeyFrom(db, rekey{oldMBID: oldMBID, newMBID: newMBID, title: old.Title}, models.MigrationSourceManual) {
+		return row, ErrSameAlbumSettled
+	}
+	err := db.Where("entity_type = ? AND old_mb_id = ?", models.MigrationEntityReleaseGroup, oldMBID).First(&row).Error
+	return row, err
 }
 
 // clearCatalogView retires everything a manager wrote about one artist's albums,

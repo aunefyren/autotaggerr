@@ -13,6 +13,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -59,6 +60,21 @@ func (s *DiscoverStats) Add(o DiscoverStats) {
 type moveKey struct {
 	size  int64
 	mtime int64
+}
+
+// copyKey is what a file keeps through a move that rewrites it — across filesystems,
+// or by a tool that copies and deletes — which resets the modification time: its size,
+// its name, and the name of the album folder it sat in. A rename changes the name and
+// keeps the time; a copy keeps the name and loses the time; so between them the two
+// keys cover both, and neither alone has to be loose enough to cover the other.
+type copyKey struct {
+	size   int64
+	name   string
+	folder string
+}
+
+func copyKeyOf(path string, size int64) copyKey {
+	return copyKey{size: size, name: filepath.Base(path), folder: filepath.Base(filepath.Dir(path))}
 }
 
 // DiscoverLibraryRoots runs discovery over part of a library — each of roots, or the
@@ -127,8 +143,11 @@ func discoverWith(db *gorm.DB, library models.Library, manager Manager, roots []
 		}
 	}
 
-	moved, rest := carryMovedRows(db, gone, unknown)
+	moved, rest, stranded := carryMovedRows(db, gone, unknown)
 	stats.Moved = moved
+	if len(stranded) > 0 && narrowed(roots, library.Path) {
+		stats.Moved += carryFromElsewhere(db, library, roots, rows, stranded)
+	}
 
 	resolveIdentities(db, library, manager, append(rest, needsIdentity...), detail, workers, &stats)
 
@@ -138,64 +157,98 @@ func discoverWith(db *gorm.DB, library models.Library, manager Manager, roots []
 }
 
 // carryMovedRows moves the index row of a vanished file onto an unindexed file that is
-// the same bytes, and returns how many it moved and the unindexed paths left over.
+// the same bytes. It returns how many it moved, the unindexed paths left over, and the
+// vanished rows it found no partner for.
 //
 // A pair is taken only when it is **unique on both sides**: one vanished row and one
-// new file sharing a size and modification second. Anything else — two candidates for
-// one row, or one file that could be either of two rows — is left to the manager to
-// resolve, because carrying an identity onto the wrong file is a mistag with the
-// manager's name on it, and resolving costs one lookup.
+// new file sharing a key. Anything else — two candidates for one row, or one file that
+// could be either of two rows — is left to the manager to resolve, because carrying an
+// identity onto the wrong file is a mistag with the manager's name on it, and
+// resolving costs one lookup.
+//
+// Two keys, tried in turn: size and modification second (moveKey) for a rename or a
+// move on one filesystem, then size, name and album folder (copyKey) for a move that
+// reset the time. The second only sees what the first left.
 //
 // The whole row moves, pin included: a manual attachment is a fact about the file, and
 // the file did not change. Only its path, and when it was last seen, are new.
-func carryMovedRows(db *gorm.DB, gone []models.LibraryItem, unknown []string) (int, []string) {
+func carryMovedRows(db *gorm.DB, gone []models.LibraryItem, unknown []string) (int, []string, []models.LibraryItem) {
 	if len(gone) == 0 || len(unknown) == 0 {
-		return 0, unknown
+		return 0, unknown, gone
 	}
 
-	goneBy := map[moveKey][]models.LibraryItem{}
-	for _, row := range gone {
-		if row.ModTime == nil {
-			continue
-		}
-		k := moveKey{row.Size, row.ModTime.Unix()}
-		goneBy[k] = append(goneBy[k], row)
-	}
-	newBy := map[moveKey][]string{}
+	sizes := map[string]os.FileInfo{}
 	for _, path := range unknown {
-		fi, err := os.Stat(path)
-		if err != nil {
-			continue
+		if fi, err := os.Stat(path); err == nil {
+			sizes[path] = fi
 		}
-		k := moveKey{fi.Size(), fi.ModTime().Unix()}
-		newBy[k] = append(newBy[k], path)
 	}
 
 	moved := 0
-	taken := map[string]bool{}
+	taken := map[string]bool{}      // new paths now holding a carried row
+	settled := map[string]bool{}    // new paths no longer unindexed
+	carried := map[uuid.UUID]bool{} // vanished rows that found their file
 	now := time.Now()
-	for k, rows := range goneBy {
-		paths := newBy[k]
-		if len(rows) != 1 || len(paths) != 1 {
-			if len(paths) > 0 {
-				logger.Log.Infof("not carrying identity by size and time: %d vanished row(s) and %d new file(s) share one, resolving instead", len(rows), len(paths))
+
+	carry := func(label string, rowKey func(models.LibraryItem) (any, bool), fileKey func(string, os.FileInfo) any) {
+		goneBy := map[any][]models.LibraryItem{}
+		for _, row := range gone {
+			if carried[row.ID] {
+				continue
 			}
-			continue
+			if k, ok := rowKey(row); ok {
+				goneBy[k] = append(goneBy[k], row)
+			}
 		}
-		row, path := rows[0], paths[0]
-		if err := db.Model(&models.LibraryItem{}).Where("id = ?", row.ID).
-			Updates(map[string]any{"path": path, "last_scanned_at": now}).Error; err != nil {
-			logger.Log.Warnf("failed to carry the index row for %q over to %q: %s", row.Path, path, err.Error())
-			continue
+		newBy := map[any][]string{}
+		for _, path := range unknown {
+			if fi, ok := sizes[path]; ok && !settled[path] {
+				k := fileKey(path, fi)
+				newBy[k] = append(newBy[k], path)
+			}
 		}
-		logger.Log.Infof("file moved on disk, identity carried over: %q -> %q", row.Path, path)
-		moved++
-		// A row that moved without an identity still needs one, so its file stays on the
-		// list to resolve — now against the row at its new path.
-		if row.Pinned || (row.MBReleaseID != "" && row.Status != models.LibraryItemStatusUnmatched) {
-			taken[path] = true
+		for k, rows := range goneBy {
+			paths := newBy[k]
+			if len(rows) != 1 || len(paths) != 1 {
+				if len(paths) > 0 {
+					logger.Log.Infof("not carrying identity by %s: %d vanished row(s) and %d new file(s) share one, resolving instead", label, len(rows), len(paths))
+				}
+				continue
+			}
+			row, path := rows[0], paths[0]
+			if err := db.Model(&models.LibraryItem{}).Where("id = ?", row.ID).
+				Updates(map[string]any{"path": path, "last_scanned_at": now}).Error; err != nil {
+				logger.Log.Warnf("failed to carry the index row for %q over to %q: %s", row.Path, path, err.Error())
+				continue
+			}
+			logger.Log.Infof("file moved on disk, identity carried over by %s: %q -> %q", label, row.Path, path)
+			moved++
+			carried[row.ID] = true
+			settled[path] = true
+			// A row that moved without an identity still needs one, so its file stays on
+			// the list to resolve — now against the row at its new path.
+			if row.Pinned || (row.MBReleaseID != "" && row.Status != models.LibraryItemStatusUnmatched) {
+				taken[path] = true
+			}
 		}
 	}
+
+	carry("size and time",
+		func(row models.LibraryItem) (any, bool) {
+			if row.ModTime == nil {
+				return nil, false
+			}
+			return moveKey{row.Size, row.ModTime.Unix()}, true
+		},
+		func(_ string, fi os.FileInfo) any { return moveKey{fi.Size(), fi.ModTime().Unix()} })
+	carry("size, name and folder",
+		func(row models.LibraryItem) (any, bool) {
+			if row.Size == 0 {
+				return nil, false
+			}
+			return copyKeyOf(row.Path, row.Size), true
+		},
+		func(path string, fi os.FileInfo) any { return copyKeyOf(path, fi.Size()) })
 
 	rest := make([]string, 0, len(unknown)-len(taken))
 	for _, path := range unknown {
@@ -203,7 +256,54 @@ func carryMovedRows(db *gorm.DB, gone []models.LibraryItem, unknown []string) (i
 			rest = append(rest, path)
 		}
 	}
-	return moved, rest
+	var stranded []models.LibraryItem
+	for _, row := range gone {
+		if !carried[row.ID] {
+			stranded = append(stranded, row)
+		}
+	}
+	return moved, rest, stranded
+}
+
+// narrowed reports whether a pass walked less than its whole library.
+func narrowed(roots []string, libraryPath string) bool {
+	return !(len(roots) == 1 && filepath.Clean(roots[0]) == filepath.Clean(libraryPath))
+}
+
+// carryFromElsewhere looks for vanished rows a scoped walk could not pair in the rest
+// of their library, and returns how many it carried.
+//
+// An artist-scoped walk covers the artist's folders as indexed, so an album the
+// manager moved under a *different* artist folder vanished from the walk's view
+// without appearing in it — and the Scan that follows would prune its rows, leaving
+// the files to be resolved again from scratch by whatever next walked that folder.
+// This is the one case a scoped pass has to look outside its scope to get right.
+//
+// It runs only when something vanished unpaired, which is rare, and it only lists and
+// stats: no file is read, and nothing outside the scope is resolved through the
+// manager. A file found here is either carried or left exactly as it was, for the pass
+// that owns its folder.
+func carryFromElsewhere(db *gorm.DB, library models.Library, roots []string, rows []models.LibraryItem, stranded []models.LibraryItem) int {
+	everywhere, err := walkAudioFiles([]string{library.Path})
+	if err != nil {
+		logger.Log.Warnf("failed to look for moved files in the rest of %q: %s", library.Name, err.Error())
+		return 0
+	}
+	indexed := make(map[string]bool, len(rows))
+	for _, row := range rows {
+		indexed[row.Path] = true
+	}
+	var elsewhere []string
+	for _, path := range everywhere {
+		if !indexed[path] && !underAny(path, roots) {
+			elsewhere = append(elsewhere, path)
+		}
+	}
+	moved, _, _ := carryMovedRows(db, stranded, elsewhere)
+	if moved > 0 {
+		logger.Log.Infof("carried %d row(s) to files moved outside the scanned folders in %q", moved, library.Name)
+	}
+	return moved
 }
 
 // resolveIdentities asks the manager about each path and records the answer without

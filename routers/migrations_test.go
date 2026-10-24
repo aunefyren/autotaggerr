@@ -3,6 +3,7 @@ package routers
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -398,5 +399,234 @@ func TestListItemsFiltersByMBID(t *testing.T) {
 	}
 	if page.Total != 0 {
 		t.Errorf("unknown identifier returned %d items, want none", page.Total)
+	}
+}
+
+// TestArtistPageOffersTheRepair: the artist page states which of the artist's albums
+// hold dead IDs and offers the same refresh the Migrations row does — and, with every
+// manager's refresh turned off, refuses rather than queueing a pass that asks nobody.
+func TestArtistPageOffersTheRepair(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Some Band"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := api.DB.Create(&models.CollectionReleaseGroup{
+		MBID: "rg-ghost", ArtistMBID: "artist-1", Title: "Heatstroke", InCatalog: true,
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := api.DB.Create(&models.MusicbrainzMigration{
+		EntityType: models.MigrationEntityReleaseGroup, OldMBID: "rg-ghost",
+		Kind: models.MigrationKindDeleted, Status: models.MigrationStatusPending, Name: "Heatstroke",
+	}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// A Lidarr that holds every request until the test is over, so the queued repair
+	// is still in flight when the page is read back — the state being asserted.
+	release := make(chan struct{})
+	lidarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(func() { close(release); lidarr.Close() })
+	manager := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true,
+		LidarrBaseURL: lidarr.URL, LidarrAPIKey: "k", LidarrSkipArtistRefresh: true}
+	if err := api.DB.Create(&manager).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	var page struct {
+		Repair *struct {
+			Albums []string `json:"albums"`
+			HeldBy []string `json:"held_by"`
+			Queued bool     `json:"queued"`
+		} `json:"repair"`
+	}
+	read := func() {
+		t.Helper()
+		w := do(r, "GET", "/api/v1/artists/artist-1", token, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("artist = %d: %s", w.Code, w.Body.String())
+		}
+		page.Repair = nil
+		if err := json.Unmarshal(w.Body.Bytes(), &page); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	read()
+	if page.Repair == nil || len(page.Repair.Albums) != 1 || len(page.Repair.HeldBy) != 1 {
+		t.Fatalf("repair = %+v, want the ghost album and the manager holding it", page.Repair)
+	}
+	if w := do(r, "POST", "/api/v1/artists/artist-1/repair-albums", token, nil); w.Code != http.StatusConflict {
+		t.Errorf("repair with refresh turned off = %d, want 409", w.Code)
+	}
+
+	if err := api.DB.Model(&manager).Update("lidarr_skip_artist_refresh", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if w := do(r, "POST", "/api/v1/artists/artist-1/repair-albums", token, nil); w.Code != http.StatusAccepted {
+		t.Fatalf("repair = %d: %s", w.Code, w.Body.String())
+	}
+	read()
+	if page.Repair == nil || !page.Repair.Queued || len(page.Repair.HeldBy) != 0 {
+		t.Errorf("repair after asking = %+v, want it shown as in flight", page.Repair)
+	}
+}
+
+// TestReleaseFilesSettlesANativeAlbum: the blocker "files on disk still resolve to this
+// album" finally has a control. For a library Autotaggerr manages, one press marks the
+// files for re-identification, re-derives the album as unowned and applies the change.
+func TestReleaseFilesSettlesANativeAlbum(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	lib := models.Library{Name: "Native", Path: t.TempDir(), Enabled: true}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []any{
+		&models.CollectionArtist{MBID: "artist-1", Name: "Some Band"},
+		&models.CollectionReleaseGroup{MBID: "rg-ghost", ArtistMBID: "artist-1", Title: "Heatstroke", Owned: true},
+		&models.CollectionRelease{MBID: "rel-ghost", ReleaseGroupMBID: "rg-ghost", ArtistMBID: "artist-1"},
+		&models.LibraryItem{LibraryID: lib.ID, Path: lib.Path + "/a.flac", MBReleaseID: "rel-ghost", Status: models.LibraryItemStatusOK},
+	} {
+		if err := api.DB.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := models.MusicbrainzMigration{EntityType: models.MigrationEntityReleaseGroup, OldMBID: "rg-ghost",
+		Kind: models.MigrationKindDeleted, Status: models.MigrationStatusPending, Name: "Heatstroke"}
+	if err := api.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(r, "POST", "/api/v1/migrations/"+m.ID.String()+"/release-files", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("release-files = %d: %s", w.Code, w.Body.String())
+	}
+	var item models.LibraryItem
+	if err := api.DB.Where("path = ?", lib.Path+"/a.flac").First(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != models.LibraryItemStatusUnmatched || item.LastErrorTransient || item.MBReleaseID != "rel-ghost" {
+		t.Errorf("item = %+v, want marked for re-identification with its old ID kept", item)
+	}
+	var settled models.MusicbrainzMigration
+	if err := api.DB.First(&settled, "id = ?", m.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if settled.Status != models.MigrationStatusApplied {
+		t.Errorf("migration status = %q (error %q), want applied", settled.Status, settled.Error)
+	}
+
+	if w := do(r, "POST", "/api/v1/migrations/"+m.ID.String()+"/release-files", token, nil); w.Code != http.StatusConflict {
+		t.Errorf("a second press = %d, want 409 — nothing holds it now", w.Code)
+	}
+}
+
+// TestReleaseFilesAsksTheManagerForItsFiles: files a manager governs would only get
+// the dead ID back if marked, so the press queues the refresh-then-re-read job — or,
+// with refresh turned off, says so instead of queueing a job that cannot help.
+func TestReleaseFilesAsksTheManagerForItsFiles(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	release := make(chan struct{})
+	lidarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(func() { close(release); lidarr.Close() })
+	manager := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true,
+		LidarrBaseURL: lidarr.URL, LidarrAPIKey: "k", LidarrSkipArtistRefresh: true}
+	if err := api.DB.Create(&manager).Error; err != nil {
+		t.Fatal(err)
+	}
+	lib := models.Library{Name: "Lidarr music", Path: t.TempDir(), Enabled: true, ManagerID: &manager.ID}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []any{
+		&models.CollectionArtist{MBID: "artist-1", Name: "Some Band"},
+		&models.CollectionReleaseGroup{MBID: "rg-ghost", ArtistMBID: "artist-1", Title: "Heatstroke", Owned: true, InCatalog: true},
+		&models.CollectionRelease{MBID: "rel-ghost", ReleaseGroupMBID: "rg-ghost", ArtistMBID: "artist-1"},
+		&models.LibraryItem{LibraryID: lib.ID, Path: lib.Path + "/a.flac", MBReleaseID: "rel-ghost", Status: models.LibraryItemStatusOK},
+	} {
+		if err := api.DB.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	m := models.MusicbrainzMigration{EntityType: models.MigrationEntityReleaseGroup, OldMBID: "rg-ghost",
+		Kind: models.MigrationKindDeleted, Status: models.MigrationStatusPending, Name: "Heatstroke"}
+	if err := api.DB.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/migrations/" + m.ID.String() + "/release-files"
+
+	if w := do(r, "POST", path, token, nil); w.Code != http.StatusConflict {
+		t.Fatalf("with refresh turned off = %d: %s, want 409", w.Code, w.Body.String())
+	}
+	if err := api.DB.Model(&manager).Update("lidarr_skip_artist_refresh", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	w := do(r, "POST", path, token, nil)
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("release-files = %d: %s, want 202", w.Code, w.Body.String())
+	}
+	var item models.LibraryItem
+	if err := api.DB.Where("path = ?", lib.Path+"/a.flac").First(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+	if item.Status != models.LibraryItemStatusOK {
+		t.Errorf("a manager's file was marked (%q); it is the manager's to re-identify", item.Status)
+	}
+}
+
+// TestMarkSameAlbum: a duplicate the sync could not pair — the old row out of the
+// catalog, the new one in it — is settled by saying so. The wants follow the album to
+// its new ID and the leftover row goes; an old row the manager still lists is refused,
+// since the next sync would bring it back.
+func TestMarkSameAlbum(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	for _, row := range []any{
+		&models.CollectionArtist{MBID: "artist-1", Name: "Some Band"},
+		&models.CollectionReleaseGroup{MBID: "rg-old", ArtistMBID: "artist-1", Title: "Heatstroke"},
+		&models.CollectionReleaseGroup{MBID: "rg-new", ArtistMBID: "artist-1", Title: "Heatstroke (Deluxe)", InCatalog: true},
+		&models.CollectionReleaseGroup{MBID: "rg-listed", ArtistMBID: "artist-1", Title: "Listed", InCatalog: true},
+		&models.CollectionDesire{ArtistMBID: "artist-1", ReleaseGroupMBID: "rg-old"},
+	} {
+		if err := api.DB.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := do(r, "POST", "/api/v1/artists/artist-1/release-groups/rg-listed/same-as", token, map[string]string{"release_group_mb_id": "rg-new"})
+	if w.Code != http.StatusConflict {
+		t.Errorf("an album the manager still lists = %d, want 409", w.Code)
+	}
+
+	w = do(r, "POST", "/api/v1/artists/artist-1/release-groups/rg-old/same-as", token, map[string]string{"release_group_mb_id": "rg-new"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("same-as = %d: %s", w.Code, w.Body.String())
+	}
+	var n int64
+	api.DB.Model(&models.CollectionReleaseGroup{}).Where("mb_id = ?", "rg-old").Count(&n)
+	if n != 0 {
+		t.Error("the leftover row was not retired")
+	}
+	var desire models.CollectionDesire
+	if err := api.DB.First(&desire).Error; err != nil || desire.ReleaseGroupMBID != "rg-new" {
+		t.Errorf("want = %+v (%v), want it moved to rg-new", desire, err)
+	}
+	var m models.MusicbrainzMigration
+	if err := api.DB.Where("old_mb_id = ?", "rg-old").First(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	if m.Source != models.MigrationSourceManual || m.SourceLabel() != "You" {
+		t.Errorf("source = %q, want the change recorded as made by hand", m.Source)
 	}
 }

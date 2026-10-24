@@ -136,6 +136,10 @@ type Result struct {
 	ChangedReleases []string
 	GoneReleases    int
 	Relinked        int
+	// PrunedGroups is album rows removed (or one artist's credit on them withdrawn)
+	// because a complete discography this pass fetched no longer lists them — see
+	// pruneDiscography.
+	PrunedGroups int
 
 	// Phases is the per-phase breakdown, keyed by the Phase* constants.
 	Phases map[string]PhaseStat
@@ -677,6 +681,30 @@ func (r *Runner) execute(ctx context.Context, scope Scope, track bool) (Result, 
 	return res, false
 }
 
+// pruneDiscography removes the artist's album rows MusicBrainz no longer lists, from
+// the discography this pass just read.
+//
+// It used to happen only on a discography sync, which is per artist and pressed by
+// hand — so an artist nobody synced kept albums merged away upstream forever. But the
+// pass already fetches every collection artist's discography on its TTL, which is the
+// one input pruning needs; the cost was never a fetch, only where the call was made.
+// Every guard is PruneOrphanReleaseGroups' own: complete listings only, and nothing
+// owned, listed by a manager, wanted or holding an edition is touched.
+func (r *Runner) pruneDiscography(artistMBID string, groups []models.MusicBrainzArtistReleaseGroup, res *Result) {
+	if r.db == nil {
+		return
+	}
+	n, err := collection.PruneOrphanReleaseGroups(r.db, artistMBID, groups)
+	if err != nil {
+		logger.Log.Warnf("failed to prune albums MusicBrainz no longer lists for %s: %s", artistMBID, err.Error())
+		return
+	}
+	if n > 0 {
+		logger.Log.Infof("removed %d album row(s) MusicBrainz no longer lists for artist %s", n, artistMBID)
+		res.PrunedGroups += n
+	}
+}
+
 // entityRelease is the cache namespace for a full release payload. It is not one of
 // the models.MBEntity* constants because releases have their own table, but a pass
 // treats it as a fourth kind.
@@ -712,7 +740,12 @@ func (r *Runner) refreshOne(entity, phase, mbid string, force, cold bool, res *R
 	case models.MBEntityArtist:
 		_, err = r.meta.GetArtist(mbid)
 	case models.MBEntityDiscography:
-		_, _, err = modules.GetArtistDiscography(mbid)
+		var groups []models.MusicBrainzArtistReleaseGroup
+		var complete bool
+		groups, complete, err = modules.GetArtistDiscography(mbid)
+		if err == nil && complete {
+			r.pruneDiscography(mbid, groups, res)
+		}
 	case models.MBEntityEditions:
 		_, err = r.meta.GetReleaseGroupReleases(mbid)
 	case entityRelease:
@@ -922,6 +955,7 @@ func (r *Runner) record(ev *models.Event, started, finished time.Time, scope Sco
 		"changed_releases": len(res.ChangedReleases),
 		"gone_releases":    res.GoneReleases,
 		"relinked":         res.Relinked,
+		"pruned_groups":    res.PrunedGroups,
 		"cancelled":        cancelled,
 		// Which phase the time went on. A pass reads four kinds of entity at very
 		// different costs, and one total cannot say whether the hours were
@@ -951,6 +985,7 @@ func (r *Runner) record(ev *models.Event, started, finished time.Time, scope Sco
 		{Label: "Changed upstream", Value: len(res.ChangedReleases), Kind: models.EventStatNotable, Filter: models.EventItemStatusRefreshed},
 		{Label: "Gone upstream", Value: res.GoneReleases, Filter: models.EventItemStatusGone},
 		{Label: "Re-linked", Value: res.Relinked, Filter: models.EventItemStatusRelinked},
+		{Label: "Albums pruned", Value: res.PrunedGroups, Kind: models.EventStatNotable},
 		{Label: "Failed", Value: res.Errors, Kind: models.EventStatBad, Filter: models.EventItemStatusError},
 	}
 
@@ -993,6 +1028,9 @@ func summaryLine(res Result, took time.Duration) string {
 	line := fmt.Sprintf("%d entities — %d fetched, %d already cached", res.Checked, res.Fetched, res.Fresh)
 	if len(res.ChangedReleases) > 0 {
 		line += fmt.Sprintf(", %d release(s) changed upstream", len(res.ChangedReleases))
+	}
+	if res.PrunedGroups > 0 {
+		line += fmt.Sprintf(", %d album(s) MusicBrainz no longer lists pruned", res.PrunedGroups)
 	}
 	if res.Errors > 0 {
 		line += fmt.Sprintf(", %d failed", res.Errors)

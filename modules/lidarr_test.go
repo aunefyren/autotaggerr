@@ -422,6 +422,9 @@ func TestLidarrFindTrackFileByPathRealMultiDisc(t *testing.T) {
 		name         string
 		diskFolder   func(disc int) string
 		lidarrFolder func(disc int) string
+		// windows stores Lidarr's paths in a Windows host's form, which an
+		// Autotaggerr on Linux has to split on backslashes to see any folder at all.
+		windows bool
 	}{
 		{
 			// Both sides agree on the folder name: the disc must be told apart on the
@@ -437,6 +440,13 @@ func TestLidarrFindTrackFileByPathRealMultiDisc(t *testing.T) {
 			diskFolder:   func(disc int) string { return fmt.Sprintf("CD %02d", disc) },
 			lidarrFolder: func(disc int) string { return fmt.Sprintf("Disc %d", disc) },
 		},
+		{
+			// A Windows-hosted Lidarr: the same release, every separator a backslash.
+			name:         "lidarr on windows",
+			diskFolder:   func(disc int) string { return fmt.Sprintf("CD %02d", disc) },
+			lidarrFolder: func(disc int) string { return fmt.Sprintf("CD %02d", disc) },
+			windows:      true,
+		},
 	}
 
 	for _, tc := range cases {
@@ -445,6 +455,11 @@ func TestLidarrFindTrackFileByPathRealMultiDisc(t *testing.T) {
 			t.Cleanup(resetLidarrCaches)
 
 			trackFiles := alienTrackFiles("/data/music", tc.lidarrFolder)
+			if tc.windows {
+				for i := range trackFiles {
+					trackFiles[i].Path = `D:` + strings.ReplaceAll(trackFiles[i].Path, "/", `\`)
+				}
+			}
 			mock := newLidarrMock(t, map[string]any{"/api/v1/trackfile": trackFiles})
 			client := NewLidarrClient(mock.server.URL, "test-key", nil)
 

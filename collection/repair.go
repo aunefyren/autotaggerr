@@ -292,6 +292,18 @@ func ghostsForArtist(db *gorm.DB, ghosts []string, artistMBID string) ([]string,
 	return mbids, err
 }
 
+// ArtistGhostReleaseGroups lists the albums under one artist whose MusicBrainz ID
+// resolves nowhere while a manager still lists them — what a manager refresh of that
+// artist is for. The artist page reads it to offer the repair where the albums are,
+// rather than only from the Migrations page.
+func ArtistGhostReleaseGroups(db *gorm.DB, artistMBID string) ([]string, error) {
+	ghosts, err := GhostReleaseGroups(db)
+	if err != nil {
+		return nil, err
+	}
+	return ghostsForArtist(db, ghosts, artistMBID)
+}
+
 // intersect keeps `want` only if it is in the list — a scoped pass must not refresh an
 // artist that holds no ghost album at all.
 func intersect(artists []string, want string) []string {

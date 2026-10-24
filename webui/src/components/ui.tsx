@@ -79,6 +79,7 @@ export function ConfirmDialog({
   confirmLabel,
   danger,
   busy,
+  confirmDisabled,
   onConfirm,
   onCancel,
 }: {
@@ -88,6 +89,8 @@ export function ConfirmDialog({
   /** Use for anything that overwrites or discards. Not for merely expensive work. */
   danger?: boolean;
   busy?: boolean;
+  /** For a dialog that asks for a choice: the confirm waits until one is made. */
+  confirmDisabled?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
 }) {
@@ -105,7 +108,7 @@ export function ConfirmDialog({
         <button
           className={`btn btn-sm ${danger ? "btn-danger" : "btn-primary"}`}
           onClick={onConfirm}
-          disabled={busy}
+          disabled={busy || confirmDisabled}
         >
           {busy ? "Working…" : confirmLabel}
         </button>

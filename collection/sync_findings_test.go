@@ -194,3 +194,49 @@ func TestSyncNamesTheArtistWhoseAlbumsFailed(t *testing.T) {
 		t.Errorf("summary hid the failure: %q", SyncSummaryLine(stats))
 	}
 }
+
+// TestSyncRecordsAnArtistTheManagerReKeyed: an artist Lidarr stopped listing, beside a
+// same-named artist it lists that the collection does not hold, is Lidarr having moved
+// them to a new ID. That is recorded as an artist redirect and explained, rather than
+// reported as unknown; a name shared by two candidates is not paired.
+func TestSyncRecordsAnArtistTheManagerReKeyed(t *testing.T) {
+	db := syncFixture(t, []models.LidarrArtist{
+		{ID: 1, ForeignArtistID: "art-known", Name: "Known"},
+		{ID: 2, ForeignArtistID: "art-stranger-new", Name: "Stranger"},
+	}, false)
+
+	stats, err := SyncLidarr(db)
+	if err != nil {
+		t.Fatalf("SyncLidarr: %v", err)
+	}
+	if len(stats.RekeyedArtists) != 1 || stats.RekeyedArtists[0] != "art-stranger" {
+		t.Fatalf("re-keyed artists = %v, want art-stranger", stats.RekeyedArtists)
+	}
+	if len(stats.Unknown) != 0 {
+		t.Errorf("unknown = %v; a re-keyed artist is accounted for", stats.Unknown)
+	}
+	var m models.MusicbrainzMigration
+	if err := db.Where("entity_type = ? AND old_mb_id = ?", models.MigrationEntityArtist, "art-stranger").First(&m).Error; err != nil {
+		t.Fatalf("no redirect recorded: %v", err)
+	}
+	if m.NewMBID != "art-stranger-new" || m.Kind != models.MigrationKindRedirect || m.Source != models.ManagerTypeLidarr {
+		t.Errorf("migration = %+v", m)
+	}
+	if !strings.Contains(SyncSummaryLine(stats), "1 artist(s) re-keyed") {
+		t.Errorf("summary = %q", SyncSummaryLine(stats))
+	}
+
+	// Two same-named candidates: either could be the one, so neither is.
+	db2 := syncFixture(t, []models.LidarrArtist{
+		{ID: 1, ForeignArtistID: "art-known", Name: "Known"},
+		{ID: 2, ForeignArtistID: "art-s1", Name: "Stranger"},
+		{ID: 3, ForeignArtistID: "art-s2", Name: "Stranger"},
+	}, false)
+	stats, err = SyncLidarr(db2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stats.RekeyedArtists) != 0 || len(stats.Unknown) != 1 {
+		t.Errorf("ambiguous name: re-keyed %v, unknown %v; want no pairing and the artist still unknown", stats.RekeyedArtists, stats.Unknown)
+	}
+}

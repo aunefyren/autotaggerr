@@ -73,3 +73,83 @@ func TestLidarrWriteAudioTags(t *testing.T) {
 		}
 	}
 }
+
+// TestLidarrHistoryDecodesALiveResponse pins the decoder to a record captured from a
+// real Lidarr (2026-10), trimmed: `data`, the quality block and most of the artist's
+// links dropped, and the download URL — which carries an indexer API key — removed.
+// What is left is every field the follower reads, in the shape Lidarr actually sends:
+// the event type as a camelCase name, the date as RFC 3339, and the artist (asked for
+// with includeArtist) under `artistName` / `foreignArtistId` / `path`.
+func TestLidarrHistoryDecodesALiveResponse(t *testing.T) {
+	const live = `[
+  {
+    "albumId": 62029,
+    "artistId": 83,
+    "trackId": 0,
+    "sourceTitle": "Anderson .Paak & Cordae - Heavy Is The Crown (2026) [Album] [FLAC Lossless / WEB]",
+    "quality": {"quality": {"id": 6, "name": "FLAC"}, "revision": {"version": 1, "real": 0, "isRepack": false}},
+    "customFormats": [{"id": 3, "name": "FLAC"}, {"id": 4, "name": "WEB format"}],
+    "customFormatScore": 4,
+    "qualityCutoffNotMet": false,
+    "date": "2026-10-23T09:14:23Z",
+    "downloadId": "32B4D06E2A9320B785A667E3E5907CE34F2DBE8B",
+    "eventType": "grabbed",
+    "data": {"downloadClient": "qBittorrent", "size": "201796361"},
+    "artist": {
+      "status": "continuing",
+      "ended": false,
+      "artistName": "Anderson .Paak",
+      "foreignArtistId": "d02dd67e-f655-4600-bc47-f789f59e7367",
+      "tadbId": 0,
+      "discogsId": 0,
+      "artistType": "Person",
+      "disambiguation": "American rapper and producer",
+      "links": [{"url": "https://soundcloud.com/andersonpaak", "name": "soundcloud"}],
+      "path": "/data/music/Anderson .Paak",
+      "id": 83
+    },
+    "id": 912345
+  }
+]`
+	var records []LidarrHistoryRecord
+	if err := json.Unmarshal([]byte(live), &records); err != nil {
+		t.Fatalf("a live Lidarr response did not decode: %v", err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("decoded %d records, want 1", len(records))
+	}
+	r := records[0]
+	if r.ArtistID != 83 || r.AlbumID != 62029 || r.EventType != LidarrHistoryGrabbed {
+		t.Errorf("record = %+v", r)
+	}
+	if want := "2026-10-23T09:14:23Z"; r.Date.UTC().Format("2006-01-02T15:04:05Z") != want {
+		t.Errorf("date = %v, want %s", r.Date, want)
+	}
+	if r.Artist == nil || r.Artist.ForeignArtistID != "d02dd67e-f655-4600-bc47-f789f59e7367" ||
+		r.Artist.Name != "Anderson .Paak" || r.Artist.Path != "/data/music/Anderson .Paak" {
+		t.Errorf("artist = %+v, want the includeArtist block decoded", r.Artist)
+	}
+	if r.EventType.MovesFiles() {
+		t.Error("a grab moves no file; following it would process an artist before the import")
+	}
+}
+
+// TestLidarrMetadataProviderDecodesALiveResponse: the whole response from a real
+// Lidarr set to *For new downloads only* — the recommended setting, which must not
+// raise the tag-writing warning.
+func TestLidarrMetadataProviderDecodesALiveResponse(t *testing.T) {
+	const live = `{
+  "metadataSource": "",
+  "writeAudioTags": "newFiles",
+  "scrubAudioTags": false,
+  "embedCoverArt": true,
+  "id": 1
+}`
+	var cfg LidarrMetadataProviderConfig
+	if err := json.Unmarshal([]byte(live), &cfg); err != nil {
+		t.Fatalf("a live Lidarr response did not decode: %v", err)
+	}
+	if cfg.WriteAudioTags != LidarrWriteAudioTagsNewFiles || cfg.WriteAudioTags.RewritesExistingFiles() {
+		t.Errorf("writeAudioTags = %q, want newFiles and no warning", cfg.WriteAudioTags)
+	}
+}

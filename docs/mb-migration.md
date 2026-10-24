@@ -33,7 +33,7 @@ by mechanisms that predate this package and are the better answer for them.
 
 | Entity | Merged | Deleted |
 |--------|--------|---------|
-| **Artist** | migration — id comparison on lookup (`musicbrainz_artist.go:210`) | migration — 404 (`:104`, `:182`) |
+| **Artist** | migration — id comparison on lookup (`musicbrainz_artist.go:210`). A **manager re-key** gets a redirect row, always reviewed — see [below](#a-manager-re-keying-an-artist) | migration — 404 (`:104`, `:182`) |
 | **Release** | migration — id comparison on lookup (`musicbrainz.go:366`) | migration — 404 (`:339`) |
 | **Release-group** | *no row* for a MusicBrainz merge: handled by subtraction — see [below](#release-groups-re-linked-not-remapped). A **manager re-key** gets a redirect row — see [below](#a-manager-re-keying-an-album) | migration — confirmed 404 (`musicbrainz_search.go:322`) |
 | **Recording** | *no row needed*: self-heals through the release payload | same |
@@ -327,6 +327,15 @@ The prune also runs against the **unfiltered** discography, not the follow-filte
 `SyncArtist` upserts — comparing against the filtered set would delete every release-group of a type
 the user does not follow.
 
+**It runs on every metadata refresh, not only on a sync.** It used to be called from `SyncArtist`
+alone — per artist, pressed by hand — so an artist nobody synced kept albums merged away upstream
+indefinitely, and the reason given was that pruning everyone would cost a discography fetch per
+artist. But the refresh pass already re-reads every collection artist's discography on its TTL
+([mirror.md](mirror.md#the-refresh-pass)); the cost was never the fetch, only where the call was
+made. `mirror.Runner.pruneDiscography` prunes against each discography the pass actually re-fetched
+— a fresh cache hit is skipped, and a stale fallback served because MusicBrainz was down comes back
+`complete=false` and prunes nothing — and the event counts it as *Albums pruned*.
+
 ### Groups that resolve nowhere
 
 A separate case, on much stronger evidence: a release-group whose ID returns **404**.
@@ -488,6 +497,16 @@ later run; the retry check (`ReleaseGroupRetirableAfterRekey`) looks past the wa
 want is what the migration carries. A redirect is never moot while a want still points at the old ID,
 even once the row is gone.
 
+**What the sync cannot pair, a person can.** A re-key that lands while a sync fails, one that
+renames the album at the same time, or one that collides with a second same-titled album is left
+unpaired, and the duplicate stays. The album page offers **Same album as…** on exactly that shape —
+an album the manager no longer lists, under an artist it manages — with the artist's albums the
+manager does list to choose from. `collection.MarkSameAlbum` writes the same redirect row with
+`Source = manual` (labelled *You*), refusing an album the manager still lists (the next sync would
+bring it back), two different artists' albums, or an ID that already has a settled change, and
+`POST /artists/:mbid/release-groups/:rgid/same-as` applies it at once. If files still resolve to the
+old row, the row is recorded and waits on Migrations with that reason, like any other.
+
 A pending or failed **deletion** of the same old ID is turned into the redirect. That is the repair
 pass's success case — the ID resolved nowhere, the manager was asked, and it re-keyed the album — and
 the deletion would have retired the row while stranding its wants. A settled row is left alone.
@@ -541,6 +560,57 @@ restart: success left the spinner. Settled rows therefore clear their own mark a
 mark on anything closed — an outcome is a statement about work that finished, and it outranks any
 claim that work is in flight.
 
+### A manager re-keying an artist
+
+The same thing one level up: Lidarr moves an artist to a new MBID. The old one stops being listed
+and the new one is never picked up, because `SyncLidarrWith` only asks about artists the collection
+holds — so the artist used to show as *Not in Lidarr* and the user was left to work out that the
+two were one act.
+
+The sync now also collects every artist a manager lists that the collection does not hold, and
+`detectArtistRekeys` pairs them with the pass's unknown artists **by name** (`CanonLoose`),
+one-to-one. Each pair becomes an artist **redirect** row (`Source = lidarr`), and is dropped from
+*Not in Lidarr*, since it is accounted for; the sync reports *Artists re-keyed*. Applying it is the
+artist-merge path already described: albums, editions and wants re-pointed, follow settings merged.
+
+**It is always held for review**, whatever the policy says about artist merges. MusicBrainz merging
+an artist is MusicBrainz stating a fact; this is a pairing read off a list by name, and two acts can
+share one. Applied wrongly it would hand one artist's albums to another, so `heldForReview` holds
+every artist redirect sourced from a manager, and the review says the two were paired by name.
+
+### Clearing a blocker of files on disk
+
+*"files on disk still resolve to this album"* named its remedy and offered none. A stuck release-group
+deletion held by files now carries **Re-identify files** (`POST /migrations/:id/release-files`),
+whose action depends on who decides those files' identity:
+
+- **Autotaggerr.** Nobody else will, so the files are marked `unmatched` with the reason on them —
+  what applying a release deletion does to its files — the artist's collection is re-derived, and
+  the migration is applied, all before the response. Their tags are untouched; they wait under
+  Items → Unmatched to be attached.
+- **A manager.** Marking would last until the next run asked the manager and got the dead ID back,
+  so the manager has to correct the album first. `Runner.RepairAlbumFiles` does both in one queued
+  job — refresh and re-mirror the artist, force a re-correlate of that album's files, then drain the
+  queue once more against the rebuilt collection (a run drains before it rebuilds, so the first
+  drain still saw the album as owned). One job rather than two, because the queue would reorder
+  them: a re-correlate writes files and jumps ahead. With artist refresh turned off on every
+  manager the press is refused, saying so.
+
+### When nobody can be asked
+
+Every enabled Lidarr manager having artist refresh turned off used to leave *Ask the manager* on the
+row, queueing a repair that skipped every manager and did nothing. `collection.RefreshTurnedOff`
+names those managers, and the review turns the row into a stuck one whose blocker says so; the
+artist page and the re-identify action refuse with the same sentence.
+
+### Repairing from the artist page
+
+The repair is offered where the albums are, too: the artist payload carries `repair` — the artist's
+albums whose IDs resolve nowhere while a manager lists them, the managers holding it back if nobody
+can be asked, and whether a refresh is already in flight — and the page shows a notice with **Ask
+the manager** (`POST /artists/:mbid/repair-albums`, the same `RepairArtistAlbums` and the same marks
+as the Migrations row).
+
 ## What the review queue shows
 
 `migration.Review` decorates each row at read time, because the stored row cannot describe itself.
@@ -558,6 +628,7 @@ the reader actually has.
 | `needs_manager_refresh` | the one blocker that is not final, and therefore the one where approve asks rather than applies |
 | `artist_mbid`, `artist_name` | who a refresh would target — a bare album title does not tell the user where the fix lives |
 | `artist_open` | how many rows one refresh of that artist would settle, so eight albums read as one decision rather than eight |
+| `target_artist_mb_id`, `target_release_group_mb_id` | where the surviving entity of a merge or re-key sits in the collection, when it does — so *"re-keyed"* or *"merged into"* links to the album or artist it became rather than offering an ID to copy |
 | `source_label` | which source reported it, written the way it spells itself |
 | `problem`, `effect` | the same facts as sentences, safe to render verbatim |
 
@@ -578,6 +649,15 @@ three things a press means, and the row has to agree with itself about that:
 | nothing objects | **Apply** — approving applies it |
 | `needs_manager_refresh` | **Ask the manager** — approving queues a refresh, and the row says how many siblings it settles |
 | `blocker`, not refreshable | **Apply, disabled**, blocker in red beside it and as the title — a file, a want or an edition claims this album, or the only managers that could be asked have artist refresh turned off, and the press would fail with that same sentence |
+
+A third-state row held by **files on disk** also carries *Re-identify files*
+([above](#clearing-a-blocker-of-files-on-disk)) — the one blocker whose remedy this page can perform.
+
+**Grouping by artist** is a view, not a filter: *Group by artist* orders the queue by the artist each
+row concerns (`sort=artist`, an SQL expression mirroring the review's own derivation, so the order
+holds across server pages) and puts a header over each artist's rows — the name, how many are
+waiting across the whole queue, and one *Ask the manager* when any of them is waiting on a refresh.
+Eight albums by one artist then read as the one decision they are.
 
 The third had no control of its own: a blocked row offered a live primary button whose press returned
 the refusal already printed beside it. The sibling count belongs to the second row of that table
@@ -629,7 +709,10 @@ processed marker so the *next* run does.
 | `GET /migrations` | one page of migrations, each decorated with its [review context](#what-the-review-queue-shows). `?status=open` is the queue (pending + failed), `?status=closed` the history; `limit`/`offset`/`sort`/`dir`/`q` page, order and search it, and the response carries `total` |
 | `GET /migrations/policy` | which categories are currently held for review |
 | `POST /migrations/:id/approve` | apply one, then rebuild the collection — **202** instead when the album needs a manager refresh first ([above](#approving-a-blocked-album)) |
+| `POST /migrations/:id/release-files` | clear a "files on disk" blocker: mark native files for re-identification and apply, or queue the manager refresh and re-read ([above](#clearing-a-blocker-of-files-on-disk)) |
 | `POST /migrations/:id/dismiss` | record it as deliberately not applied |
+| `POST /artists/:mbid/repair-albums` | ask the manager to re-read one artist whose albums hold dead IDs (202) |
+| `POST /artists/:mbid/release-groups/:rgid/same-as` | record and apply that this album row is the same album as another of the artist's (`{"release_group_mb_id"}`) |
 | `POST /migrations/verify` | sweep every stored MBID now (202; runs in the background) |
 
 ## Related

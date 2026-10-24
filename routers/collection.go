@@ -10,6 +10,7 @@ import (
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/migration"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/process"
@@ -399,7 +400,110 @@ func (a *API) getArtist(c *gin.Context) {
 		view.OwnedEditions = editionCounts[rg.MBID]
 		views = append(views, view)
 	}
-	c.JSON(http.StatusOK, gin.H{"artist": newArtistView(artist), "release_groups": views, "desires": desires})
+	body := gin.H{"artist": newArtistView(artist), "release_groups": views, "desires": desires}
+	if repair := a.artistRepair(mbid); repair != nil {
+		body["repair"] = repair
+	}
+	c.JSON(http.StatusOK, body)
+}
+
+// markSameAlbum records that this album row is the same album as another of the
+// artist's, under a new ID, and applies it: the wants move across and the old row is
+// retired (collection.MarkSameAlbum). For the duplicates the sync's own re-key
+// detection could not pair. A refusal is a 409 naming what has to change first.
+func (a *API) markSameAlbum(c *gin.Context) {
+	var body struct {
+		ReleaseGroupMBID string `json:"release_group_mb_id"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.ReleaseGroupMBID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "release_group_mb_id is required"})
+		return
+	}
+	oldMBID := c.Param("rgid")
+	var old models.CollectionReleaseGroup
+	if err := a.DB.Where("mb_id = ? AND artist_mb_id = ?", oldMBID, c.Param("mbid")).First(&old).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "album not found under this artist"})
+		return
+	}
+
+	row, err := collection.MarkSameAlbum(a.DB, oldMBID, strings.TrimSpace(body.ReleaseGroupMBID))
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	applied, err := migration.ApplyByID(a.DB, row.ID)
+	if err != nil {
+		// Recorded, not applied: something still claims the old row (files on disk,
+		// most likely). The row waits on Migrations with that reason, like any other.
+		a.recordMigrationDecision(applied, models.EventItemStatusError, err.Error())
+		c.JSON(http.StatusAccepted, gin.H{"applied": false, "reason": err.Error(), "migration": applied})
+		return
+	}
+	a.recordMigrationDecision(applied, models.EventItemStatusMigrated, "")
+	a.rebuildAfterMigration()
+	c.JSON(http.StatusOK, gin.H{"applied": true, "migration": applied})
+}
+
+// artistRepairView is what the artist page needs to offer a manager refresh: which of
+// the artist's albums hold an ID that resolves nowhere, and — when nobody can be asked
+// — the managers whose setting is in the way.
+type artistRepairView struct {
+	Albums []string `json:"albums"`
+	HeldBy []string `json:"held_by,omitempty"`
+	Queued bool     `json:"queued"`
+}
+
+// artistRepair answers for the artist page, or nil when the artist holds nothing to
+// repair. Best-effort: a failed lookup costs the offer, never the page.
+func (a *API) artistRepair(artistMBID string) *artistRepairView {
+	albums, err := collection.ArtistGhostReleaseGroups(a.DB, artistMBID)
+	if err != nil {
+		logger.Log.Warnf("failed to list unresolvable albums for %s: %s", artistMBID, err.Error())
+		return nil
+	}
+	if len(albums) == 0 {
+		return nil
+	}
+	view := &artistRepairView{Albums: albums}
+	if view.HeldBy, err = collection.RefreshTurnedOff(a.DB); err != nil {
+		logger.Log.Warnf("failed to read manager refresh settings: %s", err.Error())
+	}
+	var queued int64
+	a.DB.Model(&models.MusicbrainzMigration{}).
+		Where("entity_type = ? AND old_mb_id IN ? AND repair_queued_at IS NOT NULL", models.MigrationEntityReleaseGroup, albums).
+		Count(&queued)
+	view.Queued = queued > 0
+	return view
+}
+
+// repairArtistAlbums asks the manager to re-read one artist whose albums hold IDs
+// that resolve nowhere — the Migrations page's *Ask the manager*, offered on the
+// artist page for someone who has not opened that page. Same verb, same marks, same
+// 202: the refresh is waited on for minutes, so the request does not wait with it.
+func (a *API) repairArtistAlbums(c *gin.Context) {
+	artist, ok := a.artistAction(c)
+	if !ok {
+		return
+	}
+	albums, err := collection.ArtistGhostReleaseGroups(a.DB, artist.MBID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list the albums to repair"})
+		return
+	}
+	if len(albums) == 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "nothing to repair — every album of this artist resolves"})
+		return
+	}
+	if off, err := collection.RefreshTurnedOff(a.DB); err == nil && len(off) > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "artist refresh is turned off for " + strings.Join(off, ", ") +
+			" — turn it on under Managers, or refresh the artist in Lidarr yourself"})
+		return
+	}
+	if _, err := migration.MarkRepairQueued(a.DB, artist.MBID); err != nil {
+		logger.Log.Warnf("failed to mark migrations as repairing for %s: %s", artist.MBID, err.Error())
+	}
+	a.Scan.RepairArtistAlbums(artist.MBID)
+	c.JSON(http.StatusAccepted, gin.H{"status": "manager refresh queued", "artist": artist.Name, "albums": len(albums)})
 }
 
 // setArtistMonitored toggles monitoring. Enabling triggers a discography sync so

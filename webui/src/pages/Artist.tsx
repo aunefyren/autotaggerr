@@ -453,6 +453,10 @@ export default function Artist() {
         )}
       </div>
 
+      {detail.data?.repair && (
+        <RepairNote repair={detail.data.repair} mbid={mbid} onQueued={() => setTimeout(refresh, 300)} />
+      )}
+
       {artist && settingsOpen && (
         <>
           <FollowSettings artist={artist} busy={busy} onChange={updateFollow} manager={managerLabel} />
@@ -1218,6 +1222,66 @@ function FollowSettings({
             : "Blank wants the whole back catalogue. Set a year to be told only about what came after it."}
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The albums under this artist whose IDs resolve nowhere, and the one thing that can
+ * fix them — asking the manager to re-read the artist. The Migrations page has the same
+ * action per row; this is where someone looking at the artist meets the problem.
+ *
+ * Its states mirror that page's: offered, already in flight, or held by a manager
+ * setting — which is stated rather than hidden behind a button that does nothing.
+ */
+function RepairNote({
+  repair,
+  mbid,
+  onQueued,
+}: {
+  repair: NonNullable<ArtistDetail["repair"]>;
+  mbid: string;
+  onQueued: () => void;
+}) {
+  const toast = useToast();
+  const [busy, setBusy] = useState(false);
+  const n = repair.albums.length;
+  const held = (repair.held_by?.length ?? 0) > 0;
+
+  const ask = async () => {
+    setBusy(true);
+    try {
+      await api.post(`/artists/${mbid}/repair-albums`);
+      toast("info", "Asking the manager to re-read this artist — see Activity");
+      onQueued();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="note note-warn">
+      <strong>
+        {n} {n === 1 ? "album has an ID" : "albums have IDs"} MusicBrainz no longer resolves
+      </strong>
+      <span>
+        The manager still lists {n === 1 ? "it" : "them"} under {n === 1 ? "that ID" : "those IDs"}, usually because its
+        metadata service re-keyed the {n === 1 ? "album" : "albums"} since. A refresh of this artist in the manager
+        corrects the IDs, or drops what no longer exists.{" "}
+        {held && (
+          <>Artist refresh is turned off for {repair.held_by!.join(", ")}, so it cannot be asked from here — turn it on under Managers, or refresh the artist in Lidarr yourself. </>
+        )}
+        <Link to="/migrations">See them on Migrations</Link>
+      </span>
+      {!held && (
+        <div className="row" style={{ marginTop: 6 }}>
+          <button className="btn btn-secondary btn-sm" disabled={busy || repair.queued} onClick={ask}>
+            {repair.queued ? "Manager is re-reading…" : "Ask the manager"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

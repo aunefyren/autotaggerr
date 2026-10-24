@@ -101,6 +101,14 @@ func (p Policy) heldForReview(m models.MusicbrainzMigration, repairable bool) bo
 	if m.EntityType == models.MigrationEntityReleaseGroup {
 		return m.RepairAttemptedAt == nil && repairable
 	}
+	// An artist re-key a manager sync inferred is paired by name (see
+	// collection.detectArtistRekeys), and a name is a guess: two different acts can
+	// share one, and applying the wrong pairing hands one artist's albums to another.
+	// A person confirms it, whatever the policy says about MusicBrainz's own merges —
+	// those are MusicBrainz stating a fact, this is Autotaggerr reading one off a list.
+	if m.EntityType == models.MigrationEntityArtist && m.Source == models.ManagerTypeLidarr {
+		return true
+	}
 	if m.Kind == models.MigrationKindDeleted {
 		return p.ReviewDeletions
 	}
@@ -473,7 +481,19 @@ const (
 	ListSortName     = "name"
 	ListSortEntity   = "entity"
 	ListSortStatus   = "status"
+	// ListSortArtist groups rows by the artist they concern — the unit a manager
+	// refresh settles — and orders the groups by the artist's name.
+	ListSortArtist = "artist"
 )
+
+// rowArtistExpr is the artist a migration row concerns, in SQL: an album's or an
+// edition's artist from the collection, or the row's own MBID when it *is* an artist.
+// The same derivation Review makes per row, as an expression so the queue can be
+// ordered — and therefore grouped — by it across pages.
+const rowArtistExpr = "COALESCE(" +
+	"(SELECT artist_mb_id FROM collection_release_groups WHERE collection_release_groups.mb_id = musicbrainz_migrations.old_mb_id), " +
+	"(SELECT artist_mb_id FROM collection_releases WHERE collection_releases.mb_id = musicbrainz_migrations.old_mb_id), " +
+	"CASE WHEN musicbrainz_migrations.entity_type = 'artist' THEN musicbrainz_migrations.old_mb_id END, '')"
 
 // StatusOpen asks for everything still awaiting a decision, and StatusClosed for
 // everything that is over. Neither is a stored status: a failed row is one whose
@@ -566,6 +586,11 @@ func orderClause(opts ListOptions) string {
 		return "entity_type " + dir + ", name COLLATE NOCASE asc, detected_at desc"
 	case ListSortStatus:
 		return "status " + dir + ", detected_at desc"
+	case ListSortArtist:
+		// By name, then by MBID so two artists sharing a name do not interleave, then
+		// the usual tiebreak. Rows with no artist the collection can name sort together.
+		return "(SELECT name FROM collection_artists WHERE collection_artists.mb_id = " + rowArtistExpr + ") COLLATE NOCASE " + dir +
+			", " + rowArtistExpr + ", detected_at desc"
 	default:
 		return "detected_at " + dir
 	}

@@ -92,9 +92,9 @@ func ResolveRefs(db *gorm.DB, items []models.EventItem) {
 		logger.Log.Warnf("failed to resolve artists for event detail: %s", err.Error())
 	}
 
-	// How much of the library depends on each identifier. Only releases can carry a
-	// count: a file is correlated to a release, and every entity above one is reached
-	// through it.
+	// How much of the library depends on each identifier. A file is correlated to a
+	// release, so that is the direct count; every entity above one is reached through
+	// it, below.
 	type fileRow struct {
 		MBReleaseID string
 		N           int
@@ -121,6 +121,28 @@ func ResolveRefs(db *gorm.DB, items []models.EventItem) {
 	fileCounts := make(map[string]int, len(files))
 	for _, f := range files {
 		fileCounts[f.MBReleaseID] = f.N
+	}
+	// An album or an artist is reached through its editions, the same route
+	// GET /mb/:mbid/files takes — so the count beside a row and the list behind it
+	// agree. Without it every album and artist row read "no files on disk", including
+	// the Scan's own *added* rows, which exist because files arrived.
+	for _, column := range []string{"release_group_mb_id", "artist_mb_id"} {
+		type groupedRow struct {
+			Key string
+			N   int
+		}
+		var grouped []groupedRow
+		if err := db.Model(&models.LibraryItem{}).
+			Select("collection_releases."+column+" as key, count(*) as n").
+			Joins("JOIN collection_releases ON collection_releases.mb_id = library_items.mb_release_id").
+			Where("collection_releases."+column+" IN ?", ids).
+			Group("collection_releases." + column).Scan(&grouped).Error; err != nil {
+			logger.Log.Warnf("failed to count files by %s for event detail: %s", column, err.Error())
+			continue
+		}
+		for _, g := range grouped {
+			fileCounts[g.Key] += g.N
+		}
 	}
 
 	// The last resort: what a migration row remembers being called.

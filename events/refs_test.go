@@ -72,6 +72,15 @@ func TestResolveRefsNamesEachKind(t *testing.T) {
 	if artist == nil || artist.Kind != models.EntityKindArtist || artist.Name != "Radiohead" {
 		t.Errorf("artist ref = %+v", artist)
 	}
+
+	// Albums and artists count the files under their editions — the same route the
+	// file list behind the count takes, so the two cannot disagree.
+	if group != nil && group.Files != 2 {
+		t.Errorf("group files = %d, want 2 through its edition", group.Files)
+	}
+	if artist != nil && artist.Files != 2 {
+		t.Errorf("artist files = %d, want 2 through their editions", artist.Files)
+	}
 }
 
 // TestResolveRefsFilesWithoutACollectionRow pins the case the feature exists for: files

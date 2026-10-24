@@ -864,3 +864,18 @@ func TestPolicyFromConfig(t *testing.T) {
 		t.Errorf("PolicyFromConfig = %+v, want %+v", got, want)
 	}
 }
+
+// TestNamePairedArtistReKeysAreAlwaysReviewed: a manager artist re-key is paired by
+// name, which is a guess, so it waits for a person even under a policy that applies
+// MusicBrainz's own artist merges unattended.
+func TestNamePairedArtistReKeysAreAlwaysReviewed(t *testing.T) {
+	m := models.MusicbrainzMigration{EntityType: models.MigrationEntityArtist, Kind: models.MigrationKindRedirect,
+		OldMBID: "a-old", NewMBID: "a-new", Source: models.ManagerTypeLidarr}
+	if !(Policy{}).heldForReview(m, false) {
+		t.Error("a name-paired artist re-key was applied without review")
+	}
+	m.Source = models.DataSourceTypeMusicBrainz
+	if (Policy{}).heldForReview(m, false) {
+		t.Error("a MusicBrainz artist merge is held under a policy that applies them")
+	}
+}

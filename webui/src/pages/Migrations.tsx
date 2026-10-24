@@ -1,9 +1,9 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useDebounced, useFetch } from "../hooks";
 import { MusicbrainzMigration, MigrationList, MigrationPolicy, MigrationRepairQueued } from "../types";
-import { EmptyState, ErrorNote, IdChip, Pill } from "../components/ui";
+import { ConfirmDialog, EmptyState, ErrorNote, IdChip, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { Pager, SortHeader, TableToolbar, useBrowse, usePaging } from "../components/browse";
 import { useToast } from "../toast";
@@ -130,6 +130,16 @@ function FilesCell({ m }: { m: MusicbrainzMigration }) {
   );
 }
 
+/** What a queue row's buttons post to: `/migrations/:id/<action>`. */
+type MigrationAction = "approve" | "dismiss" | "release-files";
+
+/** The collection page of a merge's or re-key's surviving entity, when there is one. */
+function targetPath(m: MusicbrainzMigration): string | null {
+  if (!m.target_artist_mb_id) return null;
+  if (m.target_release_group_mb_id) return `/collection/${m.target_artist_mb_id}/${m.target_release_group_mb_id}`;
+  return `/collection/${m.target_artist_mb_id}`;
+}
+
 /** The entity, named and placed: what it is called, what kind of thing it is, whose. */
 function WhatCell({ m }: { m: MusicbrainzMigration }) {
   const entity = ENTITY_LABELS[m.entity_type] ?? m.entity_type;
@@ -140,7 +150,7 @@ function WhatCell({ m }: { m: MusicbrainzMigration }) {
         {entity} · {kindLabel(m)} · {m.source_label}
       </span>
       {m.artist_name && m.artist_mb_id && (
-        <Link className="railref" to={`/artist/${m.artist_mb_id}`}>
+        <Link className="railref" to={`/collection/${m.artist_mb_id}`}>
           <span>{m.artist_name}</span>
         </Link>
       )}
@@ -156,6 +166,14 @@ function WhatCell({ m }: { m: MusicbrainzMigration }) {
           </>
         )}
       </div>
+      {/* The surviving entity, as somewhere to go. "Re-keyed" and "merged into" are the
+          right words and were the wrong affordance: the album under its new ID is
+          usually in the collection, and the row only offered its ID to copy. */}
+      {targetPath(m) && (
+        <Link className="railref" to={targetPath(m)!}>
+          <span>{m.entity_type === "artist" ? "Open the artist it became" : "Open the album under its new ID"}</span>
+        </Link>
+      )}
     </div>
   );
 }
@@ -197,6 +215,7 @@ export default function Migrations() {
   const policy = useFetch<MigrationPolicy>(() => api.get("/migrations/policy"));
 
   const queueRows = queue.data?.migrations ?? [];
+  const grouped = browse.sort === "artist";
   const historyRows = history.data?.migrations ?? [];
   const working = queueRows.some(isWorking);
 
@@ -223,12 +242,14 @@ export default function Migrations() {
   // change, or asking the manager to re-read the artist so the change stops being
   // necessary. The second answers 202 and leaves the row where it is — reporting that
   // as "applied" is what made the button look like it did nothing.
-  const act = (m: MusicbrainzMigration, what: "approve" | "dismiss") => async () => {
+  const act = (m: MusicbrainzMigration, what: MigrationAction) => async () => {
     setBusy(m.id);
     try {
       const res = await api.post<MigrationRepairQueued>(`/migrations/${m.id}/${what}`);
-      if (what === "approve" && res?.queued) {
+      if (res?.queued) {
         toast("info", res.message ?? "Asking the manager to re-read this artist.");
+      } else if (what === "release-files") {
+        toast("info", "Files marked for re-identification · migration applied");
       } else {
         toast("info", what === "approve" ? "Migration applied" : "Migration dismissed");
       }
@@ -310,8 +331,20 @@ export default function Migrations() {
 
       {queueTotal > 0 && (
         <div className="stack">
-          <h2 style={{ fontSize: 14 }}>Awaiting review ({queueTotal})</h2>
-          <QueueTable rows={queueRows} browse={browse} busy={busy} act={act} />
+          <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline" }}>
+            <h2 style={{ fontSize: 14 }}>Awaiting review ({queueTotal})</h2>
+            {/* A view, not a filter: the same rows, ordered so an artist's albums sit
+                together under one header — which is how a manager refresh settles them. */}
+            <button
+              className={grouped ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
+              aria-pressed={grouped}
+              title={grouped ? "Grouped by artist. Click to list by date found." : "Group the queue by artist"}
+              onClick={() => browse.setSort(grouped ? "detected" : "artist", grouped ? "desc" : "asc")}
+            >
+              {grouped ? "Grouped by artist" : "Group by artist"}
+            </button>
+          </div>
+          <QueueTable rows={queueRows} browse={browse} busy={busy} act={act} grouped={grouped} />
           <Pager paging={queuePaging} unit="changes" />
         </div>
       )}
@@ -341,11 +374,13 @@ function QueueTable({
   browse,
   busy,
   act,
+  grouped,
 }: {
   rows: MusicbrainzMigration[];
   browse: ReturnType<typeof useBrowse>;
   busy: string | null;
-  act: (m: MusicbrainzMigration, what: "approve" | "dismiss") => () => Promise<void>;
+  act: (m: MusicbrainzMigration, what: MigrationAction) => () => Promise<void>;
+  grouped: boolean;
 }) {
   return (
     <div className="tablewrap">
@@ -360,12 +395,66 @@ function QueueTable({
           </tr>
         </thead>
         <tbody>
-          {rows.map((m) => (
-            <QueueRow key={m.id} m={m} busy={busy} act={act} />
+          {rows.map((m, i) => (
+            <Fragment key={m.id}>
+              {grouped && (i === 0 || (rows[i - 1].artist_mb_id ?? "") !== (m.artist_mb_id ?? "")) && (
+                <ArtistGroupHead rows={rows.filter((r) => (r.artist_mb_id ?? "") === (m.artist_mb_id ?? ""))} busy={busy} act={act} />
+              )}
+              <QueueRow m={m} busy={busy} act={act} />
+            </Fragment>
           ))}
         </tbody>
       </table>
     </div>
+  );
+}
+
+/**
+ * The header over one artist's rows in the grouped queue: who, how many are waiting
+ * (across the whole queue, not this page — the page may cut a group in two), and the
+ * one press that settles every album a refresh can, when any of them is waiting on the
+ * manager. Pressing it approves one such row, which asks the manager about the artist;
+ * the rest follow from the same answer.
+ */
+function ArtistGroupHead({
+  rows,
+  busy,
+  act,
+}: {
+  rows: MusicbrainzMigration[];
+  busy: string | null;
+  act: (m: MusicbrainzMigration, what: MigrationAction) => () => Promise<void>;
+}) {
+  const first = rows[0];
+  const refreshable = rows.find((r) => r.needs_manager_refresh && !isWorking(r));
+  const working = rows.some(isWorking);
+  const waiting = Math.max(first.artist_open ?? 0, rows.length);
+  return (
+    <tr className="group-row">
+      <td colSpan={5}>
+        <div className="row" style={{ justifyContent: "space-between", alignItems: "center", gap: 12, padding: "8px 12px" }}>
+          <div className="row" style={{ gap: 8, alignItems: "baseline", fontSize: 12 }}>
+            {first.artist_mb_id && first.artist_name ? (
+              <Link to={`/collection/${first.artist_mb_id}`} style={{ fontWeight: 600 }}>{first.artist_name}</Link>
+            ) : (
+              <span className="dim" style={{ fontWeight: 600 }}>No artist in the collection</span>
+            )}
+            <span className="dim mono" style={{ fontSize: 11 }}>{waiting} waiting</span>
+            {working && <span className="dim" style={{ fontSize: 11 }}>· the manager is re-reading this artist</span>}
+          </div>
+          {refreshable && (
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={busy !== null}
+              title="Ask the manager to re-read this artist once. Every album here it can correct settles from that one answer."
+              onClick={act(refreshable, "approve")}
+            >
+              Ask the manager
+            </button>
+          )}
+        </div>
+      </td>
+    </tr>
   );
 }
 
@@ -376,7 +465,7 @@ function QueueRow({
 }: {
   m: MusicbrainzMigration;
   busy: string | null;
-  act: (m: MusicbrainzMigration, what: "approve" | "dismiss") => () => Promise<void>;
+  act: (m: MusicbrainzMigration, what: MigrationAction) => () => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const working = isWorking(m);
@@ -390,6 +479,10 @@ function QueueRow({
   // is disabled rather than offering an action that cannot go anywhere. The blocker is
   // the title, because a disabled button is exactly where the reason gets asked for.
   const stuck = Boolean(m.blocker) && !m.needs_manager_refresh;
+  // The one stuck state with a remedy here: files still resolving to an album whose ID
+  // is gone. See releaseMigrationFiles for what the press does under each manager.
+  const filesHold = stuck && m.owned && m.entity_type === "release_group" && m.kind === "deleted";
+  const [releasing, setReleasing] = useState(false);
 
   return (
     <>
@@ -437,6 +530,18 @@ function QueueRow({
         </td>
         <td>
           <div className="row" style={{ justifyContent: "flex-end" }}>
+            {/* The fix the blocker names, as a control: the album is held because files
+                still resolve to it. Confirmed first — it changes what those files are. */}
+            {filesHold && (
+              <button
+                className="btn btn-secondary btn-sm"
+                disabled={busy === m.id || working}
+                onClick={() => setReleasing(true)}
+                title="Re-identify the files that still resolve to this album, so the change can be applied"
+              >
+                Re-identify files
+              </button>
+            )}
             <button
               className="btn btn-ghost btn-sm"
               disabled={busy === m.id || working}
@@ -454,6 +559,32 @@ function QueueRow({
               {busy === m.id ? "Working…" : primary}
             </button>
           </div>
+            {releasing && (
+              <ConfirmDialog
+                title="Re-identify files"
+                busy={busy === m.id}
+                confirmLabel="Re-identify files"
+                body={
+                  <>
+                    <span>
+                      {m.files_on_disk} {m.files_on_disk === 1 ? "file still resolves" : "files still resolve"} to{" "}
+                      <strong>{m.name || "this album"}</strong>, whose ID no longer exists.
+                    </span>
+                    <span>
+                      In a library Autotaggerr manages, the files are marked as needing re-identification and the change is
+                      applied now. Their tags are left alone, and they wait under Items → Unmatched to be attached. In a
+                      library a manager governs, the manager is asked to re-read the artist and the files are read again from
+                      it — the manager decides what they become.
+                    </span>
+                  </>
+                }
+                onConfirm={async () => {
+                  await act(m, "release-files")();
+                  setReleasing(false);
+                }}
+                onCancel={() => setReleasing(false)}
+              />
+            )}
         </td>
       </tr>
       {/* The explanation belongs to the row above it, so it is styled as part of that

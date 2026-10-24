@@ -387,3 +387,57 @@ func waitUntil(t *testing.T, cond func() bool) {
 		time.Sleep(5 * time.Millisecond)
 	}
 }
+
+// TestPassPrunesAlbumsTheDiscographyDropped: pruning used to run only on a discography
+// sync, pressed per artist, so an artist nobody synced kept albums merged away
+// upstream forever. The pass already re-reads every artist's discography, and that is
+// all pruning needs — under its usual guards, so an album with files is left alone.
+func TestPassPrunesAlbumsTheDiscographyDropped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if strings.HasPrefix(req.URL.Path, "/release-group") {
+			fmt.Fprint(w, `{"release-group-count":1,"release-group-offset":0,"release-groups":[{"id":"rg-live","title":"Live","primary-type":"Album"}]}`)
+			return
+		}
+		http.NotFound(w, req)
+	}))
+	t.Cleanup(srv.Close)
+	modules.SetMusicBrainzBaseURLForTest(t, srv.URL)
+	modules.SetMusicBrainzRateLimit(1000)
+	t.Cleanup(func() { modules.SetMusicBrainzRateLimit(1) })
+
+	db := testDB(t)
+	for _, row := range []any{
+		&models.CollectionArtist{MBID: "a-1", Name: "Band"},
+		&models.CollectionReleaseGroup{MBID: "rg-live", ArtistMBID: "a-1", Title: "Live"},
+		&models.CollectionReleaseGroup{MBID: "rg-merged", ArtistMBID: "a-1", Title: "Merged away"},
+		&models.CollectionReleaseGroup{MBID: "rg-owned", ArtistMBID: "a-1", Title: "On disk", Owned: true},
+	} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, rg := range []string{"rg-live", "rg-merged", "rg-owned"} {
+		if err := db.Create(&models.CollectionReleaseGroupArtist{ReleaseGroupMBID: rg, ArtistMBID: "a-1"}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	r := NewRunner(db, nil, models.ConfigStruct{})
+	r.meta = fakeMeta{}
+	res, err := r.Run(context.Background(), Scope{Title: "Metadata refresh", Artists: []string{"a-1"}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if res.PrunedGroups != 1 {
+		t.Errorf("pruned = %d, want 1", res.PrunedGroups)
+	}
+	var left []string
+	db.Model(&models.CollectionReleaseGroup{}).Order("mb_id").Pluck("mb_id", &left)
+	if strings.Join(left, ",") != "rg-live,rg-owned" {
+		t.Errorf("albums left = %v, want the live one and the one with files", left)
+	}
+	if !strings.Contains(summaryLine(res, 0), "1 album(s) MusicBrainz no longer lists pruned") {
+		t.Errorf("summary = %q", summaryLine(res, 0))
+	}
+}

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import {
+  ArtistDetail,
   CollectionArtist,
   CollectionDesire,
   CollectionReleaseGroup,
@@ -10,7 +11,7 @@ import {
   ReleaseTracks,
   ScanStatus,
 } from "../types";
-import { ErrorNote, Pill } from "../components/ui";
+import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { MBLink } from "../components/MBLink";
 import { mediaSummary } from "../components/mediaSummary";
@@ -52,6 +53,7 @@ export default function ReleaseGroup() {
 
   const [busy, setBusy] = useState(false);
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
+  const [sameAsk, setSameAsk] = useState(false);
   const browse = useBrowse("date", "asc");
 
   // Re-correlate queues on the shared job runner, so the global status is what says
@@ -299,6 +301,20 @@ export default function ReleaseGroup() {
               mean the library-wide form, which discards every manager-governed pin in
               it. Stays visible with nothing on disk — it is the control that explains
               why it cannot run — and disabled, because there are no folders to walk. */}
+          {/* Only on the shape a manager re-key leaves behind: an album the manager no
+              longer lists, beside the artist's ones it does. The sync pairs most of
+              these itself; this is for the ones it could not (a renamed album, two of
+              the same title, a re-key while a sync was failing). */}
+          {isLidarr && rg && !rg.in_catalog && (
+            <button
+              className="btn btn-ghost btn-sm"
+              disabled={busy || loading}
+              title={`${managerLabel} no longer lists this album. If it is a leftover from ${managerLabel} moving the album to a new ID, say which album it became.`}
+              onClick={() => setSameAsk(true)}
+            >
+              Same album as…
+            </button>
+          )}
           <button
             className="btn btn-ghost btn-sm"
             style={{ color: "var(--danger-text)" }}
@@ -314,6 +330,15 @@ export default function ReleaseGroup() {
           </button>
         </div>
       </div>
+
+      {sameAsk && rg && (
+        <SameAlbumDialog
+          artistMbid={mbid}
+          rg={rg}
+          manager={managerLabel}
+          onCancel={() => setSameAsk(false)}
+        />
+      )}
 
       {recorrelateAsk && (
         <RecorrelateDialog
@@ -786,5 +811,89 @@ function TrackPane({
         })}
       </div>
     </div>
+  );
+}
+
+/**
+ * Says that this album row is the same album as another of the artist's, under the ID
+ * the manager moved it to. The candidates are the artist's albums the manager does
+ * list; applying moves any want across and retires this row, the same as a re-key the
+ * sync pairs on its own. If something still claims this row — files on disk resolving
+ * to it — the change is recorded and waits on the Migrations page with that reason.
+ */
+function SameAlbumDialog({
+  artistMbid,
+  rg,
+  manager,
+  onCancel,
+}: {
+  artistMbid: string;
+  rg: CollectionReleaseGroup;
+  manager: string;
+  onCancel: () => void;
+}) {
+  const toast = useToast();
+  const navigate = useNavigate();
+  const artist = useFetch<ArtistDetail>(() => api.get(`/artists/${artistMbid}`), [artistMbid]);
+  const candidates = (artist.data?.release_groups ?? [])
+    .filter((g) => g.in_catalog && g.mb_id !== rg.mb_id)
+    .sort((a, b) => a.title.localeCompare(b.title));
+  const [target, setTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const confirm = async () => {
+    if (!target) return;
+    setBusy(true);
+    try {
+      const res = await api.post<{ applied: boolean; reason?: string }>(
+        `/artists/${artistMbid}/release-groups/${rg.mb_id}/same-as`,
+        { release_group_mb_id: target },
+      );
+      if (res.applied) {
+        toast("info", "Merged into the album under its new ID");
+        navigate(`/collection/${artistMbid}/${target}`, { replace: true });
+      } else {
+        toast("err", `Recorded, not applied yet: ${res.reason} — see Migrations`);
+        onCancel();
+      }
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ConfirmDialog
+      title="Same album as…"
+      busy={busy}
+      confirmLabel="Merge into this album"
+      confirmDisabled={!target}
+      body={
+        <>
+          <span>
+            <strong>{rg.title}</strong> is no longer listed by {manager}. If {manager} moved it to a new ID, pick the
+            album it became. Wants move to that album and this row is removed. No files are touched.
+          </span>
+          {artist.loading ? (
+            <span className="muted">Loading albums…</span>
+          ) : candidates.length === 0 ? (
+            <span className="muted">This artist has no other album {manager} lists.</span>
+          ) : (
+            <select className="select" value={target} onChange={(e) => setTarget(e.target.value)}>
+              <option value="">Choose the album…</option>
+              {candidates.map((g) => (
+                <option key={g.mb_id} value={g.mb_id}>
+                  {g.title}
+                  {g.first_release_date ? ` (${g.first_release_date.slice(0, 4)})` : ""}
+                </option>
+              ))}
+            </select>
+          )}
+        </>
+      }
+      onConfirm={confirm}
+      onCancel={onCancel}
+    />
   );
 }

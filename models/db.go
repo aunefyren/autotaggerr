@@ -214,6 +214,9 @@ func DataSourceCategory(sourceType string) string {
 //
 // An unknown type is returned unchanged rather than blanked: a source this build does
 // not know about is still better named badly than not at all.
+// MigrationSourceManual is the source of an identity change a person recorded by hand.
+const MigrationSourceManual = "manual"
+
 func DataSourceLabel(sourceType string) string {
 	switch sourceType {
 	case DataSourceTypeMusicBrainz:
@@ -228,6 +231,9 @@ func DataSourceLabel(sourceType string) string {
 	// an album is reported the same way MusicBrainz merging one is.
 	case ManagerTypeLidarr:
 		return "Lidarr"
+	// Nor a person, who can say two album rows are one (collection.MarkSameAlbum).
+	case MigrationSourceManual:
+		return "You"
 	}
 	return sourceType
 }

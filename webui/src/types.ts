@@ -594,6 +594,17 @@ export interface ArtistDetail {
   artist: CollectionArtist;
   release_groups: CollectionReleaseGroup[];
   desires: CollectionDesire[];
+  /**
+   * Present only when some of the artist's albums carry a MusicBrainz ID that resolves
+   * nowhere while a manager still lists them — what a manager refresh repairs.
+   */
+  repair?: {
+    albums: string[];
+    /** Managers whose artist-refresh setting means nobody can be asked. */
+    held_by?: string[];
+    /** A refresh for this artist is already queued or running. */
+    queued: boolean;
+  };
 }
 
 /** An enabled external login option, as shown on the login page. */
@@ -684,6 +695,9 @@ export interface MusicbrainzMigration {
   artist_name?: string;
   /** Open rows waiting on the same artist, this one included. One refresh settles all. */
   artist_open?: number;
+  /** Where the surviving entity of a merge or re-key sits in the collection, when it does. */
+  target_artist_mb_id?: string;
+  target_release_group_mb_id?: string;
 
   /** Files under this entity — what you own, not what approving would rewrite. */
   files_on_disk: number;

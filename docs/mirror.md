@@ -328,6 +328,11 @@ Two properties make a multi-hour first pass tolerable:
   Both draw on the same one-request-per-second budget, and the run is the one with a user
   attached.
 
+A discography the pass actually re-fetched — complete, not a stale fallback — is also what
+[release-group pruning](mb-migration.md#pruning-groups-that-merged-away) needs, so the pass prunes
+the artist's albums MusicBrainz no longer lists right there, under every guard pruning has, and
+reports *Albums pruned*. That used to wait for someone to sync the artist's discography by hand.
+
 Errors are counted and logged per entity, never fatal: one artist MusicBrainz cannot answer for
 must not end a pass with a thousand others to warm. A pass that hit some still finishes `ok` with
 a count — it is not a failed job.

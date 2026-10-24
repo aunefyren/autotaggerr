@@ -3,6 +3,7 @@ package routers
 import (
 	"fmt"
 	"net/http"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/events"
@@ -169,6 +170,132 @@ func (a *API) approveViaManagerRefresh(c *gin.Context, id uuid.UUID) bool {
 			"album is removed from the collection. Follow it in Activity.",
 	})
 	return true
+}
+
+// releaseMigrationFiles clears the one blocker that used to have no control: an album
+// whose ID resolves nowhere, held because files on disk still resolve to it.
+//
+// What clears it depends on who decides those files' identity:
+//
+//   - **Autotaggerr**: nobody else will. The files are marked as needing
+//     re-identification — what applying a release deletion does to its files — the
+//     collection is re-derived, and the migration is applied, all before answering.
+//     The files keep their tags and show under Items → Unmatched, ready to attach.
+//   - **A manager**: marking them would last only until the next run asked the manager
+//     again and got the dead ID back. The manager has to correct the album first, so a
+//     job refreshes the artist there, re-reads the album's files from it, and drains
+//     the queue (Runner.RepairAlbumFiles). That waits on the manager, so it is a 202.
+//
+// Both can apply to one album, which is split across a native and a managed library.
+func (a *API) releaseMigrationFiles(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	var row models.MusicbrainzMigration
+	if err := a.DB.First(&row, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "migration not found"})
+		return
+	}
+	review := migration.NewReview(a.DB, row)
+	if row.EntityType != models.MigrationEntityReleaseGroup || row.Kind != models.MigrationKindDeleted || !review.Owned {
+		c.JSON(http.StatusConflict, gin.H{"error": "no files on disk are holding this change"})
+		return
+	}
+
+	releases, err := collection.ReleaseGroupReleaseMBIDs(a.DB, row.OldMBID)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to find the album's editions"})
+		return
+	}
+	var items []models.LibraryItem
+	if len(releases) > 0 {
+		if err := a.DB.Where("mb_release_id IN ?", releases).Scopes(models.InDiskView).Find(&items).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load the album's files"})
+			return
+		}
+	}
+
+	var native []uuid.UUID
+	managed := 0
+	editable := map[uuid.UUID]bool{}
+	for _, item := range items {
+		ok, seen := editable[item.LibraryID]
+		if !seen {
+			var err error
+			if ok, err = a.libraryIdentityEditable(item.LibraryID); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve a library's manager"})
+				return
+			}
+			editable[item.LibraryID] = ok
+		}
+		if ok {
+			native = append(native, item.ID)
+		} else {
+			managed++
+		}
+	}
+
+	if managed > 0 {
+		if a.Scan == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+			return
+		}
+		if off, err := collection.RefreshTurnedOff(a.DB); err == nil && len(off) > 0 {
+			c.JSON(http.StatusConflict, gin.H{"error": "these files are the manager's, and artist refresh is turned off for " +
+				strings.Join(off, ", ") + " — turn it on under Managers, or refresh the artist in Lidarr and re-correlate it"})
+			return
+		}
+	}
+
+	if len(native) > 0 {
+		if err := a.DB.Model(&models.LibraryItem{}).Where("id IN ?", native).Updates(map[string]any{
+			"status":               models.LibraryItemStatusUnmatched,
+			"error":                "the album this file resolved to no longer exists on " + row.SourceLabel() + " — re-identify this file",
+			"last_error_transient": false,
+		}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to mark the files"})
+			return
+		}
+	}
+
+	if managed > 0 {
+		if _, err := migration.MarkRepairQueued(a.DB, review.ArtistMBID); err != nil {
+			logger.Log.Warnf("failed to mark migrations as repairing for %s: %s", review.ArtistMBID, err.Error())
+		}
+		a.Scan.RepairAlbumFiles(row.OldMBID, review.ArtistMBID)
+		c.JSON(http.StatusAccepted, gin.H{
+			"queued":  true,
+			"marked":  len(native),
+			"managed": managed,
+			"message": fmt.Sprintf("Asking the manager to re-read %s, then re-reading %d of its files from it. "+
+				"If the manager corrects the album, the files follow and this entry settles. Follow it in Activity.",
+				nameOr(review.ArtistName, "the artist"), managed),
+		})
+		return
+	}
+
+	// Native only: settle it now. Re-derived first, so the album no longer reads as
+	// owned when the migration is applied.
+	if _, err := collection.RebuildScoped(a.DB, collection.RebuildScope{ArtistMBID: review.ArtistMBID}); err != nil {
+		logger.Log.Warnf("failed to re-derive %s after marking files: %s", review.ArtistMBID, err.Error())
+	}
+	applied, err := migration.ApplyByID(a.DB, id)
+	if err != nil {
+		a.recordMigrationDecision(applied, models.EventItemStatusError, err.Error())
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error(), "marked": len(native)})
+		return
+	}
+	a.recordMigrationDecision(applied, models.EventItemStatusMigrated, "")
+	a.rebuildAfterMigration()
+	c.JSON(http.StatusOK, gin.H{"marked": len(native), "migration": applied})
+}
+
+func nameOr(name, fallback string) string {
+	if name == "" {
+		return fallback
+	}
+	return name
 }
 
 // dismissMigration records that a detected change was deliberately not applied.

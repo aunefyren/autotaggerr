@@ -350,3 +350,75 @@ func TestDiscoverResolvesAMovedRowThatHadNoIdentity(t *testing.T) {
 		t.Errorf("row = %+v, want the same row, now matched", got)
 	}
 }
+
+// TestDiscoverFindsAnAlbumMovedUnderAnotherArtist: a scoped walk covers the artist's
+// folders as indexed, so an album the manager moved under a different artist folder
+// vanished from the walk without appearing in it, and the Scan after pruned its rows.
+// The pass now looks for unpaired rows in the rest of the library — carrying them, and
+// touching nothing else out there.
+func TestDiscoverFindsAnAlbumMovedUnderAnotherArtist(t *testing.T) {
+	db, library := discoverFixture(t)
+	mtime := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	oldPath := filepath.Join(library.Path, "Artist", "Album (2020)", "01 Intro.flac")
+	newPath := filepath.Join(library.Path, "Artist feat. Guest", "Album (2020)", "01 Intro.flac")
+	bystander := filepath.Join(library.Path, "Someone Else", "Record (1999)", "01 Song.flac")
+	writeAudio(t, filepath.Join(library.Path, "Artist", "Other (2018)", "01 Kept.flac"), "kept", mtime)
+	writeAudio(t, newPath, "moved bytes", mtime)
+	writeAudio(t, bystander, "bystander", mtime)
+	indexRow(t, db, library, oldPath, int64(len("moved bytes")), mtime, nil)
+
+	manager := &answerManager{}
+	stats, err := discoverWith(db, library, manager, []string{filepath.Join(library.Path, "Artist")}, nil, 1)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if stats.Moved != 1 {
+		t.Errorf("stats = %+v, want the moved album's row carried", stats)
+	}
+	if item, ok := itemAt(t, db, newPath); !ok || item.MBReleaseID != "rel-old" {
+		t.Errorf("row at the new path = %+v (found %v), want the carried identity", item, ok)
+	}
+	if manager.wasAsked(newPath) || manager.wasAsked(bystander) {
+		t.Error("files outside the scope were resolved; the wider look only carries")
+	}
+	if _, ok := itemAt(t, db, bystander); ok {
+		t.Error("an unrelated file outside the scope was indexed")
+	}
+}
+
+// TestDiscoverCarriesACopyThatResetTheTime: a move across filesystems rewrites the
+// file and resets its modification time, so size and time find nothing. Size, name and
+// album folder still identify it — the same bytes under the same names somewhere else.
+func TestDiscoverCarriesACopyThatResetTheTime(t *testing.T) {
+	db, library := discoverFixture(t)
+	then := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	oldPath := filepath.Join(library.Path, "Artist", "Album (2020)", "01 Intro.flac")
+	newPath := filepath.Join(library.Path, "Artist (2)", "Album (2020)", "01 Intro.flac")
+	writeAudio(t, newPath, "copied bytes", then.Add(48*time.Hour))
+	indexRow(t, db, library, oldPath, int64(len("copied bytes")), then, nil)
+
+	manager := &answerManager{}
+	stats, err := discoverWith(db, library, manager, nil, nil, 1)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if stats.Moved != 1 || manager.wasAsked(newPath) {
+		t.Errorf("stats = %+v, asked = %v; want the copy carried, not resolved", stats, manager.wasAsked(newPath))
+	}
+
+	// The album folder is part of the key: the same name and size under a different
+	// album is a different file as far as this pass can tell, and goes to the manager.
+	db2, library2 := discoverFixture(t)
+	oldPath2 := filepath.Join(library2.Path, "Artist", "Album (2020)", "01 Intro.flac")
+	newPath2 := filepath.Join(library2.Path, "Artist", "Other Album (2021)", "01 Intro.flac")
+	writeAudio(t, newPath2, "copied bytes", then.Add(48*time.Hour))
+	indexRow(t, db2, library2, oldPath2, int64(len("copied bytes")), then, nil)
+	manager2 := &answerManager{}
+	stats, err = discoverWith(db2, library2, manager2, nil, nil, 1)
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if stats.Moved != 0 || !manager2.wasAsked(newPath2) {
+		t.Errorf("stats = %+v; a file under a different album must be resolved, not carried", stats)
+	}
+}

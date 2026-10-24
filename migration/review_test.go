@@ -265,3 +265,26 @@ func TestReviewNamesItsSource(t *testing.T) {
 		t.Errorf("problem = %q, want it to name the source that reported the change", r.Problem)
 	}
 }
+
+// TestReviewPlacesTheTarget: a re-key's resolution says the album moved, and the row
+// can now say where to — the album under its new ID, when the collection holds it.
+func TestReviewPlacesTheTarget(t *testing.T) {
+	db := testDB(t)
+	storeGroup(t, db, "rg-new", "artist-1", "Heatstroke", nil)
+	m := models.MusicbrainzMigration{
+		EntityType: models.MigrationEntityReleaseGroup, OldMBID: "rg-old", NewMBID: "rg-new",
+		Kind: models.MigrationKindRedirect, Status: models.MigrationStatusResolved,
+	}
+	if err := db.Create(&m).Error; err != nil {
+		t.Fatal(err)
+	}
+	r := NewReview(db, m)
+	if r.TargetArtistMBID != "artist-1" || r.TargetReleaseGroupMBID != "rg-new" {
+		t.Errorf("target = %q/%q, want artist-1/rg-new", r.TargetArtistMBID, r.TargetReleaseGroupMBID)
+	}
+
+	m.NewMBID = "rg-elsewhere"
+	if r := NewReview(db, m); r.TargetArtistMBID != "" || r.TargetReleaseGroupMBID != "" {
+		t.Error("a target the collection does not hold must not be linked")
+	}
+}
