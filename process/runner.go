@@ -893,7 +893,7 @@ func (r *Runner) runScope(scope Scope) {
 
 	refreshSet := modules.NewAlbumRefreshSet(nil)
 	detail := components.NewDetailCollector(r.detailRetention)
-	var processed, unchanged, tagsWritten, removed int
+	var processed, unchanged, tagsWritten, removed, moved int
 	var errorFiles []string
 	libraryNames := make([]string, 0, len(scope.Targets))
 
@@ -954,6 +954,23 @@ func (r *Runner) runScope(scope Scope) {
 				r.setCurrent(a)
 			}
 		}
+		// Carry moved files onto their new paths before the walk reaches them, so a
+		// move keeps its identity and pin instead of being a deleted row plus a fresh
+		// resolve — and a narrowed run finds an album moved out of its scope. What it
+		// could not pair is all the prune below needs to check; on failure the prune
+		// checks everything, as it always did.
+		var pruneOnly map[uuid.UUID]bool
+		carried, stranded, carryErr := components.CarryMovedFiles(r.db, library, target.Roots)
+		if carryErr != nil {
+			logger.Log.Warnf("failed to look for moved files in %q: %s", library.Name, carryErr.Error())
+		} else {
+			pruneOnly = make(map[uuid.UUID]bool, len(stranded))
+			for _, row := range stranded {
+				pruneOnly[row.ID] = true
+			}
+		}
+		moved += carried
+
 		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.Concurrency(), scope.Force, onFile)
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library.Path + "'. error: " + err.Error())
@@ -976,7 +993,7 @@ func (r *Runner) runScope(scope Scope) {
 		// where "the file is not there" means "we could not look", and pruning on it
 		// would delete rows for files that are present. A failure here is logged and
 		// the run carries on — a stale index row is a wrong count, not a lost file.
-		n, err := pruneMissingItems(r.db, library, target.Roots)
+		n, err := pruneMissingItems(r.db, library, target.Roots, pruneOnly)
 		if err != nil {
 			logger.Log.Warnf("failed to prune missing files in %q: %s", library.Name, err.Error())
 		}
@@ -1027,6 +1044,7 @@ func (r *Runner) runScope(scope Scope) {
 		unchanged:   unchanged,
 		tagsWritten: tagsWritten,
 		removed:     removed,
+		moved:       moved,
 		errorFiles:  errorFiles,
 		drift:       drift,
 		libraries:   libraryNames,
@@ -1225,6 +1243,7 @@ type taggingResult struct {
 	unchanged   int
 	tagsWritten int
 	removed     int
+	moved       int
 	errorFiles  []string
 	drift       releaseRefresh
 	libraries   []string
@@ -1259,6 +1278,9 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 	if retrying > 0 {
 		summary += fmt.Sprintf(" (%d will retry)", retrying)
 	}
+	if res.moved > 0 {
+		summary += fmt.Sprintf(" · %d moved", res.moved)
+	}
 	if res.removed > 0 {
 		summary += fmt.Sprintf(" · %d removed", res.removed)
 	}
@@ -1280,6 +1302,7 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 		{Label: "Files unchanged", Value: res.unchanged, Kind: models.EventStatMuted},
 		{Label: "Files changed", Value: changed, Kind: models.EventStatNotable, Filter: models.EventItemStatusChanged},
 		{Label: "Tags written", Value: res.tagsWritten},
+		{Label: "Files moved", Value: res.moved},
 		{Label: "Files removed", Value: res.removed},
 	}
 	if res.drift.changedReleases > 0 {
@@ -1300,6 +1323,7 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 		"changed":          changed,
 		"tags_written":     res.tagsWritten,
 		"files_removed":    res.removed,
+		"files_moved":      res.moved,
 		"errors":           len(res.errorFiles),
 		"errors_transient": retrying,
 		"error_files":      recorded,

@@ -343,3 +343,44 @@ func ids(rows []models.MusicbrainzMigration) []string {
 	}
 	return out
 }
+
+// TestAVanishedAlbumNamesWhatItBecame: the drain remembers whose album a row is about
+// while the row exists; when a manager re-keys it and the old row goes, the row closes
+// pointing at the one same-titled album under that artist — and at nothing when two
+// fit, since a link to a coin flip is worse than none.
+func TestAVanishedAlbumNamesWhatItBecame(t *testing.T) {
+	db := testDB(t)
+	storeGroup(t, db, "rg-old", "artist-1", "Heatstroke", func(rg *models.CollectionReleaseGroup) { rg.InCatalog = true })
+	m := pendingDeletion(t, db, models.MigrationEntityReleaseGroup, "rg-old")
+
+	// First pass: held for a repair, and the artist is remembered.
+	if _, err := ProcessPending(db, Policy{}); err != nil {
+		t.Fatal(err)
+	}
+	if row := reload(t, db, m.ID); row.SubjectArtistMBID != "artist-1" || row.Name != "Heatstroke" {
+		t.Fatalf("remembered %q / %q, want artist-1 / Heatstroke", row.SubjectArtistMBID, row.Name)
+	}
+
+	// The manager re-keys it: the old row goes, a new one arrives under a new ID.
+	if err := db.Where("mb_id = ?", "rg-old").Delete(&models.CollectionReleaseGroup{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	storeGroup(t, db, "rg-new", "artist-1", "Heatstroke", nil)
+
+	if _, err := ProcessPending(db, Policy{}); err != nil {
+		t.Fatal(err)
+	}
+	row := reload(t, db, m.ID)
+	if row.Status != models.MigrationStatusResolved || row.NewMBID != "rg-new" {
+		t.Fatalf("row = %s → %q, want resolved pointing at rg-new", row.Status, row.NewMBID)
+	}
+	if r := NewReview(db, row); r.TargetReleaseGroupMBID != "rg-new" || r.ArtistMBID != "artist-1" {
+		t.Errorf("review target = %q, artist = %q; want a link to the album it became", r.TargetReleaseGroupMBID, r.ArtistMBID)
+	}
+
+	// Two candidates: no guess.
+	storeGroup(t, db, "rg-other", "artist-1", "Heatstroke", nil)
+	if target, _ := rekeyTarget(db, row); target != "" {
+		t.Errorf("target = %q with two same-titled albums, want none", target)
+	}
+}

@@ -630,3 +630,59 @@ func TestMarkSameAlbum(t *testing.T) {
 		t.Errorf("source = %q, want the change recorded as made by hand", m.Source)
 	}
 }
+
+// TestMarkSameArtist: an artist Lidarr stopped listing whose re-key changed the name
+// too cannot be paired by the sync, so a person picks the artist Lidarr lists now. The
+// candidates come from the manager, the join applies at once, and the albums follow.
+func TestMarkSameArtist(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	lidarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		_ = json.NewEncoder(w).Encode([]models.LidarrArtist{
+			{ID: 1, ForeignArtistID: "art-kept", Name: "Kept"},
+			{ID: 2, ForeignArtistID: "art-renamed", Name: "The New Name"},
+		})
+	}))
+	t.Cleanup(lidarr.Close)
+	if err := api.DB.Create(&models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true,
+		LidarrBaseURL: lidarr.URL, LidarrAPIKey: "k"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range []any{
+		&models.CollectionArtist{MBID: "art-kept", Name: "Kept", ManagedBy: models.ManagedByLidarr},
+		&models.CollectionArtist{MBID: "art-old", Name: "Old Name", ManagedBy: models.ManagedByLidarr},
+		&models.CollectionReleaseGroup{MBID: "rg-1", ArtistMBID: "art-old", Title: "Album"},
+	} {
+		if err := api.DB.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	w := do(r, "GET", "/api/v1/artists/art-old/manager-candidates", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("candidates = %d: %s", w.Code, w.Body.String())
+	}
+	var candidates []struct {
+		MBID string `json:"mb_id"`
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &candidates); err != nil {
+		t.Fatal(err)
+	}
+	if len(candidates) != 1 || candidates[0].MBID != "art-renamed" {
+		t.Fatalf("candidates = %+v, want only the artist the collection does not hold", candidates)
+	}
+
+	w = do(r, "POST", "/api/v1/artists/art-old/same-as", token, map[string]string{"artist_mb_id": "art-renamed"})
+	if w.Code != http.StatusOK {
+		t.Fatalf("same-as = %d: %s", w.Code, w.Body.String())
+	}
+	var rg models.CollectionReleaseGroup
+	if err := api.DB.Where("mb_id = ?", "rg-1").First(&rg).Error; err != nil || rg.ArtistMBID != "art-renamed" {
+		t.Errorf("album artist = %q (%v), want it re-pointed at art-renamed", rg.ArtistMBID, err)
+	}
+	var m models.MusicbrainzMigration
+	if err := api.DB.Where("old_mb_id = ?", "art-old").First(&m).Error; err != nil || m.Source != models.MigrationSourceManual {
+		t.Errorf("migration = %+v (%v), want a manual artist redirect", m, err)
+	}
+}

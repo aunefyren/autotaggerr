@@ -217,6 +217,8 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/artists/:mbid/retag", a.retagArtist)
 		protected.POST("/artists/:mbid/recorrelate", a.recorrelateArtist)
 		protected.POST("/artists/:mbid/repair-albums", a.repairArtistAlbums)
+		protected.GET("/artists/:mbid/manager-candidates", a.managerArtistCandidates)
+		protected.POST("/artists/:mbid/same-as", a.markSameArtist)
 		protected.GET("/search/artists", a.searchArtists)
 		protected.POST("/artists", a.addArtist)
 		protected.GET("/release-groups/:mbid/releases", a.releaseGroupEditions)

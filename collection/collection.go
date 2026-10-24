@@ -2015,7 +2015,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			// "the manager does not have this" rather than "we never asked".
 			now := time.Now()
 			if err := db.Model(&models.CollectionArtist{}).Where("mb_id = ?", la.ForeignArtistID).
-				Update("last_synced_at", now).Error; err != nil {
+				Updates(map[string]any{"last_synced_at": now, "manager_missing_at": nil}).Error; err != nil {
 				logger.Log.Warnf("failed to set last_synced_at for artist %s: %s", la.ForeignArtistID, err.Error())
 			}
 			stats.ArtistsSynced++
@@ -2068,6 +2068,15 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 					}
 				}
 				stats.Unknown = kept
+			}
+		}
+		// What is still unknown is recorded on the artist, for their page to say and to
+		// offer a join from; a first sighting keeps its date across passes.
+		if len(stats.Unknown) > 0 {
+			if err := db.Model(&models.CollectionArtist{}).
+				Where("mb_id IN ? AND manager_missing_at IS NULL", stats.Unknown).
+				Update("manager_missing_at", time.Now()).Error; err != nil {
+				logger.Log.Warnf("failed to record artists the manager no longer lists: %s", err.Error())
 			}
 		}
 	}
@@ -2304,6 +2313,92 @@ func recordArtistRekey(db *gorm.DB, rk rekey) bool {
 	}
 	logger.Log.Infof("Lidarr re-keyed artist %q from %s to %s", rk.title, rk.oldMBID, rk.newMBID)
 	return true
+}
+
+// ManagerCandidate is an artist a manager lists that the collection does not hold —
+// what an artist the manager stopped listing may have become.
+type ManagerCandidate struct {
+	MBID    string `json:"mb_id"`
+	Name    string `json:"name"`
+	Manager string `json:"manager"`
+}
+
+// ManagerArtistCandidates asks every enabled Lidarr manager for the artists it lists
+// that the collection does not hold, sorted by name. One request per manager, made
+// when someone opens the join dialog — not on every artist page view.
+func ManagerArtistCandidates(db *gorm.DB) ([]ManagerCandidate, error) {
+	var managers []models.Manager
+	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).Find(&managers).Error; err != nil {
+		return nil, err
+	}
+	var held []string
+	if err := db.Model(&models.CollectionArtist{}).Pluck("mb_id", &held).Error; err != nil {
+		return nil, err
+	}
+	inCollection := make(map[string]bool, len(held))
+	for _, id := range held {
+		inCollection[id] = true
+	}
+	seen := map[string]bool{}
+	var out []ManagerCandidate
+	var lastErr error
+	for _, m := range managers {
+		if strings.TrimSpace(m.LidarrBaseURL) == "" || strings.TrimSpace(m.LidarrAPIKey) == "" {
+			continue
+		}
+		cookie := m.LidarrHeaderCookie
+		artists, err := modules.NewLidarrClient(m.LidarrBaseURL, m.LidarrAPIKey, &cookie).GetArtists()
+		if err != nil {
+			lastErr = fmt.Errorf("%s: %w", m.Name, err)
+			continue
+		}
+		for _, la := range artists {
+			if la.ForeignArtistID == "" || inCollection[la.ForeignArtistID] || seen[la.ForeignArtistID] {
+				continue
+			}
+			seen[la.ForeignArtistID] = true
+			out = append(out, ManagerCandidate{MBID: la.ForeignArtistID, Name: la.Name, Manager: m.Name})
+		}
+	}
+	if len(out) == 0 && lastErr != nil {
+		return nil, lastErr
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
+	return out, nil
+}
+
+// MarkSameArtist records, on a person's word, that a collection artist the manager no
+// longer lists is the artist it lists under newMBID — the join detectArtistRekeys
+// makes by name when it can, for a re-key that changed the name too. It writes the
+// same artist redirect row, sourced to the person, for the caller to apply.
+func MarkSameArtist(db *gorm.DB, oldMBID, newMBID, name string) (models.MusicbrainzMigration, error) {
+	var row models.MusicbrainzMigration
+	if oldMBID == newMBID || newMBID == "" {
+		return row, errors.New("pick a different artist to join this one to")
+	}
+	var n int64
+	if err := db.Model(&models.MusicbrainzMigration{}).
+		Where("entity_type = ? AND old_mb_id = ?", models.MigrationEntityArtist, oldMBID).Count(&n).Error; err != nil {
+		return row, err
+	}
+	if n > 0 {
+		// A row exists — the sync's own pairing, or an earlier MusicBrainz merge. Take
+		// it over if it is still open; a settled one was decided already.
+		if err := db.Where("entity_type = ? AND old_mb_id = ?", models.MigrationEntityArtist, oldMBID).First(&row).Error; err != nil {
+			return row, err
+		}
+		if row.Status != models.MigrationStatusPending && row.Status != models.MigrationStatusFailed {
+			return row, errors.New("this artist already has a settled identity change")
+		}
+		row.Kind, row.NewMBID, row.Source, row.Error = models.MigrationKindRedirect, newMBID, models.MigrationSourceManual, ""
+		return row, db.Save(&row).Error
+	}
+	row = models.MusicbrainzMigration{
+		EntityType: models.MigrationEntityArtist, OldMBID: oldMBID, NewMBID: newMBID,
+		Kind: models.MigrationKindRedirect, Status: models.MigrationStatusPending,
+		Source: models.MigrationSourceManual, Name: name, DetectedAt: time.Now(),
+	}
+	return row, db.Create(&row).Error
 }
 
 // Why MarkSameAlbum refuses. Each names what would have to change first.

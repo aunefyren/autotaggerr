@@ -79,7 +79,11 @@ func TestLidarrWriteAudioTags(t *testing.T) {
 // links dropped, and the download URL — which carries an indexer API key — removed.
 // What is left is every field the follower reads, in the shape Lidarr actually sends:
 // the event type as a camelCase name, the date as RFC 3339, and the artist (asked for
-// with includeArtist) under `artistName` / `foreignArtistId` / `path`.
+// with includeArtist) under `artistName` / `foreignArtistId` / `path`. The same
+// instance's import window confirmed the rest: `path` on every artist block, and the
+// event names `grabbed`, `downloadImported`, `trackFileImported` and
+// `trackFileRetagged` — the last arriving one per imported file, which is why it must
+// not count as a file move.
 func TestLidarrHistoryDecodesALiveResponse(t *testing.T) {
 	const live = `[
   {

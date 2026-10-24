@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, Manager, ScanStatus } from "../types";
@@ -452,6 +452,10 @@ export default function Artist() {
           </div>
         )}
       </div>
+
+      {artist?.manager_missing_at && artist.managed_by !== "autotaggerr" && (
+        <MissingFromManagerNote artist={artist} manager={managerLabel} />
+      )}
 
       {detail.data?.repair && (
         <RepairNote repair={detail.data.repair} mbid={mbid} onQueued={() => setTimeout(refresh, 300)} />
@@ -1283,5 +1287,104 @@ function RepairNote({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * The manager no longer lists this artist. Usually that is the manager having moved
+ * them to a new MBID — which the sync pairs by itself when the name stayed the same,
+ * so what reaches this notice is mostly a re-key that renamed them too. Joining them
+ * to the artist the manager lists now carries the albums, editions and wants across.
+ */
+function MissingFromManagerNote({ artist, manager }: { artist: CollectionArtist; manager: string }) {
+  const [asking, setAsking] = useState(false);
+  return (
+    <div className="note note-warn">
+      <strong>{manager} no longer lists this artist</strong>
+      <span>
+        Noticed by the sync on {new Date(artist.manager_missing_at!).toLocaleDateString()}. If {manager} moved them to
+        a new ID — often with a new name — join them to the artist it lists now, and their albums and wants follow.
+        Otherwise, re-add them in {manager}, or detach them from it under Settings.
+      </span>
+      <div className="row" style={{ marginTop: 6 }}>
+        <button className="btn btn-secondary btn-sm" onClick={() => setAsking(true)}>Same artist as…</button>
+      </div>
+      {asking && <SameArtistDialog artist={artist} manager={manager} onCancel={() => setAsking(false)} />}
+    </div>
+  );
+}
+
+function SameArtistDialog({
+  artist,
+  manager,
+  onCancel,
+}: {
+  artist: CollectionArtist;
+  manager: string;
+  onCancel: () => void;
+}) {
+  const toast = useToast();
+  const navigate = useNavigate();
+  const candidates = useFetch<{ mb_id: string; name: string; manager: string }[]>(
+    () => api.get(`/artists/${artist.mb_id}/manager-candidates`),
+    [artist.mb_id],
+  );
+  const [filter, setFilter] = useState("");
+  const [target, setTarget] = useState("");
+  const [busy, setBusy] = useState(false);
+  const shown = (candidates.data ?? []).filter((c) => c.name.toLowerCase().includes(filter.trim().toLowerCase()));
+
+  const confirm = async () => {
+    setBusy(true);
+    try {
+      const res = await api.post<{ artist_mb_id: string }>(`/artists/${artist.mb_id}/same-as`, { artist_mb_id: target });
+      toast("info", "Joined — the albums now sit under the artist's new ID");
+      navigate(`/collection/${res.artist_mb_id}`, { replace: true });
+    } catch (e) {
+      toast("err", errMsg(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <ConfirmDialog
+      title="Same artist as…"
+      busy={busy}
+      confirmLabel="Join artists"
+      confirmDisabled={!target}
+      body={
+        <>
+          <span>
+            Pick the artist {manager} lists now that <strong>{artist.name}</strong> became. Their albums, editions and
+            wants move to that ID and follow settings are merged. No files are touched.
+          </span>
+          {candidates.err ? (
+            <ErrorNote message={candidates.err} />
+          ) : candidates.loading ? (
+            <span className="muted">Asking {manager} for its artists…</span>
+          ) : (candidates.data ?? []).length === 0 ? (
+            <span className="muted">{manager} lists no artist the collection does not already hold.</span>
+          ) : (
+            <>
+              <input
+                className="input"
+                placeholder="Filter by name…"
+                value={filter}
+                onChange={(e) => setFilter(e.target.value)}
+              />
+              <select className="select" size={8} value={target} onChange={(e) => setTarget(e.target.value)}>
+                {shown.map((c) => (
+                  <option key={c.mb_id} value={c.mb_id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+        </>
+      }
+      onConfirm={confirm}
+      onCancel={onCancel}
+    />
   );
 }

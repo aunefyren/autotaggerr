@@ -68,13 +68,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   the per-event limit by design: the drift rows are adopted whole (`DetailCollector.Adopt`) so a
   big walk cannot starve them.
 
-- **A scoped *Process* still loses an album moved under another artist.** Discovery now carries
-  those rows ([scanning.md](scanning.md#scan-can-walk-the-disk-when-asked)), but Process does not
-  carry moves at all: its walk resolves what it finds and its prune deletes what it does not, so an
-  artist-scoped Process prunes the moved album and never visits its new folder. The next full run,
-  or the follower's Process for the artist it was moved to, picks it up — resolved again rather
-  than carried, which loses a pin. Calling `carryMovedRows` before `pruneMissingItems` would close it.
-
 ## Tagging — what is left
 
 Multi-value tags and the four "match what Lidarr writes" flags are both done; the reference lives
@@ -93,26 +86,6 @@ still open:
   support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
   setting's reasoning applies, and the format work should reuse it rather than re-litigate the
   separator.
-
-## MusicBrainz entity migration — what is left
-
-The feature has shipped, including release-group pruning, artist identity verification and the
-manual sweep; see [mb-migration.md](mb-migration.md). Artist and release are covered for both merge
-and deletion, release-group for deletion (and for merges by subtraction), and recordings need no row
-— the coverage matrix and the reasoning for each *no row* live in
-[mb-migration.md](mb-migration.md#coverage-which-entity-which-change-which-mechanism). What that
-matrix leaves open:
-
-- **Re-keys are paired by name, one-to-one.** Album re-keys a sync could not pair now have a manual
-  *Same album as…*; artist re-keys are paired by name and always held for review. What neither
-  covers is an artist re-key whose name changed too — it still shows as *Not in Lidarr* beside a
-  stranger, and nothing offers to join them by hand.
-
-### Migrations page — what is left
-
-- **A ghost closed as resolved-elsewhere has no target to link.** Merges and re-keys now link the
-  album or artist they became (`target_*` on the review); a deletion that a manager settled by
-  re-keying *before* the sync could pair it closes with only the sentence.
 
 ## Known issues / limitations
 

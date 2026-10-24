@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -62,7 +63,7 @@ func TestPruneMissingItemsRemovesGhosts(t *testing.T) {
 	seedItem(t, db, lib, present, false)
 	seedItem(t, db, lib, ghost, false)
 
-	removed, err := pruneMissingItems(db, lib, nil)
+	removed, err := pruneMissingItems(db, lib, nil, nil)
 	if err != nil {
 		t.Fatalf("pruneMissingItems: %v", err)
 	}
@@ -92,7 +93,7 @@ func TestPruneMissingItemsUnavailableRoot(t *testing.T) {
 	}
 	seedItem(t, db, lib, filepath.Join(root, "Artist", "Album", "01.flac"), false)
 
-	removed, err := pruneMissingItems(db, lib, nil)
+	removed, err := pruneMissingItems(db, lib, nil, nil)
 	if err == nil {
 		t.Fatal("an unavailable root must be reported as an error, not treated as an empty library")
 	}
@@ -125,7 +126,7 @@ func TestPruneMissingItemsScoped(t *testing.T) {
 	seedItem(t, db, lib, inScope, false)
 	seedItem(t, db, lib, outOfScope, false)
 
-	removed, err := pruneMissingItems(db, lib, []string{scoped})
+	removed, err := pruneMissingItems(db, lib, []string{scoped}, nil)
 	if err != nil {
 		t.Fatalf("pruneMissingItems: %v", err)
 	}
@@ -158,7 +159,7 @@ func TestPruneMissingItemsOtherLibrary(t *testing.T) {
 	}
 	seedItem(t, db, other, filepath.Join(root, "gone.flac"), false)
 
-	removed, err := pruneMissingItems(db, lib, nil)
+	removed, err := pruneMissingItems(db, lib, nil, nil)
 	if err != nil {
 		t.Fatalf("pruneMissingItems: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestPruneMissingItemsDropsPins(t *testing.T) {
 	}
 	seedItem(t, db, lib, filepath.Join(root, "pinned.flac"), true)
 
-	removed, err := pruneMissingItems(db, lib, nil)
+	removed, err := pruneMissingItems(db, lib, nil, nil)
 	if err != nil {
 		t.Fatalf("pruneMissingItems: %v", err)
 	}
@@ -210,7 +211,7 @@ func TestPruneMissingItemsBatching(t *testing.T) {
 		seedItem(t, db, lib, filepath.Join(root, "gone", string(rune('a'+i%26))+string(rune('a'+i/26))+".flac"), false)
 	}
 
-	removed, err := pruneMissingItems(db, lib, nil)
+	removed, err := pruneMissingItems(db, lib, nil, nil)
 	if err != nil {
 		t.Fatalf("pruneMissingItems: %v", err)
 	}
@@ -255,7 +256,7 @@ func TestPruneMissingItemsVanishedScopeRoot(t *testing.T) {
 	seedItem(t, db, lib, gone, false)
 	seedItem(t, db, lib, kept, false)
 
-	removed, err := pruneMissingItems(db, lib, []string{filepath.Join(root, "Artist A")})
+	removed, err := pruneMissingItems(db, lib, []string{filepath.Join(root, "Artist A")}, nil)
 	if err != nil {
 		t.Fatalf("pruneMissingItems: %v", err)
 	}
@@ -268,5 +269,50 @@ func TestPruneMissingItemsVanishedScopeRoot(t *testing.T) {
 	}
 	if !paths[kept] {
 		t.Error("a file that is still on disk must keep its row")
+	}
+}
+
+// TestPruneMissingItemsChecksOnlyItsCandidates: after the carry step, the prune only
+// has to look at the rows that vanished without a partner — and it still re-checks
+// those, since a file can reappear while the walk runs.
+func TestPruneMissingItemsChecksOnlyItsCandidates(t *testing.T) {
+	db := newTestDB(t)
+	root := t.TempDir()
+	lib := models.Library{Name: "L", Path: root}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	candidate := filepath.Join(root, "Artist", "Gone (2001)", "01.flac")
+	other := filepath.Join(root, "Artist", "Also gone (2002)", "01.flac")
+	back := filepath.Join(root, "Artist", "Back (2003)", "01.flac")
+	seedItem(t, db, lib, candidate, false)
+	seedItem(t, db, lib, other, false)
+	seedItem(t, db, lib, back, false)
+	if err := os.MkdirAll(filepath.Dir(back), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(back, []byte("audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	only := map[uuid.UUID]bool{}
+	var items []models.LibraryItem
+	db.Where("path IN ?", []string{candidate, back}).Find(&items)
+	for _, it := range items {
+		only[it.ID] = true
+	}
+	removed, err := pruneMissingItems(db, lib, nil, only)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paths := indexedPaths(t, db, lib)
+	if removed != 1 || paths[candidate] {
+		t.Errorf("removed = %d; the gone candidate must go", removed)
+	}
+	if !paths[back] {
+		t.Error("a candidate whose file reappeared was pruned")
+	}
+	if !paths[other] {
+		t.Error("a row outside the candidate list was checked; the carry step already cleared it")
 	}
 }

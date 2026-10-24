@@ -753,6 +753,13 @@ type MusicbrainzMigration struct {
 	// migration is applied the old ID can no longer be looked up to name it.
 	Name string `json:"name"`
 
+	// SubjectArtistMBID is the artist a release-group row's album belongs to, captured
+	// by the drain while the album's collection row still exists (migration.remember).
+	// Once a manager re-keys the album and the old row goes, it is the only route left
+	// to what the album became. Not serialized: the review exposes the artist as its
+	// own computed field.
+	SubjectArtistMBID string `json:"-"`
+
 	// Impact counts, recorded at detection so a pending row can say what approving
 	// it would touch. They are a snapshot, not a promise — the apply path re-counts.
 	AffectedFiles   int `json:"affected_files"`
@@ -1204,6 +1211,12 @@ type CollectionArtist struct {
 	FollowFromYear int `json:"follow_from_year"`
 
 	LastSyncedAt *time.Time `json:"last_synced_at"`
+
+	// ManagerMissingAt is when a manager sync found this artist filed under a manager
+	// that no longer lists them — the *Not in Lidarr* finding, kept on the artist so
+	// their own page can say it and offer to join them to the artist the manager now
+	// lists instead. Cleared by the next sync that finds them.
+	ManagerMissingAt *time.Time `json:"manager_missing_at"`
 }
 
 // DefaultFollowTypes is what following an artist wants when nothing is configured.

@@ -462,6 +462,8 @@ export interface EventsPage {
 export interface CollectionArtist {
   mb_id: string;
   name: string;
+  /** Set when a manager sync found the manager no longer lists this artist. */
+  manager_missing_at?: string | null;
   /** Following is *stored*; see follow_governs for whether it currently decides. */
   monitored: boolean;
   /**

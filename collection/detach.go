@@ -109,6 +109,9 @@ func DetachArtist(db *gorm.DB, artistMBID string) (DetachResult, error) {
 				"manager_detached": true,
 				"managed_by":       models.ManagedByAutotaggerr,
 				"monitored":        false,
+				// The manager's opinion of them stops mattering, so "it no longer
+				// lists them" stops being something to say.
+				"manager_missing_at": nil,
 			}).Error
 	})
 	if err != nil {

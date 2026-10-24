@@ -146,7 +146,8 @@ func discoverWith(db *gorm.DB, library models.Library, manager Manager, roots []
 	moved, rest, stranded := carryMovedRows(db, gone, unknown)
 	stats.Moved = moved
 	if len(stranded) > 0 && narrowed(roots, library.Path) {
-		stats.Moved += carryFromElsewhere(db, library, roots, rows, stranded)
+		more, _ := carryFromElsewhere(db, library, roots, rows, stranded)
+		stats.Moved += more
 	}
 
 	resolveIdentities(db, library, manager, append(rest, needsIdentity...), detail, workers, &stats)
@@ -283,11 +284,11 @@ func narrowed(roots []string, libraryPath string) bool {
 // stats: no file is read, and nothing outside the scope is resolved through the
 // manager. A file found here is either carried or left exactly as it was, for the pass
 // that owns its folder.
-func carryFromElsewhere(db *gorm.DB, library models.Library, roots []string, rows []models.LibraryItem, stranded []models.LibraryItem) int {
+func carryFromElsewhere(db *gorm.DB, library models.Library, roots []string, rows []models.LibraryItem, stranded []models.LibraryItem) (int, []models.LibraryItem) {
 	everywhere, err := walkAudioFiles([]string{library.Path})
 	if err != nil {
 		logger.Log.Warnf("failed to look for moved files in the rest of %q: %s", library.Name, err.Error())
-		return 0
+		return 0, stranded
 	}
 	indexed := make(map[string]bool, len(rows))
 	for _, row := range rows {
@@ -299,11 +300,71 @@ func carryFromElsewhere(db *gorm.DB, library models.Library, roots []string, row
 			elsewhere = append(elsewhere, path)
 		}
 	}
-	moved, _, _ := carryMovedRows(db, stranded, elsewhere)
+	moved, _, left := carryMovedRows(db, stranded, elsewhere)
 	if moved > 0 {
 		logger.Log.Infof("carried %d row(s) to files moved outside the scanned folders in %q", moved, library.Name)
 	}
-	return moved
+	return moved, left
+}
+
+// CarryMovedFiles is the carry step on its own, for a Process to run before it walks.
+//
+// A Process resolves what its walk finds and prunes what it does not, so a moved file
+// used to be a deleted row plus a new one resolved from scratch — the pin and the
+// identity lost, and under an artist scope the new folder never visited at all, so the
+// album simply left the collection. Run first, this moves the rows onto the files'
+// new paths before the walk reaches them (where they then read as unchanged), and
+// looks outside a narrowed scope for what vanished from it.
+//
+// It returns how many rows it carried and the rows that vanished without a partner —
+// the only ones the prune after the walk needs to check again. Nothing is resolved
+// here: an unknown file is the walk's.
+func CarryMovedFiles(db *gorm.DB, library models.Library, roots []string) (int, []models.LibraryItem, error) {
+	if db == nil {
+		return 0, nil, nil
+	}
+	if _, err := os.Stat(library.Path); err != nil {
+		return 0, nil, fmt.Errorf("library root %q is unavailable: %w", library.Path, err)
+	}
+	if len(roots) == 0 {
+		roots = []string{library.Path}
+	}
+	var rows []models.LibraryItem
+	if err := db.Where("library_id = ?", library.ID).Find(&rows).Error; err != nil {
+		return 0, nil, err
+	}
+	indexed := make(map[string]bool, len(rows))
+	var gone []models.LibraryItem
+	for _, row := range rows {
+		indexed[row.Path] = true
+		if !underAny(row.Path, roots) {
+			continue
+		}
+		if _, err := os.Stat(row.Path); err != nil && errors.Is(err, fs.ErrNotExist) {
+			gone = append(gone, row)
+		}
+	}
+	if len(gone) == 0 {
+		return 0, nil, nil
+	}
+
+	onDisk, err := walkAudioFiles(roots)
+	if err != nil {
+		return 0, gone, err
+	}
+	var unknown []string
+	for _, path := range onDisk {
+		if !indexed[path] {
+			unknown = append(unknown, path)
+		}
+	}
+	moved, _, stranded := carryMovedRows(db, gone, unknown)
+	if len(stranded) > 0 && narrowed(roots, library.Path) {
+		var more int
+		more, stranded = carryFromElsewhere(db, library, roots, rows, stranded)
+		moved += more
+	}
+	return moved, stranded, nil
 }
 
 // resolveIdentities asks the manager about each path and records the answer without

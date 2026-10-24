@@ -87,6 +87,16 @@ func TestSyncReportsArtistsLidarrDoesNotHave(t *testing.T) {
 	if !strings.Contains(SyncSummaryLine(stats), "1 not in Lidarr") {
 		t.Errorf("summary did not state the finding: %q", SyncSummaryLine(stats))
 	}
+
+	// Kept on the artist for their page to say, and cleared once Lidarr lists them.
+	var stranger models.CollectionArtist
+	if err := db.Where("mb_id = ?", "art-stranger").First(&stranger).Error; err != nil || stranger.ManagerMissingAt == nil {
+		t.Fatalf("manager_missing_at not recorded: %+v (%v)", stranger, err)
+	}
+	var known models.CollectionArtist
+	if err := db.Where("mb_id = ?", "art-known").First(&known).Error; err != nil || known.ManagerMissingAt != nil {
+		t.Errorf("a listed artist is marked missing: %+v (%v)", known, err)
+	}
 }
 
 // TestSyncSuppressesUnknownsWhenTheLookupFailed is the same distinction the app draws

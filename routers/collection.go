@@ -444,6 +444,54 @@ func (a *API) markSameAlbum(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"applied": true, "migration": applied})
 }
 
+// managerArtistCandidates lists the artists a manager holds that the collection does
+// not — what an artist the manager stopped listing may have become. Asked live, when
+// the join dialog opens.
+func (a *API) managerArtistCandidates(c *gin.Context) {
+	candidates, err := collection.ManagerArtistCandidates(a.DB)
+	if err != nil {
+		c.JSON(http.StatusBadGateway, gin.H{"error": "could not read the manager's artists: " + err.Error()})
+		return
+	}
+	if candidates == nil {
+		candidates = []collection.ManagerCandidate{}
+	}
+	c.JSON(http.StatusOK, candidates)
+}
+
+// markSameArtist joins an artist the manager no longer lists to the artist it lists
+// now, and applies it: albums, editions and wants re-pointed, follow settings merged
+// — the artist-merge path. A person chose the pair, so it is applied rather than held.
+func (a *API) markSameArtist(c *gin.Context) {
+	var body struct {
+		ArtistMBID string `json:"artist_mb_id"`
+		Name       string `json:"name"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || strings.TrimSpace(body.ArtistMBID) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "artist_mb_id is required"})
+		return
+	}
+	var artist models.CollectionArtist
+	if err := a.DB.Where("mb_id = ?", c.Param("mbid")).First(&artist).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+		return
+	}
+	row, err := collection.MarkSameArtist(a.DB, artist.MBID, strings.TrimSpace(body.ArtistMBID), artist.Name)
+	if err != nil {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	applied, err := migration.ApplyByID(a.DB, row.ID)
+	if err != nil {
+		a.recordMigrationDecision(applied, models.EventItemStatusError, err.Error())
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	a.recordMigrationDecision(applied, models.EventItemStatusMigrated, "")
+	a.rebuildAfterMigration()
+	c.JSON(http.StatusOK, gin.H{"applied": true, "artist_mb_id": applied.NewMBID})
+}
+
 // artistRepairView is what the artist page needs to offer a manager refresh: which of
 // the artist's albums hold an ID that resolves nowhere, and — when nobody can be asked
 // — the managers whose setting is in the way.

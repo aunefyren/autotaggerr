@@ -422,3 +422,32 @@ func TestDiscoverCarriesACopyThatResetTheTime(t *testing.T) {
 		t.Errorf("stats = %+v; a file under a different album must be resolved, not carried", stats)
 	}
 }
+
+// TestCarryMovedFilesBeforeAProcess: a Process carries moves before it walks. An album
+// moved under another artist keeps its rows (pin included) even though the walk is
+// scoped to the old artist, and only what vanished unpaired is handed to the prune.
+func TestCarryMovedFilesBeforeAProcess(t *testing.T) {
+	db, library := discoverFixture(t)
+	mtime := time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
+	oldPath := filepath.Join(library.Path, "Artist", "Album (2020)", "01 Intro.flac")
+	newPath := filepath.Join(library.Path, "Artist feat. Guest", "Album (2020)", "01 Intro.flac")
+	deleted := filepath.Join(library.Path, "Artist", "Album (2020)", "02 Gone.flac")
+	writeAudio(t, filepath.Join(library.Path, "Artist", "Other (2018)", "01 Kept.flac"), "kept", mtime)
+	writeAudio(t, newPath, "moved bytes", mtime)
+	indexRow(t, db, library, oldPath, int64(len("moved bytes")), mtime, func(i *models.LibraryItem) { i.Pinned = true })
+	indexRow(t, db, library, deleted, 7, mtime, nil)
+
+	moved, stranded, err := CarryMovedFiles(db, library, []string{filepath.Join(library.Path, "Artist")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved != 1 {
+		t.Errorf("moved = %d, want 1", moved)
+	}
+	if item, ok := itemAt(t, db, newPath); !ok || !item.Pinned || item.ProcessedVersion != "v1" {
+		t.Errorf("row at the new path = %+v (found %v), want the pin and version carried", item, ok)
+	}
+	if len(stranded) != 1 || stranded[0].Path != deleted {
+		t.Errorf("stranded = %+v, want only the deleted file", stranded)
+	}
+}

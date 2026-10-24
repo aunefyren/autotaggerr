@@ -210,8 +210,12 @@ func (r *Review) fillReleaseGroup(db *gorm.DB) {
 	var rg models.CollectionReleaseGroup
 	if err := db.Where("mb_id = ?", r.OldMBID).First(&rg).Error; err != nil {
 		// Already retired, by an earlier approval or an artist prune. Nothing objects
-		// to a retirement that has happened, so the row is left with empty context and
-		// a blocker of "" — which is the truth.
+		// to a retirement that has happened, so the row is left with no blocker — which
+		// is the truth — but still names the artist when the drain remembered one.
+		if r.SubjectArtistMBID != "" {
+			r.ArtistMBID = r.SubjectArtistMBID
+			r.ArtistName = artistName(db, r.SubjectArtistMBID)
+		}
 		return
 	}
 

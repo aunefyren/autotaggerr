@@ -28,6 +28,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -224,7 +225,13 @@ func ProcessPending(db *gorm.DB, policy Policy) (Result, error) {
 		// every step below assumes there is still something to migrate: measuring a
 		// vanished entity writes zeroes, and applying one reports a rewrite of nothing
 		// as an application.
+		remember(db, &m)
 		if reason, moot := mootReason(db, m); moot {
+			if target, title := rekeyTarget(db, m); target != "" {
+				m.NewMBID = target
+				reason = fmt.Sprintf("the album is no longer in the collection — %q under the same artist is "+
+					"almost certainly what a manager re-keyed it to", title)
+			}
 			if err := closeExternally(db, &m, reason); err != nil {
 				logger.Log.Warnf("failed to close migration %s: %s", m.OldMBID, err.Error())
 				continue
@@ -295,6 +302,58 @@ func repairable(db *gorm.DB, m models.MusicbrainzMigration) bool {
 		return true
 	}
 	return rg.InCatalog
+}
+
+// remember captures, while the album's collection row still exists, whose album a
+// release-group row is about — the one fact a re-key deletes along with the row, and
+// the one rekeyTarget needs to say what the album became. Written once; a read
+// failure costs only the link.
+func remember(db *gorm.DB, m *models.MusicbrainzMigration) {
+	if m.EntityType != models.MigrationEntityReleaseGroup || m.SubjectArtistMBID != "" {
+		return
+	}
+	var rg models.CollectionReleaseGroup
+	if err := db.Where("mb_id = ?", m.OldMBID).Limit(1).Find(&rg).Error; err != nil || rg.ArtistMBID == "" {
+		return
+	}
+	m.SubjectArtistMBID = rg.ArtistMBID
+	if m.Name == "" {
+		m.Name = rg.Title
+	}
+	if err := db.Model(&models.MusicbrainzMigration{}).Where("id = ?", m.ID).
+		Updates(map[string]any{"subject_artist_mb_id": m.SubjectArtistMBID, "name": m.Name}).Error; err != nil {
+		logger.Log.Debugf("could not remember the artist of %s: %s", m.OldMBID, err.Error())
+	}
+}
+
+// rekeyTarget names the album a vanished album most likely became: the one album of
+// the same title, folded loosely, under the same artist. Used only to *describe* a row
+// that is closing anyway — nothing is moved on the strength of it — and still only
+// when exactly one album fits, so the link never points at a coin flip.
+func rekeyTarget(db *gorm.DB, m models.MusicbrainzMigration) (string, string) {
+	if m.EntityType != models.MigrationEntityReleaseGroup || m.Kind != models.MigrationKindDeleted ||
+		m.SubjectArtistMBID == "" || m.Name == "" {
+		return "", ""
+	}
+	var groups []models.CollectionReleaseGroup
+	if err := db.Where("artist_mb_id = ? AND mb_id <> ?", m.SubjectArtistMBID, m.OldMBID).Find(&groups).Error; err != nil {
+		return "", ""
+	}
+	want := utilities.CanonLoose(m.Name)
+	var match *models.CollectionReleaseGroup
+	for i := range groups {
+		if utilities.CanonLoose(groups[i].Title) != want {
+			continue
+		}
+		if match != nil {
+			return "", ""
+		}
+		match = &groups[i]
+	}
+	if match == nil {
+		return "", ""
+	}
+	return match.MBID, match.Title
 }
 
 // mootReason reports whether there is anything left to migrate, and if not, the

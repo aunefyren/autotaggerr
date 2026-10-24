@@ -367,6 +367,20 @@ the file, so for a library that writes BPM, a file whose stored tempo is newer t
 its `last_scanned_at` is processed once more (`tempoPending`). See
 [tempo.md](tempo.md#reaching-the-file).
 
+### Process carries moves too
+
+A Process resolves what its walk finds and prunes what it does not, so a moved file used to be a
+deleted row plus a fresh resolve: the identity re-asked, a manual pin lost — and under an artist
+scope the new folder was never visited, so an album a manager filed under another artist simply left
+the collection until a full run. `components.CarryMovedFiles` now runs per target **before** the
+walk: the same carry as above, the same look outside a narrowed scope, so the walk then meets the
+moved files as indexed and unchanged. It only stats and lists when something in scope has vanished.
+
+What it could not pair is handed to the prune after the walk as its candidate list, so a run does not
+stat every indexed file twice; each candidate is still re-checked, since a file can reappear while
+the walk runs. If the carry step fails, the prune checks everything as it always did. The tagging
+activity counts *Files moved* beside *Files removed*.
+
 ## Pruning files that are gone
 
 `library_items` is keyed by **path**, and a run only ever writes rows for files it finds — so for a

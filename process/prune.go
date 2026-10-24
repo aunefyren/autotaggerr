@@ -54,7 +54,13 @@ const pruneDeleteBatch = 200
 // still deleted — the pin identifies a file that no longer exists — but it is
 // counted and logged separately, because "your manual attachments went away" is not
 // something the user should have to infer from a file count.
-func pruneMissingItems(db *gorm.DB, library models.Library, roots []string) (int, error) {
+//
+// candidates narrows the check to rows already known to be gone — what the carry step
+// before the walk found and could not pair (components.CarryMovedFiles) — so a run
+// does not stat every indexed file twice. Each is still re-checked: a file that
+// reappeared during the walk has a live row. Nil means check every row in scope, for a
+// caller with no such list.
+func pruneMissingItems(db *gorm.DB, library models.Library, roots []string, candidates map[uuid.UUID]bool) (int, error) {
 	if db == nil {
 		return 0, nil
 	}
@@ -91,6 +97,9 @@ func pruneMissingItems(db *gorm.DB, library models.Library, roots []string) (int
 	pinned := 0
 	for _, item := range items {
 		if !pathInScope(item.Path, roots) {
+			continue
+		}
+		if candidates != nil && !candidates[item.ID] {
 			continue
 		}
 		if _, err := os.Stat(item.Path); err == nil {

@@ -573,10 +573,30 @@ one-to-one. Each pair becomes an artist **redirect** row (`Source = lidarr`), an
 *Not in Lidarr*, since it is accounted for; the sync reports *Artists re-keyed*. Applying it is the
 artist-merge path already described: albums, editions and wants re-pointed, follow settings merged.
 
+**A re-key that renamed the artist too cannot be paired by name**, so the sync records the
+finding on the artist instead (`CollectionArtist.ManagerMissingAt`, cleared by the next sync that
+finds them, or by detaching them) and their page says so, with **Same artist as…**. The dialog asks
+each Lidarr manager, on demand, for the artists it lists that the collection does not hold
+(`GET /artists/:mbid/manager-candidates`); picking one writes the artist redirect with `Source =
+manual` (taking over an open row if the sync had written one) and applies it at once
+(`POST /artists/:mbid/same-as`) — a person chose the pair, so there is nothing left to review.
+
 **It is always held for review**, whatever the policy says about artist merges. MusicBrainz merging
 an artist is MusicBrainz stating a fact; this is a pairing read off a list by name, and two acts can
 share one. Applied wrongly it would hand one artist's albums to another, so `heldForReview` holds
 every artist redirect sourced from a manager, and the review says the two were paired by name.
+
+### A row that settled itself still says what it became
+
+A release-group deletion often closes *resolved elsewhere*: the manager re-keyed the album, the old
+row went (a prune, or the sync), and there was nothing left to retire. The row used to close with
+only *"a manager re-keyed it"*, because the one route from it to the new album — the old row's
+artist — was deleted with the row. So the drain **remembers** whose album a release-group row is
+about while the row still exists (`remember`, into `SubjectArtistMBID`, along with the title), and
+when the row closes as moot, `rekeyTarget` looks under that artist for the one album of the same
+title. Exactly one, and the row records it as its target and says so — the review then links it like
+any re-key; none or two, and it closes as before, naming the artist. It only *describes* a row that is
+closing anyway: nothing is moved on the strength of a title match.
 
 ### Clearing a blocker of files on disk
 
@@ -712,6 +732,8 @@ processed marker so the *next* run does.
 | `POST /migrations/:id/release-files` | clear a "files on disk" blocker: mark native files for re-identification and apply, or queue the manager refresh and re-read ([above](#clearing-a-blocker-of-files-on-disk)) |
 | `POST /migrations/:id/dismiss` | record it as deliberately not applied |
 | `POST /artists/:mbid/repair-albums` | ask the manager to re-read one artist whose albums hold dead IDs (202) |
+| `GET /artists/:mbid/manager-candidates` | the artists a Lidarr manager lists that the collection does not hold, asked live |
+| `POST /artists/:mbid/same-as` | join an artist the manager stopped listing to the one it lists now (`{"artist_mb_id"}`), applied at once |
 | `POST /artists/:mbid/release-groups/:rgid/same-as` | record and apply that this album row is the same album as another of the artist's (`{"release_group_mb_id"}`) |
 | `POST /migrations/verify` | sweep every stored MBID now (202; runs in the background) |
 
