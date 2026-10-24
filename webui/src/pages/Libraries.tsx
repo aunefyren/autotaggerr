@@ -268,11 +268,11 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
         bpm_write: bpmWrite, bpm_min_confidence: bpmFloor,
       };
       if (editing) body.cron = cron;
-      // Null, not absent: "No manager" is a choice, and absent would keep the old one.
+      // Null, not absent: "No manager" and "Default" are choices, and absent would keep
+      // the old one — an edit back to Default used to be silently ignored.
       body.manager_id = managerId || null;
-      // Only send these when one is chosen; "Default" leaves the field unset.
-      if (dataSourceId) body.data_source_id = dataSourceId;
-      if (taggerProfileId) body.tagger_profile_id = taggerProfileId;
+      body.data_source_id = dataSourceId || null;
+      body.tagger_profile_id = taggerProfileId || null;
 
       if (editing) await api.put(`/libraries/${initial!.id}`, body);
       else await api.post("/libraries", { ...body, enabled: true });

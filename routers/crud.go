@@ -200,8 +200,10 @@ type managerInput struct {
 	LidarrHeaderCookie *string `json:"lidarr_header_cookie"`
 	// Pointer like every other field here: absent means "leave it alone", which is
 	// what lets the UI PATCH one setting without resending the API key.
-	LidarrSkipArtistRefresh *bool      `json:"lidarr_skip_artist_refresh"`
-	DefaultDataSourceID     *uuid.UUID `json:"default_data_source_id"`
+	LidarrSkipArtistRefresh *bool `json:"lidarr_skip_artist_refresh"`
+	// Clearable for the same reason as a library's references: null is "back to the
+	// default", and a plain pointer could not tell it from "not sent".
+	DefaultDataSourceID clearableUUID `json:"default_data_source_id"`
 }
 
 func (in managerInput) apply(m *models.Manager) {
@@ -226,8 +228,8 @@ func (in managerInput) apply(m *models.Manager) {
 	if in.LidarrSkipArtistRefresh != nil {
 		m.LidarrSkipArtistRefresh = *in.LidarrSkipArtistRefresh
 	}
-	if in.DefaultDataSourceID != nil {
-		m.DefaultDataSourceID = in.DefaultDataSourceID
+	if in.DefaultDataSourceID.Set {
+		m.DefaultDataSourceID = in.DefaultDataSourceID.Value
 	}
 }
 
@@ -456,8 +458,8 @@ type libraryInput struct {
 	Name             *string       `json:"name"`
 	Path             *string       `json:"path"`
 	ManagerID        clearableUUID `json:"manager_id"`
-	DataSourceID     *uuid.UUID    `json:"data_source_id"`
-	TaggerProfileID  *uuid.UUID    `json:"tagger_profile_id"`
+	DataSourceID     clearableUUID `json:"data_source_id"`
+	TaggerProfileID  clearableUUID `json:"tagger_profile_id"`
 	Enabled          *bool         `json:"enabled"`
 	Cron             *string       `json:"cron"`
 	UseAcoustID      *bool         `json:"use_acoustid"`
@@ -489,11 +491,11 @@ func (in libraryInput) apply(l *models.Library) {
 	if in.ManagerID.Set {
 		l.ManagerID = in.ManagerID.Value
 	}
-	if in.DataSourceID != nil {
-		l.DataSourceID = in.DataSourceID
+	if in.DataSourceID.Set {
+		l.DataSourceID = in.DataSourceID.Value
 	}
-	if in.TaggerProfileID != nil {
-		l.TaggerProfileID = in.TaggerProfileID
+	if in.TaggerProfileID.Set {
+		l.TaggerProfileID = in.TaggerProfileID.Value
 	}
 	if in.Enabled != nil {
 		l.Enabled = *in.Enabled
@@ -517,8 +519,9 @@ func (in libraryInput) apply(l *models.Library) {
 
 // clearableUUID is an optional reference that can also be cleared: absent leaves the
 // field alone, null clears it, a UUID sets it. A plain *uuid.UUID cannot tell absent
-// from null, and for a library's manager the difference is the setting itself —
-// "no manager" is a choice, and an edit making it was silently ignored.
+// from null, and for these references the difference is the setting itself — "no
+// manager" and "back to the default" are choices, and an edit making one was silently
+// ignored. Every optional reference an edit form can reset goes through this.
 type clearableUUID struct {
 	Set   bool
 	Value *uuid.UUID
@@ -579,7 +582,7 @@ func (a *API) createLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
-	if !a.checkLibraryDataSource(c, in.DataSourceID) {
+	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) {
 		return
 	}
 	l := models.Library{Enabled: true}
@@ -610,7 +613,7 @@ func (a *API) updateLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
-	if !a.checkLibraryDataSource(c, in.DataSourceID) {
+	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) {
 		return
 	}
 	in.apply(&l)

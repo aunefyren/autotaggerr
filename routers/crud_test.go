@@ -269,6 +269,89 @@ func TestLibraryManagerCanBeCleared(t *testing.T) {
 	}
 }
 
+// TestLibraryDefaultsCanBeRestored: the form's "Default" for a metadata source or a
+// tagger profile sends null, and null has to clear the choice. Both were plain
+// pointers, so null decoded as "not sent" and an edit back to Default kept the old
+// choice with nothing on the page saying so.
+func TestLibraryDefaultsCanBeRestored(t *testing.T) {
+	r, api := setupAPI(t)
+	tok := loginToken(t, r)
+	ds := models.DataSource{Name: "Local MB", Type: models.DataSourceTypeMusicBrainz, Enabled: true}
+	profile := models.TaggerProfile{Name: "Strict", WriteTags: true}
+	if err := api.DB.Create(&ds).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := api.DB.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	lib := models.Library{Name: "L", Path: "/l", Enabled: true, DataSourceID: &ds.ID, TaggerProfileID: &profile.ID}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatal(err)
+	}
+	read := func() models.Library {
+		var got models.Library
+		api.DB.First(&got, "id = ?", lib.ID)
+		return got
+	}
+
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"name": "Renamed"}); w.Code != http.StatusOK {
+		t.Fatalf("update = %d: %s", w.Code, w.Body.String())
+	}
+	if got := read(); got.DataSourceID == nil || got.TaggerProfileID == nil {
+		t.Fatalf("an edit sending neither field cleared one: %+v", got)
+	}
+
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{
+		"data_source_id": nil, "tagger_profile_id": nil,
+	}); w.Code != http.StatusOK {
+		t.Fatalf("restore defaults = %d: %s", w.Code, w.Body.String())
+	}
+	if got := read(); got.DataSourceID != nil || got.TaggerProfileID != nil {
+		t.Errorf("null left data source %v, tagger profile %v", got.DataSourceID, got.TaggerProfileID)
+	}
+
+	// Setting one again still goes through the metadata-provider check.
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"data_source_id": uuid.New().String()}); w.Code != http.StatusBadRequest {
+		t.Errorf("unknown data source = %d, want 400", w.Code)
+	}
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"data_source_id": ds.ID.String()}); w.Code != http.StatusOK {
+		t.Errorf("set data source = %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestManagerDefaultDataSourceCanBeCleared: the same absent/null distinction for the
+// one optional reference on a manager.
+func TestManagerDefaultDataSourceCanBeCleared(t *testing.T) {
+	r, api := setupAPI(t)
+	tok := loginToken(t, r)
+	ds := models.DataSource{Name: "MB", Type: models.DataSourceTypeMusicBrainz, Enabled: true}
+	if err := api.DB.Create(&ds).Error; err != nil {
+		t.Fatal(err)
+	}
+	mgr := models.Manager{Name: "Native", Type: models.ManagerTypeAutotaggerr, Enabled: true, DefaultDataSourceID: &ds.ID}
+	if err := api.DB.Create(&mgr).Error; err != nil {
+		t.Fatal(err)
+	}
+	read := func() *uuid.UUID {
+		var got models.Manager
+		api.DB.First(&got, "id = ?", mgr.ID)
+		return got.DefaultDataSourceID
+	}
+
+	if w := do(r, "PUT", "/api/v1/managers/"+mgr.ID.String(), tok, map[string]any{"name": "Native 2"}); w.Code != http.StatusOK {
+		t.Fatalf("update = %d: %s", w.Code, w.Body.String())
+	}
+	if read() == nil {
+		t.Fatal("an edit without default_data_source_id cleared it")
+	}
+	if w := do(r, "PUT", "/api/v1/managers/"+mgr.ID.String(), tok, map[string]any{"default_data_source_id": nil}); w.Code != http.StatusOK {
+		t.Fatalf("clear = %d: %s", w.Code, w.Body.String())
+	}
+	if got := read(); got != nil {
+		t.Errorf("null left %v", got)
+	}
+}
+
 func TestScanEndpoints(t *testing.T) {
 	r, _ := setupAPI(t)
 	tok := loginToken(t, r)

@@ -79,7 +79,9 @@ manager. So the choice is allowed, but it is never silent:
   below it whenever it is selected.
 - **The form can actually choose it.** `PUT /libraries/:id` treats `"manager_id": null` as "clear"
   and an absent `manager_id` as "unchanged" (`routers.clearableUUID`). The form sends null. Before
-  this, choosing the empty option while editing kept the old manager.
+  this, choosing the empty option while editing kept the old manager. The library's
+  `data_source_id` and `tagger_profile_id` work the same way, so *Default* on either is an edit that
+  sticks, and so does a manager's `default_data_source_id`.
 
 Internally the library resolves to a manager row with no ID, of the native type. Native is the type
 because the resolution is the same, embedded tags only, and because it is what files correlated
