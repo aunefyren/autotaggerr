@@ -71,8 +71,11 @@ type Summary struct {
 	// Running is whether any background job is executing; CurrentJob names it and Queue
 	// lists what is waiting behind it. The scan counters and progress below describe the
 	// current job only when it is a scan.
-	Running     bool       `json:"running"`
-	CurrentJob  *JobView   `json:"current_job,omitempty"`
+	Running    bool     `json:"running"`
+	CurrentJob *JobView `json:"current_job,omitempty"`
+	// Stopping is set once the running job has been asked to stop and is finishing
+	// the files it already started.
+	Stopping    bool       `json:"stopping,omitempty"`
 	Queue       []JobView  `json:"queue,omitempty"`
 	StartedAt   *time.Time `json:"started_at,omitempty"`
 	FinishedAt  *time.Time `json:"finished_at,omitempty"`
@@ -149,6 +152,10 @@ type Runner struct {
 	queue   []job
 	current *job
 	wake    chan struct{}
+	// jobCtx is the running job's context and jobCancel stops it (CancelCurrent,
+	// Shutdown). Both are guarded by queueMu and set by the worker around each job.
+	jobCtx    context.Context
+	jobCancel context.CancelFunc
 
 	statusMu sync.Mutex
 	summary  Summary
@@ -316,8 +323,8 @@ func (r *Runner) Wait() {
 	}
 }
 
-// Shutdown stops the queue and waits for the job in flight, returning ctx's error if
-// that job outlasts the deadline.
+// Shutdown stops the queue, asks the job in flight to stop, and waits for it,
+// returning ctx's error if that job outlasts the deadline.
 //
 // It is not Wait. Wait drains the whole queue, which at shutdown is the wrong
 // promise: a full scan sitting behind the running job would hold the process open for
@@ -333,6 +340,11 @@ func (r *Runner) Wait() {
 // next boot.
 func (r *Runner) Shutdown(ctx context.Context) error {
 	r.stopping.Store(true)
+	// The job in flight is asked to stop rather than left to run out the grace period:
+	// every long loop checks its context between files, so it ends cleanly in the time
+	// the files already started take, and records its event as stopped early rather than
+	// leaving it for the next boot to reconcile.
+	r.CancelCurrent()
 
 	r.queueMu.Lock()
 	dropped := len(r.queue)
@@ -361,6 +373,40 @@ func (r *Runner) Shutdown(ctx context.Context) error {
 		case <-time.After(20 * time.Millisecond):
 		}
 	}
+}
+
+// jobContext is the context of the job running now, or Background outside one (an
+// interactive re-tag, a test calling a job body directly). Every long loop checks it
+// between files.
+func (r *Runner) jobContext() context.Context {
+	r.queueMu.Lock()
+	defer r.queueMu.Unlock()
+	if r.jobCtx == nil {
+		return context.Background()
+	}
+	return r.jobCtx
+}
+
+// stopRequested reports whether the running job has been asked to stop.
+func (r *Runner) stopRequested() bool {
+	return r.jobContext().Err() != nil
+}
+
+// CancelCurrent asks the running job to stop and reports which one, or false when
+// nothing is running. It does not wait: the job finishes the files already in
+// flight, skips what remains, and records its event as stopped early. Pending jobs
+// are left queued — stopping one run is not clearing the queue.
+func (r *Runner) CancelCurrent() (JobView, bool) {
+	r.queueMu.Lock()
+	cancel, current := r.jobCancel, r.current
+	r.queueMu.Unlock()
+	if cancel == nil || current == nil {
+		return JobView{}, false
+	}
+	cancel()
+	r.setStatus(func(s *Summary) { s.Stopping = true })
+	logger.Log.Infof("asked the running job to stop: %s", current.title)
+	return current.view(), true
 }
 
 // Target is one unit of scan work: a library, and optionally the folders inside it
@@ -927,7 +973,8 @@ func (r *Runner) runScope(scope Scope) {
 	// meant the stage a user was actually waiting on had no row to open.
 	r.setPhase(PhaseRefresh)
 	due := r.narrowDue(modules.MusicbrainzDueForRefresh(), filter)
-	refreshResult := r.refresh.RunStage(context.Background(), mirror.DueScope(due), event)
+	ctx := r.jobContext()
+	refreshResult := r.refresh.RunStage(ctx, mirror.DueScope(due), event)
 
 	fullScan := scopeIsFull(scope)
 
@@ -940,7 +987,12 @@ func (r *Runner) runScope(scope Scope) {
 	warnings := managerWarnings(scope)
 	var libraryErrors []string
 	tagEvent := events.BeginChild(r.db, event, models.EventTypeTagFiles, taggingActivityTitle)
+	stopped := false
 	for _, target := range scope.Targets {
+		if ctx.Err() != nil {
+			stopped = true
+			break
+		}
 		library := target.Library
 		libraryNames = append(libraryNames, library.Name)
 		logger.Log.Info("processing library: " + library.Path)
@@ -971,7 +1023,17 @@ func (r *Runner) runScope(scope Scope) {
 		}
 		moved += carried
 
-		c, u, tw, errs, err := components.ScanLibraryRoots(r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.Concurrency(), scope.Force, onFile)
+		c, u, tw, errs, err := components.ScanLibraryRoots(ctx, r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.Concurrency(), scope.Force, onFile)
+		if errors.Is(err, context.Canceled) {
+			// Stopped on purpose, part-way through the walk: count what was done, and
+			// prune nothing — an unfinished walk proves nothing about what is gone.
+			processed += c
+			unchanged += u
+			tagsWritten += tw
+			errorFiles = append(errorFiles, errs...)
+			stopped = true
+			break
+		}
 		if err != nil {
 			logger.Log.Error("failed to process library '" + library.Path + "'. error: " + err.Error())
 			r.setStatus(func(s *Summary) { s.LastError = err.Error() })
@@ -1025,7 +1087,7 @@ func (r *Runner) runScope(scope Scope) {
 	// Its rows join the walk's on the same tagging event, phase-tagged so the detail
 	// list keeps "found on disk" and "changed upstream" apart.
 	drift := releaseRefresh{}
-	if len(refreshResult.ChangedReleases) > 0 {
+	if len(refreshResult.ChangedReleases) > 0 && !stopped {
 		r.setPhase(PhaseDrift)
 		logger.Log.Infof("%d release(s) changed upstream; re-tagging their files", len(refreshResult.ChangedReleases))
 		driftDetail := components.NewDetailCollector(r.detailRetention)
@@ -1092,15 +1154,23 @@ func (r *Runner) runScope(scope Scope) {
 	// unblocks the drain below — and running it the other way round would retire albums
 	// the refresh was about to correct. Full runs only: a one-artist button should not
 	// set the whole collection refreshing in Lidarr.
-	if scopeIsFull(scope) {
+	// A stopped run skips the stages after the walk that call out to a manager or
+	// rewrite identities: they are minutes of work nobody asked to wait for. The
+	// rebuild below still runs — it is a database pass, and it keeps the collection
+	// in step with the files the walk did reach.
+	stopped = stopped || ctx.Err() != nil
+	if scopeIsFull(scope) && !stopped {
 		r.repairGhostAlbums(event)
 	}
 
 	// A scan fetches releases just as a sync does, so it detects redirects and
 	// deletions too — draining the queue here keeps a cold scan from leaving them
 	// for whenever the next sync happens to run.
-	r.setPhase(PhaseMigrations)
-	migrations := r.applyMigrations(event)
+	var migrations migration.Result
+	if !stopped {
+		r.setPhase(PhaseMigrations)
+		migrations = r.applyMigrations(event)
+	}
 
 	// Re-derive the collection, then refresh the manager mirror against it. Both run
 	// before the event is finished so what they changed can ride it — a rebuild that
@@ -1110,7 +1180,7 @@ func (r *Runner) runScope(scope Scope) {
 	r.setPhase(PhaseCollection)
 	rebuild := r.rebuildCollection(event)
 	mirrored := map[string]any{}
-	if fullScan {
+	if fullScan && !stopped {
 		syncedArtists, syncedAlbums := r.syncManagers(event)
 		mirrored["artists"] = syncedArtists
 		mirrored["albums"] = syncedAlbums
@@ -1121,7 +1191,11 @@ func (r *Runner) runScope(scope Scope) {
 	stopProgress()
 
 	summary := scanSummaryLine(processed, changed, tagsWritten, len(errorFiles), removed, rebuild.CreditChanges, refreshResult)
+	if stopped {
+		summary = "stopped early — " + summary
+	}
 	details := map[string]any{
+		"stopped":       stopped,
 		"migrations":    migrations,
 		"processed":     processed,
 		"unchanged":     unchanged,
@@ -1743,7 +1817,7 @@ func (r *Runner) SyncDrift() {
 }
 
 func (r *Runner) syncDriftNow() {
-	if err := r.refresh.RunCollection(context.Background(), false); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+	if err := r.refresh.RunCollection(r.jobContext(), false); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
 		logger.Log.Warnf("metadata refresh failed: %s", err.Error())
 	}
 }
@@ -1769,7 +1843,7 @@ func (r *Runner) VerifyIdentities() {
 }
 
 func (r *Runner) verifyIdentitiesNow() {
-	if err := r.refresh.RunCollection(context.Background(), true); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+	if err := r.refresh.RunCollection(r.jobContext(), true); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
 		logger.Log.Warnf("full metadata refresh failed: %s", err.Error())
 	}
 }
@@ -1828,7 +1902,7 @@ func (r *Runner) refreshArtistNow(artistMBID string, force bool) {
 		logger.Log.Warnf("failed to sync discography for %s: %s", artistMBID, err.Error())
 	}
 
-	if _, err := r.refresh.Run(context.Background(), scope); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+	if _, err := r.refresh.Run(r.jobContext(), scope); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
 		logger.Log.Warnf("metadata refresh failed for %s: %s", artistMBID, err.Error())
 	}
 }
@@ -1852,7 +1926,7 @@ func (r *Runner) refreshLibraryNow(libraryID uuid.UUID) {
 		logger.Log.Warnf("metadata refresh skipped for library %s: %s", libraryID, err.Error())
 		return
 	}
-	if _, err := r.refresh.Run(context.Background(), scope); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
+	if _, err := r.refresh.Run(r.jobContext(), scope); err != nil && !errors.Is(err, mirror.ErrAlreadyRunning) {
 		logger.Log.Warnf("metadata refresh failed for library %s: %s", libraryID, err.Error())
 	}
 }
@@ -2001,6 +2075,8 @@ func (r *Runner) retagArtistNow(artistMBID string) {
 // releaseRefresh accumulates the outcome of re-tagging work: how many releases were
 // re-read, how many had changed, how many files were rewritten, and which failed.
 type releaseRefresh struct {
+	// stopped is set when the job was asked to stop part-way through the re-tag.
+	stopped         bool
 	checked         int
 	changedReleases int
 	retagged        int
@@ -2046,6 +2122,9 @@ func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshS
 	libraries := map[uuid.UUID]models.Library{} // small per-run cache
 
 	for _, mbID := range mbIDs {
+		if res.stopped {
+			break
+		}
 		res.checked++
 		res.changedReleases++
 
@@ -2069,6 +2148,12 @@ func (r *Runner) retagReleases(mbIDs []string, refreshSet *modules.AlbumRefreshS
 // returned. The libraries map is the caller's cache, reused across batches.
 func (res *releaseRefresh) retagItems(r *Runner, items []models.LibraryItem, libraries map[uuid.UUID]models.Library, refreshSet *modules.AlbumRefreshSet, detail *components.DetailCollector) {
 	for _, item := range items {
+		// Between files, never during one: a tag write is the unit that must not be
+		// cut in half.
+		if r.stopRequested() {
+			res.stopped = true
+			return
+		}
 		written, changes, err := r.retagItem(item, libraries, refreshSet)
 		if err != nil {
 			logger.Log.Errorf("failed to re-tag '%s'. error: %s", item.Path, err.Error())
@@ -2159,6 +2244,9 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseRefresh, detail *components.DetailCollector, extra map[string]any) {
 	mbStats := modules.MusicbrainzStatsSnapshot()
 	summary += mbLookupsClause(mbStats)
+	if res.stopped {
+		summary = "stopped early — " + summary
+	}
 	status := models.EventStatusOK
 	if len(res.errorFiles) > 0 {
 		status = models.EventStatusError
@@ -2178,6 +2266,7 @@ func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseR
 		"releases_relinked": res.relinked,
 		"migrations":        res.migrations,
 		"mb_lookups":        mbStats,
+		"stopped":           res.stopped,
 	}
 	for k, v := range extra {
 		details[k] = v

@@ -1,6 +1,7 @@
 package components
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -305,7 +306,7 @@ func TestDiscoverRefusesAMissingLibraryRoot(t *testing.T) {
 	if err := db.Create(&library).Error; err != nil {
 		t.Fatal(err)
 	}
-	if _, err := DiscoverLibraryRoots(db, library, nil, nil, 1); err == nil {
+	if _, err := DiscoverLibraryRoots(context.Background(), db, library, nil, nil, 1); err == nil {
 		t.Error("discovery of a missing library root should fail")
 	}
 }

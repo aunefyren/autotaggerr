@@ -493,7 +493,7 @@ export default function Artist() {
           while the header's controls are this artist's *state* — who manages it, whether
           it is followed, what following means. Eight controls in one wrapping row made
           those two kinds of thing indistinguishable. */}
-      <RunBar status={status.data} idle="Idle">
+      <RunBar status={status.data} idle="Idle" onStopped={() => status.reload()}>
         <button
           className="btn btn-ghost btn-sm"
           disabled={running}

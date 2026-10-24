@@ -2,6 +2,7 @@ import { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { ScanStatus } from "../types";
 import { ProgressBar } from "./ProgressBar";
+import { StopJobButton } from "./StopJobButton";
 import { PHASE_LABELS, phaseDrivesProgress } from "./phases";
 
 /**
@@ -21,8 +22,11 @@ export function RunBar({
   status,
   idle,
   children,
+  onStopped,
 }: {
   status?: ScanStatus | null;
+  /** Called after a stop is requested, so the caller can re-read the status. */
+  onStopped?: () => void;
   /** What the bar says when no job is in flight. Scope-specific, so the caller owns it. */
   idle: ReactNode;
   /** The verbs, in the documented cheapest-first order. */
@@ -67,6 +71,7 @@ export function RunBar({
                 {status?.done ?? 0} / {total}
               </span>
             )}
+            <StopJobButton stopping={status?.stopping} onStopped={onStopped} />
           </>
         ) : (
           <span className="runbar-status">{idle}</span>

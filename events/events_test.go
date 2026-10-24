@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/logger"
@@ -368,5 +369,44 @@ func TestMigrateLegacyTypes(t *testing.T) {
 		Count(&legacy)
 	if legacy != 0 {
 		t.Errorf("%d legacy rows remain", legacy)
+	}
+}
+
+// TestPruneByAge: with a retention period set, runs are kept by age and the count is
+// ignored — a burst of recent runs evicts nothing, and only runs older than the period
+// go, taking their stages and detail rows with them.
+func TestPruneByAge(t *testing.T) {
+	db := testDB(t)
+	SetRetentionDays(30)
+	t.Cleanup(func() { SetRetentionDays(0) })
+
+	old := models.Event{Type: models.EventTypeProcess, Title: "old", StartedAt: time.Now().AddDate(0, 0, -45)}
+	if err := db.Create(&old).Error; err != nil {
+		t.Fatal(err)
+	}
+	stage := models.Event{Type: models.EventTypeTagFiles, Title: "stage", ParentID: &old.ID, StartedAt: old.StartedAt}
+	if err := db.Create(&stage).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&models.EventItem{EventID: stage.ID, Path: "/m/a.flac"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 5; i++ {
+		if err := db.Create(&models.Event{Type: models.EventTypeProcess, Title: "recent", StartedAt: time.Now().Add(-time.Duration(i) * time.Hour)}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	Prune(db, 2) // the count must not apply
+
+	var titles []string
+	db.Model(&models.Event{}).Order("started_at").Pluck("title", &titles)
+	if len(titles) != 5 {
+		t.Errorf("kept %v, want the five recent runs and nothing older", titles)
+	}
+	var items int64
+	db.Model(&models.EventItem{}).Count(&items)
+	if items != 0 {
+		t.Errorf("%d detail row(s) of a pruned run survived", items)
 	}
 }

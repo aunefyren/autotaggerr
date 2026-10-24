@@ -1,6 +1,8 @@
 package process
 
 import (
+	"context"
+
 	"github.com/aunefyren/autotaggerr/logger"
 )
 
@@ -170,6 +172,8 @@ func (r *Runner) worker() {
 		j := r.queue[0]
 		r.queue = r.queue[1:]
 		r.current = &j
+		ctx, cancel := context.WithCancel(context.Background())
+		r.jobCtx, r.jobCancel = ctx, cancel
 		views := r.queueViewsLocked()
 		r.queueMu.Unlock()
 
@@ -189,9 +193,11 @@ func (r *Runner) worker() {
 
 		r.queueMu.Lock()
 		r.current = nil
+		r.jobCtx, r.jobCancel = nil, nil
 		views = r.queueViewsLocked()
 		r.queueMu.Unlock()
-		r.setStatus(func(s *Summary) { s.CurrentJob = nil; s.Queue = views })
+		cancel()
+		r.setStatus(func(s *Summary) { s.CurrentJob = nil; s.Queue = views; s.Stopping = false })
 	}
 }
 

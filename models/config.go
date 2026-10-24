@@ -143,6 +143,10 @@ type ConfigStruct struct {
 	// Zero or less means the default.
 	AutotaggerrEventRetention       int `json:"autotaggerr_event_retention"`
 	AutotaggerrEventDetailRetention int `json:"autotaggerr_event_detail_retention"`
+	// AutotaggerrEventRetentionDays keeps Activity runs by age instead of by count when
+	// above zero: runs younger than this are kept, older ones go, and
+	// AutotaggerrEventRetention is ignored. Zero keeps the count (see events.Prune).
+	AutotaggerrEventRetentionDays int `json:"autotaggerr_event_retention_days"`
 
 	// MusicBrainz mirror. The mirror refreshes the local copy of every MusicBrainz
 	// entity the collection refers to on a schedule, so browsing reads the database

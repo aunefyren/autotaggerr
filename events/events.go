@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -308,6 +309,19 @@ func MigrateLegacyTypes(db *gorm.DB) {
 	}
 }
 
+// retentionDays is the age-based retention period, in days; 0 means count-based.
+var retentionDays atomic.Int64
+
+// SetRetentionDays switches Prune to keeping runs by age (days > 0) or back to the
+// count each caller passes (0). Set once at startup from
+// autotaggerr_event_retention_days.
+func SetRetentionDays(days int) {
+	if days < 0 {
+		days = 0
+	}
+	retentionDays.Store(int64(days))
+}
+
 // Prune keeps only the newest `keep` **runs**, deleting the rest along with their
 // stage events and every detail row belonging to either. Retention runs after each
 // recorded action so the tables stay bounded.
@@ -320,13 +334,28 @@ func MigrateLegacyTypes(db *gorm.DB) {
 // The child rows are deleted explicitly: nothing in the schema cascades, so without
 // this the events table would stay capped while event_items grew without limit —
 // orphaned rows that no feed would ever show again.
+//
+// With a retention period set (SetRetentionDays), runs are kept by **age** instead and
+// keep is ignored: everything younger than the period stays, everything older goes. A
+// count lets a busy week silently evict a quiet month; "keep 90 days" is what someone
+// asking for history means. It is process-wide rather than a parameter because every
+// writer of the feed prunes it, and a feed pruned by age in one place and by count in
+// another would keep whichever verb ran last's idea of history.
 func Prune(db *gorm.DB, keep int) {
-	if db == nil || keep < 1 {
+	if db == nil {
 		return
 	}
+	q := db.Model(&models.Event{}).Where("parent_id IS NULL")
+	if days := retentionDays.Load(); days > 0 {
+		q = q.Where("started_at < ?", time.Now().AddDate(0, 0, -int(days)))
+	} else {
+		if keep < 1 {
+			return
+		}
+		q = q.Order("started_at desc").Offset(keep)
+	}
 	var ids []uuid.UUID
-	if err := db.Model(&models.Event{}).Where("parent_id IS NULL").
-		Order("started_at desc").Offset(keep).Pluck("id", &ids).Error; err != nil {
+	if err := q.Pluck("id", &ids).Error; err != nil {
 		logger.Log.Warnf("failed to enumerate events for pruning: %s", err.Error())
 		return
 	}

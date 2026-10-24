@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -903,6 +904,19 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 	errorFiles []string,
 	err error,
 ) {
+	return WalkAndProcessContext(context.Background(), root, workers, process, onFile)
+}
+
+// WalkAndProcessContext is WalkAndProcess that stops when ctx is cancelled: no file is
+// started after that, the ones already in flight finish, and the error is ctx's —
+// so the caller can tell a stopped walk from a finished one and prune nothing on it.
+func WalkAndProcessContext(ctx context.Context, root string, workers int, process func(path string) (unchanged bool, tagsWritten int, err error), onFile func(path string)) (
+	counter int,
+	unchangedFiles int,
+	allTagsWritten int,
+	errorFiles []string,
+	err error,
+) {
 	errorFiles = []string{}
 
 	// <1 falls back to the default; 1 reproduces the old serial behavior exactly
@@ -942,6 +956,9 @@ func WalkAndProcess(root string, workers int, process func(path string) (unchang
 		}
 		if d.IsDir() || !supportedExtensions[strings.ToLower(filepath.Ext(path))] {
 			return nil
+		}
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
 		}
 
 		wg.Add(1)

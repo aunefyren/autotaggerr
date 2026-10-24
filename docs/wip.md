@@ -53,20 +53,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   create hooks cover everything that arrives. The gap between them is an artist whose covers went
   missing from the cache after they were added — recoverable today only by a full pass. If that
   turns out to matter it is a `Targets` constructor and a button, not new machinery.
-- **A running job cannot be cancelled.** Graceful shutdown has shipped (see
-  [scanning.md](scanning.md#stopping-on-purpose)): schedules stop, HTTP drains, pending jobs are
-  dropped and the job in flight is given 30 seconds. What is missing is the ability to *stop* that
-  job — there is no cancellation to thread through a tag write, so a long scan still outlasts the
-  grace period and leaves its event to be reconciled on the next boot. A per-job context checked
-  between files (where the walk already stops cleanly) would close that gap, and would give file
-  work the counterpart to the metadata pass's `POST /mirror/cancel`.
-- **Retention is a count, not a duration.** The two figures are configurable now
-  (`autotaggerr_event_retention` / `autotaggerr_event_detail_retention`, see
-  [scanning.md](scanning.md#a-run-spawns-activities-each-one-is-a-row)), but time-based retention
-  would suit a feed better than a count — "keep 90 days" is what someone actually wants, and a
-  count means a busy week silently evicts a quiet month. Note that a tagging activity can exceed
-  the per-event limit by design: the drift rows are adopted whole (`DetailCollector.Adopt`) so a
-  big walk cannot starve them.
 
 ## Tagging — what is left
 
@@ -99,18 +85,11 @@ still open:
   to count its audio tracks — a rate-limited request per search result, for a number the format
   string half-answers already. Worth it only if the count is ever used for more than a glance.
 
-- **`GET /artists` recomputes the whole collection on every request.** `listArtists`
-  (`routers/collection.go:272`) loads every artist, every release group, every desire and every
-  credit link, then aggregates in Go — deliberately, so the complete/discrepancy rules have one
-  definition shared with the artist page, but it means the cost is the size of the collection and
-  nothing is cached between calls. The /collection page now covers the wait with a skeleton table
-  (see [style-guide.md](style-guide.md) → *Loading placeholder*), which makes it feel responsive
-  without making it faster. If it needs to actually be faster, the counts are the thing to
-  materialise — they change only when a scan or a sync does.
 - **Worker-count tuning.** Scan events now carry `mb_lookups` (cache hit / coalesced / fetched), so
   the cost of a run is finally measurable. The default `autotaggerr_process_concurrency` of 4 has
   never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
   worth it — FLAC rewrites are more disk-bound.
+
 ## Roadmap / ideas
 
 - **BPM playlists in Plex** (postponed from the tempo work, optional). Plex ignores BPM tags, so

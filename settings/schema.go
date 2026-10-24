@@ -410,6 +410,12 @@ func Sections() []Section {
 					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventRetention = v }, intRange(1, 10000)),
 				},
 				{
+					Key: "autotaggerr_event_retention_days", Label: "Keep Activity for (days)", Type: TypeInt, Tier: TierRestart,
+					Help: "Keep runs by age instead of by count: everything from the last this-many days stays, older runs go, and the count above is ignored. 0 keeps the count.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventRetentionDays },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventRetentionDays = v }, intRange(0, 3650)),
+				},
+				{
 					Key: "autotaggerr_event_detail_retention", Label: "Detail rows per activity", Type: TypeInt, Tier: TierRestart,
 					Help: "Per-file detail kept for one activity. Rows past the cap are still counted, so the total stays honest — but this is what dominates database size on a large library.",
 					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventDetailRetention },

@@ -150,6 +150,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"autotaggerr_environment": "prod",
 	"autotaggerr_event_detail_retention": 500,
 	"autotaggerr_event_retention": 200,
+	"autotaggerr_event_retention_days": 0,
 	"autotaggerr_external_url": "",
 	"autotaggerr_health_cron_schedule": "0 */5 * * * *",
 	"autotaggerr_lidarr_follow_cron_schedule": "0 */10 * * * *",
@@ -232,6 +233,7 @@ starts.
 | `autotaggerr_migration_review_deletions` | — | — | bool | Hold **deleted** entities for manual approval. Applying one marks the affected files unmatched. Default `false` (apply). |
 | `autotaggerr_replaced_pin_policy` | — | — | string | What happens when a file attached by hand has its audio replaced: `review` (default — held under **Items → Pin needs review**), `keep` (keep the pin and tag the new audio with it), or `release` (drop the pin; the library's manager identifies the file). Applies to pins already held, from the next run. Editable on **Settings → Manual identifications**. |
 | `autotaggerr_event_retention` | — | — | int | How many runs the **Activity** feed keeps. Counted in runs, not rows, so a run's stages are never pruned out from under it. Default `200`; `0` or less means the default. |
+| `autotaggerr_event_retention_days` | — | — | int | Keep **Activity** runs by age instead of by count: runs from the last this-many days are kept, older ones are deleted, and `autotaggerr_event_retention` is ignored. Default `0` (keep by count). |
 | `autotaggerr_event_detail_retention` | — | — | int | How many per-file (or per-entity) detail rows one Activity event stores. Rows past the cap are counted but not kept, so the event still reports "showing 500 of 3120". Raising it on a busy library grows the database noticeably. Default `500`; `0` or less means the default. |
 | `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. Used by the *Send test message* button on **Settings → Email**; nothing else sends mail yet. |
 | `smtp_host` | `-smtphost` | `smtphost` | string | SMTP server hostname. Default empty. |

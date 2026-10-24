@@ -1,6 +1,7 @@
 package components
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -84,7 +85,9 @@ func copyKeyOf(path string, size int64) copyKey {
 // The library root must exist. An unmounted library walks as empty, and reading that
 // as "nothing here" is harmless for discovery itself — but the Scan that follows would
 // then have nothing to compare against, so refusing here is the honest answer.
-func DiscoverLibraryRoots(db *gorm.DB, library models.Library, roots []string, detail *DetailCollector, workers int) (DiscoverStats, error) {
+//
+// ctx stops it between lookups; a stopped pass returns ctx's error with what it did.
+func DiscoverLibraryRoots(ctx context.Context, db *gorm.DB, library models.Library, roots []string, detail *DetailCollector, workers int) (DiscoverStats, error) {
 	if db == nil {
 		return DiscoverStats{Failed: []string{}}, nil
 	}
@@ -92,11 +95,15 @@ func DiscoverLibraryRoots(db *gorm.DB, library models.Library, roots []string, d
 	if err != nil {
 		return DiscoverStats{Failed: []string{}}, err
 	}
-	return discoverWith(db, library, manager, roots, detail, workers)
+	return discoverWithContext(ctx, db, library, manager, roots, detail, workers)
 }
 
 // discoverWith is DiscoverLibraryRoots with the manager supplied.
 func discoverWith(db *gorm.DB, library models.Library, manager Manager, roots []string, detail *DetailCollector, workers int) (DiscoverStats, error) {
+	return discoverWithContext(context.Background(), db, library, manager, roots, detail, workers)
+}
+
+func discoverWithContext(ctx context.Context, db *gorm.DB, library models.Library, manager Manager, roots []string, detail *DetailCollector, workers int) (DiscoverStats, error) {
 	stats := DiscoverStats{Failed: []string{}}
 	if _, err := os.Stat(library.Path); err != nil {
 		return stats, fmt.Errorf("library root %q is unavailable, skipping discovery: %w", library.Path, err)
@@ -150,7 +157,10 @@ func discoverWith(db *gorm.DB, library models.Library, manager Manager, roots []
 		stats.Moved += more
 	}
 
-	resolveIdentities(db, library, manager, append(rest, needsIdentity...), detail, workers, &stats)
+	resolveIdentities(ctx, db, library, manager, append(rest, needsIdentity...), detail, workers, &stats)
+	if err := ctx.Err(); err != nil {
+		return stats, err
+	}
 
 	logger.Log.Infof("discovery in %q: %d files on disk · %d moved · %d resolved · %d unmatched · %d failed",
 		library.Name, stats.Walked, stats.Moved, stats.Resolved, stats.Unmatched, len(stats.Failed))
@@ -370,7 +380,7 @@ func CarryMovedFiles(db *gorm.DB, library models.Library, roots []string) (int, 
 // resolveIdentities asks the manager about each path and records the answer without
 // touching the file. The processed version is recorded blank on purpose: it is what
 // tells the next Process this file has never been tagged against its identity.
-func resolveIdentities(db *gorm.DB, library models.Library, manager Manager, paths []string, detail *DetailCollector, workers int, stats *DiscoverStats) {
+func resolveIdentities(ctx context.Context, db *gorm.DB, library models.Library, manager Manager, paths []string, detail *DetailCollector, workers int, stats *DiscoverStats) {
 	if len(paths) == 0 {
 		return
 	}
@@ -383,6 +393,9 @@ func resolveIdentities(db *gorm.DB, library models.Library, manager Manager, pat
 	var wg sync.WaitGroup
 	sem := make(chan struct{}, workers)
 	for _, path := range paths {
+		if ctx.Err() != nil {
+			break // the lookups already started finish; no new one begins
+		}
 		wg.Add(1)
 		sem <- struct{}{}
 		go func(path string) {

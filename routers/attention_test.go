@@ -98,3 +98,66 @@ func TestHealthCountsWhatNeedsAttention(t *testing.T) {
 		}
 	}
 }
+
+// TestCancelWithNothingRunning: a stale Stop button is told nothing is running rather
+// than answered as though it stopped something.
+func TestCancelWithNothingRunning(t *testing.T) {
+	r, _ := setupAPI(t)
+	token := loginToken(t, r)
+	if w := do(r, "POST", "/api/v1/process/cancel", token, nil); w.Code != http.StatusConflict {
+		t.Errorf("cancel when idle = %d, want 409", w.Code)
+	}
+}
+
+// TestArtistListFollowsEveryWrite: the collection list is served from memory between
+// writes, so the one thing it must never do is miss one — an insert, an update and a
+// delete each change what it shows on the very next request.
+func TestArtistListFollowsEveryWrite(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	list := func() []map[string]any {
+		t.Helper()
+		w := do(r, "GET", "/api/v1/artists", token, nil)
+		if w.Code != http.StatusOK {
+			t.Fatalf("artists = %d: %s", w.Code, w.Body.String())
+		}
+		var out []map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+
+	artist := models.CollectionArtist{MBID: "a-1", Name: "Band"}
+	if err := api.DB.Create(&artist).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); len(got) != 1 {
+		t.Fatalf("list = %v", got)
+	}
+	if fp := api.artists.fingerprint; fp == "" {
+		t.Fatal("the list was not kept")
+	}
+
+	rg := models.CollectionReleaseGroup{MBID: "rg-1", ArtistMBID: "a-1", Title: "One"}
+	if err := api.DB.Create(&rg).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); got[0]["missing_count"] != float64(1) {
+		t.Errorf("after an insert: %v, want the new album counted", got[0])
+	}
+
+	if err := api.DB.Model(&rg).Update("owned", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); got[0]["owned_count"] != float64(1) {
+		t.Errorf("after an update: %v, want the album owned", got[0])
+	}
+
+	if err := api.DB.Delete(&rg).Error; err != nil {
+		t.Fatal(err)
+	}
+	if got := list(); got[0]["owned_count"] != float64(0) || got[0]["missing_count"] != float64(0) {
+		t.Errorf("after a delete: %v, want the album gone", got[0])
+	}
+}

@@ -900,7 +900,7 @@ repeated here because they are about *this* data model.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts |
+| `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts — [kept between writes](#the-collection-list-is-kept-between-writes) |
 | `GET /artists/:mbid` | artist detail: release-groups (with derived `complete`, `discrepancy`, `wanted*`) + desires |
 | `GET /artists/:mbid/info` | who the artist is (kind, origin, active years, top genres) — a live MusicBrainz entity read for the page header, cached 24h. Its own endpoint so the page never waits on it; a failure means the header shows less, never an error. |
 | `GET /artists/:mbid/discography` | live MusicBrainz read of *all* release-group types, **not stored** — browsing a catalogue must never require committing to it, or inflate the missing count. Cached 6h; a stale copy beats an empty page when MB is down. |
@@ -914,6 +914,18 @@ repeated here because they are about *this* data model.
 | `POST /collection/sync-lidarr` · `POST /artists/:mbid/sync-lidarr` | [mirror Lidarr](#mirroring-lidarr-at-two-scopes), collection-wide or for one artist. Both take an optional `{"ignore_cache": true}`. **400** without an enabled Lidarr manager; the per-artist form is also **404** for an unknown artist and **400** for one the mirror does not govern |
 
 `Rebuild` also runs automatically at the end of every processing run and drift sync.
+
+### The collection list is kept between writes
+
+`GET /artists` aggregates every artist, release-group, want and credit link in Go — deliberately, so
+the complete/discrepancy rules have one definition shared with the artist page — which made its cost
+the size of the collection on every request. Its answer only changes when one of those four tables
+does, so the computed list is kept on the API and served again until `collectionFingerprint` says
+otherwise: each table's row count and newest `updated_at`, four aggregate queries instead of four
+full loads. An insert or update moves the newest stamp and a delete moves the count, so no write the
+list could show slips past — given that every write goes through GORM, which stamps `updated_at` on
+`Create`, `Save` and `Updates` alike. A raw `Exec` or `UpdateColumn` on these tables would; there are
+none, and one added later would show as a list that lags until the next unrelated write.
 
 ## UI
 

@@ -47,6 +47,10 @@ type API struct {
 	SigningKey []byte
 	AppName    string
 	Version    string
+
+	// artists memoises GET /artists against a fingerprint of the tables it reads
+	// (see listArtists). Zero value is ready to use.
+	artists artistListCache
 }
 
 // meta returns the injected metadata source, or the real MusicBrainz-backed one when
@@ -170,6 +174,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/refresh", a.refreshAll)
 		protected.POST("/retag", a.retagAll)
 		protected.GET("/process/status", a.processStatus)
+		protected.POST("/process/cancel", a.cancelJob)
 
 		// MusicBrainz mirror: the scheduled refresh of the local entity cache.
 		protected.GET("/mirror/status", a.mirrorStatus)

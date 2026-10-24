@@ -199,6 +199,7 @@ func main() {
 	// schedules and startup jobs below create new running events, so it only touches
 	// orphans from an interrupted run — the "two scans stuck at running" after a
 	// restart.
+	events.SetRetentionDays(files.ConfigFile.AutotaggerrEventRetentionDays)
 	events.ReconcileRunning(db)
 
 	// Rewrite events recorded under a type name that has since been renamed, so the

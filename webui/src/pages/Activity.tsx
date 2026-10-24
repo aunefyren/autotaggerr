@@ -4,6 +4,7 @@ import { api, errMsg } from "../api";
 import { useDebounced, useFetch } from "../hooks";
 import { EntityRef, Event, EventItem, EventStat, EventsPage, JobView, MBFilesPage, ScanStatus } from "../types";
 import { EmptyState, ErrorNote, IdChip, Modal, Note, Pill } from "../components/ui";
+import { StopJobButton } from "../components/StopJobButton";
 import { ProgressBar } from "../components/ProgressBar";
 import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
 import { FilterChip, Pager, TableToolbar, useBrowse, usePaging } from "../components/browse";
@@ -299,7 +300,10 @@ export default function Activity() {
                 </span>
               )}
             </div>
-            <span className="dim mono" style={{ fontSize: 11 }}>{elapsed(status.data.started_at)}</span>
+            <div className="row" style={{ gap: 8, alignItems: "center" }}>
+              <span className="dim mono" style={{ fontSize: 11 }}>{elapsed(status.data.started_at)}</span>
+              <StopJobButton stopping={status.data.stopping} onStopped={() => status.reload()} />
+            </div>
           </div>
 
           {/* The counters belong to one stage of the job. In any other stage they are

@@ -1,6 +1,7 @@
 package components
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -349,7 +350,7 @@ func ScanLibrary(
 	processedVersion string,
 	workers int,
 ) (counter, unchangedFiles, tagsWritten int, errorFiles []string, err error) {
-	return ScanLibraryRoots(db, library, nil, plexClient, refreshSet, detail, processedVersion, workers, false, nil)
+	return ScanLibraryRoots(context.Background(), db, library, nil, plexClient, refreshSet, detail, processedVersion, workers, false, nil)
 }
 
 // ScanLibraryRoots is ScanLibrary narrowed to part of a library: it walks each of
@@ -377,6 +378,7 @@ func ScanLibrary(
 // changed in Lidarr does not touch a byte on disk, so the only way to pull the new
 // correlation down onto already-tagged files is to ignore the skip cache for one run.
 func ScanLibraryRoots(
+	ctx context.Context,
 	db *gorm.DB,
 	library models.Library,
 	roots []string,
@@ -401,7 +403,7 @@ func ScanLibraryRoots(
 	writesTempo := tagger.WritesBPM()
 	errorFiles = []string{}
 	for _, root := range roots {
-		c, u, tw, errs, walkErr := modules.WalkAndProcess(root, workers, func(path string) (bool, int, error) {
+		c, u, tw, errs, walkErr := modules.WalkAndProcessContext(ctx, root, workers, func(path string) (bool, int, error) {
 			if !force && shouldSkip(db, path, processedVersion, managerType, taggedWith) && !(writesTempo && tempoPending(db, path)) {
 				return true, 0, nil // counts as unchanged
 			}

@@ -609,6 +609,14 @@ Diagnostics**. They trade history against database size, which is why they are t
 — the run count is what a longer audit trail needs, the detail cap is what dominates the table's
 size on a busy library. Both are `restart`-tier: see below for why that is deliberate.
 
+**Or by age.** `autotaggerr_event_retention_days` (default `0`, off) switches retention from a count
+to a period: runs from the last that-many days are kept and older ones go, with the run count
+ignored. A count lets a busy week silently evict a quiet month, and "keep 90 days" is what someone
+asking for history usually means. It is process-wide (`events.SetRetentionDays`, set at startup)
+rather than a figure each caller passes, because every writer of the feed prunes it — the
+processing, metadata, artwork, tempo and health passes — and one of them pruning by age while
+another pruned by count would keep whichever ran last's idea of history.
+
 Both runners that write these tables — `process.Runner` and `mirror.Runner` — read the *same* two
 keys, resolved once at construction. They prune and fill one pair of tables, so different figures
 would make the feed's depth depend on which verb happened to run last. Resolving at construction
@@ -1114,7 +1122,8 @@ stopping means something:
 2. **`http.Server.Shutdown`** stops accepting requests and waits for the ones in flight — which
    includes the synchronous re-tags (`RetagItems`), the only file writes that happen outside the
    queue.
-3. **`process.Runner.Shutdown`** stops the queue and waits for the job already executing.
+3. **`process.Runner.Shutdown`** stops the queue, asks the job already executing to stop, and waits
+   for it.
 
 The third step is deliberately *not* `Wait`. Draining the whole queue would hold the process open
 for however long a full scan queued behind the current job takes; the pending jobs have started
@@ -1122,10 +1131,31 @@ nothing, hold no event, and every verb here is re-runnable, so they are dropped 
 running job is given time — it has written files and opened an event. From `stopping` onward the
 queue refuses new work rather than accepting it to drop it seconds later.
 
-Nothing is cancelled mid-job. There is no cancellation to thread through a tag write, and
-interrupting one is how a file ends up half-written, so a job that outlasts `shutdownGrace`
-(30 seconds) is left to the process exiting under it. That is the crash case, which the next boot
-already repairs — see below.
+### Stopping a job
+
+Every job runs under its own context, created by the worker and cancelled by
+`Runner.CancelCurrent` — the **Stop** button beside a running job on the run bar and the Activity
+banner (`POST /process/cancel`, 409 when nothing runs) — and by `Shutdown`, which no longer waits
+out the grace period on a job that could stop. The long loops check it **between files, never during
+one**: a tag write is the unit that must not be cut in half, so the files in flight finish and no new
+one starts.
+
+- **Process** stops its walk (`WalkAndProcessContext` returns the context's error), skips the
+  drift re-tag and everything after the rebuild that calls out to a manager or rewrites identities
+  (repair, migrations, sync), and still rebuilds the collection — a database pass that keeps it in
+  step with what the walk reached. It prunes **nothing** for a library whose walk was stopped: an
+  unfinished walk proves nothing about what is gone.
+- **Tag files** stops between files.
+- **A disk-walking Scan** stops between lookups and skips the Scan stage after it, whose prune would
+  delete rows the walk had not reached to carry.
+- **A metadata refresh** run as a queued job is the mirror pass, which already stopped on its
+  context (`POST /mirror/cancel` does the same for a pass started there).
+
+A stopped job finishes its event normally, prefixed *stopped early —* with `stopped: true` in its
+details; nothing in it reads as a failure, because nothing failed. The queue behind it is untouched.
+`Summary.Stopping` lets the button say *Stopping…* until the job has wound down. A job that still
+outlasts `shutdownGrace` (30 seconds) — one file taking that long — is left to the process exiting
+under it, which is the crash case the next boot repairs.
 
 ## Restart reconciliation
 

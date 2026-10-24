@@ -366,6 +366,22 @@ func (a *API) recorrelateArtist(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"status": "re-correlate queued", "artist": artist.Name})
 }
 
+// cancelJob asks the running job to stop between files (Runner.CancelCurrent). Jobs
+// queued behind it are left alone. 409 when nothing is running, so a stale button says
+// so rather than pretending it stopped something.
+func (a *API) cancelJob(c *gin.Context) {
+	if a.Scan == nil {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+		return
+	}
+	job, ok := a.Scan.CancelCurrent()
+	if !ok {
+		c.JSON(http.StatusConflict, gin.H{"error": "nothing is running"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": "stopping", "job": job})
+}
+
 // processStatus reports the job queue and the current or most recent run. It covers
 // every queued verb, not only processing — the queue is one, so its status is one.
 func (a *API) processStatus(c *gin.Context) {

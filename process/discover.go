@@ -1,6 +1,8 @@
 package process
 
 import (
+	"context"
+	"errors"
 	"fmt"
 
 	"github.com/aunefyren/autotaggerr/collection"
@@ -59,8 +61,19 @@ func (r *Runner) discoverNow(scope Scope, rebuild collection.RebuildScope, scanT
 	warnings := managerWarnings(scope)
 	total := components.DiscoverStats{Failed: []string{}}
 	var libraryErrors []string
+	ctx := r.jobContext()
+	stopped := false
 	for _, target := range scope.Targets {
-		stats, err := components.DiscoverLibraryRoots(r.db, target.Library, target.Roots, detail, r.Concurrency())
+		if ctx.Err() != nil {
+			stopped = true
+			break
+		}
+		stats, err := components.DiscoverLibraryRoots(ctx, r.db, target.Library, target.Roots, detail, r.Concurrency())
+		if errors.Is(err, context.Canceled) {
+			total.Add(stats)
+			stopped = true
+			break
+		}
 		if err != nil {
 			logger.Log.Warnf("disk walk of %q failed: %s", target.Library.Name, err.Error())
 			libraryErrors = append(libraryErrors, fmt.Sprintf("%s: %s", target.Library.Name, err.Error()))
@@ -73,7 +86,14 @@ func (r *Runner) discoverNow(scope Scope, rebuild collection.RebuildScope, scanT
 	// files are gone and were not carried anywhere — which is why the walk had to come
 	// first: run the other way round, a moved file's row is deleted before the walk
 	// could move it.
-	scanStats, scanErr := collection.RecordScanUnder(r.db, event, scanTitle, rebuild, scope.Detail)
+	//
+	// Not after a stopped walk: rows it had not reached yet may be files that moved, and
+	// the Scan's prune would delete them before a finished walk could carry them.
+	var scanStats collection.RebuildStats
+	var scanErr error
+	if !stopped {
+		scanStats, scanErr = collection.RecordScanUnder(r.db, event, scanTitle, rebuild, scope.Detail)
+	}
 
 	status := models.EventStatusOK
 	if len(total.Failed) > 0 || len(libraryErrors) > 0 || scanErr != nil {
@@ -86,6 +106,9 @@ func (r *Runner) discoverNow(scope Scope, rebuild collection.RebuildScope, scanT
 	}
 	if total.Resolved > 0 {
 		summary += " — the next Process tags the new ones"
+	}
+	if stopped {
+		summary = "stopped early — " + summary + " — the Scan was skipped"
 	}
 
 	recorded := total.Failed

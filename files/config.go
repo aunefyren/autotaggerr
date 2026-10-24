@@ -176,6 +176,12 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrEventRetentionDays < 0 {
+		// zero is the default (retention by count), so only a nonsense value needs fixing
+		ConfigFile.AutotaggerrEventRetentionDays = 0
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrEventRetention < 1 {
 		// set new value (how many Activity runs are kept)
 		ConfigFile.AutotaggerrEventRetention = models.DefaultEventRetention
@@ -185,6 +191,7 @@ func LoadConfig() (err error) {
 	if ConfigFile.AutotaggerrEventDetailRetention < 1 {
 		// set new value (per-file detail rows kept per Activity event)
 		ConfigFile.AutotaggerrEventDetailRetention = models.DefaultEventDetailRetention
+		ConfigFile.AutotaggerrEventRetentionDays = 0
 		anythingChanged = true
 	}
 

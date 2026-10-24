@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/events"
@@ -270,12 +271,81 @@ func creditedArtists(rg models.CollectionReleaseGroup, credits map[string][]stri
 	return collection.CreditedArtists(rg, credits)
 }
 
+// artistListCache holds the last computed collection list and the fingerprint of the
+// tables it was computed from.
+type artistListCache struct {
+	mu          sync.Mutex
+	fingerprint string
+	list        []artistSummary
+}
+
+// collectionFingerprint names the state of the four tables the collection list is
+// computed from: each one's row count and newest updated_at. An insert or an update
+// moves the newest stamp, a delete moves the count, so any write the list could show
+// changes it — four aggregate queries instead of loading every row of all four.
+//
+// It holds because every write to these tables goes through GORM, which stamps
+// updated_at on Create, Save and Updates alike. A raw Exec or UpdateColumn would slip
+// past it; there are none, and one added later would show up as a list that does not
+// change until the next unrelated write.
+func collectionFingerprint(db *gorm.DB) (string, error) {
+	var parts []string
+	for _, model := range []any{&models.CollectionArtist{}, &models.CollectionReleaseGroup{},
+		&models.CollectionDesire{}, &models.CollectionReleaseGroupArtist{}} {
+		// Newest as `any`: an aggregate over a time column comes back as text from
+		// SQLite and as a timestamp elsewhere, and all the fingerprint needs is that the
+		// same state prints the same way twice.
+		var n int64
+		var newest any
+		if err := db.Model(model).Select("count(*), max(updated_at)").Row().Scan(&n, &newest); err != nil {
+			return "", err
+		}
+		parts = append(parts, fmt.Sprintf("%d@%v", n, newest))
+	}
+	return strings.Join(parts, "|"), nil
+}
+
 // listArtists returns the collection: artists with owned/missing counts.
+//
+// The list is computed from every artist, release-group, want and credit link — the
+// complete/discrepancy rules have one definition, shared with the artist page, and
+// it runs in Go — so its cost is the size of the collection. The answer only changes
+// when one of those tables does, which is rarely between two page loads, so it is kept
+// and served again until collectionFingerprint says otherwise.
 func (a *API) listArtists(c *gin.Context) {
+	fingerprint, err := collectionFingerprint(a.DB)
+	if err == nil {
+		a.artists.mu.Lock()
+		if a.artists.fingerprint == fingerprint && a.artists.list != nil {
+			list := a.artists.list
+			a.artists.mu.Unlock()
+			c.JSON(http.StatusOK, list)
+			return
+		}
+		a.artists.mu.Unlock()
+	} else {
+		logger.Log.Warnf("failed to fingerprint the collection, computing the list afresh: %s", err.Error())
+	}
+
+	out, ok := a.computeArtistList(c)
+	if !ok {
+		return
+	}
+	if fingerprint != "" {
+		a.artists.mu.Lock()
+		a.artists.fingerprint, a.artists.list = fingerprint, out
+		a.artists.mu.Unlock()
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// computeArtistList is the uncached body of listArtists. It writes the error response
+// itself and reports false when it did.
+func (a *API) computeArtistList(c *gin.Context) ([]artistSummary, bool) {
 	var artists []models.CollectionArtist
 	if err := a.DB.Order("name").Find(&artists).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list artists"})
-		return
+		return nil, false
 	}
 
 	// Aggregated in Go rather than SQL so the complete/discrepancy rules have exactly
@@ -286,7 +356,7 @@ func (a *API) listArtists(c *gin.Context) {
 	var groups []models.CollectionReleaseGroup
 	if err := a.DB.Find(&groups).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list release groups"})
-		return
+		return nil, false
 	}
 	picked := map[string]map[string]bool{}
 	var desires []models.CollectionDesire
@@ -355,7 +425,7 @@ func (a *API) listArtists(c *gin.Context) {
 			PickedCount:   len(picked[ar.MBID]),
 		})
 	}
-	c.JSON(http.StatusOK, out)
+	return out, true
 }
 
 // getArtist returns an artist and its release-groups (owned + wanted).

@@ -234,6 +234,8 @@ export interface JobView {
 
 export interface ScanStatus {
   running: boolean;
+  /** The running job was asked to stop and is finishing the files already in flight. */
+  stopping?: boolean;
   /** The job executing right now (a processing run, re-tag, or metadata refresh); absent when idle. */
   current_job?: JobView;
   /** Jobs waiting behind the current one, in the order they will run. */

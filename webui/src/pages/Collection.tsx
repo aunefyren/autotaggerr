@@ -313,6 +313,7 @@ export default function Collection() {
           one artist, in the same cheapest-first order. */}
       <RunBar
         status={status.data}
+        onStopped={() => status.reload()}
         idle={
           noFiles ? (
             "Nothing indexed yet — Process walks your libraries first."
