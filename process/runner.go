@@ -685,7 +685,11 @@ func (r *Runner) prepareForceRecorrelate(scope Scope) {
 		if len(ids) == 0 {
 			continue
 		}
-		if err := r.db.Model(&models.LibraryItem{}).Where("id IN ?", ids).Update("pinned", false).Error; err != nil {
+		// A held pin goes with its pin: the hold was waiting on a decision about the pin,
+		// and re-correlating through the manager is that decision.
+		if err := r.db.Model(&models.LibraryItem{}).Where("id IN ?", ids).Updates(map[string]any{
+			"pinned": false, "pin_held": false, "pinned_audio_hash": "",
+		}).Error; err != nil {
 			logger.Log.Warnf("force re-correlate: failed to clear %d pin(s) in %q: %s", len(ids), target.Library.Name, err.Error())
 			continue
 		}
@@ -869,6 +873,9 @@ func (r *Runner) runScope(scope Scope) {
 		s.LastError = ""
 	})
 	logger.Log.Info("library process task starting...")
+
+	// Read per run, so a settings edit applies from the next run.
+	components.SetReplacedPinPolicy(files.ConfigFile.AutotaggerrReplacedPinPolicy)
 
 	event := events.Begin(r.db, models.EventTypeProcess, scope.Title)
 
@@ -1119,7 +1126,7 @@ func (r *Runner) runScope(scope Scope) {
 			"files_retagged":   drift.retagged,
 		},
 	}
-	addWarnings(details, append(warnings, components.MetaflacWarning(detail))...)
+	addWarnings(details, append(warnings, components.MetaflacWarning(detail), components.ReplacedPinWarning(detail))...)
 	if len(libraryErrors) > 0 {
 		details[models.EventDetailLibraryErrors] = libraryErrors
 	}
@@ -1290,7 +1297,7 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 		"files_retagged":   res.drift.retagged,
 		"detail":           detailSummary(detail),
 	}
-	addWarnings(details, components.MetaflacWarning(detail))
+	addWarnings(details, components.MetaflacWarning(detail), components.ReplacedPinWarning(detail))
 	events.Finish(r.db, ev, status, summary, details)
 
 	// The release rows go on last: they are few, they are the tie between a metadata

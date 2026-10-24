@@ -19,7 +19,7 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   hundreds of broken files, in Activity as well as on Items. The faceted-filter shape the Activity
   feed now uses is the obvious model.
 - **An unmatched file keeps its identity and is dropped from the disk view anyway.** `recordItem`
-  preserves `mb_release_id` through a failure (`components/pipeline.go:391`) — Autotaggerr still
+  preserves `mb_release_id` through a failure (`components/pipeline.go:461`) — Autotaggerr still
   knows exactly which release those files are — but `ownedItemRows` excludes `unmatched`, so a
   Lidarr hiccup empties the album from the collection regardless. This is deliberate and documented
   ([collection.md](collection.md#the-disk-view-counts-files-not-successes)): under a manager,
@@ -29,36 +29,24 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   *collection* half: the transient Lidarr case has exactly the shape the MusicBrainz fix was written
   for, and an hour-old cache is not the manager changing its mind. `last_error_transient` already
   exists to carry that distinction and nothing reads it.
-- **Lidarr replacing files — what following it leaves open.** Recheck-on-miss and the history
-  follower have shipped ([scanning.md](scanning.md#following-lidarr)). Residual, roughly by risk:
-  - **A pin outlives the file it was made for.** `shouldSkip` re-processes a file whose size or
-    mtime changed (`components/pipeline.go:350`), but `pinnedCorrelation` (`:189`) then applies the
-    pin regardless. When Lidarr replaces a pinned file at the same path — especially with a different
-    edition — the new bytes are tagged with the identity someone chose by hand for the old ones. A pin
-    should probably record the size/mtime it was made against and be held (or flagged, the way
-    migrations are) when those no longer match.
-  - **A stale-but-consistent cache can tag the old identity, and then it sticks.** Recheck only fires
-    on a miss. A same-path upgrade to a *different edition*, processed before the caches expire and
-    before the follower drops them (follower off, or a run inside the settle window), resolves to the
-    old release cleanly; after the write the file's size/mtime match the index, so `shouldSkip` never
-    looks again. The follower closes this in practice; with it disabled the only exits are drift, a
-    version bump, or force re-correlate.
-  - **Lidarr writing its own tags.** With Lidarr's *Write audio tags* on, each upgrade becomes Lidarr
-    tagging on import, Autotaggerr re-tagging, Lidarr possibly rescanning or renaming. The follower
-    makes the second step faster, and the second Process diffs to a no-op, so it settles — but the
-    setting fights Autotaggerr by design. The health check could read Lidarr's metadata-provider
-    config and warn about it.
-  - **A new artist cannot be followed.** The follower scopes a run through the collection
-    (`ArtistScope`), so an artist Lidarr imported for the first time is `skipped` until the scheduled
-    run. Scoping by Lidarr's own artist path would need the Lidarr-root → library-root mapping that
-    nothing has today (path matching compares positions for exactly that reason).
-  - **The album still blinks out during the settle window.** A run that reaches an upgraded album
-    between the import and the follower's pass can still see a half-replaced folder; recheck makes
-    most of those files resolve, but any that land `unmatched` drop the album from the disk view until
-    the queued Process. That is the *unmatched file is dropped from the disk view* entry below.
-  - **A manager edit can rewind the cursor.** `updateManager` loads the row and `Save`s it whole, so a
-    follower pass between the load and the save is written back over. The cost is one window read
-    twice and an artist processed twice — harmless, but a column-scoped update there would end it.
+  Lidarr upgrades are the live case: a run that reaches an album between the import and the
+  follower's queued Process can still see a half-replaced folder. Recheck and fresh resolution make
+  most of those files resolve, but any that land `unmatched` drop the album until the Process runs.
+- **Lidarr replacing files — what is left.** Recheck-on-miss, fresh resolution of changed files, held
+  pins, the history follower (including artists new to Lidarr) and the tag-setting warning have
+  shipped ([scanning.md](scanning.md#following-lidarr), [attach.md](attach.md#a-pin-belongs-to-the-audio-not-the-path)).
+  - **Not yet checked against a live Lidarr.** `/api/v1/history/since` and
+    `/api/v1/config/metadataprovider` were written from Lidarr's API shape and tested against mocks;
+    both decoders accept an enum as name or number for that reason. One real response of each would
+    settle it.
+  - **A Windows-hosted Lidarr's paths are not split on Linux.** `utilities.BaseOfPathAny` uses
+    `filepath.ToSlash`, which converts nothing on Linux, so `C:\Music\Artist` has no last segment
+    there. The follower's folder lookup inherits this, and so does trackfile matching
+    (`FindTrackFileByPath`), which is the older and larger exposure. Replacing `\` before splitting
+    fixes both; nobody has reported the setup.
+  - **Held pins are only visible on Items.** The run that holds one lists it once as a failure; after
+    that it is the *Pin needs review* filter or nothing. A count on the dashboard, or on the
+    Activity row, would make a held pin hard to forget.
   - **Webhook.** Lidarr's *Connect → Webhook* would let an import be followed in seconds rather than
     within ten minutes. Same history, same actions; only worth it if the polling delay is ever felt.
 - **The Lidarr mirror cannot introduce an artist**, so it cannot populate a cold collection — the

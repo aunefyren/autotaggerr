@@ -15,7 +15,7 @@ natively forever after. Attaching is a one-time cost per file, not an annotation
   body. A wrong ID would otherwise be written straight into the file's tags.
 - The recording ID is derived server-side from that release, never taken from the caller.
 - The item is pinned (`CorrelationSource = manual`), which is what stops the next scan from undoing
-  the decision. A pinned file is never handed to the manager again: `components.pinnedCorrelation`
+  the decision. A pinned file is never handed to the manager again: `components.pinnedCorrelationOf`
   short-circuits resolution and the pipeline re-uses the stored correlation, so a re-process (a
   version bump, an edited file) re-tags *to the pin* rather than to whatever the manager would have
   said. The index write is guarded the same way, so the MB IDs and the `manual` label cannot drift
@@ -27,6 +27,65 @@ natively forever after. Attaching is a one-time cost per file, not an annotation
 
 `DELETE .../attach` removes the pin and hands the file back to automatic resolution. The written
 tags are left alone: they are still the correct tags for whatever it was attached to.
+
+### A pin belongs to the audio, not the path
+
+A pin says what a *recording* is. It used to say that about whatever file sat at the path, so when
+something replaced the file — Lidarr upgrading it, a re-encode, a different edition dropped in place
+— the next run tagged the new audio with the identity someone had chosen for the old one, and since
+the pin is never handed to the manager, nothing ever questioned it.
+
+Attaching now records `PinnedAudioHash`: `modules.AudioPayloadHash` of the file, which hashes the
+audio frames and skips every tag block. That is the distinction size and mtime cannot make — a tag
+write and a replaced file both move them; only a replaced file moves the audio hash. When a pinned
+file's bytes have changed since the index last saw them, `components.checkPin` hashes it:
+
+- **Same audio** (our own tag write, or anyone else's): the pin applies, as before.
+- **Different audio**: the pin is **held** (`PinHeld`). It is neither applied nor dropped. The file
+  is not tagged — `models.TaggableItems` leaves held rows out of every tag write, and `shouldSkip`
+  passes over them so a run does not report the same file as failed every night. The run that held
+  it lists it once, with the reason.
+
+A held pin waits for a person, under *Items → Pin needs review*:
+
+- **Keep pin** (`POST /library-items/:id/pin/confirm`) — the new audio is still that recording:
+  the hash moves to it and the tags are written now.
+- **Release pin** (`DELETE …/attach`) — the hold and the hash go with the pin, and the next
+  processing run identifies the file like any other.
+- **Re-attach** — a different identity, recorded against the audio the file holds now.
+
+Force re-correlate, which already drops the pins of Lidarr-governed files, drops their holds with
+them.
+
+#### Deciding automatically
+
+`autotaggerr_replaced_pin_policy` (**Settings → Manual identifications**) chooses what happens instead
+of the hold. Each is right for a different source of replacements, which is why it is a choice and
+not a switch:
+
+| Policy | A pinned file's audio changed | Right when |
+|---|---|---|
+| `review` (default) | held, as above | replacements could be anything |
+| `keep` | the pin is confirmed for the new audio and the file tagged with it | files are replaced by the same recording — a better rip, a re-encode |
+| `release` | the pin is dropped and the file identified by its manager, in the same pass, against fresh answers | a manager decides identity, e.g. a Lidarr upgrade to another edition |
+
+The default is `review` because the other two each decide something about an identity a person chose,
+and an empty value reads as `review` so an upgrade changes nothing. Neither automatic policy is
+silent: the run carries a warning naming the files it kept or released (`ReplacedPinWarning`), since
+undoing either is a re-attach. `keep` falls back to holding when the new audio cannot be read —
+there would be nothing to record the pin against.
+
+The policy also covers pins **already held**: under `keep` or `release`, `shouldSkip` stops passing
+over held rows, so the next run settles the backlog. It is pushed into `components` at the start of
+each run (`SetReplacedPinPolicy`), so a settings edit applies from the next run.
+
+Pins made before the hash existed are hashed once at startup
+(`components.BackfillPinnedAudioHashes`, in the background), but only where the file is still
+byte-identical to what the index recorded — the only case where its current audio is known to be the
+audio the pin was made for. A pin whose file changed before then adopts whatever audio it next finds;
+nothing recorded what it used to be. That blind spot shrinks to files replaced before the first boot
+of a version with this check. Hashing is always on the pinned file's own changes, never a sweep:
+unchanged pins with a recorded hash cost nothing.
 
 ## Finding the release
 
@@ -96,7 +155,9 @@ Optional, and only ever a suggestion — see [fingerprinting.md](fingerprinting.
 |----------|---------|
 | `GET /search/releases` | fielded search; returns `{count, offset, releases}` |
 | `GET /releases/:mbid/tracks` | flattened tracklist, cache-backed |
-| `POST\|DELETE /library-items/:id/attach` | attach / unpin one file |
+| `POST\|DELETE /library-items/:id/attach` | attach / unpin one file (unpinning also releases a held pin) |
+| `POST /library-items/:id/pin/confirm` | keep a held pin for the audio the file holds now, and tag it |
+| `GET /library-items?pin_held=true` | the pins held for review |
 | `POST /attach/preview` | propose a file → track mapping; **writes nothing** |
 | `POST /attach/bulk` | apply a reviewed mapping |
 

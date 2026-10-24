@@ -48,3 +48,28 @@ func TestLidarrHistoryEventTypeMovesFiles(t *testing.T) {
 		}
 	}
 }
+
+// Only the two modes that rewrite already-imported files fight Autotaggerr. "For new
+// downloads only" is the recommended setting, and "no" is compatible too.
+func TestLidarrWriteAudioTags(t *testing.T) {
+	for _, tc := range []struct {
+		in       string
+		want     LidarrWriteAudioTags
+		rewrites bool
+	}{
+		{`"no"`, LidarrWriteAudioTagsNo, false},
+		{`"newFiles"`, LidarrWriteAudioTagsNewFiles, false},
+		{`"allFiles"`, LidarrWriteAudioTagsAllFiles, true},
+		{`"sync"`, LidarrWriteAudioTagsSync, true},
+		{`2`, LidarrWriteAudioTagsAllFiles, true},
+		{`1`, LidarrWriteAudioTagsNewFiles, false},
+	} {
+		var got LidarrWriteAudioTags
+		if err := json.Unmarshal([]byte(tc.in), &got); err != nil {
+			t.Fatalf("%s: %v", tc.in, err)
+		}
+		if got != tc.want || got.RewritesExistingFiles() != tc.rewrites {
+			t.Errorf("%s → %q (rewrites %t), want %q (%t)", tc.in, got, got.RewritesExistingFiles(), tc.want, tc.rewrites)
+		}
+	}
+}

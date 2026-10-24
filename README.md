@@ -75,8 +75,8 @@ There are other solutions that try to fix this, like a Beets plugin that can run
 1. Plex does not support multi-artist albums, and renders a joined string as one artist literally named `A; B`. So `ALBUMARTIST` gets the primary artist only; the full credit is written alongside it as `ALBUMARTISTS`, which players that understand it (Navidrome, Picard) read instead. The same applies to genres on MP3: Plex reads tags through ffmpeg, which sees only the first value of a proper multi-value tag, so MP3s join them with `; ` unless the tagger profile's `mp3_multi_value_tags` is on. FLAC always uses the multi-value form — ffmpeg joins those back together on its own, so nothing is lost either way.
 2. Autotaggerr can at times utilize the path of the file to determine what metadata is correct. Therefore, you must use this structure `/music-library-root/[ARTIST]/[ALBUM] ([YEAR])/[OPTIONAL MEDIA FOLDER]/[TRACKS])`
 3. Autotaggerr will first look for the Musicbrainz release/track ID within the file tags. If none are found, a Lidarr client must be configured for fallback. This is necessary for MP3 files as Lidarr does not tag these IDs on MP3s
-4.  Lidarr tends to overwrite tags for some reason. Go to Lidarr -> Settings -> Metadata:
-    - Set `Tag Audio Files with Metadata` to `For new downloads only`
+4.  Lidarr writes tags too, and with the wrong setting it rewrites files Autotaggerr has already tagged. Go to Lidarr -> Settings -> Metadata:
+    - Set `Tag Audio Files with Metadata` to `For new downloads only` (recommended): Lidarr tags a file once when it imports it, and Autotaggerr owns it from then on. `All files` and `Sync` rewrite existing files, so the two take turns — the health check and the manager's **Test** button warn about either.
     - Set `Scrub Existing Tags` to unchecked
 5. Plex must be set up to respect local metadata:
     - Library -> Manage library -> Edit -> Advanced -> Check `Prefer local metadata`
@@ -165,6 +165,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"autotaggerr_port": 8080,
 	"autotaggerr_process_concurrency": 4,
 	"autotaggerr_process_cron_schedule": "0 0 18 * * 7",
+	"autotaggerr_replaced_pin_policy": "review",
 	"autotaggerr_tempo_concurrency": 2,
 	"autotaggerr_tempo_cron_schedule": "0 0 1 * * *",
 	"autotaggerr_test_email": "",
@@ -229,6 +230,7 @@ starts.
 | `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |
 | `autotaggerr_migration_review_pinned` | — | — | bool | Hold any migration that would rewrite a **manually attached** file's MB ID, whatever its type. Default `false` (apply). |
 | `autotaggerr_migration_review_deletions` | — | — | bool | Hold **deleted** entities for manual approval. Applying one marks the affected files unmatched. Default `false` (apply). |
+| `autotaggerr_replaced_pin_policy` | — | — | string | What happens when a file attached by hand has its audio replaced: `review` (default — held under **Items → Pin needs review**), `keep` (keep the pin and tag the new audio with it), or `release` (drop the pin; the library's manager identifies the file). Applies to pins already held, from the next run. Editable on **Settings → Manual identifications**. |
 | `autotaggerr_event_retention` | — | — | int | How many runs the **Activity** feed keeps. Counted in runs, not rows, so a run's stages are never pruned out from under it. Default `200`; `0` or less means the default. |
 | `autotaggerr_event_detail_retention` | — | — | int | How many per-file (or per-entity) detail rows one Activity event stores. Rows past the cap are counted but not kept, so the event still reports "showing 500 of 3120". Raising it on a busy library grows the database noticeably. Default `500`; `0` or less means the default. |
 | `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. Used by the *Send test message* button on **Settings → Email**; nothing else sends mail yet. |

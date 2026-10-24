@@ -66,6 +66,24 @@ const (
 	DefaultTempoConcurrency  = 2
 )
 
+// What happens when a pinned file's audio is replaced underneath its pin (see
+// LibraryItem.PinHeld and docs/attach.md).
+const (
+	// ReplacedPinReview holds the pin for a person to keep or release. The default:
+	// the other two each make a decision about an identity someone chose by hand.
+	ReplacedPinReview = "review"
+	// ReplacedPinKeep confirms the pin for the new audio and tags the file with it —
+	// right when files are replaced by the same recording (a better rip, a re-encode).
+	ReplacedPinKeep = "keep"
+	// ReplacedPinRelease drops the pin and lets the library's manager identify the
+	// file — right when replacements come from a manager that decides identity, such
+	// as a Lidarr upgrade to another edition.
+	ReplacedPinRelease = "release"
+)
+
+// ReplacedPinPolicies lists the policies in the order the settings page offers them.
+var ReplacedPinPolicies = []string{ReplacedPinReview, ReplacedPinKeep, ReplacedPinRelease}
+
 // DefaultLidarrFollowCronSchedule reads each Lidarr manager's history every ten
 // minutes. A pass that finds nothing is a request per manager and records nothing, and
 // an upgrade then reaches its files within minutes rather than at the weekly run.
@@ -179,6 +197,9 @@ type ConfigStruct struct {
 	// AutotaggerrMigrationReviewPinned holds any migration that would rewrite a
 	// manual correlation, whatever its entity type.
 	AutotaggerrMigrationReviewPinned bool `json:"autotaggerr_migration_review_pinned"`
+	// AutotaggerrReplacedPinPolicy is ReplacedPin*: whether a pinned file whose audio
+	// was replaced is held for review, kept, or released. Empty reads as review.
+	AutotaggerrReplacedPinPolicy string `json:"autotaggerr_replaced_pin_policy"`
 	// AutotaggerrMigrationReviewDeletions holds the 404 case, which un-identifies
 	// files rather than re-pointing them.
 	AutotaggerrMigrationReviewDeletions bool `json:"autotaggerr_migration_review_deletions"`

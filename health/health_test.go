@@ -141,3 +141,51 @@ func TestCheckerProbesManagerRows(t *testing.T) {
 		t.Errorf("probes after disabling = %+v, want none", got)
 	}
 }
+
+// A warning is a fact about a working connection: it is recorded when it appears and
+// when it clears, not repeated while it stands, and it never turns the check red.
+func TestCheckerRecordsWarningsAsChanges(t *testing.T) {
+	db := testDB(t)
+	warning := ""
+	c := &Checker{db: db, last: map[string]bool{}, services: []service{{
+		name:   "Lidarr",
+		check:  func() (bool, error) { return true, nil },
+		advise: func() (string, error) { return warning, nil },
+	}}}
+
+	c.Run() // baseline, no warning
+	warning = "Lidarr is set to tag existing files"
+	c.Run() // appeared
+	c.Run() // standing
+	warning = ""
+	c.Run() // cleared
+
+	evs := healthEvents(t, db)
+	if len(evs) != 3 {
+		t.Fatalf("%d events, want 3 (baseline, appeared, cleared)", len(evs))
+	}
+	if evs[1].Status != models.EventStatusOK {
+		t.Errorf("warned status = %q, want ok", evs[1].Status)
+	}
+	if evs[1].Summary != "Lidarr healthy with a warning" {
+		t.Errorf("warned summary = %q", evs[1].Summary)
+	}
+	if ws, _ := evs[1].Details[models.EventDetailWarnings].([]any); len(ws) != 1 {
+		t.Errorf("warnings = %v, want one", evs[1].Details[models.EventDetailWarnings])
+	}
+}
+
+// A setting that cannot be read is not a warning and not ill health.
+func TestCheckerIgnoresAnUnreadableSetting(t *testing.T) {
+	db := testDB(t)
+	c := &Checker{db: db, last: map[string]bool{}, services: []service{{
+		name:   "Lidarr",
+		check:  func() (bool, error) { return true, nil },
+		advise: func() (string, error) { return "", errors.New("404") },
+	}}}
+	c.Run()
+	evs := healthEvents(t, db)
+	if len(evs) != 1 || evs[0].Status != models.EventStatusOK || evs[0].Summary != "Lidarr healthy" {
+		t.Fatalf("events = %+v, want one plain healthy baseline", evs)
+	}
+}

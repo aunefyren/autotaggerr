@@ -148,6 +148,9 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/releases/:mbid/tracks", a.releaseTracks)
 		protected.POST("/library-items/:id/attach", a.attachItem)
 		protected.DELETE("/library-items/:id/attach", a.detachItem)
+		// A pin held because the file's audio changed is settled by confirming it for
+		// the new audio (here) or releasing it (DELETE …/attach above).
+		protected.POST("/library-items/:id/pin/confirm", a.confirmPin)
 		// Bulk attach lives under its own prefix rather than /library-items/bulk,
 		// which would collide with the :id parameter above.
 		protected.POST("/attach/preview", a.previewBulkAttach)

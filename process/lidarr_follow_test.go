@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -189,9 +191,10 @@ func TestFollowLidarrIgnoresUnsettledAndNonFileRecords(t *testing.T) {
 	}
 }
 
-// An artist Lidarr changed that the collection does not hold cannot have a run scoped
-// to them. They are reported as skipped, with the reason, rather than dropped silently.
-func TestFollowLidarrSkipsAnArtistOutsideTheCollection(t *testing.T) {
+// An artist the collection does not hold, whose folder is in no library this manager
+// governs, cannot have a run scoped to them. They are reported as skipped, with the
+// reason, rather than dropped silently.
+func TestFollowLidarrSkipsAnArtistItCannotFind(t *testing.T) {
 	db := newTestDB(t)
 	cursor := time.Now().Add(-time.Hour)
 	h := newHistoryLidarr(t, historyRecord(7, "artist-new", "Newcomer", models.LidarrHistoryTrackFileImported, time.Now().Add(-10*time.Minute)))
@@ -211,8 +214,8 @@ func TestFollowLidarrSkipsAnArtistOutsideTheCollection(t *testing.T) {
 	if err := db.Where("event_id = ?", evs[0].ID).Find(&items).Error; err != nil {
 		t.Fatalf("load items: %v", err)
 	}
-	if len(items) != 1 || items[0].Status != models.EventItemStatusSkipped || items[0].Error != followSkipNotTracked {
-		t.Errorf("items = %+v, want one skipped as not tracked", items)
+	if len(items) != 1 || items[0].Status != models.EventItemStatusSkipped || items[0].Error != followSkipNoFolder {
+		t.Errorf("items = %+v, want one skipped for having no folder", items)
 	}
 }
 
@@ -258,5 +261,42 @@ func TestFollowLidarrSkipsUnusableManagers(t *testing.T) {
 
 	if followCursor(t, db, disabled) != nil || followCursor(t, db, noKey) != nil {
 		t.Error("an unusable manager had its cursor set")
+	}
+}
+
+// An artist's first import is the case the collection cannot answer for — nothing of
+// theirs is indexed. They are found on disk by the folder name Lidarr files them
+// under, in a library this manager governs, and a run is queued over that folder.
+func TestFollowLidarrFindsANewArtistByFolder(t *testing.T) {
+	db := newTestDB(t)
+	cursor := time.Now().Add(-time.Hour)
+	rec := historyRecord(7, "artist-new", "Newcomer", models.LidarrHistoryTrackFileImported, time.Now().Add(-10*time.Minute))
+	rec.Artist.Path = "/data/music/Newcomer"
+	h := newHistoryLidarr(t, rec)
+	m := seedFollowedManager(t, db, h.server.URL, &cursor)
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "Newcomer", "Debut (2026)"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	governed := models.Library{Name: "Lidarr music", Path: root, Enabled: true, ManagerID: &m.ID}
+	elsewhere := models.Library{Name: "Native", Path: t.TempDir(), Enabled: true}
+	for _, l := range []*models.Library{&governed, &elsewhere} {
+		if err := db.Create(l).Error; err != nil {
+			t.Fatalf("create library: %v", err)
+		}
+	}
+	r := newFollowRunner(db)
+
+	r.FollowLidarr()
+
+	if keys := queuedKeys(r); len(keys) != 1 || keys[0] != "process_artist:artist-new" {
+		t.Fatalf("queued %v, want one process_artist:artist-new", keys)
+	}
+	r.queueMu.Lock()
+	title := r.queue[0].title
+	r.queueMu.Unlock()
+	if title != "Processing Newcomer" {
+		t.Errorf("job title = %q", title)
 	}
 }

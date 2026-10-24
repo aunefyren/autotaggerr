@@ -197,13 +197,29 @@ func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *P
 // manager and the legacy single-file engine pass true, because embedded tags are the
 // only source they have.
 func ResolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir string, allowTagFallback bool) (models.Correlation, error) {
+	return resolveCorrelation(filePath, lidarrClient, rootDir, allowTagFallback, false)
+}
+
+// ResolveCorrelationFresh is ResolveCorrelation for a file whose bytes changed since
+// the index last saw it: Lidarr is asked through
+// ResolveMetadataDetailsFromLidarrFresh, which trusts no cached answer older than a
+// couple of minutes, matching or not.
+func ResolveCorrelationFresh(filePath string, lidarrClient *LidarrClient, rootDir string, allowTagFallback bool) (models.Correlation, error) {
+	return resolveCorrelation(filePath, lidarrClient, rootDir, allowTagFallback, true)
+}
+
+func resolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir string, allowTagFallback, fresh bool) (models.Correlation, error) {
 	correlation := models.Correlation{}
 
 	logger.Log.Debugf("processing track file: %s", filePath)
 
 	if lidarrClient != nil {
 		logger.Log.Debug("trying to get metadata details from Lidarr...")
-		lidarrTrackObject, err := ResolveMetadataDetailsFromLidarr(lidarrClient, filePath, rootDir)
+		resolve := ResolveMetadataDetailsFromLidarr
+		if fresh {
+			resolve = ResolveMetadataDetailsFromLidarrFresh
+		}
+		lidarrTrackObject, err := resolve(lidarrClient, filePath, rootDir)
 		if err != nil {
 			logger.Log.Errorf("failed to retrieve track details from Lidarr for '%s'. error: %s", filePath, err.Error())
 			// Wrap, do not replace. This error is what recordItem stores on the item and

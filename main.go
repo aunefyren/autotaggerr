@@ -242,6 +242,9 @@ func main() {
 	healthChecker := health.NewChecker(db, plexClient)
 	if filePath == nil {
 		go healthChecker.Run()
+		// Record which audio each pin stands for, for pins made before that was
+		// recorded. Off the main goroutine: it reads each pinned file once.
+		go components.BackfillPinnedAudioHashes(db)
 	}
 
 	// Every recurring job is described once and owned by the settings runtime, which
@@ -298,6 +301,7 @@ func main() {
 
 	// process file path
 	if filePath != nil && fileRootPath != nil {
+		components.SetReplacedPinPolicy(files.ConfigFile.AutotaggerrReplacedPinPolicy)
 		refreshSet := modules.NewAlbumRefreshSet(nil)
 
 		// Resolve the owning library's manager + tagger from the DB and run the

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -33,6 +34,54 @@ type DetailCollector struct {
 	// noMetaflac counts the failures that were only metaflac being missing, so the
 	// run can say so once instead of leaving it to be read off every row.
 	noMetaflac int
+	// pinsKept and pinsReleased are the files whose replaced audio the automatic
+	// pin policy decided about (ReplacedPinWarning), capped at maxReplacedPinPaths
+	// each; pinsKeptTotal / pinsReleasedTotal keep counting past the cap.
+	pinsKept, pinsReleased           []string
+	pinsKeptTotal, pinsReleasedTotal int
+}
+
+// maxReplacedPinPaths caps how many files a replaced-pin warning names. Pins are
+// hand-made and few, so this is rarely reached; past it the count still says how many.
+const maxReplacedPinPaths = 10
+
+// AddReplacedPin records that the automatic pin policy kept or released a pin.
+func (d *DetailCollector) AddReplacedPin(path string, kept bool) {
+	if d == nil {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if kept {
+		d.pinsKeptTotal++
+		if len(d.pinsKept) < maxReplacedPinPaths {
+			d.pinsKept = append(d.pinsKept, path)
+		}
+		return
+	}
+	d.pinsReleasedTotal++
+	if len(d.pinsReleased) < maxReplacedPinPaths {
+		d.pinsReleased = append(d.pinsReleased, path)
+	}
+}
+
+// ReplacedPins returns how many pins the automatic policy kept and released, and the
+// files it names for each, with a trailing "and N more" when there were more.
+func (d *DetailCollector) ReplacedPins() (keptTotal, releasedTotal int, kept, released []string) {
+	if d == nil {
+		return 0, 0, nil, nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	withMore := func(paths []string, total int) []string {
+		out := append([]string(nil), paths...)
+		if total > len(paths) {
+			out = append(out, fmt.Sprintf("and %d more", total-len(paths)))
+		}
+		return out
+	}
+	return d.pinsKeptTotal, d.pinsReleasedTotal,
+		withMore(d.pinsKept, d.pinsKeptTotal), withMore(d.pinsReleased, d.pinsReleasedTotal)
 }
 
 // NewDetailCollector returns a collector holding at most limit entries. A limit < 1
@@ -186,9 +235,52 @@ func ProcessFile(
 ) (unchanged bool, tagsWritten int, err error) {
 	managerType := manager.Type()
 
-	correlation, pinned := pinnedCorrelation(db, filePath)
+	item, indexed := indexedItem(db, filePath)
+	changed := bytesChanged(item, indexed, filePath)
+
+	correlation, pinned := pinnedCorrelationOf(item, indexed)
+	var pinHash string
+	if pinned {
+		var hold bool
+		if hold, pinHash = checkPin(item, changed, filePath); hold {
+			// The audio under the pin is not what it was made for. The policy decides:
+			// keep it for the new audio, release it to the manager, or (the default)
+			// hold it for a person. Keeping falls back to holding when the audio
+			// cannot be read, since there would be nothing to record the pin against.
+			switch currentReplacedPinPolicy() {
+			case models.ReplacedPinKeep:
+				if pinHash = keepReplacedPin(db, filePath); pinHash != "" {
+					hold = false
+					detail.AddReplacedPin(filePath, true)
+				}
+			case models.ReplacedPinRelease:
+				releaseReplacedPin(db, filePath)
+				detail.AddReplacedPin(filePath, false)
+				hold, pinned = false, false
+				correlation = models.Correlation{}
+				// The audio is new to whatever the manager has cached, whether or not
+				// the index already recorded its size when the pin was held.
+				changed = true
+			}
+		}
+		if hold {
+			// Neither applied nor dropped: the file is left untagged, keeps the
+			// identity on its row, and waits for someone to confirm or release it.
+			err = fmt.Errorf("%w (%s)", ErrPinHeld, filepath.Base(filePath))
+			recordItem(db, library.ID, filePath, models.Correlation{}, false, processedVersion, managerType, err)
+			holdPin(db, filePath)
+			detail.AddError(filePath, err)
+			return false, 0, err
+		}
+	}
 	if !pinned {
-		correlation, err = manager.Correlate(filePath, rootDir)
+		// A file the index has not seen in this state is the one a cached manager
+		// answer may not describe, so it is resolved against fresh answers.
+		correlate := manager.Correlate
+		if fc, ok := manager.(freshCorrelator); ok && changed {
+			correlate = fc.CorrelateFresh
+		}
+		correlation, err = correlate(filePath, rootDir)
 		if err != nil {
 			// An unmatched file is a state, not a failure: the manager owns identity and
 			// does not know this file. Record it as unmatched (so it drops out of the
@@ -219,6 +311,7 @@ func ProcessFile(
 	}
 
 	recordItemTagged(db, library.ID, filePath, correlation, unchanged, processedVersion, managerType, nil, tagger.Fingerprint())
+	recordPinHash(db, filePath, pinHash)
 	return unchanged, tagsWritten, nil
 }
 
@@ -329,6 +422,15 @@ func shouldSkip(db *gorm.DB, filePath, processedVersion, managerType, taggedWith
 	if err := db.Where("path = ?", filePath).First(&item).Error; err != nil {
 		return false // not indexed yet
 	}
+	// A held pin waits on a person, and nothing a run could do would change that, so
+	// it is passed over quietly instead of being reported as failed again every run.
+	// The run that held it reported it once; Items lists it until it is settled.
+	//
+	// Under an automatic policy it is processed instead, so switching the setting also
+	// settles the pins already waiting.
+	if item.PinHeld {
+		return currentReplacedPinPolicy() == models.ReplacedPinReview
+	}
 	if item.Status != models.LibraryItemStatusOK || item.MBReleaseID == "" {
 		return false
 	}
@@ -372,30 +474,6 @@ func tempoPending(db *gorm.DB, filePath string) bool {
 		return true
 	}
 	return stored.AnalysedAt.After(*item.LastScannedAt)
-}
-
-// pinnedCorrelation returns a file's stored correlation when its index row is pinned
-// and actually holds a release. Anything else (no DB, no row, unpinned, or a pin
-// without a release ID to reuse) reports false so the caller resolves normally.
-func pinnedCorrelation(db *gorm.DB, filePath string) (models.Correlation, bool) {
-	if db == nil {
-		return models.Correlation{}, false
-	}
-
-	var item models.LibraryItem
-	if err := db.Where("path = ?", filePath).First(&item).Error; err != nil {
-		return models.Correlation{}, false
-	}
-	if !item.Pinned || item.MBReleaseID == "" {
-		return models.Correlation{}, false
-	}
-
-	return models.Correlation{
-		MBReleaseID:      item.MBReleaseID,
-		MBReleaseTrackID: item.MBReleaseTrackID,
-		MBRecordingID:    item.MBRecordingID,
-		Source:           item.CorrelationSource,
-	}, true
 }
 
 // TaggerForLibrary returns just the tagger a library is configured with (no

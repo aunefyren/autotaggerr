@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
-import { api } from "../api";
+import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { ItemsPage, Library, LibraryItem } from "../types";
-import { EmptyState, ErrorNote, IdChip, StatusPill } from "../components/ui";
+import { ConfirmDialog, EmptyState, ErrorNote, IdChip, Pill, StatusPill } from "../components/ui";
+import { useToast } from "../toast";
 import { ItemDiffModal } from "../components/ItemDiff";
 import { AttachModal } from "../components/AttachModal";
 import { BulkAttachModal } from "../components/BulkAttachModal";
@@ -34,10 +35,16 @@ export default function Items() {
   const [attaching, setAttaching] = useState<LibraryItem | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [bulk, setBulk] = useState(false);
+  const [releasing, setReleasing] = useState<LibraryItem | null>(null);
+  const [busy, setBusy] = useState("");
+  const toast = useToast();
 
   const query = new URLSearchParams();
   if (libraryId) query.set("library_id", libraryId);
-  if (status) query.set("status", status);
+  // A held pin is its own filter, not a status: the row's status says what the last
+  // attempt did, and what a held pin needs is a decision.
+  if (status === "pin_held") query.set("pin_held", "true");
+  else if (status) query.set("status", status);
   if (q) query.set("q", q);
   if (mbid) query.set("mbid", mbid);
   query.set("limit", String(PAGE));
@@ -67,6 +74,35 @@ export default function Items() {
   const allPicked = attachable.length > 0 && picked.length === attachable.length;
   const pickedItems = items.filter((it) => picked.includes(it.id));
 
+  // Keeping a held pin confirms the hand-chosen identity for the audio the file holds
+  // now, and writes it — the same outcome as attaching again, without re-picking.
+  const keepPin = async (it: LibraryItem) => {
+    setBusy(it.id);
+    try {
+      const res = await api.post<{ tags_written: number; warning?: string }>(`/library-items/${it.id}/pin/confirm`);
+      toast(res.warning ? "err" : "info", res.warning ?? `Pin kept · ${res.tags_written} tags written`);
+      page.reload();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const releasePin = async (it: LibraryItem) => {
+    setBusy(it.id);
+    try {
+      await api.del(`/library-items/${it.id}/attach`);
+      toast("info", "Pin released · the next processing run identifies the file");
+      setReleasing(null);
+      page.reload();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
   return (
     <div className="stack">
       <div className="page-head">
@@ -84,6 +120,7 @@ export default function Items() {
           <option value="ok">Tagged</option>
           <option value="error">Error</option>
           <option value="unmatched">Unmatched</option>
+          <option value="pin_held">Pin needs review</option>
         </select>
         <input className="input mono" style={{ width: 240 }} placeholder="Filter by path…" value={q} onChange={(e) => resetAnd(() => setQ(e.target.value))} />
       </div>
@@ -176,9 +213,40 @@ export default function Items() {
                       {it.correlation_source || "—"}
                       {it.pinned && <span title="Manually attached; automatic resolution will not override it"> 📌</span>}
                     </td>
-                    <td><StatusPill status={it.status} /></td>
+                    <td>
+                      {it.pin_held ? (
+                        <span title="This file's audio changed since it was attached by hand. It is not tagged until the pin is kept or released.">
+                          <Pill kind="warn">Pin needs review</Pill>
+                        </span>
+                      ) : (
+                        <StatusPill status={it.status} />
+                      )}
+                    </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="row" style={{ justifyContent: "flex-end" }}>
+                        {/* A held pin is settled one of two ways: kept for the new
+                            audio, or released to automatic identification. Re-attach
+                            beside them is the third — a different identity. */}
+                        {it.pin_held && (
+                          <>
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              disabled={busy === it.id}
+                              title="The new audio is still the recording you attached: keep the pin and write it"
+                              onClick={() => keepPin(it)}
+                            >
+                              Keep pin
+                            </button>
+                            <button
+                              className="btn btn-ghost btn-sm"
+                              style={{ color: "var(--danger-text)" }}
+                              disabled={busy === it.id}
+                              onClick={() => setReleasing(it)}
+                            >
+                              Release pin
+                            </button>
+                          </>
+                        )}
                         {/* Albums are attached per folder, so filtering to one is the
                             first step of the bulk workflow. */}
                         <button
@@ -222,6 +290,26 @@ export default function Items() {
       )}
 
       {selected && <ItemDiffModal item={selected} onClose={() => setSelected(null)} />}
+
+      {releasing && (
+        <ConfirmDialog
+          title="Release pin"
+          danger
+          busy={busy === releasing.id}
+          confirmLabel="Release pin"
+          body={
+            <>
+              <span className="path">{releasing.path}</span>
+              <span>
+                The identity you attached by hand is dropped, and the next processing run identifies this file the
+                way it identifies any other — through its library's manager, or its own tags.
+              </span>
+            </>
+          }
+          onConfirm={() => releasePin(releasing)}
+          onCancel={() => setReleasing(null)}
+        />
+      )}
 
       {attaching && (
         <AttachModal

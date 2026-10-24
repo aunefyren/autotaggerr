@@ -516,6 +516,29 @@ func (c *LidarrClient) GetHistorySince(since time.Time) ([]models.LidarrHistoryR
 	return records, nil
 }
 
+// GetMetadataProviderConfig reads Lidarr's *Write Metadata to Audio Files* settings.
+func (c *LidarrClient) GetMetadataProviderConfig() (models.LidarrMetadataProviderConfig, error) {
+	var cfg models.LidarrMetadataProviderConfig
+	if err := c.getJSON("/api/v1/config/metadataprovider", &cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+// LidarrTagWritingAdvice is the warning for a Lidarr set to rewrite tags on files it
+// already imported, or "" when its setting is compatible with Autotaggerr.
+func LidarrTagWritingAdvice(mode models.LidarrWriteAudioTags) string {
+	if !mode.RewritesExistingFiles() {
+		return ""
+	}
+	label := "All files"
+	if mode == models.LidarrWriteAudioTagsSync {
+		label = "Sync"
+	}
+	return fmt.Sprintf("Lidarr is set to tag existing files (%s), so it rewrites files Autotaggerr has tagged and the two take turns. "+
+		"Set Settings → Metadata → Tag Audio Files with Metadata to \"For new downloads only\" in Lidarr.", label)
+}
+
 // retrieves the Lidarr album object from a Lidarr artist ID and album ID
 func (c *LidarrClient) GetMonitoredAlbumMBID(artistID, albumID int64) (*string, error) {
 	albumKey := strconv.FormatInt(albumID, 10)
@@ -751,6 +774,26 @@ func lidarrDropCachedBefore(artistID, albumID int64, cutoff time.Time) bool {
 
 // try to retrieve the MB release from Lidarr
 func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootDir string) (*models.LidarrTrackMetadataDetails, error) {
+	return resolveMetadataDetailsFromLidarr(cli, trackPath, rootDir, false)
+}
+
+// ResolveMetadataDetailsFromLidarrFresh is ResolveMetadataDetailsFromLidarr for a file
+// whose bytes changed since the index last saw it: no cached answer older than
+// lidarrRecheckAfter is trusted, *including one that matches*.
+//
+// The recheck on a miss cannot catch a cache that is stale and consistent. When Lidarr
+// replaces a file at the same path, the cached trackfile list, track list and edition
+// can all still describe the old file and agree with each other, so the file resolves
+// cleanly — to the old identity, which after the tag write is never looked at again,
+// because the file then matches the index. A changed file is exactly the one a stale
+// answer can be wrong about, so it is the one that pays for a fresh answer. The floor
+// still bounds that to one refetch per artist per window, however many of their files
+// changed.
+func ResolveMetadataDetailsFromLidarrFresh(cli *LidarrClient, trackPath string, rootDir string) (*models.LidarrTrackMetadataDetails, error) {
+	return resolveMetadataDetailsFromLidarr(cli, trackPath, rootDir, true)
+}
+
+func resolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootDir string, fresh bool) (*models.LidarrTrackMetadataDetails, error) {
 	// derive the artist from the path folder
 	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(rootDir, trackPath)
 	if err != nil {
@@ -783,8 +826,11 @@ func ResolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 		// list finds it, the album it names may have a stale track list still pointing
 		// at the trackfile the upgrade replaced. Each pass leaves what it dropped fresh,
 		// so the condition cannot hold a third time.
+		//
+		// A fresh resolve rechecks a hit as well as a miss: see
+		// ResolveMetadataDetailsFromLidarrFresh.
 		cutoff := time.Now().Add(-lidarrRecheckAfter)
-		for attempt := 0; details == nil && attempt < 2 && lidarrDropCachedBefore(artist.ID, albumID, cutoff); attempt++ {
+		for attempt := 0; (details == nil || fresh) && attempt < 2 && lidarrDropCachedBefore(artist.ID, albumID, cutoff); attempt++ {
 			logger.Log.Infof("cached Lidarr answers for %s do not account for %s; asking Lidarr again", artist.Name, trackPath)
 			details, albumID, err = resolveFromLidarrArtist(cli, artist, trackPath, rootDir)
 			if err != nil {

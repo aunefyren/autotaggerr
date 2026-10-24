@@ -157,6 +157,13 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrReplacedPinPolicy == "" {
+		// set new value — hold for review: the automatic policies each decide about
+		// an identity someone chose by hand, so they are opted into, not defaulted
+		ConfigFile.AutotaggerrReplacedPinPolicy = models.ReplacedPinReview
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrLidarrFollowCronSchedule == "" {
 		// set new value — every ten minutes; a pass that finds nothing records nothing
 		ConfigFile.AutotaggerrLidarrFollowCronSchedule = models.DefaultLidarrFollowCronSchedule
@@ -247,6 +254,8 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrMigrationReviewReleases = false
 	ConfigFile.AutotaggerrMigrationReviewArtists = false
 	ConfigFile.AutotaggerrMigrationReviewPinned = false
+
+	ConfigFile.AutotaggerrReplacedPinPolicy = models.ReplacedPinReview
 	ConfigFile.AutotaggerrMigrationReviewDeletions = false
 
 	level := logrus.InfoLevel

@@ -156,3 +156,54 @@ func (t LidarrHistoryEventType) MovesFiles() bool {
 	}
 	return false
 }
+
+// LidarrMetadataProviderConfig is Lidarr's Settings → Metadata → *Write Metadata to
+// Audio Files* section, as /api/v1/config/metadataprovider returns it. Only the tag
+// writing mode is modelled — it is the one setting that decides whether Lidarr and
+// Autotaggerr write the same files.
+type LidarrMetadataProviderConfig struct {
+	WriteAudioTags LidarrWriteAudioTags `json:"writeAudioTags"`
+}
+
+// LidarrWriteAudioTags is Lidarr's WriteAudioTagsType. Like the history event type it
+// is decoded from either its name or its number.
+type LidarrWriteAudioTags string
+
+const (
+	LidarrWriteAudioTagsNo       LidarrWriteAudioTags = "no"
+	LidarrWriteAudioTagsNewFiles LidarrWriteAudioTags = "newFiles"
+	LidarrWriteAudioTagsAllFiles LidarrWriteAudioTags = "allFiles"
+	LidarrWriteAudioTagsSync     LidarrWriteAudioTags = "sync"
+)
+
+var lidarrWriteAudioTagsNames = []LidarrWriteAudioTags{
+	LidarrWriteAudioTagsNo, LidarrWriteAudioTagsNewFiles, LidarrWriteAudioTagsAllFiles, LidarrWriteAudioTagsSync,
+}
+
+func (w *LidarrWriteAudioTags) UnmarshalJSON(data []byte) error {
+	var name string
+	if err := json.Unmarshal(data, &name); err == nil {
+		*w = LidarrWriteAudioTags(name)
+		return nil
+	}
+	var n int
+	if err := json.Unmarshal(data, &n); err != nil {
+		return fmt.Errorf("lidarr writeAudioTags %s is neither a name nor a number", string(data))
+	}
+	if n < 0 || n >= len(lidarrWriteAudioTagsNames) {
+		*w = ""
+		return nil
+	}
+	*w = lidarrWriteAudioTagsNames[n]
+	return nil
+}
+
+// RewritesExistingFiles reports whether Lidarr is set to write tags to files it has
+// already imported — *All files* (on every change to an album's metadata) or *Sync*
+// (keeping tags in step with Lidarr, removing what it does not know). Either one
+// rewrites files Autotaggerr has tagged, with Lidarr's narrower set of tags, and the
+// two then take turns. *For new downloads only* is the recommended setting: Lidarr tags
+// a file once on import, and Autotaggerr owns it from then on.
+func (w LidarrWriteAudioTags) RewritesExistingFiles() bool {
+	return w == LidarrWriteAudioTagsAllFiles || w == LidarrWriteAudioTagsSync
+}

@@ -308,6 +308,25 @@ func Sections() []Section {
 			},
 		},
 		{
+			// Not a migration: nothing upstream changed. The file under a pin did, and the
+			// question is what a hand-made identity means for audio it was not made for.
+			ID:    "pins",
+			Title: "Manual identifications",
+			Description: "Files you attached by hand keep that identity. When one's audio is replaced — an " +
+				"upgrade, a re-encode — the pin was chosen for the old audio, and this decides what happens to it.",
+			Fields: []Field{
+				{
+					Key: "autotaggerr_replaced_pin_policy", Label: "When a pinned file's audio changes", Type: TypeSelect, Tier: TierLive,
+					Options: models.ReplacedPinPolicies,
+					Help: "review: hold it under Items → Pin needs review. keep: keep the pin and tag the new audio with it. " +
+						"release: drop the pin and let the library's manager identify the file. Applies from the next run, including to pins already held.",
+					get: func(c models.ConfigStruct) any { return c.AutotaggerrReplacedPinPolicy },
+					set: setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrReplacedPinPolicy = v },
+						oneOf(models.ReplacedPinPolicies...)),
+				},
+			},
+		},
+		{
 			ID:          "email",
 			Title:       "Email",
 			Description: "The SMTP server Autotaggerr sends mail through.",

@@ -441,6 +441,19 @@ type LibraryItem struct {
 	TaggedWith string `json:"tagged_with"`
 	// Pinned marks a manual correlation that automatic resolution must never override.
 	Pinned bool `json:"pinned"`
+	// PinnedAudioHash is modules.AudioPayloadHash of the audio a pin was made for (or
+	// last confirmed against). A pin names what a *recording* is, so it must not
+	// follow a file whose audio was replaced underneath it — Lidarr upgrading the
+	// file, another tool re-encoding it. Tag writes leave the hash alone, which is
+	// what tells "we rewrote the tags" apart from "this is different audio": both
+	// move size and mtime. Empty means not yet known (a pin from before the column,
+	// whose file could not be read when it was backfilled).
+	PinnedAudioHash string `json:"-"`
+	// PinHeld marks a pin whose file's audio no longer matches PinnedAudioHash. The
+	// pin is neither applied nor dropped: the file is not tagged, by Process or by
+	// Tag files, until someone confirms the pin for the new audio or releases it to
+	// automatic resolution (Items → *Pin needs review*).
+	PinHeld bool `json:"pin_held"`
 	// Status is what the *last attempt* did, not what the file is. The MB ID columns
 	// above are the file's identity and outlive any failure to act on it — a lookup
 	// that fails must not erase what a file is, or the file leaves the disk view and
@@ -473,6 +486,7 @@ type LibraryItem struct {
 //     what the file is, and identity survives a failure (see recordItem). Excluding an
 //     errored file from a re-tag is exactly what stopped it recovering once the cause
 //     was fixed — the failure kept the file out of the only verb that could clear it.
+//
 //   - **`unmatched` is a disqualification, and a different one.** It is not a failed
 //     attempt: it is the manager answering that it does not know this file. Whatever
 //     release ID the row still carries is an answer that has been withdrawn, and
@@ -480,7 +494,12 @@ type LibraryItem struct {
 //     disclaimed. The same reasoning that keeps these out of the disk view
 //     (collection.ownedItemRows), applied to writes.
 //
-// The two failure states part company here, which `status = ok` could not express.
+//   - **A held pin is a third.** The identity on the row was chosen for audio the file
+//     no longer holds (LibraryItem.PinHeld); writing it would tag the new audio with a
+//     decision nobody made about it. Unlike `unmatched` it stays in the disk view — the
+//     file is still there, and the hold is waiting on a person, not on the manager.
+//
+// The failure states part company here, which `status = ok` could not express.
 // Folder resolution for the repair verbs deliberately reaches wider — see
 // collection.ArtistTargets.
 //
@@ -492,8 +511,8 @@ type LibraryItem struct {
 // guard counts across `libraries`, and an unqualified name there relies on the other
 // table not happening to have one too.
 func TaggableItems(db *gorm.DB) *gorm.DB {
-	return db.Where("library_items.mb_release_id <> '' AND library_items.status <> ?",
-		LibraryItemStatusUnmatched)
+	return db.Where("library_items.mb_release_id <> '' AND library_items.status <> ? AND library_items.pin_held = ?",
+		LibraryItemStatusUnmatched, false)
 }
 
 // MusicbrainzReleaseCache replaces config/mb_releases.json. Its primary key is the

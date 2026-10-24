@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { Manager } from "../types";
-import { EmptyState, ErrorNote, Modal, Pill } from "../components/ui";
+import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { useToast } from "../toast";
 
 // ManagerTest is the verdict from POST /managers/:id/test. A rejected probe still
@@ -13,6 +13,8 @@ type ManagerTest = {
   api_key_set: boolean;
   cookie_set: boolean;
   error?: string;
+  /** Reachable, but set up in a way that works against Autotaggerr. */
+  warning?: string;
 };
 
 export default function Managers() {
@@ -110,6 +112,18 @@ export default function Managers() {
           </table>
         </div>
       )}
+
+      {/* Reachable is not the same as compatible: a Lidarr set to rewrite tags on files
+          it already imported works, and still undoes what Autotaggerr writes. */}
+      {data?.map((m) => {
+        const t = tests[m.id];
+        if (!t || !t.healthy || !t.warning) return null;
+        return (
+          <Note key={m.id} kind="warn" title={m.name}>
+            {t.warning}
+          </Note>
+        );
+      })}
 
       {data?.map((m) => {
         const t = tests[m.id];

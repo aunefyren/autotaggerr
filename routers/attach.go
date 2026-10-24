@@ -257,6 +257,18 @@ func (a *API) requireIdentityEditable(c *gin.Context, items []models.LibraryItem
 // disk view is derived from these rows, and a writer that forgets to re-derive
 // leaves the collection reporting something the index no longer says.
 func (a *API) saveCorrelation(itemID uuid.UUID, releaseID string, track modules.ReleaseTrack) error {
+	// The pin is a statement about this audio, so it records which audio that is
+	// (LibraryItem.PinnedAudioHash). A file that cannot be read gets an empty hash —
+	// the pin still applies, and adopts the audio it next finds (components.checkPin).
+	var current models.LibraryItem
+	if err := a.DB.Select("path").First(&current, "id = ?", itemID).Error; err != nil {
+		return err
+	}
+	audioHash, hashErr := components.PinAudioHash(current.Path)
+	if hashErr != nil {
+		logger.Log.Warnf("attach: could not hash the audio of %s: %s", current.Path, hashErr.Error())
+	}
+
 	now := time.Now()
 	err := a.DB.Model(&models.LibraryItem{}).Where("id = ?", itemID).Updates(map[string]any{
 		"mb_release_id":       releaseID,
@@ -265,7 +277,11 @@ func (a *API) saveCorrelation(itemID uuid.UUID, releaseID string, track modules.
 		"correlation_source":  models.CorrelationSourceManual,
 		"correlated_at":       now,
 		"pinned":              true,
-		"status":              models.LibraryItemStatusOK,
+		"pinned_audio_hash":   audioHash,
+		// Attaching again is one of the two ways to settle a held pin: the new choice
+		// is made for the audio the file holds now.
+		"pin_held": false,
+		"status":   models.LibraryItemStatusOK,
 		// A hand-picked correlation settles whatever the last automatic attempt
 		// failed at, so the failure it recorded is cleared with it — leaving a dated
 		// error on a file someone just identified would read as a live problem.
@@ -527,10 +543,68 @@ func (a *API) detachItem(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "library item not found"})
 		return
 	}
-	if err := a.DB.Model(&models.LibraryItem{}).Where("id = ?", item.ID).
-		Update("pinned", false).Error; err != nil {
+	// Releasing is also how a held pin is settled the other way: the hold and the hash
+	// belong to the pin and go with it. The file keeps the failed status the hold
+	// recorded, so the next processing run resolves it rather than skipping it.
+	if err := a.DB.Model(&models.LibraryItem{}).Where("id = ?", item.ID).Updates(map[string]any{
+		"pinned":            false,
+		"pin_held":          false,
+		"pinned_audio_hash": "",
+	}).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove the pin"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"pinned": false})
+}
+
+// confirmPin settles a held pin by keeping it: the hand-chosen identity is confirmed
+// for the audio the file holds now, and written to the file straight away — the same
+// as attaching, without making the user pick the release and track again.
+//
+// Only a held pin can be confirmed. Anything else has nothing to confirm, and a 409
+// says so rather than quietly re-tagging a file nobody asked about.
+func (a *API) confirmPin(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+
+	var item models.LibraryItem
+	if err := a.DB.First(&item, "id = ?", id).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "library item not found"})
+		return
+	}
+	if !item.Pinned || !item.PinHeld {
+		c.JSON(http.StatusConflict, gin.H{"error": "this file has no held pin to confirm"})
+		return
+	}
+
+	audioHash, err := components.PinAudioHash(item.Path)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read the file's audio: " + err.Error()})
+		return
+	}
+	if err := a.DB.Model(&models.LibraryItem{}).Where("id = ?", item.ID).Updates(map[string]any{
+		"pinned_audio_hash":    audioHash,
+		"pin_held":             false,
+		"status":               models.LibraryItemStatusOK,
+		"error":                "",
+		"last_error_at":        nil,
+		"last_error_transient": false,
+	}).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to confirm the pin"})
+		return
+	}
+
+	written, err := a.Scan.RetagItem(item.ID)
+	if err != nil {
+		logger.Log.Warnf("confirm pin: pin kept but tagging failed for %s: %s", item.Path, err.Error())
+		c.JSON(http.StatusAccepted, gin.H{
+			"confirmed":    true,
+			"tags_written": 0,
+			"warning":      "Pin kept, but writing tags failed: " + err.Error(),
+		})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"confirmed": true, "tags_written": written})
 }

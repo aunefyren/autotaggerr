@@ -680,6 +680,11 @@ run — so leaving them would have put two entries in the type filter for one ki
   connection's health changes** (with a baseline on the first check per process): a frequent cadence
   otherwise buries the feed under identical "healthy" rows. `details.services` carries per-connection
   `healthy` + `error`. Lives in `health.Checker`, which holds the last-seen state to gate the write.
+  A reachable connection can still carry a **warning** (`components.Advisor`): today, a Lidarr set to
+  tag existing files (*All files* or *Sync*), which rewrites what Autotaggerr wrote. A warning never
+  makes the check unhealthy; it appearing or clearing is a change like any other, and it rides
+  `details.warnings`. The manager's **Test** button shows the same sentence. *For new downloads
+  only* is the recommended Lidarr setting.
 
 - **`lidarr_follow`** — a pass over a Lidarr manager's history that found files changing under
   some artists: one entity row per artist, `queued` or `skipped` with the reason. Recorded **only when
@@ -919,9 +924,19 @@ The floor is what keeps this cheap. A file Lidarr really does not know about mis
 without the floor, a folder of them would re-download the artist's trackfile list once per file. With
 it, one refetch makes the entries fresh and every further miss in the window is believed.
 
-What it cannot catch is a cache that is stale **and consistent**: a same-path upgrade where all four
-entries still describe the old file, so they agree with each other and nothing misses. Following Lidarr's
-history (below) is what drops those.
+What it cannot catch by itself is a cache that is stale **and consistent**: a same-path upgrade where
+all four entries still describe the old file, so they agree with each other and nothing misses. That
+case resolved cleanly to the old identity, and after the tag write the file matched the index, so
+`shouldSkip` never looked at it again.
+
+So a file whose bytes the index has not seen — not indexed yet, or a different size or modification
+second than recorded (`components.bytesChanged`) — is resolved **fresh**: through
+`LidarrManager.CorrelateFresh` and `ResolveMetadataDetailsFromLidarrFresh`, which recheck a *hit*
+against stale entries as well as a miss. Our own tag writes are recorded straight after they happen,
+so they never count as a change; what does is a file something else put there, which is exactly the
+file a cached answer may not describe. The two-minute floor still bounds it to one refetch per artist
+per window, however many of their files changed. Following Lidarr's history (below) drops the
+artist's caches as well, sooner.
 
 ## Following Lidarr
 
@@ -940,9 +955,12 @@ on a schedule (`autotaggerr_lidarr_follow_cron_schedule`, every ten minutes by d
    and following it would loop with a Lidarr that writes tags.
 3. **Per artist named**, drop their cached Lidarr answers (`LidarrInvalidateArtistCaches`, with the
    albums the records named) and queue a Process over their folders (`ArtistScope` → `Run`, deduped
-   on the artist like the button). An artist the collection does not hold, or with nothing indexed
-   yet, cannot be scoped; they are reported as `skipped` and left to the scheduled run, which now
-   reads them fresh.
+   on the artist like the button). An artist the collection cannot answer for — new to Lidarr, or
+   with nothing indexed yet, which is every artist's first import — is looked for **on disk by
+   folder name**: the last segment of Lidarr's path for them, under each enabled library assigned to
+   this manager. Only the name is comparable, since Lidarr's path sits under its own root. The
+   Process over that folder is what brings them into the collection. An artist found nowhere is
+   reported as `skipped` and left to the scheduled run, which now reads them fresh.
 4. **Advance** the cursor to the end of the window — not to "now", so the unsettled records are the
    start of the next window.
 
@@ -955,6 +973,8 @@ Process, as the weekly schedule does, and nothing a user pressed does more than 
 
 Three choices worth knowing:
 
+- **The cursor is the follower's alone.** Saving a manager omits the column, so an edit made while a
+  pass runs cannot write the old cursor back over it.
 - **The first pass starts from now.** A manager with no cursor gets one and nothing else — replaying
   Lidarr's whole history would queue a run for every artist it ever touched. The cursor is persisted
   so that what Lidarr upgraded while Autotaggerr was down is still caught up on.

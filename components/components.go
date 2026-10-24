@@ -34,6 +34,20 @@ type Manager interface {
 	Type() string
 }
 
+// Advisor is a Manager that can be reachable and still be set up in a way that works
+// against Autotaggerr. Advice is "" when there is nothing to say; an error means the
+// setting could not be read, which is not the same as the manager being unhealthy.
+type Advisor interface {
+	Advice() (string, error)
+}
+
+// freshCorrelator is a Manager whose answers come from a cache, and which can be told
+// that a file changed on disk so the cache is not trusted for it. ProcessFile asks for
+// it optionally, so a manager with nothing cached need not implement it.
+type freshCorrelator interface {
+	CorrelateFresh(filePath, rootDir string) (models.Correlation, error)
+}
+
 // --- Data sources -----------------------------------------------------------
 
 // MusicBrainzDataSource adapts the MetadataSource port onto the DataSource
@@ -106,6 +120,14 @@ func (m *LidarrManager) Correlate(filePath, rootDir string) (models.Correlation,
 	return modules.ResolveCorrelation(filePath, m.client, rootDir, allowTagFallback)
 }
 
+// CorrelateFresh is Correlate for a file whose bytes changed since the index last saw
+// it, resolved against Lidarr answers no older than a couple of minutes (see
+// modules.ResolveMetadataDetailsFromLidarrFresh).
+func (m *LidarrManager) CorrelateFresh(filePath, rootDir string) (models.Correlation, error) {
+	allowTagFallback := m.client == nil
+	return modules.ResolveCorrelationFresh(filePath, m.client, rootDir, allowTagFallback)
+}
+
 func (m *LidarrManager) HealthCheck() (bool, error) {
 	if m.client == nil {
 		return false, fmt.Errorf("lidarr client not configured")
@@ -114,6 +136,20 @@ func (m *LidarrManager) HealthCheck() (bool, error) {
 }
 
 func (m *LidarrManager) Type() string { return models.ManagerTypeLidarr }
+
+// Advice reports Lidarr being set to rewrite tags on files it already imported, which
+// is reachable, working, and still wrong alongside Autotaggerr (see
+// models.LidarrWriteAudioTags.RewritesExistingFiles).
+func (m *LidarrManager) Advice() (string, error) {
+	if m.client == nil {
+		return "", nil
+	}
+	cfg, err := m.client.GetMetadataProviderConfig()
+	if err != nil {
+		return "", err
+	}
+	return modules.LidarrTagWritingAdvice(cfg.WriteAudioTags), nil
+}
 
 // AutotaggerrManager resolves natively, without Lidarr: today from the file's
 // embedded MusicBrainz tags (fingerprinting and manual pins come later).

@@ -97,6 +97,11 @@ export interface LibraryItem {
   /** A manual attach that automatic resolution must not override. */
   pinned: boolean;
   /**
+   * A pin whose file's audio changed since it was attached: neither applied nor
+   * dropped, and the file is not tagged until the pin is kept or released.
+   */
+  pin_held: boolean;
+  /**
    * False when the file's library is managed by Lidarr: the release, the edition
    * and the track are Lidarr's to decide, so attaching by hand is rejected by the
    * API (409) and the controls are shown disabled rather than offered.

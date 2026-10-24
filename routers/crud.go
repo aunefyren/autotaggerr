@@ -272,6 +272,13 @@ func (a *API) testManager(c *gin.Context) {
 		out["error"] = probeErr.Error()
 		logger.Log.Warnf("manager %q failed its connection test: %s", m.Name, probeErr.Error())
 	}
+	// Reachable is not the same as compatible: say so here, where the user is looking
+	// at the manager's settings, as well as on the health check.
+	if advisor, ok := manager.(components.Advisor); ok && healthy {
+		if warning, err := advisor.Advice(); err == nil && warning != "" {
+			out["warning"] = warning
+		}
+	}
 	c.JSON(http.StatusOK, out)
 }
 
@@ -340,7 +347,10 @@ func (a *API) updateManager(c *gin.Context) {
 		return
 	}
 	in.apply(&m)
-	if err := a.DB.Save(&m).Error; err != nil {
+	// The history cursor is the Lidarr follower's, not the form's: Save writes back the
+	// row as loaded, and a follower pass between the load and this save would be
+	// rewound (process.Runner.FollowLidarr).
+	if err := a.DB.Omit("lidarr_history_cursor").Save(&m).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 		return
 	}

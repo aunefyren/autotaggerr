@@ -29,6 +29,10 @@ type service struct {
 	key   string
 	name  string
 	check func() (bool, error)
+	// advise, when set, is asked after a healthy probe whether the connection is set
+	// up in a way that works against Autotaggerr (components.Advisor). It never makes
+	// a service unhealthy — a warning is a separate fact about a working connection.
+	advise func() (string, error)
 }
 
 func (s service) stateKey() string {
@@ -47,7 +51,11 @@ type Checker struct {
 
 	mu   sync.Mutex
 	last map[string]bool // service key -> healthy at last check; absent = never checked
-	seen bool            // whether any check has run this process
+	// lastWarn is the warning each service carried at the last check, so a warning
+	// appearing or clearing is recorded like a change in health, and a standing one
+	// is not repeated every few minutes.
+	lastWarn map[string]string
+	seen     bool // whether any check has run this process
 }
 
 // NewChecker builds a checker for the Plex client plus whatever managers the database
@@ -63,7 +71,7 @@ func NewChecker(db *gorm.DB, plex *modules.PlexClient) *Checker {
 	if plex != nil {
 		svcs = append(svcs, service{key: "plex", name: "Plex", check: plex.HealthCheck})
 	}
-	return &Checker{db: db, services: svcs, last: map[string]bool{}}
+	return &Checker{db: db, services: svcs, last: map[string]bool{}, lastWarn: map[string]string{}}
 }
 
 // probes lists the connections to check, rebuilt on every run.
@@ -95,7 +103,11 @@ func (c *Checker) probes() []service {
 		if name == "" {
 			name = "Lidarr"
 		}
-		svcs = append(svcs, service{key: row.ID.String(), name: name, check: manager.HealthCheck})
+		svc := service{key: row.ID.String(), name: name, check: manager.HealthCheck}
+		if advisor, ok := manager.(components.Advisor); ok {
+			svc.advise = advisor.Advice
+		}
+		svcs = append(svcs, svc)
 	}
 	return append(svcs, c.services...)
 }
@@ -116,28 +128,46 @@ func (c *Checker) Run() {
 		// and forgetting the previous state means a connection configured later gets a
 		// fresh baseline rather than being compared against a stale one.
 		c.last = map[string]bool{}
+		c.lastWarn = map[string]string{}
 		return
 	}
 
 	type result struct {
 		healthy bool
 		err     error
+		warning string
 	}
 	results := make(map[string]result, len(svcs))
 	// A probe appearing or disappearing is itself a change worth a row: a manager was
 	// added, deleted or disabled, and the feed should say so.
 	current := make(map[string]bool, len(svcs))
+	currentWarn := make(map[string]string, len(svcs))
 	changed := !c.seen || len(svcs) != len(c.last)
 	for _, s := range svcs {
 		healthy, err := s.check()
 		if err != nil {
 			healthy = false
 		}
-		results[s.name] = result{healthy: healthy, err: err}
+		warning := ""
+		if healthy && s.advise != nil {
+			w, adviseErr := s.advise()
+			if adviseErr != nil {
+				logger.Log.Debugf("%s: could not read its settings to check them: %s", s.name, adviseErr.Error())
+			}
+			warning = w
+		}
+		results[s.name] = result{healthy: healthy, err: err, warning: warning}
 		if prev, ok := c.last[s.stateKey()]; !ok || prev != healthy {
 			changed = true
 		}
+		if c.lastWarn[s.stateKey()] != warning {
+			changed = true
+		}
 		current[s.stateKey()] = healthy
+		currentWarn[s.stateKey()] = warning
+		if warning != "" {
+			logger.Log.Warnf("%s: %s", s.name, warning)
+		}
 
 		switch {
 		case healthy:
@@ -149,6 +179,7 @@ func (c *Checker) Run() {
 		}
 	}
 	c.last = current
+	c.lastWarn = currentWarn
 	c.seen = true
 
 	if !changed {
@@ -163,6 +194,7 @@ func (c *Checker) Run() {
 	sort.Strings(names)
 
 	allHealthy := true
+	var warnings []string
 	parts := make([]string, 0, len(names))
 	states := make(map[string]any, len(names))
 	for _, name := range names {
@@ -172,10 +204,17 @@ func (c *Checker) Run() {
 			allHealthy = false
 			state = "unreachable"
 		}
+		if r.warning != "" {
+			state += " with a warning"
+		}
 		parts = append(parts, fmt.Sprintf("%s %s", name, state))
 		entry := map[string]any{"healthy": r.healthy}
 		if r.err != nil {
 			entry["error"] = r.err.Error()
+		}
+		if r.warning != "" {
+			entry["warning"] = r.warning
+			warnings = append(warnings, name+": "+r.warning)
 		}
 		states[name] = entry
 	}
@@ -193,12 +232,20 @@ func (c *Checker) Run() {
 		if !results[name].healthy {
 			stat.Value = 0
 			stat.Kind = models.EventStatBad
+		} else if results[name].warning != "" {
+			stat.Kind = models.EventStatNotable
 		}
 		stats = append(stats, stat)
 	}
 
 	event := events.Begin(c.db, models.EventTypeHealth, "Health check")
 	event.Stats = stats
-	events.Finish(c.db, event, status, strings.Join(parts, " · "), map[string]any{"services": states})
+	details := map[string]any{"services": states}
+	if len(warnings) > 0 {
+		// The Activity detail renders details.warnings as a list, which is where a
+		// sentence saying what to change belongs.
+		details[models.EventDetailWarnings] = warnings
+	}
+	events.Finish(c.db, event, status, strings.Join(parts, " · "), details)
 	events.Prune(c.db, eventRetention)
 }

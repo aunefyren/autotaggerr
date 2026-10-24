@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -239,5 +240,72 @@ func TestLidarrGetHistorySince(t *testing.T) {
 	if len(records) != 1 || records[0].EventType != models.LidarrHistoryTrackFileImported ||
 		records[0].Artist == nil || records[0].Artist.ForeignArtistID != "mb-artist" {
 		t.Errorf("records = %+v", records)
+	}
+}
+
+// The stale-but-consistent case: Lidarr replaced the file at the same path with a
+// different edition's track. Every cached entry still describes the old file and they
+// agree, so an ordinary resolve finds nothing to doubt and answers the old identity.
+// A fresh resolve — what a file whose bytes changed gets — rechecks the hit and
+// answers the new one.
+func TestResolveFreshRechecksAStaleButConsistentHit(t *testing.T) {
+	resetLidarrCaches()
+	t.Cleanup(resetLidarrCaches)
+	root := filepath.Join("/", "music")
+	l := newUpgradableLidarr(t)
+	client := NewLidarrClient(l.server.URL, "test-key", nil)
+
+	path := lidarrAlbumPath + recheckTrack + ".flac"
+	l.upgrade(100, path)
+	if d, err := ResolveMetadataDetailsFromLidarr(client, wallPath(root, ".flac"), root); err != nil || d == nil {
+		t.Fatalf("priming resolve = %v, %v; want details", d, err)
+	}
+
+	l.mu.Lock()
+	l.tracks[0].ForeignTrackID = "mbtrack-deluxe"
+	l.mu.Unlock()
+	ageLidarrCaches(2 * lidarrRecheckAfter)
+
+	if d, _ := ResolveMetadataDetailsFromLidarr(client, wallPath(root, ".flac"), root); d == nil || d.MBTrackID != "mbtrack-1" {
+		t.Fatalf("ordinary resolve = %+v; want the cached mbtrack-1 (nothing missed)", d)
+	}
+	d, err := ResolveMetadataDetailsFromLidarrFresh(client, wallPath(root, ".flac"), root)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if d == nil || d.MBTrackID != "mbtrack-deluxe" {
+		t.Fatalf("fresh resolve = %+v; want mbtrack-deluxe", d)
+	}
+
+	// Fresh again inside the window: the entries are new, so nothing is refetched.
+	tracksBefore := l.hitCount("/api/v1/track")
+	if _, err := ResolveMetadataDetailsFromLidarrFresh(client, wallPath(root, ".flac"), root); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := l.hitCount("/api/v1/track"); got != tracksBefore {
+		t.Errorf("track list fetched again inside the window (%d → %d)", tracksBefore, got)
+	}
+}
+
+func TestLidarrTagWritingAdvice(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/config/metadataprovider" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":1,"metadataSource":"","writeAudioTags":"sync","scrubAudioTags":false}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg, err := NewLidarrClient(srv.URL, "k", nil).GetMetadataProviderConfig()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if advice := LidarrTagWritingAdvice(cfg.WriteAudioTags); !strings.Contains(advice, "(Sync)") || !strings.Contains(advice, "For new downloads only") {
+		t.Errorf("advice = %q", advice)
+	}
+	if advice := LidarrTagWritingAdvice(models.LidarrWriteAudioTagsNewFiles); advice != "" {
+		t.Errorf("advice for the recommended setting = %q, want none", advice)
 	}
 }

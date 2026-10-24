@@ -377,7 +377,7 @@ func (a *API) processStatus(c *gin.Context) {
 }
 
 // listLibraryItems returns a paginated, filterable view of the correlation index.
-// Filters: library_id, status, q (path substring) and mbid. Pagination: limit/offset.
+// Filters: library_id, status, q (path substring), mbid and pin_held. Pagination: limit/offset.
 func (a *API) listLibraryItems(c *gin.Context) {
 	q := a.DB.Model(&models.LibraryItem{})
 
@@ -394,6 +394,12 @@ func (a *API) listLibraryItems(c *gin.Context) {
 	}
 	if search := c.Query("q"); search != "" {
 		q = q.Where("path LIKE ?", "%"+search+"%")
+	}
+	// Pins held for review (LibraryItem.PinHeld) — their own filter rather than a
+	// status, because a held file's status says what the last attempt did, and what
+	// it needs is a person.
+	if c.Query("pin_held") == "true" {
+		q = q.Where("pin_held = ?", true)
 	}
 	// "Show me the files behind this identifier" — the other half of the question
 	// GET /mb/:mbid/files answers, asked of a page the user can then act on rather than

@@ -3,13 +3,17 @@ package process
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -43,9 +47,8 @@ var lidarrFollowSettle = 2 * time.Minute
 // Why an artist Lidarr named could not have a run queued. Their cached answers are
 // dropped regardless, so the next run that reaches them asks Lidarr fresh.
 const (
-	followSkipNoArtist   = "Lidarr's history did not name a MusicBrainz artist"
-	followSkipNotTracked = "not in the collection — the next full processing run picks them up"
-	followSkipNoFiles    = "none of their files are indexed yet — the next full processing run picks them up"
+	followSkipNoArtist = "Lidarr's history did not name a MusicBrainz artist"
+	followSkipNoFolder = "no folder of theirs was found in a library this manager governs — the next full processing run picks them up"
 )
 
 // followedArtist is one artist a history window named, with the albums it named for
@@ -55,8 +58,11 @@ type followedArtist struct {
 	lidarrID int64
 	mbid     string
 	name     string
-	albums   map[int64]bool
-	records  int
+	// folder is the artist folder's name as Lidarr stores it — the last segment of
+	// its path, which is the only part comparable across Lidarr's root and ours.
+	folder  string
+	albums  map[int64]bool
+	records int
 }
 
 // FollowLidarr reads every enabled Lidarr manager's history since it was last read
@@ -131,7 +137,7 @@ func (r *Runner) followManager(m models.Manager, upTo time.Time) {
 		modules.LidarrInvalidateArtistCaches(a.lidarrID, albumIDs)
 
 		item := models.EventItem{Path: a.mbid, Kind: models.EventItemKindEntity, Status: models.EventItemStatusQueued}
-		if reason := r.queueFollowedArtist(a); reason != "" {
+		if reason := r.queueFollowedArtist(m, a); reason != "" {
 			item.Status = models.EventItemStatusSkipped
 			item.Error = reason
 			if a.mbid == "" {
@@ -165,7 +171,15 @@ func (r *Runner) followManager(m models.Manager, upTo time.Time) {
 
 // queueFollowedArtist queues a Process over the artist's folders and returns "" — or,
 // when there is nothing to scope a run to, the reason why.
-func (r *Runner) queueFollowedArtist(a followedArtist) string {
+//
+// The collection is asked first, because it knows every folder the artist's files sit
+// in. An artist it cannot answer for — new to Lidarr, so not in the collection, or in
+// it with nothing indexed yet — is looked for on disk instead, by the folder name
+// Lidarr files them under, in each library this manager governs. That is the case the
+// collection can never cover by itself: an artist's first import is precisely the
+// one with nothing indexed. The Process that runs over the folder is what then brings
+// them into the collection.
+func (r *Runner) queueFollowedArtist(m models.Manager, a followedArtist) string {
 	if a.mbid == "" {
 		return followSkipNoArtist
 	}
@@ -174,13 +188,41 @@ func (r *Runner) queueFollowedArtist(a followedArtist) string {
 	case err == nil:
 		r.Run(scope)
 		return ""
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		return followSkipNotTracked
-	case errors.Is(err, ErrNothingToProcess):
-		return followSkipNoFiles
+	case errors.Is(err, gorm.ErrRecordNotFound), errors.Is(err, ErrNothingToProcess):
 	default:
 		return err.Error()
 	}
+
+	found := r.lidarrArtistFolders(m, a.folder)
+	if len(found) == 0 {
+		return followSkipNoFolder
+	}
+	r.Run(buildScope("Processing "+a.name,
+		map[string]any{"artist": a.name, "artist_mb_id": a.mbid}, found))
+	return ""
+}
+
+// lidarrArtistFolders finds an artist folder by name under every enabled library
+// assigned to this manager. Only the name is compared: Lidarr's stored path sits under
+// its own root (often a container mount), so the leading part says nothing about
+// where the folder is here — the same reason trackfile matching compares by position.
+func (r *Runner) lidarrArtistFolders(m models.Manager, folder string) []collection.ArtistTarget {
+	if folder == "" || folder == "." || folder == string(filepath.Separator) {
+		return nil
+	}
+	var libraries []models.Library
+	if err := r.db.Where("manager_id = ? AND enabled = ?", m.ID, true).Order("name").Find(&libraries).Error; err != nil {
+		logger.Log.Warnf("failed to load libraries for manager %q: %s", m.Name, err.Error())
+		return nil
+	}
+	var found []collection.ArtistTarget
+	for _, library := range libraries {
+		candidate := filepath.Join(library.Path, folder)
+		if fi, err := os.Stat(candidate); err == nil && fi.IsDir() {
+			found = append(found, collection.ArtistTarget{Library: library, Path: candidate})
+		}
+	}
+	return found
 }
 
 // artistsWithMovedFiles groups the records in (from, upTo] that moved files by the
@@ -199,6 +241,7 @@ func artistsWithMovedFiles(records []models.LidarrHistoryRecord, from, upTo time
 		if rec.Artist != nil {
 			a.mbid = rec.Artist.ForeignArtistID
 			a.name = rec.Artist.Name
+			a.folder = utilities.BaseOfPathAny(rec.Artist.Path)
 		}
 		if rec.AlbumID != 0 {
 			a.albums[rec.AlbumID] = true
