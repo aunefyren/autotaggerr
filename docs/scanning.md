@@ -831,11 +831,44 @@ kinds, grouped by `Phase`.
 on disk, `drift` for one rewritten because its release changed upstream, `refresh` for the release
 rows themselves — so one event's detail list reads as sections rather than as an interleaving.
 
+**A run in an outage says so.** `DetailCollector` counts the failures wrapped in
+`modules.ErrTransient` (MusicBrainz unreachable, throttled, 5xx) apart from the rest, through
+`Adopt` and past the row limit. The tagging activity then reads `300 errors (298 will retry)` with
+a muted *Will retry* counter beside *Failed* (`details.errors_transient`), rather than a red 300 that
+reads as a library full of broken files.
+
 The UI renders a file's changes with the same old → new diff language as the file-tags view
 (`.diff` / `.diffrow`), so it is learned once. Each file is a `.filegroup`: the path, its outcome
 and its tag count stay visible and the fields under it collapse, open by default only while the
 activity holds ten or fewer changed files (`EXPANDED_FILE_LIMIT`). A handful of diffs is what the
 modal was opened to read; fifty is a wall to scroll past on the way to anything else.
+
+### What failed, asked of files
+
+The Activity feed answers *what failed?* about runs; the same question about **files** is the Items
+page, and it reads the three columns `recordItem` writes on every attempt — `error`,
+`last_error_at` and `last_error_transient` (see
+[collection.md](collection.md#the-disk-view-counts-files-not-successes) for why they are kept apart
+from identity). `GET /library-items` takes `transient=true|false` beside `status`, and the status
+filter splits along it:
+
+| Filter | Query | What it is |
+|---|---|---|
+| Error · needs a look | `status=error&transient=false` | a failure that will not clear by itself |
+| Error · will retry | `status=error&transient=true` | MusicBrainz was down or throttled; the next run retries it |
+| Unmatched · waiting | `status=unmatched&transient=true` | the manager missed a file it knew, once — held in the collection until the next attempt ([collection.md](collection.md#the-disk-view-counts-files-not-successes)) |
+| Pin needs review | `pin_held=true` | a hand-picked identity whose audio changed ([attach.md](attach.md#a-pin-belongs-to-the-audio-not-the-path)) |
+
+A failed row prints its error and when it happened under the path, one line, in `--danger-text` for
+a lasting failure and muted for one that will retry; a transient row's pill says *Will retry* or
+*Unmatched · waiting* instead of *Error* / *Unmatched*.
+
+**The dashboard counts all four.** `GET /health` carries `attention` — `errors`, `retrying`,
+`pins_held`, `unmatched_wait` — and the Overview shows a *Needs attention* card with one line per
+non-zero figure, each linking to its Items filter (`/items?status=…`). The card is absent when
+everything is zero, for the reason zero-valued counters are dropped everywhere else. A held pin is
+the one that most needed it: nothing retries a hold, and the run that made it lists it once, so it
+was otherwise visible only to someone who thought to open that filter.
 
 #### An identifier is not a subject
 
@@ -964,7 +997,9 @@ on a schedule (`autotaggerr_lidarr_follow_cron_schedule`, every ten minutes by d
    on the artist like the button). An artist the collection cannot answer for — new to Lidarr, or
    with nothing indexed yet, which is every artist's first import — is looked for **on disk by
    folder name**: the last segment of Lidarr's path for them, under each enabled library assigned to
-   this manager. Only the name is comparable, since Lidarr's path sits under its own root. The
+   this manager. Only the name is comparable, since Lidarr's path sits under its own root — and it
+   is split on either separator (`utilities.BaseOfPathAny`), because a Windows-hosted Lidarr reports
+   `D:\Music\Artist` to an Autotaggerr on Linux, where `filepath` sees one segment. The
    Process over that folder is what brings them into the collection. An artist found nowhere is
    reported as `skipped` and left to the scheduled run, which now reads them fresh.
 4. **Advance** the cursor to the end of the window — not to "now", so the unsettled records are the

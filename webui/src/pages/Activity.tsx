@@ -86,6 +86,8 @@ const ITEM_PHASE_LABELS: Record<string, string> = {
   "": "Files found on disk",
   drift: "Files re-tagged after an upstream change",
   refresh: "Releases that changed upstream",
+  collection_artists: "Artists",
+  collection_albums: "Albums",
 };
 
 // Labels for the kinds of job the queue holds, so a pending row reads as words.
@@ -841,11 +843,12 @@ function EventDetail({
           </div>
         )}
 
-        {/* Lookups that did not complete. They have no detail rows because they are
-            not *about* an entity — the manager was unreachable, or one artist's albums
-            could not be read — and every one of them used to be a log line and nothing
-            else, so a Lidarr that was half down produced a row identical to a healthy
-            one with smaller numbers in it. */}
+        {/* Lookups that did not complete and are not *about* an entity — the manager
+            was unreachable, the wants could not be reconciled. One artist's albums
+            failing is about that artist, so it is a detail row naming them instead.
+            Every one of these used to be a log line and nothing else, so a Lidarr that
+            was half down produced a row identical to a healthy one with smaller numbers
+            in it. */}
         {failures.length > 0 && (
           <div>
             <div className="eyebrow" style={{ marginBottom: 6 }}>Lookups that failed</div>
@@ -927,6 +930,21 @@ const ENTITY_OUTCOMES: Record<string, { label: string; kind: string; note: strin
     kind: "off",
     note: "Lidarr changed files under this artist, but there was nothing to scope a run to — the row says why. Their cached Lidarr answers were still dropped, so the next scheduled run sees them fresh.",
   },
+  added: {
+    label: "Added",
+    kind: "ok",
+    note: "Entered the collection's disk view: files resolving to it were indexed since the previous scan.",
+  },
+  left: {
+    label: "Left the collection",
+    kind: "warn",
+    note: "No indexed file resolves to it any more — the files were removed or moved, their identity changed, or their manager stopped recognising them. The album stays in the catalogue if a manager or a want still holds it; only the disk view let go.",
+  },
+  recredited: {
+    label: "Credit moved",
+    kind: "scan",
+    note: "MusicBrainz now credits this album to a different artist, so it moved between artists in the collection. Both IDs survive a re-credit, so no Migrations row records it — this row is the record.",
+  },
   error: {
     label: "Failed",
     kind: "err",
@@ -968,6 +986,8 @@ const PHASE_ENTITY_KIND: Record<string, string> = {
   editions: "release-group",
   releases: "release",
   refresh: "release",
+  collection_artists: "artist",
+  collection_albums: "release-group",
 };
 
 const ENTITY_KIND_LABELS: Record<string, string> = {

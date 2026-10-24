@@ -1109,6 +1109,9 @@ func applyDeletion(tx *gorm.DB, m models.MusicbrainzMigration) (applyCounts, err
 		Updates(map[string]any{
 			"status": models.LibraryItemStatusUnmatched,
 			"error":  "release no longer exists on MusicBrainz — re-identify this file",
+			// Final, not a miss to wait out: a transient flag left over from an earlier
+			// outage would keep these files counted (models.InDiskView).
+			"last_error_transient": false,
 		})
 	if res.Error != nil {
 		return counts, res.Error

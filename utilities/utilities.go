@@ -496,18 +496,27 @@ func Canon(s string) string {
 	return strings.ToLower(norm.NFC.String(strings.TrimSpace(s)))
 }
 
+// slashAny turns a path from any OS into forward-slash form. The *Any helpers read
+// paths another host wrote — Lidarr's, which may run on Windows while Autotaggerr runs
+// on Linux — so filepath.ToSlash is not enough: it converts the *local* separator, and
+// on Linux that leaves `C:\Music\Artist` as one segment with no folders in it. A
+// backslash is legal in a Linux file name, but not in anything Lidarr names a folder.
+func slashAny(p string) string {
+	return strings.ReplaceAll(filepath.ToSlash(p), `\`, "/")
+}
+
 func BaseOfPathAny(p string) string {
-	return path.Base(filepath.ToSlash(p)) // use forward slash rules
+	return path.Base(slashAny(p)) // use forward slash rules
 }
 
 func BaseDirOfPathAny(p string) string {
-	slashed := filepath.ToSlash(p)
+	slashed := slashAny(p)
 	dir := path.Dir(slashed)
 	return path.Base(dir)
 }
 
 func GrandfatherDirOfPathAny(p string) string {
-	slashed := filepath.ToSlash(p)
+	slashed := slashAny(p)
 	// 1) directory containing the file
 	parent := path.Dir(slashed)
 	// 2) directory containing the parent

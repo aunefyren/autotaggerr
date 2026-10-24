@@ -94,6 +94,16 @@ export interface LibraryItem {
   correlation_source: string;
   status: string;
   last_tagged_at: string | null;
+  /** What the last attempt failed with; empty after a success or for unmatched. */
+  error: string;
+  /** When that failure happened — or, on an unmatched row, when the manager first missed it. */
+  last_error_at: string | null;
+  /**
+   * The failure is expected to clear by itself (MusicBrainz down, throttled). On an
+   * unmatched row: the manager missed a file it knew once, and the file stays in the
+   * collection until the next attempt confirms it.
+   */
+  last_error_transient: boolean;
   /** A manual attach that automatic resolution must not override. */
   pinned: boolean;
   /**
@@ -207,6 +217,13 @@ export interface Health {
   name: string;
   version: string;
   counts: Record<string, number>;
+  /** Files waiting on something, by what they wait on; each is one Items filter. */
+  attention?: {
+    errors: number;
+    retrying: number;
+    pins_held: number;
+    unmatched_wait: number;
+  };
 }
 
 /** One queued or running background job. */

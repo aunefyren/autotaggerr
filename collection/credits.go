@@ -49,20 +49,41 @@ type creditChanges struct {
 	// unlinked counts credit links dropped because MusicBrainz no longer names the
 	// artist on that release-group.
 	unlinked int
+	// groups is the release-groups either count was taken on, so the Scan's event can
+	// name them rather than only count them.
+	groups map[string]bool
+}
+
+// note records a release-group a change was counted on. Callers hold a non-nil c.
+func (c *creditChanges) note(releaseGroupMBID string) {
+	if c.groups == nil {
+		c.groups = map[string]bool{}
+	}
+	c.groups[releaseGroupMBID] = true
+}
+
+// releaseGroups lists the release-groups whose credit changed, sorted.
+func (c *creditChanges) releaseGroups() []string {
+	if c == nil {
+		return nil
+	}
+	return keys(c.groups)
 }
 
 // regroup records a primary credit moving between artists. Nil-safe: writers that do
 // not report take no branch at the call site.
-func (c *creditChanges) regroup() {
+func (c *creditChanges) regroup(releaseGroupMBID string) {
 	if c != nil {
 		c.regrouped++
+		c.note(releaseGroupMBID)
 	}
 }
 
-// unlink records n credit links dropped.
-func (c *creditChanges) unlink(n int) {
-	if c != nil {
+// unlink records n credit links dropped from a release-group.
+func (c *creditChanges) unlink(releaseGroupMBID string, n int) {
+	if c != nil && n > 0 {
 		c.unlinked += n
+		c.note(releaseGroupMBID)
 	}
 }
 

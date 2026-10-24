@@ -607,6 +607,26 @@ func TestDetailCollectorCountsMissingMetaflac(t *testing.T) {
 	}
 }
 
+// TestDetailCollectorCountsTransientFailures: the failures a run expects to clear by
+// themselves are counted apart, past the row limit and through Adopt, so a run in an
+// outage can say "300 errors (298 will retry)".
+func TestDetailCollectorCountsTransientFailures(t *testing.T) {
+	walk := NewDetailCollector(1)
+	walk.AddError("/m/a.flac", fmt.Errorf("lookup: %w", modules.ErrTransient))
+	walk.AddError("/m/b.flac", errors.New("permission denied"))
+
+	drift := NewDetailCollector(10)
+	drift.AddError("/m/c.flac", modules.ErrTransient)
+	walk.Adopt(drift, models.EventItemPhaseDrift)
+
+	if n := walk.TransientFailures(); n != 2 {
+		t.Errorf("TransientFailures = %d, want 2", n)
+	}
+	if _, failed := walk.Totals(); failed != 3 {
+		t.Errorf("failed = %d, want 3", failed)
+	}
+}
+
 // TestDetailCollectorBounds pins the two properties the Activity detail depends on:
 // it is safe to fill from the scan's worker pool, and it stops growing at the limit
 // while still counting what it dropped — a truncated list has to know it is one.
@@ -956,6 +976,57 @@ func TestRecordItemUnmatchedCarriesNoError(t *testing.T) {
 	}
 	if item.Error != "" || item.LastErrorAt != nil || item.LastErrorTransient {
 		t.Errorf("unmatched recorded as a failure: %+v", item)
+	}
+}
+
+// TestRecordItemFirstMissOnAKnownFileIsHeld: a file the manager knew, missed once, is
+// the shape of Lidarr mid-import, and stays in the disk view on its old identity; a
+// second miss in a row is the manager's answer, and drops it. Neither ever makes it
+// taggable.
+func TestRecordItemFirstMissOnAKnownFileIsHeld(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	path := "/music/Artist/Album (2020)/06 Track.flac"
+	missed := fmt.Errorf("no album: %w", modules.ErrUnmatched)
+	inView := func() (counted, taggable bool) {
+		var n int64
+		db.Model(&models.LibraryItem{}).Where("path = ?", path).Scopes(models.InDiskView).Count(&n)
+		var m int64
+		db.Model(&models.LibraryItem{}).Where("path = ?", path).Scopes(models.TaggableItems).Count(&m)
+		return n == 1, m == 1
+	}
+
+	recordItem(db, library.ID, path, correlated(), false, "v-test", models.ManagerTypeLidarr, nil)
+	recordItem(db, library.ID, path, models.Correlation{}, true, "v-test", models.ManagerTypeLidarr, missed)
+
+	var item models.LibraryItem
+	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if item.Status != models.LibraryItemStatusUnmatched || !item.LastErrorTransient || item.LastErrorAt == nil {
+		t.Fatalf("the first miss must be recorded as one, got %+v", item)
+	}
+	if counted, taggable := inView(); !counted || taggable {
+		t.Errorf("first miss: counted=%v taggable=%v, want counted and not taggable", counted, taggable)
+	}
+
+	recordItem(db, library.ID, path, models.Correlation{}, true, "v-test", models.ManagerTypeLidarr, missed)
+	if counted, _ := inView(); counted {
+		t.Error("a second miss in a row must drop the file from the disk view")
+	}
+
+	// A file the manager never knew has nothing to be held on.
+	fresh := "/music/Artist/Album (2020)/07 Track.flac"
+	recordItem(db, library.ID, fresh, models.Correlation{}, true, "v-test", models.ManagerTypeLidarr, missed)
+	var other models.LibraryItem
+	if err := db.Where("path = ?", fresh).First(&other).Error; err != nil {
+		t.Fatalf("item not recorded: %v", err)
+	}
+	if other.LastErrorTransient {
+		t.Error("a file with no prior identity was held as though the manager had known it")
 	}
 }
 

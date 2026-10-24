@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -258,9 +257,10 @@ func authHint(status int, redirected, sentCookie bool) string {
 
 // lidarrArtistFolder is the last segment of Lidarr's stored path for an artist — the
 // name of the directory their files actually live in, which is the only thing a file
-// path can be compared against.
+// path can be compared against. Split with the any-OS helper: Lidarr's path is in its
+// host's form, and a Windows Lidarr's `C:\Music\Artist` has no last segment by Linux rules.
 func lidarrArtistFolder(artist models.LidarrArtist) string {
-	return filepath.Base(utilities.NormPath(artist.Path))
+	return utilities.BaseOfPathAny(artist.Path)
 }
 
 // lidarrArtistFolderMatches reports whether an artist's folder is the one named by

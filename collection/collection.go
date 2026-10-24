@@ -237,6 +237,7 @@ func RecordScanUnder(db *gorm.DB, parent *models.Event, title string, scope Rebu
 	}
 	ev.Stats = ScanStats(stats)
 	events.Finish(db, ev, status, summary, details)
+	events.AddItems(db, ev, ScanEventItems(stats))
 	return stats, err
 }
 
@@ -278,11 +279,11 @@ func ScanStats(stats RebuildStats) []models.EventStat {
 	return []models.EventStat{
 		{Label: "Artists", Value: stats.Artists},
 		{Label: "Albums on disk", Value: stats.Owned},
-		{Label: "Artists added", Value: stats.ArtistsAdded, Kind: models.EventStatNotable},
-		{Label: "Artists gone", Value: stats.ArtistsRemoved, Kind: models.EventStatNotable},
-		{Label: "Albums added", Value: stats.AlbumsAdded, Kind: models.EventStatNotable},
-		{Label: "Albums gone", Value: stats.AlbumsRemoved, Kind: models.EventStatBad},
-		{Label: "Credit changes", Value: stats.CreditChanges, Kind: models.EventStatNotable},
+		{Label: "Artists added", Value: stats.ArtistsAdded, Kind: models.EventStatNotable, Filter: models.EventItemStatusAdded},
+		{Label: "Artists gone", Value: stats.ArtistsRemoved, Kind: models.EventStatNotable, Filter: models.EventItemStatusLeft},
+		{Label: "Albums added", Value: stats.AlbumsAdded, Kind: models.EventStatNotable, Filter: models.EventItemStatusAdded},
+		{Label: "Albums gone", Value: stats.AlbumsRemoved, Kind: models.EventStatBad, Filter: models.EventItemStatusLeft},
+		{Label: "Credit changes", Value: stats.CreditChanges, Kind: models.EventStatNotable, Filter: models.EventItemStatusRecredited},
 		{Label: "Files removed", Value: stats.FilesRemoved, Kind: models.EventStatBad},
 	}
 }
@@ -443,6 +444,50 @@ type RebuildStats struct {
 	// Sync → catalog columns), so on a fresh install every verb but the first reports
 	// an honest zero that reads as a dud.
 	EmptyReason string `json:"empty_reason,omitempty"`
+
+	// moved is the identifiers behind the four movement counts and CreditChanges,
+	// which become the Scan event's detail rows (ScanEventItems). Kept off the JSON:
+	// callers answering inline report the counts, and the names are the feed's to show.
+	moved scanMovement
+}
+
+// maxScanMovementRows caps each kind of ScanEventItems row.
+const maxScanMovementRows = 100
+
+// scanMovement is what a Scan moved, by MBID.
+type scanMovement struct {
+	artistsAdded, artistsLeft []string
+	albumsAdded, albumsLeft   []string
+	recredited                []string
+}
+
+// ScanEventItems is the detail behind a Scan's movement counters: one entity row per
+// artist or album that entered or left the disk view, and per album whose credit
+// moved. The counts alone said "3 albums gone" and named none of them, which is the
+// one thing anyone reading that line wants next. Entity rows, so the feed resolves
+// them to names and links like every other.
+//
+// Each list is capped at maxScanMovementRows. The first Scan of a library "adds" every
+// album in it, and a row per album there names nothing anyone is looking for; the
+// counter still says how many.
+func ScanEventItems(stats RebuildStats) []models.EventItem {
+	m := stats.moved
+	items := make([]models.EventItem, 0,
+		len(m.artistsAdded)+len(m.artistsLeft)+len(m.albumsAdded)+len(m.albumsLeft)+len(m.recredited))
+	add := func(ids []string, phase, status string) {
+		if len(ids) > maxScanMovementRows {
+			ids = ids[:maxScanMovementRows]
+		}
+		for _, id := range ids {
+			items = append(items, models.EventItem{Path: id, Kind: models.EventItemKindEntity, Phase: phase, Status: status})
+		}
+	}
+	add(m.artistsAdded, models.EventItemPhaseArtists, models.EventItemStatusAdded)
+	add(m.artistsLeft, models.EventItemPhaseArtists, models.EventItemStatusLeft)
+	add(m.albumsAdded, models.EventItemPhaseAlbums, models.EventItemStatusAdded)
+	add(m.albumsLeft, models.EventItemPhaseAlbums, models.EventItemStatusLeft)
+	add(m.recredited, models.EventItemPhaseAlbums, models.EventItemStatusRecredited)
+	return items
 }
 
 // The reasons a Scan can have nothing to re-derive. Exported so a caller can render
@@ -824,8 +869,11 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 	// What moved. The totals above describe the collection; these describe the pass,
 	// and they are the difference between "the Scan ran" and "the Scan did something".
 	after := collectionSnapshot{artists: setOf(artistManagers), groups: setOf(rgBest)}
-	stats.ArtistsAdded, stats.ArtistsRemoved = countDiff(before.artists, after.artists)
-	stats.AlbumsAdded, stats.AlbumsRemoved = countDiff(before.groups, after.groups)
+	stats.moved.artistsAdded, stats.moved.artistsLeft = diffSets(before.artists, after.artists)
+	stats.moved.albumsAdded, stats.moved.albumsLeft = diffSets(before.groups, after.groups)
+	stats.moved.recredited = changes.releaseGroups()
+	stats.ArtistsAdded, stats.ArtistsRemoved = len(stats.moved.artistsAdded), len(stats.moved.artistsLeft)
+	stats.AlbumsAdded, stats.AlbumsRemoved = len(stats.moved.albumsAdded), len(stats.moved.albumsLeft)
 	if stats.Artists == 0 && stats.Owned == 0 {
 		stats.EmptyReason = scanEmptyReason(db, scope, len(all), len(rows))
 	}
@@ -885,18 +933,21 @@ func setOf[V any](m map[string]V) map[string]bool {
 	return out
 }
 
-// countDiff is how many keys appeared and how many went away.
-func countDiff(before, after map[string]bool) (added, removed int) {
+// diffSets lists the keys that appeared and the keys that went away, sorted so the
+// event's rows read in a stable order.
+func diffSets(before, after map[string]bool) (added, removed []string) {
 	for k := range after {
 		if !before[k] {
-			added++
+			added = append(added, k)
 		}
 	}
 	for k := range before {
 		if !after[k] {
-			removed++
+			removed = append(removed, k)
 		}
 	}
+	sort.Strings(added)
+	sort.Strings(removed)
 	return added, removed
 }
 
@@ -1542,7 +1593,7 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 	defer func() {
 		linkReleaseGroupArtists(db, w.mbID, credited, len(w.credits) > 0, source)
 		if source == creditFromDisk && len(w.credits) > 0 {
-			w.changes.unlink(pruneReleaseGroupArtists(db, w.mbID, w.credits))
+			w.changes.unlink(w.mbID, pruneReleaseGroupArtists(db, w.mbID, w.credits))
 		}
 	}()
 
@@ -1553,7 +1604,7 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 		// MusicBrainz changing its mind.
 		if primary, ok := updates["artist_mb_id"].(string); ok && rg.ArtistMBID != "" && rg.ArtistMBID != primary {
 			logger.Log.Infof("release-group %s (%s) moved from artist %s to %s upstream", w.mbID, w.title, rg.ArtistMBID, primary)
-			w.changes.regroup()
+			w.changes.regroup(w.mbID)
 		}
 		if err := db.Model(&rg).Updates(updates).Error; err != nil {
 			logger.Log.Warnf("failed to update release-group %s: %s", w.mbID, err.Error())
@@ -1651,10 +1702,28 @@ type SyncStats struct {
 	// album's wants to the new ID and retires the old row once nothing holds it.
 	Rekeyed []string `json:"rekeyed,omitempty"`
 
-	// Failures are the lookups that errored, one line each. Every one of these used to
-	// be a `continue` with a log line: Lidarr going down mid-pass produced an Activity
-	// row identical to a healthy one, just with smaller numbers.
+	// Failures are the lookups that errored and are not about any one artist — a
+	// manager that could not be listed, the wants that could not be reconciled — one
+	// line each. Every one of these used to be a `continue` with a log line: Lidarr
+	// going down mid-pass produced an Activity row identical to a healthy one, just
+	// with smaller numbers.
 	Failures []string `json:"failures,omitempty"`
+
+	// FailedArtists is the other kind: one artist's albums could not be read. Those
+	// are about an entity, and the artist MBID is in hand at the point of the error, so
+	// they become rows naming the artist rather than lines in the entity-less list.
+	FailedArtists []SyncArtistFailure `json:"failed_artists,omitempty"`
+}
+
+// SyncArtistFailure is one artist whose albums a manager could not list.
+type SyncArtistFailure struct {
+	ArtistMBID string `json:"artist_mb_id"`
+	Error      string `json:"error"`
+}
+
+// FailedLookups counts both kinds of failure: what the pass's "lookups failed" means.
+func (s SyncStats) FailedLookups() int {
+	return len(s.Failures) + len(s.FailedArtists)
 }
 
 // SyncEventStats is the counter set a Lidarr mirror pass puts on its event, shared by
@@ -1672,8 +1741,17 @@ func SyncEventStats(stats SyncStats) []models.EventStat {
 		{Label: "Not in Lidarr", Value: len(stats.Unknown), Kind: models.EventStatNotable, Filter: models.EventItemStatusUnknown},
 		{Label: "Not in MusicBrainz", Value: len(stats.Ghosts), Kind: models.EventStatNotable, Filter: models.EventItemStatusGone},
 		{Label: "Re-keyed", Value: len(stats.Rekeyed), Kind: models.EventStatNotable},
-		{Label: "Lookups failed", Value: len(stats.Failures), Kind: models.EventStatBad},
+		{Label: "Lookups failed", Value: stats.FailedLookups(), Kind: models.EventStatBad, Filter: failedLookupsFilter(stats)},
 	}
+}
+
+// failedLookupsFilter makes the failure counter selectable only when every failure it
+// counts has a row; a chip showing two of three would read as all of them.
+func failedLookupsFilter(stats SyncStats) string {
+	if len(stats.FailedArtists) > 0 && len(stats.Failures) == 0 {
+		return models.EventItemStatusError
+	}
+	return ""
 }
 
 // SyncEventItems is the per-artist detail behind the "Not in Lidarr" counter: one row
@@ -1683,7 +1761,7 @@ func SyncEventStats(stats SyncStats) []models.EventStat {
 // page like every other entity row in the feed — the point of the counter is going and
 // looking at the artists it counted.
 func SyncEventItems(stats SyncStats) []models.EventItem {
-	items := make([]models.EventItem, 0, len(stats.Unknown)+len(stats.Ghosts))
+	items := make([]models.EventItem, 0, len(stats.Unknown)+len(stats.Ghosts)+len(stats.FailedArtists))
 	for _, mbid := range stats.Unknown {
 		items = append(items, models.EventItem{
 			Path:   mbid,
@@ -1697,6 +1775,14 @@ func SyncEventItems(stats SyncStats) []models.EventItem {
 			Kind:   models.EventItemKindEntity,
 			Status: models.EventItemStatusGone,
 			Error:  "the manager lists this album under a MusicBrainz ID that does not resolve",
+		})
+	}
+	for _, f := range stats.FailedArtists {
+		items = append(items, models.EventItem{
+			Path:   f.ArtistMBID,
+			Kind:   models.EventItemKindEntity,
+			Status: models.EventItemStatusError,
+			Error:  f.Error,
 		})
 	}
 	return items
@@ -1735,7 +1821,7 @@ func SyncSummaryLine(stats SyncStats) string {
 	if n := len(stats.Rekeyed); n > 0 {
 		line += fmt.Sprintf(" · %d re-keyed", n)
 	}
-	if n := len(stats.Failures); n > 0 {
+	if n := stats.FailedLookups(); n > 0 {
 		line += fmt.Sprintf(" · %d lookup(s) failed", n)
 	}
 	return line
@@ -1852,7 +1938,10 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			albums, err := client.GetArtistAlbums(la.ID)
 			if err != nil {
 				logger.Log.Warnf("failed to list Lidarr albums for %s: %s", la.Name, err.Error())
-				stats.Failures = append(stats.Failures, fmt.Sprintf("%s: %s", la.Name, err.Error()))
+				stats.FailedArtists = append(stats.FailedArtists, SyncArtistFailure{
+					ArtistMBID: la.ForeignArtistID,
+					Error:      fmt.Sprintf("%s could not list their albums: %s", m.Name, err.Error()),
+				})
 				continue
 			}
 

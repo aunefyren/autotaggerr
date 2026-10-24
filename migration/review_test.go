@@ -103,6 +103,42 @@ func TestReviewOfBlockedAlbumAsksTheManager(t *testing.T) {
 	}
 }
 
+// TestReviewNamesTheRefreshSetting: with artist refresh turned off on every manager,
+// the repair pass asks nobody, so "Ask the manager" used to queue a job that did
+// nothing. The row is stuck instead, and its blocker names the setting holding it.
+// One manager that may still be asked keeps the row repairable — the pass asks that one.
+func TestReviewNamesTheRefreshSetting(t *testing.T) {
+	db := testDB(t)
+	m := ghostGroup(t, db, "rg-ghost", "artist-1", "Heatstroke", func(rg *models.CollectionReleaseGroup) {
+		rg.InCatalog = true
+	})
+	off := models.Manager{
+		Name: "Main Lidarr", Type: models.ManagerTypeLidarr, Enabled: true,
+		LidarrBaseURL: "http://lidarr", LidarrAPIKey: "k", LidarrSkipArtistRefresh: true,
+	}
+	if err := db.Create(&off).Error; err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+
+	r := NewReview(db, m)
+	if r.NeedsManagerRefresh {
+		t.Fatal("no manager can be asked, so approving must not offer to ask one")
+	}
+	if !strings.Contains(r.Blocker, `"Main Lidarr"`) || !strings.Contains(r.Blocker, "artist refresh is turned off") {
+		t.Errorf("the blocker must name the setting and the manager, got %q", r.Blocker)
+	}
+
+	if err := db.Create(&models.Manager{
+		Name: "Second Lidarr", Type: models.ManagerTypeLidarr, Enabled: true,
+		LidarrBaseURL: "http://lidarr2", LidarrAPIKey: "k",
+	}).Error; err != nil {
+		t.Fatalf("create manager: %v", err)
+	}
+	if r := NewReview(db, m); !r.NeedsManagerRefresh {
+		t.Error("a manager that may be asked keeps the row repairable")
+	}
+}
+
 // TestReviewOfOwnedAlbumIsNotRepairable: files on disk are an objection a manager
 // refresh cannot answer, so approving must not go and refresh anything. Getting this
 // wrong would turn every owned ghost into a pointless write to the manager.

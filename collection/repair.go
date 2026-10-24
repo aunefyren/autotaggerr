@@ -137,7 +137,7 @@ func RepairGhostReleaseGroupsWith(db *gorm.DB, opts RepairOptions) (RepairStats,
 			logger.Log.Debugf("manager %q has artist refresh turned off; not repairing through it", m.Name)
 			continue
 		}
-		if strings.TrimSpace(m.LidarrBaseURL) == "" || strings.TrimSpace(m.LidarrAPIKey) == "" {
+		if !lidarrConfigured(m) {
 			continue
 		}
 		cookie := m.LidarrHeaderCookie
@@ -193,6 +193,42 @@ func RepairGhostReleaseGroupsWith(db *gorm.DB, opts RepairOptions) (RepairStats,
 		logger.Log.Infof("manager refresh resolved %d album(s) whose MusicBrainz ID no longer resolved", stats.Repaired)
 	}
 	return stats, nil
+}
+
+// lidarrConfigured reports whether a Lidarr manager has what a request to it needs.
+func lidarrConfigured(m models.Manager) bool {
+	return strings.TrimSpace(m.LidarrBaseURL) != "" && strings.TrimSpace(m.LidarrAPIKey) != ""
+}
+
+// RefreshTurnedOff names the managers holding a repair back by their own setting: when
+// every enabled, configured Lidarr manager has artist refresh turned off, the repair
+// pass has nobody to ask, and these are the names a blocker should give. It returns
+// nil when at least one manager can be asked — the pass asks that one — and when
+// there is no Lidarr manager at all, where the setting is not what is in the way.
+//
+// It exists so that "Ask the manager" is never offered for a question nobody will
+// put: the pass skips those managers with a debug line, and the button used to
+// queue a repair that silently did nothing.
+func RefreshTurnedOff(db *gorm.DB) ([]string, error) {
+	if db == nil {
+		return nil, nil
+	}
+	var managers []models.Manager
+	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).
+		Order("name").Find(&managers).Error; err != nil {
+		return nil, err
+	}
+	var off []string
+	for _, m := range managers {
+		if !lidarrConfigured(m) {
+			continue
+		}
+		if !m.LidarrSkipArtistRefresh {
+			return nil, nil
+		}
+		off = append(off, m.Name)
+	}
+	return off, nil
 }
 
 // refreshAndResync performs the ordered part: ask, wait, re-mirror.

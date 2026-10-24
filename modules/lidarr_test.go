@@ -953,3 +953,23 @@ func mapHas[T any](m map[string]T, key string) bool {
 	_, ok := m[key]
 	return ok
 }
+
+// TestLidarrFindArtistByNameWindowsLidarr: a Lidarr on Windows stores
+// `D:\Music\Pink Floyd`, and an Autotaggerr on Linux used to read that as one segment —
+// so no folder ever matched, and every file under that manager came back unmatched.
+func TestLidarrFindArtistByNameWindowsLidarr(t *testing.T) {
+	resetLidarrCaches()
+	t.Cleanup(resetLidarrCaches)
+	mock := newLidarrMock(t, map[string]any{
+		"/api/v1/artist": []models.LidarrArtist{
+			{ID: 1, Name: "Radiohead", Path: `D:\Music\Radiohead`},
+			{ID: 2, Name: "Pink Floyd", Path: `D:\Music\Pink Floyd\`},
+		},
+	})
+	client := NewLidarrClient(mock.server.URL, "test-key", nil)
+
+	got, err := client.FindArtistByName("Pink Floyd")
+	if err != nil || len(got) != 1 || got[0].ID != 2 {
+		t.Fatalf("FindArtistByName = (%+v, %v), want artist 2", got, err)
+	}
+}

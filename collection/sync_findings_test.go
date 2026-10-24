@@ -135,3 +135,62 @@ func TestSyncSaysNothingWhenNothingIsWrong(t *testing.T) {
 		t.Errorf("details carried empty findings: %+v", details)
 	}
 }
+
+// TestSyncNamesTheArtistWhoseAlbumsFailed: one artist's albums failing to load is a
+// failure *about* that artist, so it is a row naming them rather than a line in the
+// entity-less list — and, since the artist listing itself succeeded, it does not stop
+// the pass reporting who Lidarr does not have.
+func TestSyncNamesTheArtistWhoseAlbumsFailed(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/artist"):
+			_ = json.NewEncoder(w).Encode([]models.LidarrArtist{{ID: 1, ForeignArtistID: "art-known", Name: "Known"}})
+		case strings.HasPrefix(r.URL.Path, "/api/v1/album"):
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	db := testDB(t)
+	if err := db.Create(&models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true, LidarrBaseURL: srv.URL, LidarrAPIKey: "k"}).Error; err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	for _, a := range []models.CollectionArtist{
+		{MBID: "art-known", Name: "Known", ManagedBy: models.ManagedByLidarr},
+		{MBID: "art-stranger", Name: "Stranger", ManagedBy: models.ManagedByLidarr},
+	} {
+		if err := db.Create(&a).Error; err != nil {
+			t.Fatalf("artist: %v", err)
+		}
+	}
+
+	stats, err := SyncLidarr(db)
+	if err != nil {
+		t.Fatalf("SyncLidarr: %v", err)
+	}
+	if len(stats.Failures) != 0 || len(stats.FailedArtists) != 1 || stats.FailedArtists[0].ArtistMBID != "art-known" {
+		t.Fatalf("failures = %v / %v, want one row naming art-known", stats.Failures, stats.FailedArtists)
+	}
+	if len(stats.Unknown) != 1 || stats.Unknown[0] != "art-stranger" {
+		t.Errorf("unknown = %v; the artist listing succeeded, so who is missing is still known", stats.Unknown)
+	}
+
+	var row *models.EventItem
+	for _, it := range SyncEventItems(stats) {
+		if it.Status == models.EventItemStatusError {
+			it := it
+			row = &it
+		}
+	}
+	if row == nil || row.Path != "art-known" || row.Kind != models.EventItemKindEntity || !strings.Contains(row.Error, "could not list their albums") {
+		t.Errorf("failure row = %+v, want an entity row naming the artist and the cause", row)
+	}
+	for _, s := range SyncEventStats(stats) {
+		if s.Label == "Lookups failed" && (s.Value != 1 || s.Filter != models.EventItemStatusError) {
+			t.Errorf("failure counter = %+v, want 1 and selectable", s)
+		}
+	}
+	if !strings.Contains(SyncSummaryLine(stats), "1 lookup(s) failed") {
+		t.Errorf("summary hid the failure: %q", SyncSummaryLine(stats))
+	}
+}

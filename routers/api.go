@@ -312,7 +312,29 @@ func (a *API) health(c *gin.Context) {
 			"tagger_profiles": count(&models.TaggerProfile{}),
 			"library_items":   count(&models.LibraryItem{}),
 		},
+		"attention": a.attention(),
 	})
+}
+
+// attention counts the files waiting on something, split by what they wait on — the
+// dashboard's answer to "is anything wrong?". Each figure is one Items filter, so the
+// card can link straight to the rows behind it.
+//
+// A failure that will retry by itself is counted apart from one that will not: during
+// a MusicBrainz outage every file in a run fails at once, and one number for both read
+// as a library full of broken files.
+func (a *API) attention() gin.H {
+	count := func(where string, args ...any) int64 {
+		var n int64
+		a.DB.Model(&models.LibraryItem{}).Where(where, args...).Count(&n)
+		return n
+	}
+	return gin.H{
+		"errors":         count("status = ? AND last_error_transient = ?", models.LibraryItemStatusError, false),
+		"retrying":       count("status = ? AND last_error_transient = ?", models.LibraryItemStatusError, true),
+		"pins_held":      count("pin_held = ?", true),
+		"unmatched_wait": count("status = ? AND last_error_transient = ?", models.LibraryItemStatusUnmatched, true),
+	}
 }
 
 func (a *API) listLibraries(c *gin.Context) {

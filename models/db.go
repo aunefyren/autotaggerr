@@ -525,6 +525,23 @@ func TaggableItems(db *gorm.DB) *gorm.DB {
 		LibraryItemStatusUnmatched, false)
 }
 
+// InDiskView is a GORM scope narrowing a LibraryItem query to the files the disk
+// view counts: every file with an identity, whatever its last attempt did, except one
+// the manager has disowned (collection.ownedItemRows has the reasoning).
+//
+// "Disowned" takes two misses in a row. An `unmatched` row carrying
+// LastErrorTransient is a file the manager knew and failed to recognise once — the
+// shape of Lidarr part-way through replacing it, which Lidarr does on its own schedule
+// and which the history follower re-processes minutes later. Dropping its album from
+// the collection for those minutes reported a change nobody made; the row is counted
+// on its old identity until the next attempt either resolves it or misses again. It is
+// still never *written* from (TaggableItems excludes every `unmatched` row): an
+// identity is good enough to count, not to tag.
+func InDiskView(db *gorm.DB) *gorm.DB {
+	return db.Where("library_items.mb_release_id <> '' AND (library_items.status <> ? OR library_items.last_error_transient = ?)",
+		LibraryItemStatusUnmatched, true)
+}
+
 // MusicbrainzReleaseCache replaces config/mb_releases.json. Its primary key is the
 // MusicBrainz release ID (not a generated UUID). Payload is the raw release JSON;
 // ExpiresAt keeps the jittered-TTL behavior and MBVersion enables upstream-drift
@@ -1092,6 +1109,13 @@ const (
 	// the reason on the row: not in the collection, or no folder of theirs indexed yet.
 	// Their cached manager answers were still dropped, so the next run sees them fresh.
 	EventItemStatusSkipped = "skipped"
+	// The three things a Scan moves, on entity rows: an artist or album that entered
+	// the collection's disk view, one that left it, and an album whose credit moved
+	// between artists upstream. They are what turns "3 albums gone" into the three.
+	// "Left" rather than "gone", which already means MusicBrainz answered 404.
+	EventItemStatusAdded      = "added"
+	EventItemStatusLeft       = "left"
+	EventItemStatusRecredited = "recredited"
 )
 
 // What an EventItem describes. Empty (EventItemKindFile) is the default and covers
@@ -1120,6 +1144,11 @@ const (
 	// tagging event, and the phase is what keeps the two halves of it apart in the
 	// detail list — they answer different questions about the same run.
 	EventItemPhaseDrift = "drift"
+	// EventItemPhaseArtists and EventItemPhaseAlbums group a Scan's movement rows by
+	// what moved, which is also what tells the reader an MBID is an artist's or a
+	// release-group's.
+	EventItemPhaseArtists = "collection_artists"
+	EventItemPhaseAlbums  = "collection_albums"
 )
 
 // CollectionArtist is a MusicBrainz artist present in (or monitored for) the

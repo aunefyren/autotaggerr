@@ -34,6 +34,8 @@ type DetailCollector struct {
 	// noMetaflac counts the failures that were only metaflac being missing, so the
 	// run can say so once instead of leaving it to be read off every row.
 	noMetaflac int
+	// transient counts the failures expected to pass on their own (TransientFailures).
+	transient int
 	// pinsKept and pinsReleased are the files whose replaced audio the automatic
 	// pin policy decided about (ReplacedPinWarning), capped at maxReplacedPinPaths
 	// each; pinsKeptTotal / pinsReleasedTotal keep counting past the cap.
@@ -117,6 +119,9 @@ func (d *DetailCollector) AddError(path string, err error) {
 	if errors.Is(err, modules.ErrMetaflacMissing) {
 		d.noMetaflac++
 	}
+	if errors.Is(err, modules.ErrTransient) {
+		d.transient++
+	}
 	d.append(models.EventItem{
 		Path:   path,
 		Status: models.EventItemStatusError,
@@ -142,12 +147,14 @@ func (d *DetailCollector) Adopt(other *DetailCollector, phase string) {
 	items := other.Items()
 	changed, failed := other.Totals()
 	noMetaflac := other.MetaflacMissing()
+	transient := other.TransientFailures()
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.changed += changed
 	d.failed += failed
 	d.noMetaflac += noMetaflac
+	d.transient += transient
 	for _, item := range items {
 		item.Phase = phase
 		d.items = append(d.items, item)
@@ -191,6 +198,18 @@ func (d *DetailCollector) Totals() (changed, failed int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	return d.changed, d.failed
+}
+
+// TransientFailures is how many of the failed files failed for a reason expected to
+// pass on its own (modules.ErrTransient) — the part of a run's failures the next run
+// retries with nothing done about them.
+func (d *DetailCollector) TransientFailures() int {
+	if d == nil {
+		return 0
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.transient
 }
 
 // MetaflacMissing is how many of the failed files failed only because metaflac is
@@ -580,10 +599,19 @@ func recordItemTagged(db *gorm.DB, libraryID uuid.UUID, filePath string, correla
 		// ErrUnmatched is its own state: the manager owns identity and does not know
 		// this file. It is not an error the user must fix, so it carries no error text
 		// and does not read as a failed file in the feed.
+		//
+		// The first miss on a file the manager *did* know is given the benefit of the
+		// doubt (models.InDiskView): the commonest cause is Lidarr mid-import, between
+		// replacing a file and re-listing it, and the follower's Process or the next run
+		// settles it either way. A second miss in a row is the manager's answer.
+		firstMiss := item.MBReleaseID != "" && item.Status != models.LibraryItemStatusUnmatched
 		item.Status = models.LibraryItemStatusUnmatched
 		item.Error = ""
 		item.LastErrorAt = nil
-		item.LastErrorTransient = false
+		item.LastErrorTransient = firstMiss
+		if firstMiss {
+			item.LastErrorAt = &now
+		}
 	default:
 		item.Status = models.LibraryItemStatusError
 		item.Error = procErr.Error()

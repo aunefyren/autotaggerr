@@ -315,11 +315,12 @@ type itemRow struct {
 // a failed attempt at all, it is the manager saying it does not know this file. There
 // is no identity to aggregate against, only a stale one left over from before, and
 // counting a file the manager has disowned would put the album back in the collection
-// on the strength of an answer that has been withdrawn.
+// on the strength of an answer that has been withdrawn — once the manager has said so
+// twice. A single miss on a file it knew is held for one more attempt (see
+// models.InDiskView).
 func ownedItemRows(db *gorm.DB) ([]itemRow, error) {
 	var rows []itemRow
-	err := db.Model(&models.LibraryItem{}).
-		Where("status <> ? AND mb_release_id <> ''", models.LibraryItemStatusUnmatched).
+	err := db.Model(&models.LibraryItem{}).Scopes(models.InDiskView).
 		Find(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the library index: %w", err)

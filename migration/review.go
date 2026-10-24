@@ -2,6 +2,7 @@ package migration
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/models"
@@ -206,7 +207,38 @@ func (r *Review) fillReleaseGroup(db *gorm.DB) {
 		// Only the catalog objection is repairable. Files on disk and an authored want
 		// are objections a manager refresh cannot answer.
 		r.NeedsManagerRefresh = rg.InCatalog && !rg.Owned
+		if r.NeedsManagerRefresh {
+			r.holdForRefreshSetting(db)
+		}
 	}
+}
+
+// holdForRefreshSetting turns a repairable row into a stuck one when nobody can be
+// asked: every Lidarr manager has artist refresh turned off, so the repair pass would
+// skip them all and the press would do nothing. The row then names the setting as its
+// blocker, the way every other blocker names its cause. The hold itself is right — the
+// manager is the authority, and it still lists the album.
+func (r *Review) holdForRefreshSetting(db *gorm.DB) {
+	off, err := collection.RefreshTurnedOff(db)
+	if err != nil || len(off) == 0 {
+		return
+	}
+	r.NeedsManagerRefresh = false
+	r.Blocker = fmt.Sprintf("the manager still lists this album, and artist refresh is "+
+		"turned off for %s, so it cannot be asked to re-read the artist — turn it on "+
+		"under Managers, or refresh the artist in Lidarr yourself", quoteNames(off))
+}
+
+// quoteNames lists manager names for a sentence: "A", "A" and "B", "A", "B" and "C".
+func quoteNames(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = fmt.Sprintf("%q", n)
+	}
+	if len(quoted) == 1 {
+		return quoted[0]
+	}
+	return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
 }
 
 // sentences writes Problem and Effect for this migration.

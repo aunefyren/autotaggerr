@@ -1252,6 +1252,13 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 	// tags clause is the one that does not, which is the whole reason to say it.
 	summary := fmt.Sprintf("%d files processed · %d changed · %d tags written · %d errors",
 		res.processed, changed, res.tagsWritten, len(res.errorFiles))
+	// The failures that will clear by themselves are said apart from the rest: in an
+	// outage they are nearly all of them, and "300 errors" alone reads as 300 broken
+	// files rather than one service that was down.
+	retrying := detail.TransientFailures()
+	if retrying > 0 {
+		summary += fmt.Sprintf(" (%d will retry)", retrying)
+	}
 	if res.removed > 0 {
 		summary += fmt.Sprintf(" · %d removed", res.removed)
 	}
@@ -1282,6 +1289,9 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 		)
 	}
 	stats = append(stats, models.EventStat{Label: "Failed", Value: len(res.errorFiles), Kind: models.EventStatBad, Filter: models.EventItemStatusError})
+	if retrying > 0 {
+		stats = append(stats, models.EventStat{Label: "Will retry", Value: retrying, Kind: models.EventStatMuted})
+	}
 	ev.Stats = stats
 
 	details := map[string]any{
@@ -1291,6 +1301,7 @@ func (r *Runner) finishTagging(ev *models.Event, res taggingResult, detail *comp
 		"tags_written":     res.tagsWritten,
 		"files_removed":    res.removed,
 		"errors":           len(res.errorFiles),
+		"errors_transient": retrying,
 		"error_files":      recorded,
 		"libraries":        res.libraries,
 		"releases_changed": res.drift.changedReleases,

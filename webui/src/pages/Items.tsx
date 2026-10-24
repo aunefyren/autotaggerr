@@ -19,18 +19,39 @@ function folderOf(path: string): string {
   return parts.join("/");
 }
 
+/**
+ * The status filter's options, and the query each one asks. Failures are split by
+ * whether they clear on their own: during an outage every file in a run fails at once,
+ * and one "Error" option showed that as a library full of broken files.
+ *
+ * A held pin is its own filter, not a status: the row's status says what the last
+ * attempt did, and what a held pin needs is a decision.
+ */
+const STATUS_FILTERS: Record<string, { label: string; query: Record<string, string> }> = {
+  ok: { label: "Tagged", query: { status: "ok" } },
+  error: { label: "Error · needs a look", query: { status: "error", transient: "false" } },
+  retrying: { label: "Error · will retry", query: { status: "error", transient: "true" } },
+  unmatched: { label: "Unmatched", query: { status: "unmatched" } },
+  unmatched_wait: { label: "Unmatched · waiting", query: { status: "unmatched", transient: "true" } },
+  pin_held: { label: "Pin needs review", query: { pin_held: "true" } },
+};
+
 export default function Items() {
   const libs = useFetch<Library[]>(() => api.get("/libraries"));
-  const [libraryId, setLibraryId] = useState("");
-  const [status, setStatus] = useState("");
-  const [q, setQ] = useState("");
-  const [offset, setOffset] = useState(0);
   // "Show me the files behind this identifier", asked by a link from somewhere that
   // knows an MBID — a migration row, an activity detail. It lives in the URL rather
   // than in a filter control because it is a destination, not something you would ever
   // type here: any of the three kinds resolves, and the server does the resolving.
   const [params, setParams] = useSearchParams();
   const mbid = params.get("mbid") ?? "";
+  const [libraryId, setLibraryId] = useState("");
+  // Seeded from the URL so the dashboard's counts can link straight to their rows.
+  const [status, setStatus] = useState(() => {
+    const s = params.get("status") ?? "";
+    return s in STATUS_FILTERS ? s : "";
+  });
+  const [q, setQ] = useState("");
+  const [offset, setOffset] = useState(0);
   const [selected, setSelected] = useState<LibraryItem | null>(null);
   const [attaching, setAttaching] = useState<LibraryItem | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
@@ -41,10 +62,7 @@ export default function Items() {
 
   const query = new URLSearchParams();
   if (libraryId) query.set("library_id", libraryId);
-  // A held pin is its own filter, not a status: the row's status says what the last
-  // attempt did, and what a held pin needs is a decision.
-  if (status === "pin_held") query.set("pin_held", "true");
-  else if (status) query.set("status", status);
+  for (const [k, v] of Object.entries(STATUS_FILTERS[status]?.query ?? {})) query.set(k, v);
   if (q) query.set("q", q);
   if (mbid) query.set("mbid", mbid);
   query.set("limit", String(PAGE));
@@ -115,12 +133,11 @@ export default function Items() {
           <option value="">All libraries</option>
           {libs.data?.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
         </select>
-        <select className="select" style={{ width: 150 }} value={status} onChange={(e) => resetAnd(() => setStatus(e.target.value))}>
+        <select className="select" style={{ width: 190 }} value={status} onChange={(e) => resetAnd(() => setStatus(e.target.value))}>
           <option value="">Any status</option>
-          <option value="ok">Tagged</option>
-          <option value="error">Error</option>
-          <option value="unmatched">Unmatched</option>
-          <option value="pin_held">Pin needs review</option>
+          {Object.entries(STATUS_FILTERS).map(([value, f]) => (
+            <option key={value} value={value}>{f.label}</option>
+          ))}
         </select>
         <input className="input mono" style={{ width: 240 }} placeholder="Filter by path…" value={q} onChange={(e) => resetAnd(() => setQ(e.target.value))} />
       </div>
@@ -202,7 +219,12 @@ export default function Items() {
                         onChange={() => toggle(it.id)}
                       />
                     </td>
-                    <td><span className="path">{it.path}</span></td>
+                    <td>
+                      <div className="stack" style={{ gap: 2 }}>
+                        <span className="path">{it.path}</span>
+                        <FailureLine item={it} />
+                      </div>
+                    </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="row" style={{ gap: 6 }}>
                         <IdChip value={it.mb_release_id} />
@@ -217,6 +239,12 @@ export default function Items() {
                       {it.pin_held ? (
                         <span title="This file's audio changed since it was attached by hand. It is not tagged until the pin is kept or released.">
                           <Pill kind="warn">Pin needs review</Pill>
+                        </span>
+                      ) : it.last_error_transient ? (
+                        <span title={RETRY_TITLES[it.status]}>
+                          <Pill kind={it.status === "error" ? "warn" : "off"}>
+                            {it.status === "error" ? "Will retry" : "Unmatched · waiting"}
+                          </Pill>
                         </span>
                       ) : (
                         <StatusPill status={it.status} />
@@ -327,5 +355,40 @@ export default function Items() {
         />
       )}
     </div>
+  );
+}
+
+/** Why a transient row is not a problem yet, for the pill's title. */
+const RETRY_TITLES: Record<string, string> = {
+  error:
+    "This failure is expected to clear by itself — MusicBrainz was unreachable or throttled. The next processing run retries the file.",
+  unmatched:
+    "The manager did not recognise a file it knew, which is what Lidarr looks like part-way through replacing it. The file stays in the collection on its old identity until the next run either matches it or misses it again.",
+};
+
+/**
+ * The failure a row carries, and when it happened, under its path. Kept to one line:
+ * the full message is in the row's detail, and a wrapped stack trace in every row of a
+ * failed run would push the list off the screen.
+ */
+function FailureLine({ item }: { item: LibraryItem }) {
+  if (item.status !== "error" || !item.error) return null;
+  const when = item.last_error_at ? new Date(item.last_error_at).toLocaleString() : "";
+  return (
+    <span
+      className="mono"
+      title={item.error}
+      style={{
+        fontSize: 11,
+        color: item.last_error_transient ? "var(--text-muted)" : "var(--danger-text)",
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+        maxWidth: "68ch",
+      }}
+    >
+      {when && <span className="dim">{when} · </span>}
+      {item.error}
+    </span>
   );
 }

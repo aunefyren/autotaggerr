@@ -107,3 +107,56 @@ func TestScanEventStatesWhatMoved(t *testing.T) {
 		t.Errorf("counters did not carry the deltas: %+v", ev.Stats)
 	}
 }
+
+// TestScanEventNamesWhatMoved: "1 album gone" names no album, and which one is the
+// first thing anyone reading it wants. The movement counters each have rows behind
+// them now, entity rows the feed resolves to names and links.
+func TestScanEventNamesWhatMoved(t *testing.T) {
+	db := twoArtistCollection(t)
+
+	if err := db.Where("mb_release_id = ?", "rel-blueprint").Delete(&models.LibraryItem{}).Error; err != nil {
+		t.Fatalf("delete item: %v", err)
+	}
+	var lib models.Library
+	if err := db.First(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	seedOwnedAlbum(t, db, lib, "art-portishead", "Portishead", "rg-dummy", "rel-dummy", "/m/Portishead/Dummy/01.flac")
+
+	if _, err := RecordScan(db, "Collection scan", RebuildScope{}, nil); err != nil {
+		t.Fatalf("RecordScan: %v", err)
+	}
+	var ev models.Event
+	if err := db.Where("type = ?", models.EventTypeCollectionScan).Order("started_at desc").First(&ev).Error; err != nil {
+		t.Fatalf("no collection_scan event: %v", err)
+	}
+	var items []models.EventItem
+	if err := db.Where("event_id = ?", ev.ID).Find(&items).Error; err != nil {
+		t.Fatalf("items: %v", err)
+	}
+	got := map[string]string{}
+	for _, it := range items {
+		if it.Kind != models.EventItemKindEntity {
+			t.Errorf("movement row %+v is not an entity row", it)
+		}
+		got[it.Phase+"/"+it.Status] += it.Path + " "
+	}
+	want := map[string]string{
+		models.EventItemPhaseArtists + "/" + models.EventItemStatusAdded: "art-portishead ",
+		models.EventItemPhaseAlbums + "/" + models.EventItemStatusAdded:  "rg-dummy ",
+	}
+	for k, v := range want {
+		if got[k] != v {
+			t.Errorf("%s = %q, want %q (all: %v)", k, got[k], v, got)
+		}
+	}
+	if got[models.EventItemPhaseAlbums+"/"+models.EventItemStatusLeft] == "" ||
+		got[models.EventItemPhaseArtists+"/"+models.EventItemStatusLeft] == "" {
+		t.Errorf("the album and artist that left are not named: %v", got)
+	}
+	for _, s := range ev.Stats {
+		if s.Label == "Albums gone" && s.Filter != models.EventItemStatusLeft {
+			t.Errorf("Albums gone is not selectable: %+v", s)
+		}
+	}
+}

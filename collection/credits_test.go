@@ -348,6 +348,16 @@ func TestRebuildCountsCreditChanges(t *testing.T) {
 	if stats.CreditChanges != 2 {
 		t.Errorf("credit changes = %d, want 2 (one regroup + one unlink)", stats.CreditChanges)
 	}
+	// Both changes were on one album, and the event names it once.
+	var recredited []string
+	for _, it := range ScanEventItems(stats) {
+		if it.Status == models.EventItemStatusRecredited {
+			recredited = append(recredited, it.Path)
+		}
+	}
+	if len(recredited) != 1 {
+		t.Errorf("recredited rows = %v, want the one album that moved", recredited)
+	}
 
 	// And it settles: the move is reported once, by the run that made it.
 	if stats, err = Rebuild(db); err != nil {

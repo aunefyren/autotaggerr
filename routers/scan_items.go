@@ -377,7 +377,8 @@ func (a *API) processStatus(c *gin.Context) {
 }
 
 // listLibraryItems returns a paginated, filterable view of the correlation index.
-// Filters: library_id, status, q (path substring), mbid and pin_held. Pagination: limit/offset.
+// Filters: library_id, status, transient, q (path substring), mbid and pin_held.
+// Pagination: limit/offset.
 func (a *API) listLibraryItems(c *gin.Context) {
 	q := a.DB.Model(&models.LibraryItem{})
 
@@ -391,6 +392,20 @@ func (a *API) listLibraryItems(c *gin.Context) {
 	}
 	if status := c.Query("status"); status != "" {
 		q = q.Where("status = ?", status)
+	}
+	// "Will this fix itself?" — the split LastErrorTransient exists for. With
+	// status=error it separates an outage (MusicBrainz down, every file failing at
+	// once) from the failures someone has to look at; with status=unmatched it picks
+	// out the files waiting on a manager's second answer (models.InDiskView).
+	switch c.Query("transient") {
+	case "true":
+		q = q.Where("last_error_transient = ?", true)
+	case "false":
+		q = q.Where("last_error_transient = ?", false)
+	case "":
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "transient must be true or false"})
+		return
 	}
 	if search := c.Query("q"); search != "" {
 		q = q.Where("path LIKE ?", "%"+search+"%")

@@ -332,7 +332,9 @@ Two defences, at different depths:
   compared by their **disc number** when both carry one, so `CD 02` on disk still matches `CD2` in
   Lidarr's stored path. If two trackfiles still fit, it returns no match rather than taking the
   first — a coin flip between two discs is the failure it exists to prevent, and an unmatched file
-  is visible and fixable.
+  is visible and fixable. Lidarr's paths are split with the `utilities.*PathAny` helpers, which
+  accept either separator: a Windows-hosted Lidarr stores `D:\Music\Artist\Album\01.flac`, and on
+  Linux `filepath` reads that as one segment, so no folder (and, earlier, no artist) ever matched.
 - **`verifyDiscFolder` is the last check before a write** (`modules/files.go`). Whatever resolved the
   file — Lidarr, embedded tags, a stale index row — the medium of the chosen track is compared with
   the file's own disc folder, and the write is refused with `ErrDiscMismatch` when they disagree.

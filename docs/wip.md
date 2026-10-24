@@ -12,26 +12,6 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 
 ## Open work
 
-- **What failed?** cannot be asked about *files*. Activity answers it for events, but the rows on the
-  Items page carry `error`, `last_error_at` and `last_error_transient` — exactly the split needed to
-  separate "MusicBrainz was down, this will retry" from "someone has to fix this" — and nothing reads
-  them, in the API or the UI. The transient flag is also what would keep an outage from reading as
-  hundreds of broken files, in Activity as well as on Items. The faceted-filter shape the Activity
-  feed now uses is the obvious model.
-- **An unmatched file keeps its identity and is dropped from the disk view anyway.** `recordItem`
-  preserves `mb_release_id` through a failure (`components/pipeline.go:461`) — Autotaggerr still
-  knows exactly which release those files are — but `ownedItemRows` excludes `unmatched`, so a
-  Lidarr hiccup empties the album from the collection regardless. This is deliberate and documented
-  ([collection.md](collection.md#the-disk-view-counts-files-not-successes)): under a manager,
-  "unmatched" means the authority does not know the file, and it should leave the collection. The
-  repair verbs no longer suffer for it — folder resolution admits these files
-  ([collection.md](collection.md#the-same-rule-applied-to-membership)) — so what is left is the
-  *collection* half: the transient Lidarr case has exactly the shape the MusicBrainz fix was written
-  for, and an hour-old cache is not the manager changing its mind. `last_error_transient` already
-  exists to carry that distinction and nothing reads it.
-  Lidarr upgrades are the live case: a run that reaches an album between the import and the
-  follower's queued Process can still see a half-replaced folder. Recheck and fresh resolution make
-  most of those files resolve, but any that land `unmatched` drop the album until the Process runs.
 - **Lidarr replacing files — what is left.** Recheck-on-miss, fresh resolution of changed files, held
   pins, the history follower (including artists new to Lidarr) and the tag-setting warning have
   shipped ([scanning.md](scanning.md#following-lidarr), [attach.md](attach.md#a-pin-belongs-to-the-audio-not-the-path)).
@@ -39,14 +19,11 @@ Shipped features are documented in [media-manager.md](media-manager.md),
     `/api/v1/config/metadataprovider` were written from Lidarr's API shape and tested against mocks;
     both decoders accept an enum as name or number for that reason. One real response of each would
     settle it.
-  - **A Windows-hosted Lidarr's paths are not split on Linux.** `utilities.BaseOfPathAny` uses
-    `filepath.ToSlash`, which converts nothing on Linux, so `C:\Music\Artist` has no last segment
-    there. The follower's folder lookup inherits this, and so does trackfile matching
-    (`FindTrackFileByPath`), which is the older and larger exposure. Replacing `\` before splitting
-    fixes both; nobody has reported the setup.
-  - **Held pins are only visible on Items.** The run that holds one lists it once as a failure; after
-    that it is the *Pin needs review* filter or nothing. A count on the dashboard, or on the
-    Activity row, would make a held pin hard to forget.
+  - **A replacement at a new path still drops its album for a few minutes.** The one-miss grace
+    ([collection.md](collection.md#the-disk-view-counts-files-not-successes)) holds a file the
+    manager knew; a file Lidarr imports under a *new* name has no identity to hold, and the old
+    row's path is gone, so until the follower's Process resolves the new files the album is out of
+    the disk view. Carrying identity across by size/mtime does not apply — an upgrade changes both.
   - **Webhook.** Lidarr's *Connect → Webhook* would let an import be followed in seconds rather than
     within ten minutes. Same history, same actions; only worth it if the polling delay is ever felt.
 - **The Lidarr mirror cannot introduce an artist**, so it cannot populate a cold collection — the
@@ -86,26 +63,14 @@ Shipped features are documented in [media-manager.md](media-manager.md),
   grace period and leaves its event to be reconciled on the next boot. A per-job context checked
   between files (where the walk already stops cleanly) would close that gap, and would give file
   work the counterpart to the metadata pass's `POST /mirror/cancel`.
-- **A credit change still has no affordance.** `collection_scan` reports the count, but it is still
-  the only identity change with no Migrations row to click through to — the count is the only way to
-  notice one, and there is nothing to open. The four movement counters beside it
-  ([collection.md](collection.md#what-a-pass-moved-not-just-where-it-ended-up)) have the same
-  shape of gap: *3 albums gone* names no albums, because the pass compares MBID sets and keeps only
-  the sizes. Keeping the two sets would make them `EventItem` rows like every other finding, and
-  those rows already resolve to names and links.
 - **`Related` resolution reaches two surfaces, not every one.** `events.ResolveRefs` and
   `GET /mb/:mbid/files` answer "what is this identifier, and which files depend on it"
   ([scanning.md](scanning.md#an-identifier-is-not-a-subject)). The Migrations page now answers the
   second half its own way — a file count per row, linking to `/items?mbid=`, which is the Items
   filter by release this entry used to ask for — and `ResolveRefs` falls back to the migration
   table so a retired album still names itself in the feed. What is left is everywhere else that
-  prints an MBID: the *what failed?* entry above wants the same treatment, since "show me the files
-  behind this MBID" and "show me the files that failed" are one query with different predicates.
-- **A per-artist Lidarr lookup failure has no row.** `SyncStats.Failures` carries the sentence and
-  the count, rendered as a plain list, because a manager-level failure is not *about* an entity. But
-  the per-artist half of it is — the artist MBID is in hand at the point of the error — so those
-  could be `unknown`-shaped entity rows with the failure on them, leaving the plain list for the
-  genuinely entity-less case.
+  prints an MBID — the Scan's new *added / left / credit moved* rows among them, which name an album
+  but do not yet link to its files.
 - **Retention is a count, not a duration.** The two figures are configurable now
   (`autotaggerr_event_retention` / `autotaggerr_event_detail_retention`, see
   [scanning.md](scanning.md#a-run-spawns-activities-each-one-is-a-row)), but time-based retention
@@ -175,12 +140,6 @@ Residual open work on what has shipped:
     is the *artist-page* entry point: "3 albums here have IDs that do not resolve — ask Lidarr", for
     a user who has not opened the Migrations page. `Runner.RepairArtistAlbums` is the verb; it needs
     an endpoint and a button, not new machinery.
-  - **A manager with artist refresh turned off leaves rows nobody can settle.** With
-    `Manager.LidarrSkipArtistRefresh` set, an album the manager still lists can be neither repaired
-    (the pass skips that manager) nor retired (`in_catalog` guards it), so the row is correctly stuck
-    — but *Ask the manager* is still offered and silently does nothing. The row should say the
-    setting is what is holding it, the way every other blocker names its cause. The hold itself is
-    right: the manager is the authority and it still lists the album.
 
 ### Migrations page — what is left after the rewrite
 

@@ -284,6 +284,18 @@ zero-valued counters, so a quiet night still reads as the two totals. *Albums go
 coloured `bad`: an album leaving the disk view means files moved or a correlation broke, and neither
 is something a Scan can fix on its own.
 
+**Each counter has rows behind it.** *3 albums gone* used to name no albums, and which three is the
+only thing anyone reading the line wants next. The pass keeps the two sets it compared, and
+`ScanEventItems` turns the differences into entity rows on the Scan's event: `added` and `left`
+(not *gone*, which already means MusicBrainz answered 404), grouped under *Artists* and *Albums* by
+phase (`collection_artists` / `collection_albums`, which is also what tells the feed an MBID is an
+artist's or a release-group's). Credit changes get the same: `creditChanges` notes the release-group
+each change was counted on, so a re-credit — the one identity change with no Migrations row — is
+now a `recredited` row that links to the album rather than only a number. Each counter is a filter
+chip over its rows. Every list is capped at 100 rows, because the first Scan of a library *adds*
+every album in it and a row per album names nothing anyone is looking for; the counter still says
+how many.
+
 ## The disk/catalog split
 
 `CollectionReleaseGroup` carries two independently written blocks:
@@ -339,10 +351,13 @@ smaller numbers in it.
   [scanning.md](scanning.md#an-identifier-is-not-a-subject)), under
   `EventItemStatusUnknown` — a complete answer that happens to be "no", distinct from *gone* (the
   source used to have it) and *error* (we could not ask).
-- **`Failures`** is the lookups that errored: a manager listing that failed, one artist's albums
-  that could not be read, a want reconciliation that did not commit. They have no detail rows
-  because they are not *about* an entity, so they ride `details.failures` and render as their own
-  list.
+- **`Failures`** is the lookups that errored and are not *about* an entity: a manager listing
+  that failed, a want reconciliation that did not commit. They ride `details.failures` and render
+  as their own list.
+- **`FailedArtists`** is the per-artist kind: one artist's albums could not be read. The artist
+  MBID is in hand at the point of the error, so each is an `error` entity row naming the artist and
+  the cause, and *Lookups failed* counts both kinds. The counter is a filter chip only when every
+  failure it counts has a row — a chip showing two of three would read as all of them.
 
 **An unknown artist's catalog view is retired with them.** The reset that clears `in_catalog` and
 the catalog counts runs per artist the manager *listed*, immediately before re-mirroring their
@@ -356,7 +371,8 @@ same guard as the reporting, below.
 **A failed listing suppresses the unknowns entirely.** An artist missing from a list that was never
 fetched is not missing, it is unlooked-at — the same distinction the MusicBrainz path draws between
 a 404 and a timeout. Reporting a whole collection as unknown because Lidarr was restarting would be
-the most alarming possible way to say "try again".
+the most alarming possible way to say "try again". Only a *listing* failure does this: one artist's
+albums failing says nothing about who the manager lists, so it leaves the unknowns reported.
 
 **`IgnoreCache` is opt-in, and it does not change what the pass fetches.** `GetArtists` and
 `GetArtistAlbums` — the only two calls a mirror makes — are the only *uncached* Lidarr calls there
@@ -399,6 +415,21 @@ So `library_items` now keeps three separate facts apart, and only the first feed
 saying it does not know this file. Any MB ID still on the row is a leftover from before, not
 identity, and counting it would restore the album on the strength of an answer that has been
 withdrawn.
+
+**Once the manager has said it twice.** The predicate is `models.InDiskView`, and it keeps one kind
+of `unmatched` row: a file the manager *knew* and missed once, recorded with `last_error_transient`
+and the date of the miss. That is the shape of Lidarr part-way through replacing a file — between
+the import and the re-listing — which it does on its own schedule. Recheck-on-miss and fresh
+resolution make sure the miss is Lidarr's current answer rather than an hour-old cache, but a current
+answer mid-import is still a wrong one, and dropping the album from the collection for the minutes
+until the [history follower](scanning.md#following-lidarr) re-processes it reported a change nobody
+made. So `recordItem` treats the first miss on a row that has an identity as a strike rather than a
+verdict; the next attempt either resolves the file or misses again, and a second miss in a row clears
+the flag and drops it. A file the manager never knew has nothing to be held on and is unmatched at
+once. The held row is still never **written** from — `TaggableItems` excludes every `unmatched` row,
+because an identity good enough to count is not good enough to tag. A MusicBrainz deletion that marks
+files unmatched clears the flag explicitly, so a transient failure left over from an outage cannot
+keep them counted.
 
 Nothing schedules a retry for a file that failed, and nothing needs to: `processed_version` is
 stamped only by a success, and `shouldSkip` refuses to skip a file whose version does not match, so

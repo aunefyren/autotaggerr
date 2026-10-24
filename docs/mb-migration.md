@@ -444,7 +444,12 @@ Constraints, all of which are the point rather than caution for its own sake:
   [Approving a blocked album](#approving-a-blocked-album).
 - **Opt-out per manager** (`Manager.LidarrSkipArtistRefresh`), for a deliberately read-only API key
   or where something else owns refresh scheduling. Phrased negatively so the zero value is "allowed"
-  — see the field comment for why a `default:true` tag would not have worked.
+  — see the field comment for why a `default:true` tag would not have worked. When **every** enabled
+  Lidarr manager has opted out, there is nobody to ask, so the review stops offering *Ask the
+  manager*: `collection.RefreshTurnedOff` names those managers, and the row becomes stuck with a
+  blocker naming the setting — *artist refresh is turned off for "Main Lidarr"* — the way every
+  other blocker names its cause. It used to queue a repair that skipped every manager and did
+  nothing. The hold itself is right: the manager is the authority and still lists the album.
 
 This is the only write Autotaggerr makes to a manager, and `modules/lidarr_command.go` explains why
 it is the only one that earns it: it does not tell Lidarr what its data should be, it asks Lidarr to
@@ -572,7 +577,7 @@ three things a press means, and the row has to agree with itself about that:
 |-------|-----------------|
 | nothing objects | **Apply** — approving applies it |
 | `needs_manager_refresh` | **Ask the manager** — approving queues a refresh, and the row says how many siblings it settles |
-| `blocker`, not refreshable | **Apply, disabled**, blocker in red beside it and as the title — a file, a want or an edition claims this album, and the press would fail with that same sentence |
+| `blocker`, not refreshable | **Apply, disabled**, blocker in red beside it and as the title — a file, a want or an edition claims this album, or the only managers that could be asked have artist refresh turned off, and the press would fail with that same sentence |
 
 The third had no control of its own: a blocked row offered a live primary button whose press returned
 the refusal already printed beside it. The sibling count belongs to the second row of that table

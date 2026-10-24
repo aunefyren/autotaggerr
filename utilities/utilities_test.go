@@ -429,3 +429,22 @@ func TestNormalizeTagValuesDoesNotDedup(t *testing.T) {
 		t.Errorf("all-blank input = %v, want nil", got)
 	}
 }
+
+// TestPathBaseHelpersReadWindowsPaths pins the split for a path a Windows-hosted
+// Lidarr reports to an Autotaggerr on Linux: filepath.ToSlash converts nothing there,
+// so without the backslash pass the whole path was one segment.
+func TestPathBaseHelpersReadWindowsPaths(t *testing.T) {
+	p := `C:\Music\Artist\Album (2020)\CD1\01 Track.flac`
+	if got := BaseOfPathAny(p); got != "01 Track.flac" {
+		t.Errorf("BaseOfPathAny = %q", got)
+	}
+	if got := BaseDirOfPathAny(p); got != "CD1" {
+		t.Errorf("BaseDirOfPathAny = %q, want CD1", got)
+	}
+	if got := GrandfatherDirOfPathAny(p); got != "Album (2020)" {
+		t.Errorf("GrandfatherDirOfPathAny = %q, want 'Album (2020)'", got)
+	}
+	if got := BaseOfPathAny(`\\nas\music\Artist\`); got != "Artist" {
+		t.Errorf("BaseOfPathAny(UNC folder) = %q, want Artist", got)
+	}
+}
