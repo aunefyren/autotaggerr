@@ -1277,7 +1277,7 @@ function RepairNote({
         {held && (
           <>Artist refresh is turned off for {repair.held_by!.join(", ")}, so it cannot be asked from here — turn it on under Managers, or refresh the artist in Lidarr yourself. </>
         )}
-        <Link to="/migrations">See them on Migrations</Link>
+        <Link to="/migrations">See them on MusicBrainz changes</Link>
       </span>
       {!held && (
         <div className="row" style={{ marginTop: 6 }}>

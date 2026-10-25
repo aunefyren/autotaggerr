@@ -917,7 +917,7 @@ const ENTITY_OUTCOMES: Record<string, { label: string; kind: string; note: strin
   gone: {
     label: "Gone upstream",
     kind: "warn",
-    note: "MusicBrainz answered 404. Usually a merge — the entity moved into another one — which is recorded as an identity change on the Migrations page rather than treated as a failure. Files still pointing at it keep their tags until the merge is applied.",
+    note: "MusicBrainz answered 404. Usually a merge — the entity moved into another one — which is recorded as an identity change on MusicBrainz changes rather than treated as a failure. Files still pointing at it keep their tags until the merge is applied.",
   },
   relinked: {
     label: "Re-linked",

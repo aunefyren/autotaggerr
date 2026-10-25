@@ -281,7 +281,7 @@ export default function Migrations() {
   return (
     <div className="stack">
       <div className="page-head">
-        <h1>Metadata migrations</h1>
+        <h1>MusicBrainz changes</h1>
         <div className="row">
           {/* Ghost: re-reading a list costs nothing, and this page's only control
               should not carry the weight of an action that does. */}

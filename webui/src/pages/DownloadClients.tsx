@@ -5,6 +5,7 @@ import { useFetch } from "../hooks";
 import { DownloadClient, DownloadClientCategory, Library, Manager, PathMapping } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { useToast } from "../toast";
+import { useSetup } from "../setup";
 
 // The verdict from POST /download-clients/:id/test. A refused login still answers 200
 // — the request worked, the credentials did not — so `healthy` carries the result.
@@ -34,6 +35,7 @@ export function CopyWarning() {
 export default function DownloadClients() {
   const toast = useToast();
   const { data, err, loading, reload } = useFetch<DownloadClient[]>(() => api.get("/download-clients"));
+  const setup = useSetup();
   const libraries = useFetch<Library[]>(() => api.get("/libraries"));
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
   const [editing, setEditing] = useState<DownloadClient | "new" | null>(null);
@@ -166,6 +168,7 @@ export default function DownloadClients() {
           onSaved={(name) => {
             setEditing(null);
             reload();
+            setup.reload();
             toast("ok", editing === "new" ? `Added ${name}` : `Saved ${name}`);
           }}
         />

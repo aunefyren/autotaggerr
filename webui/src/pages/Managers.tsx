@@ -4,6 +4,7 @@ import { useFetch } from "../hooks";
 import { Manager } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { useToast } from "../toast";
+import { useSetup } from "../setup";
 
 // ManagerTest is the verdict from POST /managers/:id/test. A rejected probe still
 // answers 200 — the request worked, the credentials did not — so `healthy` carries the
@@ -20,6 +21,7 @@ type ManagerTest = {
 export default function Managers() {
   const toast = useToast();
   const { data, err, loading, reload } = useFetch<Manager[]>(() => api.get("/managers"));
+  const setup = useSetup();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Manager | null>(null);
   const [tests, setTests] = useState<Record<string, ManagerTest>>({});
@@ -146,7 +148,7 @@ export default function Managers() {
       {creating && (
         <CreateManager
           onClose={() => setCreating(false)}
-          onCreated={() => { setCreating(false); reload(); toast("ok", "Manager added"); }}
+          onCreated={() => { setCreating(false); reload(); setup.reload(); toast("ok", "Manager added"); }}
         />
       )}
 

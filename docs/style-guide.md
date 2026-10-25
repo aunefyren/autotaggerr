@@ -226,7 +226,31 @@ Concise specs; the SPA implements each as one reusable component. States listed 
 - **Card / panel** — `--surface-1`, `1px --border`, `--radius-lg`, `--space-6` padding. Optional
   header row with title (`--text-lg`, 600) + actions.
 - **Sidebar nav** — `--bg`, item height 34px, icon + label. Active = `--accent-subtle` fill,
-  `--accent-text` label, 2px `--accent` left marker. Hover = `--surface-2`.
+  `--accent-text` label, 2px `--accent` left marker. Hover = `--surface-2`. Width 224px.
+  - **Groups**, by how often each page is used: Overview (no heading) · Music · Activity · Setup ·
+    System. Setup is in the order things are created (Managers → Libraries → Download clients),
+    with the two that ship with working defaults (Tagger profiles, Data sources) last. Groups are
+    always expanded — five short ones fit, and a collapsed group hides where a page lives.
+  - **Group headings are sentence case**, `--text-xs`, 500, `--text-dim`, 16px above the group.
+    This is a deliberate exception to the uppercase eyebrow: five tracked-uppercase labels stacked
+    in one column read as template chrome. Eyebrows inside cards stay uppercase.
+  - **Setup steps** (`.setup`, admins only) sit above the groups while a required step is undone,
+    and are the one place the nav is ordered by a real dependency. A `--surface-1` panel holding
+    verbs, not page names — *Choose a manager*, *Add a library*, *Process it*, *Connect a download
+    client* (optional, and absent when every library is Lidarr-managed) — each on a rail: 14px nodes
+    on a 1px `--border-strong` line, dashed into an optional step. Done = `--success` node with ✓
+    and a `--text-dim` label; next = `--accent` node with an `--accent-subtle` ring, a `--text`
+    label and a *Next* `pill-chg`; later = hollow `--text-dim` node. **Steps are never disabled**:
+    the step's page explains what is missing, and the rail only says which comes next. When the
+    last required step is done the panel reads *You're set up* until the next navigation, then
+    goes; undoing a step (the only library deleted) brings it back. Its state comes from
+    `setup.tsx`, which the overview's *Get started* card and the Libraries page's hints also read.
+  - **Below 720px the sidebar is a drawer**: a ☰ button in the topbar opens it over the page
+    (`--surface-3`, `--border-strong`, `--shadow-2`, the modal scrim behind). Navigating, Escape
+    or the scrim closes it; focus moves in on open, back to the button on close, and Tab stays
+    inside while it is open.
+  - **Sign out lives in the sidebar footer**, beside *Signed in as …*; the topbar is the page title
+    (and the ☰ button on a phone).
 - **Tabs** — underline style; active tab `--text` + 2px `--accent` underline; others `--text-muted`. `.tabs` / `.tab`
   with `role="tab"` and `aria-selected`; the panels of a modal's tabs stay mounted when hidden, so
   switching tabs never throws away a half-done search.

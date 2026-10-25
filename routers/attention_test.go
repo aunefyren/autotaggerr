@@ -161,3 +161,36 @@ func TestArtistListFollowsEveryWrite(t *testing.T) {
 		t.Errorf("after a delete: %v, want the album gone", got[0])
 	}
 }
+
+// TestHealthReportsSetup: the sidebar's setup steps, as counts. A library under Lidarr
+// is not one a download can be imported into; a library with no manager is.
+func TestHealthReportsSetup(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	setup := func() map[string]int {
+		t.Helper()
+		var body struct {
+			Setup map[string]int `json:"setup"`
+		}
+		w := do(r, "GET", "/api/v1/health", token, nil)
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		return body.Setup
+	}
+	if got := setup(); got["managers"] != 0 || got["libraries"] != 0 || got["importable_libraries"] != 0 {
+		t.Fatalf("fresh setup = %v", got)
+	}
+
+	lidarr := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true}
+	api.DB.Create(&lidarr)
+	api.DB.Create(&models.Library{Name: "Lidarr music", Path: t.TempDir(), Enabled: true, ManagerID: &lidarr.ID})
+	if got := setup(); got["managers"] != 1 || got["libraries"] != 1 || got["importable_libraries"] != 0 {
+		t.Errorf("with a Lidarr library = %v", got)
+	}
+
+	api.DB.Create(&models.Library{Name: "Rips", Path: t.TempDir(), Enabled: true})
+	if got := setup(); got["libraries"] != 2 || got["importable_libraries"] != 1 {
+		t.Errorf("with a library of no manager = %v", got)
+	}
+}

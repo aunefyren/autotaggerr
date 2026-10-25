@@ -396,6 +396,14 @@ export interface Health {
     pins_held: number;
     unmatched_wait: number;
   };
+  /** What a fresh install still lacks, as counts (see setup.tsx). */
+  setup?: {
+    managers: number;
+    libraries: number;
+    indexed_files: number;
+    importable_libraries: number;
+    download_clients: number;
+  };
 }
 
 /** One queued or running background job. */

@@ -347,7 +347,37 @@ func (a *API) health(c *gin.Context) {
 			"library_items":   count(&models.LibraryItem{}),
 		},
 		"attention": a.attention(),
+		"setup":     a.setupState(),
 	})
+}
+
+// setupState is what the sidebar's setup steps and the overview's Get started card
+// read: what a fresh install still lacks, in the order it has to be added. Each field
+// is a count, so a step undone later (the only library deleted) shows as undone again.
+func (a *API) setupState() gin.H {
+	count := func(model any, where string, args ...any) int64 {
+		var n int64
+		q := a.DB.Model(model)
+		if where != "" {
+			q = q.Where(where, args...)
+		}
+		q.Count(&n)
+		return n
+	}
+	return gin.H{
+		"managers":  count(&models.Manager{}, ""),
+		"libraries": count(&models.Library{}, ""),
+		// Processed, rather than merely added: a library none of whose files has been
+		// indexed is one nobody has run yet.
+		"indexed_files": count(&models.LibraryItem{}, ""),
+		// Libraries a download can be imported into. A library with no manager is
+		// native, so it counts; one under Lidarr does not, and a setup with only those
+		// has no use for a download client.
+		"importable_libraries": count(&models.Library{},
+			"manager_id IS NULL OR manager_id NOT IN (?)",
+			a.DB.Model(&models.Manager{}).Select("id").Where("type = ?", models.ManagerTypeLidarr)),
+		"download_clients": count(&models.DownloadClient{}, ""),
+	}
 }
 
 // attention counts the files waiting on something, split by what they wait on — the

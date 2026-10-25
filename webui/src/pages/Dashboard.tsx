@@ -6,6 +6,7 @@ import { Health, ScanStatus } from "../types";
 import { ErrorNote } from "../components/ui";
 import { ProgressBar } from "../components/ProgressBar";
 import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
+import { useSetup } from "../setup";
 
 const LABELS: Record<string, string> = {
   libraries: "Libraries",
@@ -31,7 +32,7 @@ export default function Dashboard() {
 
   const counts = health.data?.counts ?? {};
   const order = ["libraries", "managers", "data_sources", "tagger_profiles", "library_items"];
-  const noLibraries = health.data && (counts.libraries ?? 0) === 0;
+  const setup = useSetup();
 
   return (
     <div className="stack">
@@ -42,14 +43,27 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {noLibraries && (
+      {/* The same steps as the sidebar's, from the same source (setup.tsx). */}
+      {!setup.complete && setup.next && (
         <div className="card" style={{ borderColor: "var(--border-strong)" }}>
           <div className="eyebrow" style={{ marginBottom: 8 }}>Get started</div>
-          <div className="muted" style={{ marginBottom: 12 }}>
-            Add a music folder as a library, then process it to correlate and tag its files.
+          <div className="muted" style={{ marginBottom: 12, maxWidth: "68ch" }}>
+            A manager decides which MusicBrainz release each file is — Lidarr's decision, or Autotaggerr's own
+            from the files' tags. A library is a music folder governed by one. Processing it identifies and tags
+            its files.
           </div>
-          <Link to="/libraries" className="btn btn-primary btn-sm" style={{ textDecoration: "none" }}>
-            Add your first library
+          {/* Not struck through when done: strike-through is the diff's "removed". */}
+          <ol className="stack" style={{ gap: 6, margin: "0 0 14px", paddingLeft: 18 }}>
+            {setup.steps.map((step) => (
+              <li key={step.key} className={step.done ? "dim" : undefined}>
+                {step.label}
+                {step.done && <span style={{ color: "var(--success-text)" }}> ✓ done</span>}
+                {!step.done && step.optional && <span className="dim"> (optional)</span>}
+              </li>
+            ))}
+          </ol>
+          <Link to={setup.next.to} className="btn btn-primary btn-sm" style={{ textDecoration: "none" }}>
+            {setup.next.label}
           </Link>
         </div>
       )}

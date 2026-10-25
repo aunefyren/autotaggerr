@@ -1,4 +1,5 @@
 import { FormEvent, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { BPMWrite, DataSource, Library, Manager, TaggerProfile, TempoStatus, dataSourceCategory } from "../types";
@@ -6,6 +7,7 @@ import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { TempoAnalysis } from "../components/TempoAnalysis";
 import { useToast } from "../toast";
+import { useSetup } from "../setup";
 
 interface Options {
   managers: Manager[];
@@ -20,6 +22,7 @@ export default function Libraries() {
   const dataSources = useFetch<DataSource[]>(() => api.get("/data-sources"));
   const profiles = useFetch<TaggerProfile[]>(() => api.get("/tagger-profiles"));
 
+  const setup = useSetup();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Library | null>(null);
   const [recorrelating, setRecorrelating] = useState<Library | null>(null);
@@ -27,7 +30,7 @@ export default function Libraries() {
   // Bumped whenever a library changes, so the tempo card re-reads how many libraries
   // opt in rather than contradicting the table above it.
   const [tempoVersion, setTempoVersion] = useState(0);
-  const changed = () => { libs.reload(); setTempoVersion((v) => v + 1); };
+  const changed = () => { libs.reload(); setTempoVersion((v) => v + 1); setup.reload(); };
 
   const options: Options = {
     managers: managers.data ?? [],
@@ -117,6 +120,22 @@ export default function Libraries() {
         <h1>Libraries</h1>
         <button className="btn btn-primary btn-sm" onClick={() => setCreating(true)}>Add library</button>
       </div>
+
+      {/* Advice before the choice rather than a warning after it: a library picks its
+          manager, so the manager comes first. Adding one without is still allowed. */}
+      {managers.data && managers.data.length === 0 && (
+        <Note kind="warn" title="Add a manager first">
+          A library's manager decides which MusicBrainz release each of its files is. <Link to="/managers">Add one
+          on Managers</Link> — Lidarr, or Autotaggerr's own — then come back. A library with no manager identifies
+          files only from IDs already in their tags.
+        </Note>
+      )}
+      {setup.next?.key === "process" && libs.data && libs.data.length > 0 && (
+        <Note kind="ok" title="Process it">
+          Press <strong>Process</strong> on a library to identify and tag its files. The first run reads every file, so
+          a large library takes a while; follow it on <Link to="/activity">Activity</Link>.
+        </Note>
+      )}
 
       {libs.err && <ErrorNote message={libs.err} />}
       {!libs.err && !libs.loading && libs.data && libs.data.length === 0 && (

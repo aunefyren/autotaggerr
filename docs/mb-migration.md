@@ -123,7 +123,7 @@ less.
 ## Review and policy
 
 A detected migration is `pending`. It is applied immediately unless its category is held for
-review, in which case it waits for a human on the **Migrations** page.
+review, in which case it waits for a human on the **MusicBrainz changes** page (`/migrations`).
 
 These four live on **/settings** under *Metadata migrations*, not on the data source that reported
 the change. Holding a merge for approval is a decision about this library, so it holds across every
