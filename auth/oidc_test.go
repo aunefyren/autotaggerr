@@ -140,8 +140,12 @@ func TestResolveUserSignupCreates(t *testing.T) {
 	if got.Username != "newbie" || got.Email != "new@example.com" {
 		t.Errorf("created user = %+v", got)
 	}
-	if got.APIKey == "" {
-		t.Error("created user has no API key")
+	// No key is minted behind the user's back: keys are made on request, named and
+	// scoped, and shown once to the person who asked.
+	var keys int64
+	db.Model(&models.APIKey{}).Where("user_id = ?", got.ID).Count(&keys)
+	if keys != 0 {
+		t.Errorf("signup created %d API key(s), want none", keys)
 	}
 	if got.AuthProviderID == nil || *got.AuthProviderID != p.ID {
 		t.Errorf("created user is not linked: %+v", got)

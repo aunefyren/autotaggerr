@@ -1,6 +1,8 @@
 package models
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
 	"time"
 
@@ -845,7 +847,6 @@ type User struct {
 	Email        string `json:"email"`
 	PasswordHash string `json:"-"`
 	Role         string `gorm:"not null;default:admin" json:"role"`
-	APIKey       string `gorm:"uniqueIndex" json:"-"`
 
 	// External identity, set when the account is linked to an auth provider. The
 	// pair (AuthProviderID, ExternalSubject) is the stable identity — OIDC `sub` is
@@ -853,6 +854,46 @@ type User struct {
 	AuthProviderID  *uuid.UUID `gorm:"index" json:"auth_provider_id,omitempty"`
 	ExternalSubject string     `gorm:"index" json:"-"`
 }
+
+// API key scopes. A read key may only read: GET on the REST API, and on the MCP
+// endpoint only the tools that read. A write key may do anything its user may.
+const (
+	APIKeyScopeRead  = "read"
+	APIKeyScopeWrite = "write"
+)
+
+// APIKey is one named credential for scripts and AI assistants. A user may hold
+// several, each with its own scope, so an assistant can be handed a key that cannot
+// write and revoked without touching the others.
+//
+// Only a hash is stored. Keys are 32 random bytes, so an unsalted SHA-256 is enough
+// to make a leaked table useless — there is nothing to guess — while keeping lookup
+// a single indexed equality (HashAPIKey). The plaintext is shown once, when made.
+type APIKey struct {
+	Base
+	UserID uuid.UUID `gorm:"type:uuid;index;not null" json:"-"`
+	Name   string    `gorm:"not null" json:"name"`
+	Scope  string    `gorm:"not null" json:"scope"`
+	Hash   string    `gorm:"uniqueIndex;not null" json:"-"`
+	// Prefix is the key's first characters, so a list of keys can be matched to the
+	// one a client holds without storing anything that would let it be used.
+	Prefix     string     `json:"prefix"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+}
+
+// ValidAPIKeyScope reports whether scope is one a key may carry.
+func ValidAPIKeyScope(scope string) bool {
+	return scope == APIKeyScopeRead || scope == APIKeyScopeWrite
+}
+
+// HashAPIKey is how a key is stored and looked up.
+func HashAPIKey(key string) string {
+	sum := sha256.Sum256([]byte(key))
+	return hex.EncodeToString(sum[:])
+}
+
+// APIKeyPrefixLength is how much of a key APIKey.Prefix keeps.
+const APIKeyPrefixLength = 6
 
 // Auth provider types.
 const AuthProviderTypeOIDC = "oidc"
@@ -1591,6 +1632,7 @@ func AllDBModels() []any {
 		&ArtworkCacheEntry{},
 		&MusicbrainzMigration{},
 		&User{},
+		&APIKey{},
 		&AuthProvider{},
 		&Event{},
 		&EventItem{},

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -16,13 +17,19 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// The servers the HTTP endpoint hands an admin, by credential scope.
+var (
+	mcpReader = mcpServerKey{admin: true, write: false}
+	mcpWriter = mcpServerKey{admin: true, write: true}
+)
+
 // mcpSession connects an in-memory client to one of the API's MCP servers — the same
-// server the HTTP endpoint hands an admin, without the transport in the way.
-func mcpSession(t *testing.T, api *API, admin bool) *mcp.ClientSession {
+// server the HTTP endpoint hands that caller, without the transport in the way.
+func mcpSession(t *testing.T, api *API, key mcpServerKey) *mcp.ClientSession {
 	t.Helper()
 	ctx := context.Background()
 	clientT, serverT := mcp.NewInMemoryTransports()
-	serverSession, err := api.newMCPServer(admin).Connect(ctx, serverT, nil)
+	serverSession, err := api.newMCPServer(key).Connect(ctx, serverT, nil)
 	if err != nil {
 		t.Fatalf("server connect: %v", err)
 	}
@@ -94,34 +101,66 @@ var mcpPhaseOneTools = []string{
 	"list_activity", "get_activity", "list_migrations",
 }
 
-// TestMCPToolsAreReadOnly is the line phase 1 holds: every tool either server lists
-// is marked read-only, so a write tool cannot arrive in the read scope by a
-// convenient copy-paste. Phase 2 changes this to "read-only unless the key may write".
-func TestMCPToolsAreReadOnly(t *testing.T) {
+var mcpWriteTools = []string{
+	"search_artists", "search_releases", "browse_artist_albums",
+	"process", "scan", "refresh_metadata", "tag_files", "cancel_job",
+	"add_artist", "follow_artist", "want_album", "unwant_album",
+	"attach_file", "release_pin", "confirm_pin", "approve_migration", "dismiss_migration",
+}
+
+// listMCPTools returns the tools a server shows, by name.
+func listMCPTools(t *testing.T, session *mcp.ClientSession) map[string]*mcp.Tool {
+	t.Helper()
+	res, err := session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	out := map[string]*mcp.Tool{}
+	for _, tool := range res.Tools {
+		out[tool.Name] = tool
+	}
+	return out
+}
+
+// TestMCPScopeSplit is the line scoped keys exist to hold: a read-only credential is
+// shown exactly the read tools, every one marked read-only, so no tool that changes
+// anything is reachable with a key that may not write. A writer sees the same reads
+// plus the actions, and each action states whether it is destructive.
+func TestMCPScopeSplit(t *testing.T) {
 	_, api := setupAPI(t)
 	for _, admin := range []bool{false, true} {
-		session := mcpSession(t, api, admin)
-		res, err := session.ListTools(context.Background(), nil)
-		if err != nil {
-			t.Fatalf("ListTools: %v", err)
-		}
-		listed := map[string]bool{}
-		for _, tool := range res.Tools {
-			listed[tool.Name] = true
-			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
-				t.Errorf("admin=%v: tool %s is not marked read-only", admin, tool.Name)
-			}
-			if tool.Description == "" {
-				t.Errorf("admin=%v: tool %s has no description", admin, tool.Name)
-			}
+		reader := listMCPTools(t, mcpSession(t, api, mcpServerKey{admin: admin}))
+		if len(reader) != len(mcpPhaseOneTools) {
+			t.Errorf("admin=%v reader: %d tools, want %d", admin, len(reader), len(mcpPhaseOneTools))
 		}
 		for _, name := range mcpPhaseOneTools {
-			if !listed[name] {
-				t.Errorf("admin=%v: tool %s is not listed", admin, name)
+			tool := reader[name]
+			if tool == nil {
+				t.Errorf("admin=%v reader: %s not listed", admin, name)
+				continue
+			}
+			if tool.Annotations == nil || !tool.Annotations.ReadOnlyHint {
+				t.Errorf("admin=%v reader: %s is not marked read-only", admin, name)
 			}
 		}
-		if len(res.Tools) != len(mcpPhaseOneTools) {
-			t.Errorf("admin=%v: %d tools listed, want %d", admin, len(res.Tools), len(mcpPhaseOneTools))
+
+		writer := listMCPTools(t, mcpSession(t, api, mcpServerKey{admin: admin, write: true}))
+		if len(writer) != len(mcpPhaseOneTools)+len(mcpWriteTools) {
+			t.Errorf("admin=%v writer: %d tools, want %d", admin, len(writer), len(mcpPhaseOneTools)+len(mcpWriteTools))
+		}
+		for _, name := range mcpWriteTools {
+			tool := writer[name]
+			if tool == nil {
+				t.Errorf("admin=%v writer: %s not listed", admin, name)
+				continue
+			}
+			if tool.Description == "" || tool.Annotations == nil {
+				t.Errorf("admin=%v writer: %s has no description or annotations", admin, name)
+				continue
+			}
+			if !tool.Annotations.ReadOnlyHint && tool.Annotations.DestructiveHint == nil {
+				t.Errorf("admin=%v writer: action %s does not say whether it is destructive", admin, name)
+			}
 		}
 	}
 }
@@ -130,7 +169,7 @@ func TestMCPToolsAreReadOnly(t *testing.T) {
 // MusicBrainz budget say so, and the database-only ones do not claim to.
 func TestMCPOpenWorldMarksMusicBrainzReads(t *testing.T) {
 	_, api := setupAPI(t)
-	res, err := mcpSession(t, api, true).ListTools(context.Background(), nil)
+	res, err := mcpSession(t, api, mcpReader).ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
@@ -174,7 +213,7 @@ func mcpCollectionFixture(t *testing.T, api *API) models.CollectionArtist {
 func TestMCPCollectionTools(t *testing.T) {
 	_, api := setupAPI(t)
 	mcpCollectionFixture(t, api)
-	session := mcpSession(t, api, true)
+	session := mcpSession(t, api, mcpReader)
 
 	t.Run("list_artists", func(t *testing.T) {
 		all := callMCP[mcpArtistList](t, session, "list_artists", nil)
@@ -277,7 +316,7 @@ func TestMCPAlbumAndTracks(t *testing.T) {
 			return rel, nil
 		},
 	}
-	session := mcpSession(t, api, true)
+	session := mcpSession(t, api, mcpReader)
 
 	album := callMCP[mcpAlbumDetail](t, session, "get_album", map[string]any{"artist_mbid": "artist-1", "album_mbid": "rg-missing"})
 	if album.Album.Title != "Aerial" || len(album.Editions) != 1 {
@@ -321,7 +360,7 @@ func TestMCPFileTools(t *testing.T) {
 			t.Fatalf("create item: %v", err)
 		}
 	}
-	session := mcpSession(t, api, true)
+	session := mcpSession(t, api, mcpReader)
 
 	all := callMCP[mcpFileList](t, session, "list_files", nil)
 	if all.Total != 4 || all.Files[0].Path != "/music/A/a.flac" {
@@ -376,7 +415,7 @@ func TestMCPActivityTools(t *testing.T) {
 			t.Fatalf("create item: %v", err)
 		}
 	}
-	session := mcpSession(t, api, true)
+	session := mcpSession(t, api, mcpReader)
 
 	feed := callMCP[mcpActivityList](t, session, "list_activity", nil)
 	if feed.Total != 2 || feed.Events[0].ID != stage.ID.String() || feed.Events[0].ParentTitle != run.Title {
@@ -408,7 +447,7 @@ func TestMCPOverviewConfigurationAndMigrations(t *testing.T) {
 	if err := api.DB.Create(&manager).Error; err != nil {
 		t.Fatalf("create manager: %v", err)
 	}
-	session := mcpSession(t, api, true)
+	session := mcpSession(t, api, mcpReader)
 
 	overview := callMCP[mcpOverview](t, session, "get_overview", nil)
 	if overview.Version != "test" || overview.Counts.Artists != 2 || overview.Counts.Libraries != 1 || overview.Jobs == nil {
@@ -507,28 +546,109 @@ func TestMCPEndpointToggle(t *testing.T) {
 	}
 }
 
-func TestRotateAPIKey(t *testing.T) {
+// mcpToolNames lists the tools an MCP request over HTTP is shown.
+func mcpToolNames(t *testing.T, r *gin.Engine, key string) []string {
+	t.Helper()
+	w := mcpPost(r, "Authorization", "Bearer "+key, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("tools/list = %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Result struct {
+			Tools []struct {
+				Name string `json:"name"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode tools/list: %v (%s)", err, w.Body.String())
+	}
+	names := make([]string, 0, len(resp.Result.Tools))
+	for _, tool := range resp.Result.Tools {
+		names = append(names, tool.Name)
+	}
+	return names
+}
+
+func TestAPIKeyManagement(t *testing.T) {
 	r, _ := setupAPI(t)
 	token := loginToken(t, r)
 
-	if w := do(r, "POST", "/api/v1/auth/me/api-key", "", nil); w.Code != http.StatusUnauthorized {
-		t.Fatalf("rotate without auth = %d, want 401", w.Code)
+	type created struct {
+		APIKey string        `json:"api_key"`
+		Key    models.APIKey `json:"key"`
 	}
-	got := decodeJSON[struct {
-		APIKey string `json:"api_key"`
-	}](t, r, "POST", "/api/v1/auth/me/api-key", token, nil)
-	if got.APIKey == "" || got.APIKey == "key-123" {
-		t.Fatalf("rotated key = %q, want a new one", got.APIKey)
+	create := func(name, scope string) created {
+		t.Helper()
+		w := do(r, "POST", "/api/v1/auth/me/api-keys", token, map[string]string{"name": name, "scope": scope})
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create %s = %d: %s", name, w.Code, w.Body.String())
+		}
+		var out created
+		_ = json.Unmarshal(w.Body.Bytes(), &out)
+		return out
+	}
+	reader := create("assistant", models.APIKeyScopeRead)
+	writer := create("automation", models.APIKeyScopeWrite)
+	if reader.APIKey == "" || !strings.HasPrefix(reader.APIKey, reader.Key.Prefix) {
+		t.Fatalf("created = %+v, want the key and its prefix", reader)
 	}
 
-	if w := mcpPost(r, "X-Api-Key", "key-123", nil); w.Code != http.StatusUnauthorized {
-		t.Errorf("old key after rotation = %d, want 401", w.Code)
+	if w := do(r, "POST", "/api/v1/auth/me/api-keys", token, map[string]string{"name": "x", "scope": "admin"}); w.Code != http.StatusBadRequest {
+		t.Errorf("unknown scope = %d, want 400", w.Code)
 	}
-	if w := mcpPost(r, "X-Api-Key", got.APIKey, nil); w.Code != http.StatusOK {
-		t.Errorf("new key = %d, want 200", w.Code)
+	if w := do(r, "POST", "/api/v1/auth/me/api-keys", token, map[string]string{"scope": "read"}); w.Code != http.StatusBadRequest {
+		t.Errorf("no name = %d, want 400", w.Code)
 	}
-	// Never readable afterwards: /auth/me does not return it.
-	if w := do(r, "GET", "/api/v1/auth/me", token, nil); strings.Contains(w.Body.String(), got.APIKey) {
-		t.Errorf("/auth/me exposes the API key: %s", w.Body.String())
+
+	// Listed by name and prefix — never the key, which is only stored hashed.
+	w := do(r, "GET", "/api/v1/auth/me/api-keys", token, nil)
+	if w.Code != http.StatusOK || strings.Contains(w.Body.String(), reader.APIKey) || !strings.Contains(w.Body.String(), "assistant") {
+		t.Errorf("list = %d %s; want the keys by name, without the secret", w.Code, w.Body.String())
+	}
+
+	// Keys are managed from a session only: a key cannot mint or revoke keys.
+	req := httptest.NewRequest("POST", "/api/v1/auth/me/api-keys", strings.NewReader(`{"name":"more","scope":"write"}`))
+	req.Header.Set("X-Api-Key", writer.APIKey)
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("creating a key with a key = %d, want 403", rec.Code)
+	}
+
+	// A read key reads the REST API and may not write to it.
+	get := httptest.NewRequest("GET", "/api/v1/health", nil)
+	get.Header.Set("X-Api-Key", reader.APIKey)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, get)
+	if rec.Code != http.StatusOK {
+		t.Errorf("read key GET = %d, want 200", rec.Code)
+	}
+	post := httptest.NewRequest("POST", "/api/v1/scan", nil)
+	post.Header.Set("X-Api-Key", reader.APIKey)
+	rec = httptest.NewRecorder()
+	r.ServeHTTP(rec, post)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "read-only") {
+		t.Errorf("read key POST = %d %s, want 403", rec.Code, rec.Body.String())
+	}
+
+	// On MCP the scope is the tool list.
+	readTools, writeTools := mcpToolNames(t, r, reader.APIKey), mcpToolNames(t, r, writer.APIKey)
+	if len(readTools) != len(mcpPhaseOneTools) || slices.Contains(readTools, "tag_files") {
+		t.Errorf("read key sees %v, want only the read tools", readTools)
+	}
+	if !slices.Contains(writeTools, "tag_files") {
+		t.Errorf("write key sees %v, want the actions too", writeTools)
+	}
+
+	// Revoked: stops working at once.
+	if w := do(r, "DELETE", "/api/v1/auth/me/api-keys/"+reader.Key.ID.String(), token, nil); w.Code != http.StatusOK {
+		t.Fatalf("revoke = %d: %s", w.Code, w.Body.String())
+	}
+	if w := mcpPost(r, "X-Api-Key", reader.APIKey, nil); w.Code != http.StatusUnauthorized {
+		t.Errorf("revoked key = %d, want 401", w.Code)
+	}
+	if w := do(r, "DELETE", "/api/v1/auth/me/api-keys/"+reader.Key.ID.String(), token, nil); w.Code != http.StatusNotFound {
+		t.Errorf("revoking twice = %d, want 404", w.Code)
 	}
 }

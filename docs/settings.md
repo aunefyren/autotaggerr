@@ -175,10 +175,11 @@ nothing to act on.
 ## AI assistants (MCP)
 
 The **AI assistants (MCP)** section holds the *Allow AI assistants* switch (stored inverted, as
-`autotaggerr_mcp_disabled`, for the reason the mirror switch is) and the page's other action:
-*Generate new API key*, behind a confirmation, which shows the new key once with ready-to-paste
-client config. The switch is live without a restart because the MCP route reads it on every request.
-See [mcp.md](mcp.md).
+`autotaggerr_mcp_disabled`, for the reason the mirror switch is) and the page's other action: the
+signed-in user's **API keys** — a table with Revoke (behind a confirmation), and a create row taking a
+name and *Read only* / *Read & write*, which shows the new key once with ready-to-paste client config.
+The switch is live without a restart because the MCP route reads it on every request. See
+[mcp.md](mcp.md).
 
 ## Tests
 

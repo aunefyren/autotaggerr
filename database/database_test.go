@@ -215,6 +215,14 @@ func TestSeedBaseline(t *testing.T) {
 	if admin.PasswordHash == creds.Password {
 		t.Error("password stored in plaintext")
 	}
+	// The printed key is the admin's one write key, stored as its hash only.
+	var key models.APIKey
+	if err := db.Where("hash = ?", models.HashAPIKey(creds.APIKey)).First(&key).Error; err != nil {
+		t.Fatalf("the printed API key is not stored: %v", err)
+	}
+	if key.UserID != admin.ID || key.Scope != models.APIKeyScopeWrite || key.Hash == creds.APIKey {
+		t.Errorf("admin key = %+v", key)
+	}
 }
 
 func TestSeedIdempotent(t *testing.T) {

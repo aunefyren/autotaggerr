@@ -42,19 +42,18 @@ that lets a bad credential through.
 
 ## API keys
 
-Each user has one key. It is shown exactly once — when it is generated — and nothing reads it back:
-the first admin's key is printed to the first-boot log, and `POST /api/v1/auth/me/api-key` (the
-*Generate new API key* button under **Settings → AI assistants (MCP)**) replaces the caller's key and
-returns the new one. Rotating is therefore also how a lost key is recovered, and the old key stops
-working at once.
+A user holds any number of named keys, each **read** or **read & write**, stored only as a SHA-256
+hash. A key is shown once, when it is made: under **Settings → AI assistants (MCP)**, or
+`POST /api/v1/auth/me/api-keys`. Listing returns names, scopes, a six-character prefix and when each
+was last used; revoking is immediate. These routes take a signed-in session only — a key cannot mint
+or revoke keys. The first admin of a new install gets one write key, printed once to the first-boot
+log.
 
-A key goes in `X-Api-Key`. On the MCP endpoint only, it may also be sent as
-`Authorization: Bearer <key>`, because many MCP clients can send a bearer token but not an arbitrary
-header (`auth.BearerAPIKey`; see [mcp.md](mcp.md#authentication)). Every 401 carries
-`WWW-Authenticate: Bearer realm="autotaggerr"`.
-
-Keys are stored in plain text and grant everything their user can do. Named, scoped, hashed keys are
-open work ([wip.md](wip.md#roadmap--ideas)).
+A **read key is read-only everywhere**: on the REST API it is refused (403) on anything but
+GET/HEAD/OPTIONS, and on the MCP endpoint it is shown only the read tools. A key goes in
+`X-Api-Key`; on the MCP endpoint only, it may also be sent as `Authorization: Bearer <key>`
+(`auth.BearerAPIKey`). Every 401 carries `WWW-Authenticate: Bearer realm="autotaggerr"`. See
+[mcp.md](mcp.md#api-keys).
 
 ## OIDC setup
 

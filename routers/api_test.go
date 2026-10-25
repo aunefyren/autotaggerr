@@ -16,7 +16,9 @@ import (
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/process"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"gorm.io/gorm"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"io"
@@ -37,9 +39,11 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 		t.Fatalf("Connect: %v", err)
 	}
 	hash, _ := auth.HashPassword("pw")
-	if err := db.Create(&models.User{Username: "admin", PasswordHash: hash, Role: "admin", APIKey: "key-123"}).Error; err != nil {
+	admin := models.User{Username: "admin", PasswordHash: hash, Role: "admin"}
+	if err := db.Create(&admin).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	storeAPIKey(t, db, admin.ID, "key-123", models.APIKeyScopeWrite)
 
 	scanRunner := process.NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
 	api := &API{
@@ -60,6 +64,17 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 	r := gin.New()
 	api.Register(r.Group("/api/v1"))
 	return r, api
+}
+
+// storeAPIKey stores a known key the way auth.CreateAPIKey would, so a test can
+// present it.
+func storeAPIKey(t *testing.T, db *gorm.DB, userID uuid.UUID, key, scope string) models.APIKey {
+	t.Helper()
+	row := models.APIKey{UserID: userID, Name: key, Scope: scope, Hash: models.HashAPIKey(key), Prefix: key[:6]}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("store key: %v", err)
+	}
+	return row
 }
 
 func do(r *gin.Engine, method, path, token string, body any) *httptest.ResponseRecorder {

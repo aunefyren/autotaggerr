@@ -336,13 +336,13 @@ func Sections() []Section {
 		{
 			ID:          "mcp",
 			Title:       "AI assistants (MCP)",
-			Description: "A Model Context Protocol endpoint at /api/v1/mcp that AI assistants can connect to with an API key. It only reads — it cannot start runs or change anything.",
+			Description: "A Model Context Protocol endpoint at /api/v1/mcp that AI assistants connect to with an API key. A read-only key lets an assistant answer questions; a read & write key also lets it start runs, change wants and identify files.",
 			Fields: []Field{
 				{
 					// Stored as "disabled", shown as "enabled" — the same inversion, for the
 					// same reason, as the metadata refresh switch.
 					Key: "autotaggerr_mcp_enabled", Label: "Allow AI assistants", Type: TypeBool, Tier: TierLive,
-					Help: "Off answers 404 on the MCP endpoint. The REST API, which the same API key also opens, is unaffected.",
+					Help: "Off answers 404 on the MCP endpoint. The REST API, which the same API keys also open, is unaffected.",
 					get:  func(c models.ConfigStruct) any { return !c.AutotaggerrMCPDisabled },
 					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrMCPDisabled = !v }),
 				},

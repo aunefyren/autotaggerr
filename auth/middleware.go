@@ -6,14 +6,20 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
-const contextUserKey = "auth.user"
+const (
+	contextUserKey       = "auth.user"
+	contextCredentialKey = "auth.credential"
+)
 
 // errUnauthenticated marks the failures that are genuinely about the *credential*:
 // none supplied, one that does not parse, or one naming a user who does not exist.
@@ -31,7 +37,8 @@ var errUnauthenticated = errors.New("unauthenticated")
 type Option func(*options)
 
 type options struct {
-	bearerAPIKey bool
+	bearerAPIKey    bool
+	scopeByEndpoint bool
 }
 
 // BearerAPIKey also accepts an API key sent as `Authorization: Bearer <key>`.
@@ -43,6 +50,34 @@ type options struct {
 func BearerAPIKey() Option {
 	return func(o *options) { o.bearerAPIKey = true }
 }
+
+// ScopeCheckedByEndpoint lets a read-scoped key through whatever the HTTP method.
+//
+// By default a read key is refused on anything but GET/HEAD/OPTIONS, because on the
+// REST API the method is what says whether a request writes. The MCP endpoint is all
+// POSTs whatever the tool does, so it enforces the scope itself — by which tools a read
+// key is shown at all — and opts out of the method rule here.
+func ScopeCheckedByEndpoint() Option {
+	return func(o *options) { o.scopeByEndpoint = true }
+}
+
+// Credential kinds.
+const (
+	CredentialSession = "session"
+	CredentialAPIKey  = "api_key"
+)
+
+// Credential is how a request authenticated, beside who it is. Scope is the API key's
+// scope; a session is always write, since it is the user at the UI.
+type Credential struct {
+	Kind  string
+	Scope string
+	// KeyID is the API key used; zero for a session.
+	KeyID uuid.UUID
+}
+
+// CanWrite reports whether the credential may change anything.
+func (c Credential) CanWrite() bool { return c.Scope == models.APIKeyScopeWrite }
 
 // Middleware authenticates each request by either a Bearer session token or an
 // X-Api-Key header, resolves the user from the database, and stores it in the
@@ -63,7 +98,7 @@ func Middleware(db *gorm.DB, signingKey []byte, opts ...Option) gin.HandlerFunc 
 		opt(&o)
 	}
 	return func(c *gin.Context) {
-		user, err := userFromRequest(c, db, signingKey, o)
+		user, cred, err := userFromRequest(c, db, signingKey, o)
 		switch {
 		case err == nil:
 		case errors.Is(err, errUnauthenticated):
@@ -84,21 +119,22 @@ func Middleware(db *gorm.DB, signingKey []byte, opts ...Option) gin.HandlerFunc 
 			})
 			return
 		}
+		if !cred.CanWrite() && !o.scopeByEndpoint && !readOnlyMethod(c.Request.Method) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "this API key is read-only"})
+			return
+		}
 		c.Set(contextUserKey, user)
-		c.Request = c.Request.WithContext(WithUser(c.Request.Context(), user))
+		c.Set(contextCredentialKey, cred)
+		ctx := WithCredential(WithUser(c.Request.Context(), user), cred)
+		c.Request = c.Request.WithContext(ctx)
 		c.Next()
 	}
 }
 
-func userFromRequest(c *gin.Context, db *gorm.DB, signingKey []byte, o options) (models.User, error) {
-	var user models.User
-
+func userFromRequest(c *gin.Context, db *gorm.DB, signingKey []byte, o options) (models.User, Credential, error) {
 	// API key — programmatic access.
 	if apiKey := strings.TrimSpace(c.GetHeader("X-Api-Key")); apiKey != "" {
-		if err := db.Where("api_key = ?", apiKey).First(&user).Error; err != nil {
-			return user, credentialError(err)
-		}
-		return user, nil
+		return userFromAPIKey(db, apiKey)
 	}
 
 	// Bearer session token — interactive/UI access.
@@ -106,21 +142,62 @@ func userFromRequest(c *gin.Context, db *gorm.DB, signingKey []byte, o options) 
 		raw = strings.TrimSpace(raw)
 		claims, err := ParseToken(raw, signingKey)
 		if err != nil && o.bearerAPIKey && raw != "" {
-			if err := db.Where("api_key = ?", raw).First(&user).Error; err != nil {
-				return user, credentialError(err)
-			}
-			return user, nil
+			return userFromAPIKey(db, raw)
 		}
 		if err != nil {
-			return user, fmt.Errorf("%w: %v", errUnauthenticated, err)
+			return models.User{}, Credential{}, fmt.Errorf("%w: %v", errUnauthenticated, err)
 		}
+		var user models.User
 		if err := db.Where("id = ?", claims.UserID).First(&user).Error; err != nil {
-			return user, credentialError(err)
+			return user, Credential{}, credentialError(err)
 		}
-		return user, nil
+		return user, Credential{Kind: CredentialSession, Scope: models.APIKeyScopeWrite}, nil
 	}
 
-	return user, fmt.Errorf("%w: no credentials provided", errUnauthenticated)
+	return models.User{}, Credential{}, fmt.Errorf("%w: no credentials provided", errUnauthenticated)
+}
+
+// userFromAPIKey resolves a key by its hash, then its user.
+func userFromAPIKey(db *gorm.DB, key string) (models.User, Credential, error) {
+	var user models.User
+	var row models.APIKey
+	if err := db.Where("hash = ?", models.HashAPIKey(key)).First(&row).Error; err != nil {
+		return user, Credential{}, credentialError(err)
+	}
+	if err := db.Where("id = ?", row.UserID).First(&user).Error; err != nil {
+		return user, Credential{}, credentialError(err)
+	}
+	touchAPIKey(db, row)
+	return user, Credential{Kind: CredentialAPIKey, Scope: row.Scope, KeyID: row.ID}, nil
+}
+
+// apiKeyTouchInterval is how stale APIKey.LastUsedAt may get. It answers "is this key
+// still in use", which needs minutes, not a write on every request.
+const apiKeyTouchInterval = 5 * time.Minute
+
+var apiKeyTouched sync.Map // key ID → time.Time of the last write
+
+// touchAPIKey records that a key was used, at most once per interval and off the
+// request path: authentication must not wait on a write lock (a long sync holds one
+// for seconds), and a lost timestamp costs nothing.
+func touchAPIKey(db *gorm.DB, row models.APIKey) {
+	now := time.Now()
+	if row.LastUsedAt != nil && now.Sub(*row.LastUsedAt) < apiKeyTouchInterval {
+		return
+	}
+	if last, ok := apiKeyTouched.Load(row.ID); ok && now.Sub(last.(time.Time)) < apiKeyTouchInterval {
+		return
+	}
+	apiKeyTouched.Store(row.ID, now)
+	go func() {
+		if err := db.Model(&models.APIKey{}).Where("id = ?", row.ID).Update("last_used_at", now).Error; err != nil {
+			logger.Log.Debugf("could not record API key use: %s", err.Error())
+		}
+	}()
+}
+
+func readOnlyMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
 
 // credentialError classifies a user lookup. "No such row" is the credential naming
@@ -154,4 +231,27 @@ func WithUser(ctx context.Context, user models.User) context.Context {
 func UserFromContext(ctx context.Context) (models.User, bool) {
 	u, ok := ctx.Value(userContextKey{}).(models.User)
 	return u, ok
+}
+
+type credentialContextKey struct{}
+
+// WithCredential returns ctx carrying cred, for CredentialFromContext.
+func WithCredential(ctx context.Context, cred Credential) context.Context {
+	return context.WithValue(ctx, credentialContextKey{}, cred)
+}
+
+// CredentialFromContext returns how the request authenticated, as Middleware stored it.
+func CredentialFromContext(ctx context.Context) (Credential, bool) {
+	c, ok := ctx.Value(credentialContextKey{}).(Credential)
+	return c, ok
+}
+
+// CurrentCredential is CredentialFromContext for a Gin handler.
+func CurrentCredential(c *gin.Context) (Credential, bool) {
+	v, ok := c.Get(contextCredentialKey)
+	if !ok {
+		return Credential{}, false
+	}
+	cred, ok := v.(Credential)
+	return cred, ok
 }

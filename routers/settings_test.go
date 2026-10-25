@@ -41,7 +41,7 @@ func settingsFixture(t *testing.T) {
 func userToken(t *testing.T, r *gin.Engine, db *gorm.DB) string {
 	t.Helper()
 	hash, _ := auth.HashPassword("pw")
-	if err := db.Create(&models.User{Username: "viewer", PasswordHash: hash, Role: "user", APIKey: "key-viewer"}).Error; err != nil {
+	if err := db.Create(&models.User{Username: "viewer", PasswordHash: hash, Role: "user"}).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	w := do(r, "POST", "/api/v1/auth/login", "", map[string]string{"username": "viewer", "password": "pw"})

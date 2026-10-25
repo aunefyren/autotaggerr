@@ -143,7 +143,6 @@ func (a *API) attachItem(c *gin.Context) {
 	if !ok {
 		return
 	}
-
 	var body struct {
 		MBReleaseID      string `json:"mb_release_id"`
 		MBReleaseTrackID string `json:"mb_release_track_id"`
@@ -152,57 +151,16 @@ func (a *API) attachItem(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	body.MBReleaseID = strings.TrimSpace(body.MBReleaseID)
-	body.MBReleaseTrackID = strings.TrimSpace(body.MBReleaseTrackID)
-	if body.MBReleaseID == "" || body.MBReleaseTrackID == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "mb_release_id and mb_release_track_id are required"})
-		return
-	}
-
-	var item models.LibraryItem
-	if err := a.DB.First(&item, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "library item not found"})
-		return
-	}
-
-	if !a.requireIdentityEditable(c, []models.LibraryItem{item}) {
-		return
-	}
-
-	// Validate the choice against the real release rather than trusting the body:
-	// a wrong ID would otherwise be written into the file's tags.
-	release, err := a.meta().GetRelease(body.MBReleaseID)
+	out, err := a.attachFile(id, body.MBReleaseID, body.MBReleaseTrackID)
 	if err != nil {
-		logger.Log.Errorf("attach: failed to load release %s: %s", body.MBReleaseID, err.Error())
-		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release from MusicBrainz"})
+		respondErr(c, err)
 		return
 	}
-	track, found := modules.FindReleaseTrack(release, body.MBReleaseTrackID)
-	if !found {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "that track is not part of that release"})
+	if out.Warning != "" {
+		c.JSON(http.StatusAccepted, gin.H{"attached": true, "tags_written": 0, "warning": out.Warning})
 		return
 	}
-
-	if err := a.saveCorrelation(item.ID, release.ID, track); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to save the correlation"})
-		return
-	}
-
-	// Write the tags now, so the file stops being unmatched without waiting for the
-	// next scan. A failure here leaves the correlation saved — it is a real decision
-	// worth keeping — and is reported so the user can retry.
-	written, err := a.Scan.RetagItem(item.ID)
-	if err != nil {
-		logger.Log.Warnf("attach: correlation saved but tagging failed for %s: %s", item.Path, err.Error())
-		c.JSON(http.StatusAccepted, gin.H{
-			"attached":     true,
-			"tags_written": 0,
-			"warning":      "Attached, but writing tags failed: " + err.Error(),
-		})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{"attached": true, "tags_written": written})
+	c.JSON(http.StatusOK, gin.H{"attached": true, "tags_written": out.TagsWritten})
 }
 
 // libraryIdentityEditable reports whether files in a library may have their MB identity
@@ -230,23 +188,9 @@ func (a *API) libraryIdentityEditable(libraryID uuid.UUID) (bool, error) {
 // splitting it would be a worse surprise than rejecting it. Returns false (response
 // already written) when the request must not proceed.
 func (a *API) requireIdentityEditable(c *gin.Context, items []models.LibraryItem) bool {
-	editableByLibrary := map[uuid.UUID]bool{}
-	for _, item := range items {
-		editable, seen := editableByLibrary[item.LibraryID]
-		if !seen {
-			var err error
-			editable, err = a.libraryIdentityEditable(item.LibraryID)
-			if err != nil {
-				logger.Log.Warnf("attach gate: failed to resolve manager for library %s: %s", item.LibraryID, err.Error())
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve the library manager"})
-				return false
-			}
-			editableByLibrary[item.LibraryID] = editable
-		}
-		if !editable {
-			c.JSON(http.StatusConflict, gin.H{"error": "these files are managed by Lidarr — change the release in Lidarr, not here"})
-			return false
-		}
+	if err := a.filesIdentityEditable(items); err != nil {
+		respondErr(c, err)
+		return false
 	}
 	return true
 }
@@ -537,21 +481,8 @@ func (a *API) detachItem(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	var item models.LibraryItem
-	if err := a.DB.First(&item, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "library item not found"})
-		return
-	}
-	// Releasing is also how a held pin is settled the other way: the hold and the hash
-	// belong to the pin and go with it. The file keeps the failed status the hold
-	// recorded, so the next processing run resolves it rather than skipping it.
-	if err := a.DB.Model(&models.LibraryItem{}).Where("id = ?", item.ID).Updates(map[string]any{
-		"pinned":            false,
-		"pin_held":          false,
-		"pinned_audio_hash": "",
-	}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove the pin"})
+	if err := a.releasePin(id); err != nil {
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"pinned": false})
@@ -568,43 +499,14 @@ func (a *API) confirmPin(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	var item models.LibraryItem
-	if err := a.DB.First(&item, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "library item not found"})
-		return
-	}
-	if !item.Pinned || !item.PinHeld {
-		c.JSON(http.StatusConflict, gin.H{"error": "this file has no held pin to confirm"})
-		return
-	}
-
-	audioHash, err := components.PinAudioHash(item.Path)
+	out, err := a.confirmHeldPin(id)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read the file's audio: " + err.Error()})
+		respondErr(c, err)
 		return
 	}
-	if err := a.DB.Model(&models.LibraryItem{}).Where("id = ?", item.ID).Updates(map[string]any{
-		"pinned_audio_hash":    audioHash,
-		"pin_held":             false,
-		"status":               models.LibraryItemStatusOK,
-		"error":                "",
-		"last_error_at":        nil,
-		"last_error_transient": false,
-	}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to confirm the pin"})
+	if out.Warning != "" {
+		c.JSON(http.StatusAccepted, gin.H{"confirmed": true, "tags_written": 0, "warning": out.Warning})
 		return
 	}
-
-	written, err := a.Scan.RetagItem(item.ID)
-	if err != nil {
-		logger.Log.Warnf("confirm pin: pin kept but tagging failed for %s: %s", item.Path, err.Error())
-		c.JSON(http.StatusAccepted, gin.H{
-			"confirmed":    true,
-			"tags_written": 0,
-			"warning":      "Pin kept, but writing tags failed: " + err.Error(),
-		})
-		return
-	}
-	c.JSON(http.StatusOK, gin.H{"confirmed": true, "tags_written": written})
+	c.JSON(http.StatusOK, gin.H{"confirmed": true, "tags_written": out.TagsWritten})
 }

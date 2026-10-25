@@ -6,7 +6,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
@@ -34,75 +33,54 @@ const (
 
 // processAll runs the full pipeline over every enabled library in the background.
 func (a *API) processAll(c *gin.Context) {
-	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+	res, err := a.queueProcess(verbTarget{})
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-	// No busy check: overlapping requests queue rather than 409, and an identical run
-	// already queued or running is collapsed by the runner's dedup.
-	a.Scan.RunAll()
-	c.JSON(http.StatusAccepted, gin.H{"status": "processing queued"})
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status})
 }
 
 // processLibrary runs the full pipeline over a single library.
 func (a *API) processLibrary(c *gin.Context) {
 	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+		respondErr(c, errProcessorUnavailable)
 		return
 	}
 	id, ok := a.idParam(c)
 	if !ok {
 		return
 	}
-	var lib models.Library
-	if err := a.DB.First(&lib, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "library not found"})
+	res, err := a.queueProcess(verbTarget{LibraryID: &id})
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-	if err := a.Scan.RunLibrary(id); err != nil {
-		logger.Log.Error("failed to queue library processing. error: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to queue the run"})
-		return
-	}
-	c.JSON(http.StatusAccepted, gin.H{"status": "processing queued"})
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status})
 }
 
 // refreshAll re-reads the MusicBrainz metadata that is due, for the whole
 // collection. Writes no files: what changed upstream is reported, and the next
 // process run (or Tag files) applies it.
 func (a *API) refreshAll(c *gin.Context) {
-	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+	res, err := a.queueRefresh(verbTarget{}, false)
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-	a.Scan.SyncDrift()
-	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued"})
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status})
 }
 
 // retagAll rewrites every indexed file in every enabled library from the metadata
 // already stored — Tag files at collection scope. Like its narrower twins it refuses
 // when there is nothing indexed, rather than recording a run that tagged nothing.
 func (a *API) retagAll(c *gin.Context) {
-	if a.Scan == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
+	res, err := a.queueTag(verbTarget{})
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-
-	// Counted with the same scope the runner selects with (models.TaggableItems), so
-	// the refusal cannot disagree with the work.
-	var count int64
-	a.DB.Model(&models.LibraryItem{}).
-		Joins("JOIN libraries ON libraries.id = library_items.library_id").
-		Where("libraries.enabled = ?", true).
-		Scopes(models.TaggableItems).
-		Count(&count)
-	if count == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files — process a library first"})
-		return
-	}
-
-	a.Scan.RetagAll()
-	c.JSON(http.StatusAccepted, gin.H{"status": "tagging queued", "files": count})
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status, "files": res.Files})
 }
 
 // refreshLibrary and retagLibrary are the library-scoped halves of the verb grid:
@@ -112,8 +90,12 @@ func (a *API) refreshLibrary(c *gin.Context) {
 	if !ok {
 		return
 	}
-	a.Scan.RefreshLibrary(lib.ID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued", "library": lib.Name})
+	res, err := a.queueRefresh(verbTarget{LibraryID: &lib.ID}, false)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status, "library": res.Library})
 }
 
 func (a *API) retagLibrary(c *gin.Context) {
@@ -121,20 +103,12 @@ func (a *API) retagLibrary(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	// Still refused when there is nothing to tag — a "0 files tagged" event would look
-	// like the action silently failed — but no longer refused for a running job: it
-	// queues behind whatever is ahead of it.
-	var count int64
-	a.DB.Model(&models.LibraryItem{}).
-		Where("library_id = ?", lib.ID).Scopes(models.TaggableItems).Count(&count)
-	if count == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files in this library — process it first"})
+	res, err := a.queueTag(verbTarget{LibraryID: &lib.ID})
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-
-	a.Scan.RetagLibrary(lib.ID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "tagging queued", "library": lib.Name, "files": count})
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status, "library": res.Library, "files": res.Files})
 }
 
 // libraryAction resolves the library a scoped action targets, answering the shared
@@ -203,18 +177,12 @@ func (a *API) processArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	scope, err := a.Scan.ArtistScope(artist.MBID)
+	res, err := a.queueProcess(verbTarget{ArtistMBID: artist.MBID})
 	if err != nil {
-		if errors.Is(err, process.ErrNothingToProcess) {
-			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-			return
-		}
-		logger.Log.Error("failed to resolve artist process scope. error: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to process"})
+		respondErr(c, err)
 		return
 	}
-	a.Scan.Run(scope)
-	c.JSON(http.StatusAccepted, gin.H{"status": "processing queued", "artist": artist.Name, "folders": scope.Detail["folders"]})
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status, "artist": res.Artist, "folders": res.Folders})
 }
 
 // scanArtist re-derives one artist's albums from the files already indexed — the
@@ -231,33 +199,21 @@ func (a *API) scanArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if walkDiskRequested(c) {
-		if err := a.Scan.DiscoverArtist(artist.MBID); err != nil {
-			if errors.Is(err, process.ErrNothingToProcess) {
-				c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
-				return
-			}
-			logger.Log.Error("failed to queue a disk-walking scan of an artist. error: " + err.Error())
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to scan"})
-			return
-		}
-		c.JSON(http.StatusAccepted, gin.H{"status": "scan queued", "artist": artist.Name})
+	res, err := a.runScan(verbTarget{ArtistMBID: artist.MBID}, walkDiskRequested(c))
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-	stats, err := collection.RecordScan(a.DB, "Collection scan for "+artist.Name,
-		collection.RebuildScope{ArtistMBID: artist.MBID},
-		map[string]any{"artist": artist.Name, "artist_mb_id": artist.MBID})
-	if err != nil {
-		logger.Log.Error("failed to scan artist. error: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan this artist"})
+	if res.Queued {
+		c.JSON(http.StatusAccepted, gin.H{"status": "scan queued", "artist": res.Artist})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"artist":               artist.Name,
-		"artists":              stats.Artists,
-		"owned_release_groups": stats.Owned,
-		"credit_changes":       stats.CreditChanges,
-		"files_removed":        stats.FilesRemoved,
+		"artist":               res.Artist,
+		"artists":              res.Stats.Artists,
+		"owned_release_groups": res.Stats.Owned,
+		"credit_changes":       res.Stats.CreditChanges,
+		"files_removed":        res.Stats.FilesRemoved,
 	})
 }
 
@@ -279,8 +235,12 @@ func (a *API) refreshArtist(c *gin.Context) {
 	// it arrives the same way: an explicit argument from the refresh dialog. Absent, the
 	// pass honours the cache — which is what the button on its own means everywhere.
 	force := c.Query("force") == "true"
-	a.Scan.RefreshArtist(artist.MBID, force)
-	c.JSON(http.StatusAccepted, gin.H{"status": "refresh queued", "artist": artist.Name, "force": force})
+	res, err := a.queueRefresh(verbTarget{ArtistMBID: artist.MBID}, force)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status, "artist": res.Artist, "force": force})
 }
 
 // retagArtist rewrites this artist's indexed files from their stored correlations.
@@ -289,18 +249,12 @@ func (a *API) retagArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	items, err := collection.ArtistItemIDs(a.DB, artist.MBID)
+	res, err := a.queueTag(verbTarget{ArtistMBID: artist.MBID})
 	if err != nil {
-		logger.Log.Error("failed to load artist items. error: " + err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve what to tag"})
+		respondErr(c, err)
 		return
 	}
-	if len(items) == 0 {
-		c.JSON(http.StatusConflict, gin.H{"error": "no indexed files for this artist — process them first"})
-		return
-	}
-	a.Scan.RetagArtist(artist.MBID)
-	c.JSON(http.StatusAccepted, gin.H{"status": "tagging queued", "artist": artist.Name, "files": len(items)})
+	c.JSON(http.StatusAccepted, gin.H{"status": res.Status, "artist": res.Artist, "files": res.Files})
 }
 
 // recorrelateReleaseGroup forces one album's files to be re-correlated from their

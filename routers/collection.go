@@ -14,7 +14,6 @@ import (
 	"github.com/aunefyren/autotaggerr/migration"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
-	"github.com/aunefyren/autotaggerr/process"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
 )
@@ -707,36 +706,23 @@ func (a *API) setArtistMonitored(c *gin.Context) {
 // queued, walks every enabled library first and records what it finds without
 // writing to any audio file (see process.DiscoverAll).
 func (a *API) scanCollection(c *gin.Context) {
-	if walkDiskRequested(c) {
-		if a.Scan == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
-			return
-		}
-		if err := a.Scan.DiscoverAll(); err != nil {
-			if errors.Is(err, process.ErrNothingToProcess) {
-				c.JSON(http.StatusConflict, gin.H{"error": "no enabled libraries to walk"})
-				return
-			}
-			logger.Log.Error("failed to queue a disk-walking scan. error: " + err.Error())
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to queue the scan"})
-			return
-		}
+	res, err := a.runScan(verbTarget{}, walkDiskRequested(c))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	if res.Queued {
 		c.JSON(http.StatusAccepted, gin.H{"status": "scan queued"})
 		return
 	}
-	stats, err := collection.RecordScan(a.DB, "Collection scan", collection.RebuildScope{}, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to scan the library"})
-		return
-	}
 	c.JSON(http.StatusOK, gin.H{
-		"artists":              stats.Artists,
-		"owned_release_groups": stats.Owned,
-		"credit_changes":       stats.CreditChanges,
-		"files_removed":        stats.FilesRemoved,
+		"artists":              res.Stats.Artists,
+		"owned_release_groups": res.Stats.Owned,
+		"credit_changes":       res.Stats.CreditChanges,
+		"files_removed":        res.Stats.FilesRemoved,
 		// Present only when the pass had nothing to read. The page shows it instead of
 		// "Scanned — 0 artists, 0 albums", which is true and tells nobody anything.
-		"empty_reason": stats.EmptyReason,
+		"empty_reason": res.Stats.EmptyReason,
 	})
 }
 
@@ -935,11 +921,7 @@ func (a *API) setDesire(c *gin.Context) {
 		return
 	}
 
-	if !a.requireArtistIdentityEditable(c, c.Param("mbid")) {
-		return
-	}
-
-	desire, err := collection.SetDesire(a.DB, collection.DesireInput{
+	desire, err := a.addDesire(collection.DesireInput{
 		ArtistMBID:       c.Param("mbid"),
 		ReleaseGroupMBID: body.ReleaseGroupMBID,
 		ReleaseMBID:      body.ReleaseMBID,
@@ -950,28 +932,10 @@ func (a *API) setDesire(c *gin.Context) {
 		FirstReleaseDate: body.FirstReleaseDate,
 	})
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, desire)
-}
-
-// requireArtistIdentityEditable rejects a want when the artist is managed by Lidarr
-// (or mixed): under "Lidarr owns identity" what is wanted and which edition is Lidarr's
-// call, mirrored into the collection by the sync. It fails closed (500) if the artist's
-// manager cannot be resolved. Returns false (response already written) when blocked.
-func (a *API) requireArtistIdentityEditable(c *gin.Context, artistMBID string) bool {
-	editable, err := collection.ArtistIdentityEditable(a.DB, artistMBID)
-	if err != nil {
-		logger.Log.Warnf("desire gate: failed to resolve identity authority for %s: %s", artistMBID, err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to resolve the artist's manager"})
-		return false
-	}
-	if !editable {
-		c.JSON(http.StatusConflict, gin.H{"error": "this artist is managed by Lidarr — set what is wanted in Lidarr, not here"})
-		return false
-	}
-	return true
 }
 
 // detachArtist takes authority over an artist back from its library's manager,
@@ -1211,7 +1175,6 @@ const (
 // updateFollow changes what following this artist auto-wants, then re-syncs so the
 // missing list matches the new settings immediately.
 func (a *API) updateFollow(c *gin.Context) {
-	mbid := c.Param("mbid")
 	var body struct {
 		Monitored       *bool   `json:"monitored"`
 		FollowTypes     *string `json:"follow_types"`
@@ -1222,68 +1185,14 @@ func (a *API) updateFollow(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	// A cutoff outside the range MusicBrainz dates can occupy is a typo, and storing it
-	// would quietly want nothing (or everything) forever. Zero stays valid: it is how
-	// the cutoff is cleared.
-	if body.FollowFromYear != nil {
-		if year := *body.FollowFromYear; !validFollowYear(year) {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": fmt.Sprintf("follow_from_year must be 0 (no cutoff) or between %d and %d",
-					minFollowFromYear, maxFollowFromYear),
-			})
-			return
-		}
-	}
-
-	var artist models.CollectionArtist
-	if err := a.DB.Where("mb_id = ?", mbid).First(&artist).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+	artist, wanted, err := a.updateFollowSettings(c.Param("mbid"), followUpdate{
+		Monitored: body.Monitored, FollowTypes: body.FollowTypes,
+		FollowSecondary: body.FollowSecondary, FollowFromYear: body.FollowFromYear,
+	})
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-
-	updates := map[string]any{}
-	if body.Monitored != nil {
-		updates["monitored"] = *body.Monitored
-	}
-	if body.FollowTypes != nil {
-		updates["follow_types"] = strings.TrimSpace(*body.FollowTypes)
-	}
-	if body.FollowSecondary != nil {
-		updates["follow_secondary"] = *body.FollowSecondary
-	}
-	if body.FollowFromYear != nil {
-		updates["follow_from_year"] = *body.FollowFromYear
-	}
-	if len(updates) > 0 {
-		if err := a.DB.Model(&artist).Updates(updates).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update the artist"})
-			return
-		}
-	}
-
-	// Re-read so the sync uses the settings just saved.
-	if err := a.DB.Where("mb_id = ?", mbid).First(&artist).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reload the artist"})
-		return
-	}
-
-	wanted := 0
-	if artist.Monitored {
-		n, err := collection.SyncArtist(a.DB, a.meta(), mbid)
-		if err != nil {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "failed to sync discography: " + err.Error()})
-			return
-		}
-		wanted = n
-	} else if groups, _, err := a.meta().GetArtistReleaseGroups(mbid); err == nil {
-		// Not following, but the shape still decides what "their albums" are, so the
-		// catalogue count follows the settings. Best-effort: a failed read leaves the
-		// old count until the next discography pass.
-		if err := collection.RecordCatalogue(a.DB, artist, groups); err != nil {
-			logger.Log.Warnf("failed to record the catalogue of %s: %s", mbid, err.Error())
-		}
-	}
-	a.DB.Where("mb_id = ?", mbid).First(&artist)
 	c.JSON(http.StatusOK, gin.H{"artist": artist, "wanted": wanted})
 }
 

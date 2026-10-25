@@ -151,9 +151,16 @@ func seedAdminUser(db *gorm.DB) (*AdminCredentials, error) {
 		Username:     "admin",
 		PasswordHash: string(hash),
 		Role:         models.UserRoleAdmin,
-		APIKey:       apiKey,
 	}
-	if err := db.Create(&user).Error; err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&user).Error; err != nil {
+			return err
+		}
+		return tx.Create(&models.APIKey{
+			UserID: user.ID, Name: "default", Scope: models.APIKeyScopeWrite,
+			Hash: models.HashAPIKey(apiKey), Prefix: apiKey[:models.APIKeyPrefixLength],
+		}).Error
+	}); err != nil {
 		return nil, err
 	}
 

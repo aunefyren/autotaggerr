@@ -81,95 +81,25 @@ func (a *API) approveMigration(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	if handled := a.approveViaManagerRefresh(c, id); handled {
+	out, err := a.approveMigrationByID(id)
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
-
-	row, err := migration.ApplyByID(a.DB, id)
-	if err != nil {
-		logger.Log.Errorf("failed to apply migration %s: %s", id, err.Error())
-		// A refusal to decide twice is not an event. The row is settled, nothing was
-		// attempted, and recording it would put a feed entry in front of anyone who
-		// double-clicks — reporting their second press as a failure of the first.
-		if row.Status != models.MigrationStatusApplied && row.Status != models.MigrationStatusResolved {
-			a.recordMigrationDecision(row, models.EventItemStatusError, err.Error())
-		}
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	if out.Queued {
+		// 202 with the artist it is asking about: the manager's refresh is waited on
+		// for minutes, far longer than a request may stay open behind a proxy.
+		c.JSON(http.StatusAccepted, gin.H{
+			"status":      "manager refresh queued",
+			"queued":      true,
+			"artist_mbid": out.ArtistMBID,
+			"artist_name": out.ArtistName,
+			"marked":      out.Marked,
+			"message":     out.Message,
+		})
 		return
 	}
-
-	// Approving is a decision, and a decision that leaves no trace is indistinguishable
-	// afterwards from the nightly pass having applied it — which is exactly the question
-	// the feed exists to answer. Recorded after the fact so a failure is recorded too:
-	// "approved and refused" is more useful than silence.
-	if row.Status == models.MigrationStatusResolved {
-		a.recordMigrationDecision(row, models.EventItemStatusResolved, row.ResolutionDetail)
-	} else {
-		a.recordMigrationDecision(row, models.EventItemStatusMigrated, "")
-	}
-
-	// Applying rewrites which releases the collection is keyed on, so the derived
-	// ownership view is stale until it is rebuilt. Doing it here means the user sees
-	// a consistent collection immediately after approving, rather than at whatever
-	// point the next scan happens to run.
-	a.rebuildAfterMigration()
-
-	c.JSON(http.StatusOK, row)
-}
-
-// approveViaManagerRefresh handles the one approval that is a question rather than an
-// application, reporting whether it took the request.
-//
-// It returns 202 with the artist it is asking about: the manager's refresh command is
-// waited on for minutes, so holding the request open for the outcome would time out
-// behind any reverse proxy long before the answer arrived. The queue's dedup is what
-// makes a second press harmless.
-//
-// Everything it needs is already computed for the review list, so the check costs the
-// same query the UI made to render the row.
-func (a *API) approveViaManagerRefresh(c *gin.Context, id uuid.UUID) bool {
-	if a.Scan == nil {
-		return false
-	}
-
-	var row models.MusicbrainzMigration
-	if err := a.DB.First(&row, "id = ?", id).Error; err != nil {
-		return false
-	}
-	review := migration.NewReview(a.DB, row)
-	if !review.NeedsManagerRefresh || review.ArtistMBID == "" {
-		return false
-	}
-
-	// Marked before queueing, not after: the job may start on the worker goroutine
-	// before this handler returns, and a mark written afterwards could land on a row the
-	// job has already settled. Every open row of the artist's is marked, because the
-	// refresh answers for all of them — see migration.MarkRepairQueued.
-	marked, err := migration.MarkRepairQueued(a.DB, review.ArtistMBID)
-	if err != nil {
-		// The mark is how the table shows work in flight, not how the work happens.
-		// Losing it costs a spinner, so it must not cost the repair.
-		logger.Log.Warnf("failed to mark migrations as repairing for %s: %s", review.ArtistMBID, err.Error())
-	}
-
-	a.Scan.RepairArtistAlbums(review.ArtistMBID)
-
-	who := review.ArtistName
-	if who == "" {
-		who = "the artist"
-	}
-	c.JSON(http.StatusAccepted, gin.H{
-		"status":      "manager refresh queued",
-		"queued":      true,
-		"artist_mbid": review.ArtistMBID,
-		"artist_name": review.ArtistName,
-		"marked":      marked,
-		"message": "Asking the manager to re-read " + who + ". If it corrects the album's " +
-			"identifier this entry resolves itself; if it stops listing the album, the " +
-			"album is removed from the collection. Follow it in Activity.",
-	})
-	return true
+	c.JSON(http.StatusOK, out.Migration)
 }
 
 // releaseMigrationFiles clears the one blocker that used to have no control: an album
@@ -304,14 +234,11 @@ func (a *API) dismissMigration(c *gin.Context) {
 	if !ok {
 		return
 	}
-
-	row, err := migration.Dismiss(a.DB, id)
+	row, err := a.dismissMigrationByID(id)
 	if err != nil {
-		logger.Log.Errorf("failed to dismiss migration %s: %s", id, err.Error())
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		respondErr(c, err)
 		return
 	}
-	a.recordMigrationDecision(row, models.EventItemStatusDismissed, "")
 	c.JSON(http.StatusOK, row)
 }
 

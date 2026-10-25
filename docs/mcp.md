@@ -1,23 +1,25 @@
 # MCP server
 
-Autotaggerr exposes what it knows about the library to AI assistants over the
+Autotaggerr exposes the library to AI assistants over the
 [Model Context Protocol](https://modelcontextprotocol.io). An assistant connected to it can answer
 "what am I missing from Kate Bush?", "which files failed last night, and why?" or "is anything
-waiting on me?" from the same data the UI reads — without scraping the UI, and without a second
-copy of the rules that decide what *owned*, *complete* or *wanted* mean.
+waiting on me?" from the same data the UI reads — and, given a key that may write, act on the
+answer: follow an artist, want an album, identify a file, approve a migration, run one of the four
+verbs.
 
-**It only reads.** Nothing an assistant can call starts a run, changes a want or writes a file.
-Acting is the next phase ([wip.md](wip.md#roadmap--ideas)); reading came first because every write in
-Autotaggerr has a reason it is shaped the way it is — a pin outlives a manager change, a want has
-three sources of which only one is editable, the verbs deliberately do not cascade — and an agent
-that can read all of that is the prerequisite for one that acts on it sensibly.
+**What an assistant may do is the key's scope.** A *read* key is shown only the tools that read; a
+*read & write* key is shown the actions too. Reading came first, and is still the default to hand
+an assistant, because every write in Autotaggerr has a reason it is shaped the way it is — a pin
+outlives a manager change, a want has three sources of which only one is editable, the verbs
+deliberately do not cascade — and an agent that can read all of that is the prerequisite for one
+that acts on it sensibly.
 
 ## Connecting
 
-The endpoint is **`/api/v1/mcp`** (Streamable HTTP). It takes the same credentials as the REST API.
+The endpoint is **`/api/v1/mcp`** (Streamable HTTP). It takes the same API keys as the REST API.
 
-1. **Settings → AI assistants (MCP) → Generate new API key.** The key is shown once, there, with
-   ready-to-paste client config. Generating replaces the previous key everywhere it was used.
+1. **Settings → AI assistants (MCP) → Create key**: a name, and *Read only* or *Read & write*. The key
+   is shown once, there, with ready-to-paste client config.
 2. Give the client the URL and the key. Claude Code:
    ```bash
    claude mcp add --transport http autotaggerr https://<host>/api/v1/mcp --header "Authorization: Bearer <key>"
@@ -26,16 +28,39 @@ The endpoint is **`/api/v1/mcp`** (Streamable HTTP). It takes the same credentia
    `npx mcp-remote https://<host>/api/v1/mcp --header "Authorization: Bearer <key>"`.
 
 The key can be sent as `Authorization: Bearer <key>` or `X-Api-Key: <key>`; a UI session token also
-works. Hosted clients that insist on OAuth (claude.ai connectors) cannot connect yet — that is the
-remote-connector phase in [wip.md](wip.md#roadmap--ideas).
+works, with write scope. Hosted clients that insist on OAuth (claude.ai connectors) cannot connect yet
+— see [wip.md](wip.md#roadmap--ideas).
 
 **Turning it off**: the *Allow AI assistants* switch on the same page (`autotaggerr_mcp_disabled`).
 Off, the endpoint answers 404 before authenticating. It is read on every request, so the switch
 applies without a restart. It is on by default because it opens nothing the same key does not already
 open over REST — the switch is for an instance that wants no assistant talking to it, not a security
-boundary.
+boundary. The scope is the boundary.
+
+## API keys
+
+Each user holds any number of named keys (`models.APIKey`, table `api_keys`), each `read` or
+`write`. Only a SHA-256 of the key is stored — keys are 32 random bytes, so there is nothing to
+guess and no salt is needed, and lookup stays one indexed equality — plus a six-character prefix so
+a listed key can be matched to the one a client holds. `last_used_at` is recorded at most every five
+minutes per key, off the request path: authentication must not wait on a write lock.
+
+- `GET /api/v1/auth/me/api-keys` lists the caller's keys; `POST` creates one (`{name, scope}`) and
+  returns it **once**; `DELETE /…/:id` revokes one, effective immediately.
+- **Keys are managed from a signed-in session only.** A key that could mint keys would turn one
+  leaked key into a foothold that survives revoking it, so these routes answer 403 to any key.
+- **A read key is read-only on the REST API too**: the middleware refuses it on anything but
+  GET/HEAD/OPTIONS (403, "this API key is read-only"). Otherwise a key handed out as "cannot write"
+  could write by asking the other door. The MCP route opts out of the method rule
+  (`auth.ScopeCheckedByEndpoint`) because it is all POSTs, and enforces scope by the tools it lists.
+- Upgrading moved each user's old single plaintext key into `api_keys` as a write key named
+  "default" and cleared the plaintext (`database.hashUserAPIKeys`), so nothing using it broke. The
+  first admin of a new install gets the same, printed once to the first-boot log. A user created by
+  OIDC signup gets no key until they make one.
 
 ## Tools
+
+### Reading — every key
 
 | Tool | Answers | Reaches MusicBrainz? |
 |---|---|---|
@@ -58,8 +83,41 @@ page's rules (`newReleaseGroupView`) to every album under each credited artist i
 a collaboration can be wanted by following one artist and not the other, exactly as on their two
 pages — and lists each album once, under the first artist that wants it.
 
-`GET /mb/:mbid/files` has no tool of its own: `list_files` with `mbid` answers the same question
-through the same `releasesUnder` resolution, and returns rows the next call can act on.
+### Acting — write keys only
+
+| Tool | Does | Writes audio? | MusicBrainz? |
+|---|---|---|---|
+| `search_artists` / `search_releases` / `browse_artist_albums` | find the MBIDs an action needs; browse lists any artist's albums, in the collection or not | — | yes |
+| `process` | queue the full pipeline — everything, one library or one artist | yes | yes |
+| `scan` | re-derive the collection from the index, inline; `walk_disk` walks the folders first (queued) | no | no |
+| `refresh_metadata` | queue a MusicBrainz refresh; `force` at artist scope only | no | yes |
+| `tag_files` | queue rewriting tags from stored identities | yes | no |
+| `cancel_job` | ask the running job to stop between files | no | no |
+| `add_artist` | add an artist by MBID (name looked up when omitted); idempotent | no | when unnamed |
+| `follow_artist` | follow on/off, types, secondary types, year cutoff — then re-sync the discography | no | yes |
+| `want_album` / `unwant_album` | an explicit want, of an album, one edition, or some songs; and removing one | no | for an album the collection has not seen |
+| `attach_file` | pin a file to a release and track, validated against the release, and write its tags | yes | yes |
+| `release_pin` / `confirm_pin` | hand a pinned file back to automatic identification; keep a held pin for the new audio | confirm writes | no |
+| `approve_migration` / `dismiss_migration` | apply, or deliberately not apply, a detected identity change | no | no |
+
+**Queued verbs return at once.** The job's event does not exist until the worker reaches it, so
+nothing returns an event ID; the result says where to watch (`get_overview`'s jobs, then
+`list_activity`). The queue's dedup makes asking twice harmless, which is why those tools are
+`IdempotentHint`.
+
+**Search is write-scoped although it only reads.** It exists to feed actions (`add_artist`,
+`want_album`, `attach_file`), and an uncached search loop is the one read pattern that would starve
+the job queue's MusicBrainz budget; a read key has no use for it that `get_*` does not answer from
+the database.
+
+**Annotations are honest.** Every action states `DestructiveHint`: true for what overwrites or
+discards — anything that writes tags, a pin released, a want removed, a migration decided — and false
+for what only adds or re-derives. Clients use these to decide what to confirm with the user; since
+the server is stateless (below) it cannot ask itself, and does not need to.
+
+**Lidarr's decisions stay Lidarr's.** `want_album` and `attach_file` are refused for a Lidarr-managed
+artist or library with the same message the UI gets; `unwant_album` is not gated, like its REST
+route, because a stale want needs a way out.
 
 ### Shapes
 
@@ -67,8 +125,8 @@ through the same `releasesUnder` resolution, and returns rows the next call can 
   the counts. No UI-only flags (`identity_editable`, `detachable`), no GORM bookkeeping. An assistant
   pays for every byte in context.
 - **Every row carries the ID the next tool takes** — an artist's `mbid` into `get_artist`, an
-  album's into `get_album`, an edition's into `get_release_tracks`, a track's `file_id` into
-  `get_file`, an event's `parent_id` into `list_activity` — so drilling down needs no guessing.
+  album's into `get_album` or `want_album`, an edition's into `get_release_tracks` or `attach_file`, a
+  track's `file_id` into `get_file`, an event's `parent_id` into `list_activity`.
 - **Every list pages**: `limit` (default 50, capped at the REST maximum for that list, or 200 for
   the two paged in Go) and `offset`; every response carries `total` and `next_offset`, which is
   absent on the last page. An empty list is `[]`, never `null`.
@@ -81,16 +139,15 @@ through the same `releasesUnder` resolution, and returns rows the next call can 
 - **Errors are tool results, not protocol errors**, and name what to do next: `artist not found:
   <mbid> — list_artists returns the artist MBIDs in this collection`. A store failure ends with
   "the database may be busy, retry in a moment", so an agent waits rather than concluding the data
-  does not exist. A missing tag diff on `get_file` is reported beside the file
-  (`tag_diff_error`) rather than failing the call.
+  does not exist.
 
 ### Server instructions
 
-Every session starts with a short glossary (`mcpInstructions` in `routers/mcp.go`): owned vs
-complete vs discrepancy, the three `wanted_source` values and which one a user can change, what
-`transient` means, what a held pin is, the four verbs and that they do not cascade, and a warning
-that open-world tools spend a shared rate limit. The vocabulary is the hard part of reading this
-data correctly, so it is said once rather than in every description.
+Every session starts with a short glossary (`mcpGlossary` in `routers/mcp.go`): owned vs complete vs
+discrepancy, the three `wanted_source` values and which one a user can change, what `transient`
+means, what a held pin is, the four verbs and that they do not cascade, and that open-world tools
+spend a shared rate limit. A write session's instructions add how acting behaves: verbs queue, which
+tools write audio, that Lidarr-managed identities are refused, and to search for IDs first.
 
 ## How it is built
 
@@ -104,102 +161,92 @@ live process — the job queue, the cache fronts, the database connection. A spa
 be a thin HTTP proxy (which `mcp-remote` already is) or a second writer on the database, which the
 single serial queue exists to prevent.
 
-**Stateless, JSON responses** (`StreamableHTTPOptions{Stateless: true, JSONResponse: true}`). Read
-tools make no server-to-client requests, so a session would hold nothing. Stateless means no session
-map, nothing lost across a restart, and nothing that breaks behind a proxy that buffers SSE. GET and
-DELETE answer 405, as the transport specifies for a stateless server.
+**Stateless, JSON responses** (`StreamableHTTPOptions{Stateless: true, JSONResponse: true}`). No tool
+makes a server-to-client request, so a session would hold nothing. Stateless means no session map,
+nothing lost across a restart, and nothing that breaks behind a proxy that buffers SSE. It rules out
+elicitation, which is fine: clients already confirm a non-read-only tool with the user, and the
+annotations tell them which. Long verbs are followed by polling `get_overview`, not by progress
+notifications.
 
 **Cross-origin browsers are refused** (`http.CrossOriginProtection`). The spec asks servers to
 defend against DNS rebinding, and the app's CORS policy allows every origin — right for a
-header-authenticated JSON API, but not a decision to inherit here. MCP clients send no `Origin` and
-are unaffected.
+header-authenticated JSON API, but not a decision to inherit here. MCP clients send no `Origin`.
 
-### Authentication
+### Authentication and scope
 
-The route is mounted beside the `protected` group rather than in it, because it needs one
-middleware option the REST routes do not get: `auth.Middleware(db, key, auth.BearerAPIKey())`.
+The route is mounted beside the `protected` group rather than in it, because it takes two middleware
+options the REST routes do not: `auth.Middleware(db, key, auth.BearerAPIKey(), auth.ScopeCheckedByEndpoint())`.
 
 - **An API key is accepted as a Bearer token on this route only.** Many MCP clients can be given a
   bearer token but not an arbitrary header. A Bearer value is tried as a session token first; only
-  one that does not verify is looked up as a key, so a session still works here too. On every other
-  route a key in `Authorization` is refused, as before.
-- **The user rides on the request context** (`auth.WithUser` / `auth.UserFromContext`) as well as the
-  Gin context. Tool handlers receive a `context.Context`, never a `*gin.Context`, and the SDK passes
-  the request's context through to them.
-- **Every 401 carries `WWW-Authenticate: Bearer realm="autotaggerr"`** — RFC 9110 requires the
-  challenge, and MCP clients start their auth flow from it. Browsers show no prompt for the Bearer
-  scheme, so the SPA is unaffected. The 401-vs-503 split
+  one that does not verify is looked up as a key.
+- **The user and the credential ride on the request context** (`auth.UserFromContext`,
+  `auth.CredentialFromContext`) as well as the Gin context. Tool handlers receive a
+  `context.Context`, never a `*gin.Context`.
+- **Every 401 carries `WWW-Authenticate: Bearer realm="autotaggerr"`**, which MCP clients start
+  their auth flow from. The 401-vs-503 split
   ([authentication.md](authentication.md#401-means-the-credential-is-bad--not-that-we-could-not-check-it))
-  applies here unchanged.
+  applies unchanged.
 
-**Role-split servers.** The handler's `getServer` picks one of two `*mcp.Server` values per request
-— one for admins, one for everyone else — so a tool a user may not call is not *listed* for them,
-rather than listed and refused. Today the two hold the same tools: nothing here is admin-only, and
-the admin-only reads (`/settings`, download clients, the import scan) are deliberately not exposed.
-The split exists so the first admin-only tool is one registration, not a rework.
+**Servers per role × scope.** `mcpHandler` builds four `*mcp.Server` values once — admin or not,
+write or not — and `getServer` picks one per request from the context. A tool a caller may not use is
+not *listed* for them, rather than listed and refused. Role changes nothing yet: no tool is
+admin-only, and the admin-only reads (`/settings`, download clients, the import scan) are not exposed.
 
-### Tools call query methods, never handlers
+### Tools call commands and queries, never handlers
 
-Calling the REST handlers in-process (a synthetic request through the Gin engine) would have needed
-no refactoring, and was rejected: it returns UI-shaped payloads (`GET /artists` is the whole
-collection, unpaged), maps errors through status codes and back, runs authentication twice, and
-makes the MCP surface a side-effect of whatever the UI wants this month.
+Calling the REST handlers in-process would have needed no refactoring, and was rejected: it returns
+UI-shaped payloads, maps errors through status codes and back, runs authentication twice, and makes
+the MCP surface a side-effect of whatever the UI wants this month.
 
-Instead each handler a tool needs was split: **handler = parse params → query method → JSON; tool =
-parse args → the same query method → project.** The query method holds the rules; the projection is
-the tool's own shape. The extracted methods, all in `routers`:
+Instead, each handler a tool needs was split: **handler = parse params → method → JSON; tool =
+parse args → the same method → project.** Reads became query methods returning `(T, error)`; actions
+became commands in `routers/commands.go` that return an `*apiError` carrying the HTTP status, so the
+handler answers exactly as before (`respondErr`) and the tool passes the same message on. The guards
+live in the commands — `filesIdentityEditable` and `artistIdentityEditable` (the Lidarr gates), the
+nothing-to-tag refusals, the not-found checks — so they cannot be skipped by asking through the other
+door. The existing REST tests passed unchanged across the extraction.
 
-| Query method | Handler | Tool |
+| Method | REST handler(s) | Tool |
 |---|---|---|
-| `artistList` (memoised) / `computeArtistList` | `listArtists` | `list_artists` |
-| `artistDetail` | `getArtist` | `get_artist` |
-| `releaseGroupDetailData` | `releaseGroupDetail` | `get_album` |
-| `libraryItems(itemFilter)` | `listLibraryItems` | `list_files` |
-| `itemTagDiff` / `itemTempoInfo` | `itemTags` / `itemTempo` | `get_file` |
-| `eventFeed(eventFilter)` / `eventDetail` | `listEvents` / `getEvent` | `list_activity` / `get_activity` |
+| `artistList`, `artistDetail`, `releaseGroupDetailData` | `listArtists`, `getArtist`, `releaseGroupDetail` | `list_artists`, `get_artist`, `get_album` |
+| `libraryItems`, `itemTagDiff`, `itemTempoInfo` | `listLibraryItems`, `itemTags`, `itemTempo` | `list_files`, `get_file` |
+| `eventFeed`, `eventDetail` | `listEvents`, `getEvent` | `list_activity`, `get_activity` |
+| `queueProcess`, `queueRefresh`, `queueTag`, `runScan` | the four verbs at all three scopes | `process`, `refresh_metadata`, `tag_files`, `scan` |
+| `updateFollowSettings`, `addDesire` | `updateFollow`, `setDesire` | `follow_artist`, `want_album` |
+| `attachFile`, `releasePin`, `confirmHeldPin` | `attachItem`, `detachItem`, `confirmPin` | `attach_file`, `release_pin`, `confirm_pin` |
+| `approveMigrationByID`, `dismissMigrationByID` | `approveMigration`, `dismissMigration` | `approve_migration`, `dismiss_migration` |
 
-Their errors are written to be shown to a client (the store's own error is logged where it
-happens), so the handler and the tool can both pass them through. The existing REST tests passed
-unchanged across the extraction, which is what shows it did not move the API.
+`setArtistMonitored` deliberately stays its own: routed through `updateFollowSettings` it would gain
+a MusicBrainz read when unmonitoring, which the toggle on the artist page never made.
 
-Nothing outside `routers` imports the SDK. The code is `routers/mcp.go` (mount, toggle, role split,
-instructions, paging), `mcp_collection.go`, `mcp_files.go` and `mcp_activity.go`.
+Nothing outside `routers` imports the SDK. The code is `routers/mcp.go` (mount, toggle, servers,
+instructions, paging), `mcp_collection.go`, `mcp_files.go`, `mcp_activity.go` and `mcp_actions.go`.
 
 ### Reads that spend the MusicBrainz budget
 
-`get_album`, `get_release_tracks` and `get_file` with `include_tag_diff` go through `a.meta()`,
-which is cache-first but may fetch, and every fetch waits on `RateLimit()` — the one limiter the job
-queue also spends. They carry `OpenWorldHint: true`, their descriptions say a call may take a second
-or more, and the instructions ask for no bulk calls. Nothing here *searches* MusicBrainz: search is
-uncached by nature, and a search loop is the pattern that would starve the queue.
-
-If an MCP-driven fetch ever visibly delays a run, the fix is a priority on the limiter (queue work
-first), not a second limiter — MusicBrainz's limit is per client, and Autotaggerr is one client.
-
-### API keys
-
-`POST /api/v1/auth/me/api-key` replaces the caller's key and returns the new one. It is the only
-time a key is shown — nothing reads one back, the posture of the write-only credentials on managers
-and data sources — so rotating is also how a lost key is recovered. Before it existed, a user's key
-was printed once to the first-boot log and was unreachable afterwards. The *Generate new API key*
-button sits in the MCP section of Settings (behind a confirmation saying the old key stops working)
-because connecting an assistant is what most needs it; there is no separate account page.
+Tools marked `OpenWorldHint` may fetch, and every fetch waits on `RateLimit()` — the one limiter the
+job queue also spends. Their descriptions say a call may take a second or more and the instructions
+ask for no bulk calls. If an MCP-driven fetch ever visibly delays a run, the fix is a priority on the
+limiter (queue work first), not a second limiter: MusicBrainz's limit is per client, and Autotaggerr
+is one client.
 
 ## Tests
 
-In `routers/mcp_test.go`, through a real client session over the SDK's in-memory transport, against
-a test database and `fakeMeta`:
+In `routers`, through a real client session over the SDK's in-memory transport, against a test
+database and `fakeMeta`:
 
-- **`TestMCPToolsAreReadOnly`** lists the tools on both servers and fails on any without
-  `ReadOnlyHint`, and on any tool added or removed without updating the expected list. It is the
-  guard that keeps a write tool out of the read scope.
-- **`TestMCPOpenWorldMarksMusicBrainzReads`** — exactly the three MusicBrainz-reaching tools say so.
-- Every tool's happy path, its filters, paging, and its not-found error naming the tool to use.
-- Over real HTTP: no credential → 401 with the challenge; `X-Api-Key`, a Bearer key and a session
-  token all work; a Bearer key on a REST route does not; a cross-site browser request is refused;
-  the switch answers 404 and takes effect without a restart; a rotated key replaces the old one and
-  is never readable from `/auth/me`.
+- **`TestMCPScopeSplit`** — a reader sees exactly the read tools, each `ReadOnlyHint`; a writer sees
+  those plus the actions, each stating `DestructiveHint`. The guard that keeps a writing tool away
+  from a read key, and any tool added without updating the expected lists.
+- `mcp_test.go` — every read tool's happy path, filters, paging and not-found error; over real HTTP,
+  authentication (no credential, `X-Api-Key`, Bearer key, session), cross-site refusal and the switch.
+- `mcp_actions_test.go` — each action's refusals (nothing to tag, unknown artist, both scopes given,
+  force without an artist, the Lidarr gate), the shapes of what it queues or returns, and the state it
+  leaves (a want visible on `get_artist`, a pin on the file, a migration's status).
+- **`TestAPIKeyManagement`** — create, list without the secret, a key cannot manage keys, a read key
+  GETs but cannot POST on REST, the MCP tool list follows the key's scope, and revoking is immediate.
 
-`auth/middleware_test.go` covers `BearerAPIKey`, the context user and the challenge from inside
-`auth`, since coverage is counted per package. `settings/schema_test.go` covers the switch's
-inversion and its applied-now message.
+`auth/middleware_test.go` covers the method rule, `ScopeCheckedByEndpoint`, the credential on both
+contexts, `last_used_at` and `CreateAPIKey`; `database` covers the seed's hashed key and
+`hashUserAPIKeys`; `settings` the switch's inversion.

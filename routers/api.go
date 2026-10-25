@@ -100,7 +100,12 @@ func (a *API) Register(rg *gin.RouterGroup) {
 	protected.Use(auth.Middleware(a.DB, a.SigningKey))
 	{
 		protected.GET("/auth/me", a.me)
-		protected.POST("/auth/me/api-key", a.rotateAPIKey)
+		// API keys are managed from a signed-in session only: a key that could mint
+		// keys would turn one leaked key into a permanent foothold that survives
+		// revoking it.
+		protected.GET("/auth/me/api-keys", requireSession, a.listAPIKeys)
+		protected.POST("/auth/me/api-keys", requireSession, a.createAPIKey)
+		protected.DELETE("/auth/me/api-keys/:id", requireSession, a.deleteAPIKey)
 		protected.GET("/health", a.health)
 
 		// Which artwork kinds can actually be served, so the UI skips requests that
@@ -337,28 +342,66 @@ func (a *API) me(c *gin.Context) {
 	c.JSON(http.StatusOK, user)
 }
 
-// rotateAPIKey replaces the caller's API key and returns the new one. This is the
-// only time a key is ever shown: there is no endpoint that reads one back, the same
-// posture as the write-only credentials on managers and data sources. Rotating is
-// therefore also how a lost key is recovered, and the old key stops working at once.
-func (a *API) rotateAPIKey(c *gin.Context) {
-	user, ok := auth.CurrentUser(c)
-	if !ok {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+// requireSession refuses a request authenticated with an API key.
+func requireSession(c *gin.Context) {
+	if cred, ok := auth.CurrentCredential(c); !ok || cred.Kind != auth.CredentialSession {
+		c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "API keys are managed from a signed-in session, not with an API key"})
 		return
 	}
-	key, err := auth.NewAPIKey()
+	c.Next()
+}
+
+// listAPIKeys returns the caller's keys: name, scope, prefix and when each was last
+// used. Never the key itself — only its hash is stored.
+func (a *API) listAPIKeys(c *gin.Context) {
+	user, _ := auth.CurrentUser(c)
+	keys := []models.APIKey{}
+	if err := a.DB.Where("user_id = ?", user.ID).Order("created_at").Find(&keys).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list API keys"})
+		return
+	}
+	c.JSON(http.StatusOK, keys)
+}
+
+// createAPIKey mints a named, scoped key and returns it. This is the only time the
+// key is ever shown.
+func (a *API) createAPIKey(c *gin.Context) {
+	user, _ := auth.CurrentUser(c)
+	var body struct {
+		Name  string `json:"name"`
+		Scope string `json:"scope"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	key, row, err := auth.CreateAPIKey(a.DB, user.ID, body.Name, body.Scope)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate a key"})
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := a.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("api_key", key).Error; err != nil {
-		logger.Log.Errorf("failed to store a rotated API key for %s: %s", user.Username, err.Error())
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store the new key"})
+	logger.Log.Infof("API key %q (%s) created for user %s", row.Name, row.Scope, user.Username)
+	c.JSON(http.StatusCreated, gin.H{"api_key": key, "key": row})
+}
+
+// deleteAPIKey revokes one of the caller's keys. It stops working at once.
+func (a *API) deleteAPIKey(c *gin.Context) {
+	user, _ := auth.CurrentUser(c)
+	id, ok := a.idParam(c)
+	if !ok {
 		return
 	}
-	logger.Log.Infof("API key rotated for user %s", user.Username)
-	c.JSON(http.StatusOK, gin.H{"api_key": key})
+	res := a.DB.Where("id = ? AND user_id = ?", id, user.ID).Delete(&models.APIKey{})
+	if res.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to revoke the key"})
+		return
+	}
+	if res.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "API key not found"})
+		return
+	}
+	logger.Log.Infof("API key %s revoked by user %s", id, user.Username)
+	c.JSON(http.StatusOK, gin.H{"revoked": true})
 }
 
 // health returns a small summary of the configured domain. It requires auth (the

@@ -5,9 +5,11 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -23,11 +25,22 @@ func middlewareUser(t *testing.T, db *gorm.DB) models.User {
 	if err != nil {
 		t.Fatalf("HashPassword: %v", err)
 	}
-	user := models.User{Username: "admin", PasswordHash: hash, Role: models.UserRoleAdmin, APIKey: "api-key-123"}
+	user := models.User{Username: "admin", PasswordHash: hash, Role: models.UserRoleAdmin}
 	if err := db.Create(&user).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}
+	storeTestKey(t, db, user.ID, "api-key-123", models.APIKeyScopeWrite)
 	return user
+}
+
+// storeTestKey stores a known key the way CreateAPIKey would, so a test can present it.
+func storeTestKey(t *testing.T, db *gorm.DB, userID uuid.UUID, key, scope string) models.APIKey {
+	t.Helper()
+	row := models.APIKey{UserID: userID, Name: key, Scope: scope, Hash: models.HashAPIKey(key), Prefix: key[:6]}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatalf("store key: %v", err)
+	}
+	return row
 }
 
 // guardedRouter mounts one route behind the middleware, reporting which user the
@@ -289,5 +302,109 @@ func TestNewAPIKeyIsFreshEachTime(t *testing.T) {
 	b, _ := NewAPIKey()
 	if len(a) < 40 || a == b {
 		t.Errorf("keys %q and %q: want two distinct, long keys", a, b)
+	}
+}
+
+// scopedRouter mounts a GET and a POST behind the middleware, reporting the credential.
+func scopedRouter(db *gorm.DB, opts ...Option) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	handler := func(c *gin.Context) {
+		cred, ok := CurrentCredential(c)
+		fromCtx, ctxOK := CredentialFromContext(c.Request.Context())
+		if !ok || !ctxOK || cred != fromCtx {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "credential missing from one of the contexts"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"kind": cred.Kind, "scope": cred.Scope})
+	}
+	r.GET("/guarded", Middleware(db, testKey, opts...), handler)
+	r.POST("/guarded", Middleware(db, testKey, opts...), handler)
+	return r
+}
+
+func scopedDo(r *gin.Engine, method, header, value string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, "/guarded", nil)
+	req.Header.Set(header, value)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// TestMiddlewareEnforcesKeyScope: a read key reads and may not write, by method —
+// unless the route enforces scope itself, as the MCP endpoint does. A write key and a
+// session may do both.
+func TestMiddlewareEnforcesKeyScope(t *testing.T) {
+	db := oidcTestDB(t)
+	user := middlewareUser(t, db) // api-key-123 is a write key
+	storeTestKey(t, db, user.ID, "read-key-456", models.APIKeyScopeRead)
+	token, err := IssueToken(user, testKey, DefaultTokenTTL)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	r := scopedRouter(db)
+
+	for _, tc := range []struct {
+		name, method, header, value string
+		want                        int
+		body                        string
+	}{
+		{"read key GET", http.MethodGet, "X-Api-Key", "read-key-456", http.StatusOK, `"scope":"read"`},
+		{"read key POST", http.MethodPost, "X-Api-Key", "read-key-456", http.StatusForbidden, "read-only"},
+		{"write key POST", http.MethodPost, "X-Api-Key", "api-key-123", http.StatusOK, `"kind":"api_key"`},
+		{"session POST", http.MethodPost, "Authorization", "Bearer " + token, http.StatusOK, `"kind":"session"`},
+	} {
+		w := scopedDo(r, tc.method, tc.header, tc.value)
+		if w.Code != tc.want || !strings.Contains(w.Body.String(), tc.body) {
+			t.Errorf("%s = %d %s, want %d mentioning %s", tc.name, w.Code, w.Body.String(), tc.want, tc.body)
+		}
+	}
+
+	byEndpoint := scopedRouter(db, ScopeCheckedByEndpoint())
+	if w := scopedDo(byEndpoint, http.MethodPost, "X-Api-Key", "read-key-456"); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"scope":"read"`) {
+		t.Errorf("read key POST on a scope-by-endpoint route = %d %s, want 200 carrying the read scope", w.Code, w.Body.String())
+	}
+}
+
+// TestMiddlewareRecordsKeyUse: a key's last use is recorded, off the request path.
+func TestMiddlewareRecordsKeyUse(t *testing.T) {
+	db := oidcTestDB(t)
+	user := middlewareUser(t, db)
+	key := storeTestKey(t, db, user.ID, "fresh-key-789", models.APIKeyScopeRead)
+	if w := scopedDo(scopedRouter(db), http.MethodGet, "X-Api-Key", "fresh-key-789"); w.Code != http.StatusOK {
+		t.Fatalf("GET = %d", w.Code)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		var row models.APIKey
+		db.First(&row, "id = ?", key.ID)
+		if row.LastUsedAt != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("last_used_at was never recorded")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestCreateAPIKey(t *testing.T) {
+	db := oidcTestDB(t)
+	user := middlewareUser(t, db)
+	key, row, err := CreateAPIKey(db, user.ID, " assistant ", models.APIKeyScopeRead)
+	if err != nil {
+		t.Fatalf("CreateAPIKey: %v", err)
+	}
+	if row.Name != "assistant" || row.Hash != models.HashAPIKey(key) || !strings.HasPrefix(key, row.Prefix) {
+		t.Errorf("row = %+v for key %q", row, key)
+	}
+	if w := scopedDo(scopedRouter(db), http.MethodGet, "X-Api-Key", key); w.Code != http.StatusOK {
+		t.Errorf("new key = %d, want it to authenticate", w.Code)
+	}
+	if _, _, err := CreateAPIKey(db, user.ID, "", models.APIKeyScopeRead); err == nil {
+		t.Error("a key with no name was created")
+	}
+	if _, _, err := CreateAPIKey(db, user.ID, "x", "admin"); err == nil {
+		t.Error("a key with an unknown scope was created")
 	}
 }

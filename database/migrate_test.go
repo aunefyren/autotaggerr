@@ -173,3 +173,48 @@ func TestScopeLidarrCache(t *testing.T) {
 		t.Errorf("rows left = %v, want the scoped Lidarr row and the Plex row", got)
 	}
 }
+
+// TestHashUserAPIKeys: an upgraded install's plaintext key keeps working — moved into
+// api_keys as a write key, stored only as its hash — and the plaintext is gone.
+func TestHashUserAPIKeys(t *testing.T) {
+	db := testDB(t)
+	// The column as it was before keys had their own table.
+	if err := db.Exec("ALTER TABLE users ADD COLUMN api_key text").Error; err != nil {
+		t.Fatal(err)
+	}
+	withKey := models.User{Username: "admin", Role: models.UserRoleAdmin}
+	without := models.User{Username: "other", Role: models.UserRoleAdmin}
+	for _, u := range []*models.User{&withKey, &without} {
+		if err := db.Create(u).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Exec("UPDATE users SET api_key = ? WHERE id = ?", "old-plaintext-key", withKey.ID)
+
+	if err := hashUserAPIKeys(db); err != nil {
+		t.Fatalf("hashUserAPIKeys: %v", err)
+	}
+
+	var keys []models.APIKey
+	db.Find(&keys)
+	if len(keys) != 1 {
+		t.Fatalf("api_keys = %+v, want one row for the one user with a key", keys)
+	}
+	k := keys[0]
+	if k.UserID != withKey.ID || k.Scope != models.APIKeyScopeWrite || k.Name != "default" ||
+		k.Hash != models.HashAPIKey("old-plaintext-key") || k.Prefix != "old-pl" {
+		t.Errorf("migrated key = %+v", k)
+	}
+	var left int64
+	db.Raw("SELECT count(*) FROM users WHERE api_key IS NOT NULL").Scan(&left)
+	if left != 0 {
+		t.Errorf("%d plaintext key(s) left in users", left)
+	}
+}
+
+// TestHashUserAPIKeysOnAFreshDatabase: no old column, nothing to do.
+func TestHashUserAPIKeysOnAFreshDatabase(t *testing.T) {
+	if err := hashUserAPIKeys(testDB(t)); err != nil {
+		t.Fatalf("hashUserAPIKeys: %v", err)
+	}
+}

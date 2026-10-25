@@ -7,6 +7,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -22,6 +23,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"pin_fallback_manager", pinFallbackManager},
 		{"move_bpm_to_library", moveBPMToLibrary},
 		{"scope_lidarr_cache", scopeLidarrCache},
+		{"hash_user_api_keys", hashUserAPIKeys},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -124,6 +126,48 @@ func scopeLidarrCache(db *gorm.DB) error {
 	}
 	if res.RowsAffected > 0 {
 		logger.Log.Infof("dropped %d Lidarr cache row(s) that did not say which Lidarr they came from", res.RowsAffected)
+	}
+	return nil
+}
+
+// hashUserAPIKeys moves each user's single plaintext key (the old users.api_key
+// column) into api_keys, hashed, as a write key named "default" — the scope it
+// always had, so nothing using it stops working. The plaintext is then cleared:
+// leaving it would keep exactly the copy hashing exists to remove. The column is read
+// raw because the field is gone from the model, and on a database created after the
+// move it never existed.
+func hashUserAPIKeys(db *gorm.DB) error {
+	if !db.Migrator().HasColumn("users", "api_key") {
+		return nil
+	}
+	var users []struct {
+		ID     string
+		APIKey string
+	}
+	if err := db.Raw("SELECT id, api_key FROM users WHERE api_key IS NOT NULL AND api_key <> ''").Scan(&users).Error; err != nil {
+		return err
+	}
+	for _, u := range users {
+		userID, err := uuid.Parse(u.ID)
+		if err != nil {
+			return fmt.Errorf("user %q: %w", u.ID, err)
+		}
+		prefix := u.APIKey
+		if len(prefix) > models.APIKeyPrefixLength {
+			prefix = prefix[:models.APIKeyPrefixLength]
+		}
+		if err := db.Create(&models.APIKey{
+			UserID: userID, Name: "default", Scope: models.APIKeyScopeWrite,
+			Hash: models.HashAPIKey(u.APIKey), Prefix: prefix,
+		}).Error; err != nil {
+			return err
+		}
+	}
+	if err := db.Exec("UPDATE users SET api_key = NULL").Error; err != nil {
+		return err
+	}
+	if len(users) > 0 {
+		logger.Log.Infof("moved %d API key(s) into api_keys, stored hashed", len(users))
 	}
 	return nil
 }

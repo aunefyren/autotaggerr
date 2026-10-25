@@ -79,10 +79,6 @@ func ResetProviderCache() {
 
 // randomToken returns a URL-safe 256-bit random string, used for state, nonce, and
 // generated API keys.
-// NewAPIKey returns a fresh random API key, in the same form every other key is
-// minted in (32 random bytes, URL-safe base64).
-func NewAPIKey() (string, error) { return randomToken() }
-
 func randomToken() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -273,16 +269,11 @@ func ResolveUser(db *gorm.DB, p models.AuthProvider, id Identity) (models.User, 
 	if role == "" {
 		role = models.UserRoleAdmin
 	}
-	apiKey, err := randomToken()
-	if err != nil {
-		return user, err
-	}
 	providerID := p.ID
 	user = models.User{
 		Username:        username,
 		Email:           id.Email,
 		Role:            role,
-		APIKey:          apiKey,
 		AuthProviderID:  &providerID,
 		ExternalSubject: id.Subject,
 	}

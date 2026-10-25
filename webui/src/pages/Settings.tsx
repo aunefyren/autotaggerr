@@ -184,23 +184,37 @@ function EmailTest({
   );
 }
 
+/** One of the signed-in user's API keys, as listed — never the key itself. */
+type ApiKeyRow = {
+  id: string;
+  name: string;
+  scope: "read" | "write";
+  prefix: string;
+  created_at: string;
+  last_used_at: string | null;
+};
+
 /**
- * The MCP section's action: everything needed to connect an assistant. The endpoint
- * takes the same API key as the REST API, and a key is only ever shown once — at the
- * moment it is generated — so "connect" starts with generating one. Rotating replaces
- * the old key everywhere it is used, which is what the confirmation says.
+ * The MCP section's action: the user's API keys, and everything needed to connect an
+ * assistant with one. A key is shown once, when it is made — only its hash is stored —
+ * so the snippets carry the new key straight after creation and a placeholder before.
  *
- * The snippets carry the key once it exists and a placeholder before, so they are
- * worth reading either way.
+ * Scope is chosen per key because it is a decision about who holds it: a read key can
+ * answer questions and nothing more, which is the right default to hand an assistant.
+ * Revoking is ghost-danger behind a confirmation, per the button spec: it breaks
+ * whatever uses the key, at once.
  */
 function ApiAccess() {
-  const [key, setKey] = useState<string | null>(null);
-  const [confirming, setConfirming] = useState(false);
+  const keys = useFetch<ApiKeyRow[]>(() => api.get("/auth/me/api-keys"));
+  const [name, setName] = useState("");
+  const [scope, setScope] = useState<"read" | "write">("read");
+  const [created, setCreated] = useState<{ key: string; row: ApiKeyRow } | null>(null);
+  const [revoking, setRevoking] = useState<ApiKeyRow | null>(null);
   const [busy, setBusy] = useState(false);
   const toast = useToast();
 
   const url = `${window.location.origin}/api/v1/mcp`;
-  const shownKey = key ?? "<your API key>";
+  const shownKey = created?.key ?? "<your API key>";
   const claudeCode = `claude mcp add --transport http autotaggerr ${url} --header "Authorization: Bearer ${shownKey}"`;
   const json = JSON.stringify(
     { mcpServers: { autotaggerr: { type: "http", url, headers: { Authorization: `Bearer ${shownKey}` } } } },
@@ -208,13 +222,30 @@ function ApiAccess() {
     2,
   );
 
-  const rotate = async () => {
+  const create = async () => {
     setBusy(true);
     try {
-      const res = await api.post<{ api_key: string }>("/auth/me/api-key");
-      setKey(res.api_key);
-      setConfirming(false);
-      toast("ok", "New API key generated — copy it now, it is not shown again");
+      const res = await api.post<{ api_key: string; key: ApiKeyRow }>("/auth/me/api-keys", { name, scope });
+      setCreated({ key: res.api_key, row: res.key });
+      setName("");
+      keys.reload();
+      toast("ok", `Key "${res.key.name}" created — copy it now, it is not shown again`);
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const revoke = async () => {
+    if (!revoking) return;
+    setBusy(true);
+    try {
+      await api.del(`/auth/me/api-keys/${revoking.id}`);
+      if (created?.row.id === revoking.id) setCreated(null);
+      toast("ok", `Key "${revoking.name}" revoked`);
+      setRevoking(null);
+      keys.reload();
     } catch (e) {
       toast("err", errMsg(e));
     } finally {
@@ -223,38 +254,102 @@ function ApiAccess() {
   };
 
   return (
-    <div className="stack" style={{ gap: 10 }}>
-      <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
-        <button className="btn btn-secondary btn-sm" onClick={() => setConfirming(true)} disabled={busy}>
-          Generate new API key
+    <div className="stack" style={{ gap: 12 }}>
+      <span className="setting-name">API keys</span>
+      {keys.err && <ErrorNote message={keys.err} />}
+      {keys.data && keys.data.length === 0 && (
+        <span className="muted" style={{ fontSize: 12 }}>
+          No keys yet. Create one to connect an assistant or a script.
+        </span>
+      )}
+      {keys.data && keys.data.length > 0 && (
+        <div className="tablewrap">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Scope</th>
+                <th>Key</th>
+                <th>Last used</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {keys.data.map((k) => (
+                <tr key={k.id}>
+                  <td style={{ color: "var(--text)" }}>{k.name}</td>
+                  <td>{k.scope === "write" ? <Pill kind="warn">Read & write</Pill> : <Pill kind="ok">Read only</Pill>}</td>
+                  <td className="mono">{k.prefix}…</td>
+                  <td>{k.last_used_at ? new Date(k.last_used_at).toLocaleString() : "never"}</td>
+                  <td style={{ textAlign: "right" }}>
+                    <button
+                      className="btn btn-ghost btn-sm"
+                      style={{ color: "var(--danger-text)" }}
+                      onClick={() => setRevoking(k)}
+                      disabled={busy}
+                    >
+                      Revoke
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <input
+          className="input"
+          placeholder="Name, e.g. Claude"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          aria-label="New key name"
+          style={{ maxWidth: 220 }}
+        />
+        <select
+          className="select"
+          value={scope}
+          onChange={(e) => setScope(e.target.value as "read" | "write")}
+          aria-label="New key scope"
+        >
+          <option value="read">Read only</option>
+          <option value="write">Read & write</option>
+        </select>
+        <button className="btn btn-secondary btn-sm" onClick={create} disabled={busy || name.trim() === ""}>
+          Create key
         </button>
         <span className="muted" style={{ fontSize: 12 }}>
-          {key
-            ? "This is the only time the key is shown. The snippets below include it."
-            : "Your key is not shown after it is made. Generate a new one to connect an assistant."}
+          {scope === "write"
+            ? "Can start runs, change wants and write tags — the same as you."
+            : "Can read everything and change nothing."}
         </span>
       </div>
-      {key && <Snippet label="API key" value={key} />}
+
+      {created && (
+        <Note kind="warn" title={`Copy "${created.row.name}" now`}>
+          This is the only time the key is shown. The snippets below include it.
+        </Note>
+      )}
+      {created && <Snippet label="API key" value={created.key} />}
       <Snippet label="MCP endpoint" value={url} />
       <Snippet label="Claude Code" value={claudeCode} />
       <Snippet label="Client config (JSON)" value={json} />
-      {confirming && (
+
+      {revoking && (
         <ConfirmDialog
-          title="Generate a new API key?"
+          title={`Revoke "${revoking.name}"?`}
           body={
-            <>
-              <p style={{ margin: 0 }}>
-                Your current key stops working immediately — for assistants, scripts and anything else that
-                uses it. Each of them needs the new key.
-              </p>
-              <p style={{ margin: 0 }}>The new key is shown once, here, and never again.</p>
-            </>
+            <p style={{ margin: 0 }}>
+              The key stops working immediately — for every assistant, script or tool that uses it. This cannot be
+              undone; a new key has to be created and handed out instead.
+            </p>
           }
-          confirmLabel="Generate new key"
+          confirmLabel="Revoke key"
           danger
           busy={busy}
-          onConfirm={rotate}
-          onCancel={() => setConfirming(false)}
+          onConfirm={revoke}
+          onCancel={() => setRevoking(null)}
         />
       )}
     </div>

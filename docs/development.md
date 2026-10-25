@@ -339,6 +339,6 @@ Feature docs:
 - `artwork.md` — covers and artist images: warming them ahead of the page, and why it is its own verb.
 - `fingerprinting.md` — optional AcoustID identification.
 - `tempo.md` — optional BPM analysis: the detector, why a file is analysed once, its own runner.
-- `authentication.md` — local login, API keys, OIDC.
-- `mcp.md` — the read-only MCP server for AI assistants: connecting, the tools, and how they share query methods with the REST handlers.
+- `authentication.md` — local login, scoped API keys, OIDC.
+- `mcp.md` — the MCP server for AI assistants: scoped API keys, the read and action tools, and how they share query methods and commands with the REST handlers.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.
