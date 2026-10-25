@@ -12,6 +12,7 @@ import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { ScanDialog } from "../components/ScanDialog";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
+import { FollowFields, describeFollow } from "../components/FollowFields";
 import { RunBar } from "../components/RunBar";
 import {
   Browse,
@@ -339,7 +340,11 @@ export default function Artist() {
   if (detail.err) return <ErrorNote message={detail.err} />;
 
   const facts = info.data ?? undefined;
-  const catalogTotal = onDisk.length + missing.length;
+  // Against the artist's discography when it has been read — what they released in
+  // the shape their follow takes in — not only what is stored, which for an artist
+  // found in your files is just what you own. Never below what is owned or wanted.
+  const catalogTotal = Math.max(artist?.catalogue_count ?? 0, onDisk.length + missing.length);
+  const catalogueRead = !!artist?.catalogue_read_at;
 
   return (
     <div className="stack">
@@ -378,6 +383,7 @@ export default function Artist() {
             />
             <span className="cov-label">
               {onDisk.length} of {catalogTotal || onDisk.length} on disk
+              {!catalogueRead && <span className="dim" title="Its MusicBrainz discography is queued to be read; until then only what is stored is counted"> · discography not read yet</span>}
             </span>
           </div>
 
@@ -1106,8 +1112,6 @@ function ManagerAuthority({
   );
 }
 
-const FOLLOW_TYPES = ["Album", "EP", "Single", "Live", "Compilation", "Other"];
-
 /**
  * Following is a convenience — it auto-wants a *shape* of release — never a
  * precondition for picking albums by hand. The panel states what will be wanted,
@@ -1127,18 +1131,11 @@ function FollowSettings({
   onChange: (body: Record<string, unknown>) => void;
   manager: string;
 }) {
-  const types = (artist.follow_types || "Album,EP").split(",").map((t) => t.trim()).filter(Boolean);
-  const cutoff = artist.follow_from_year || 0;
-
   // When a manager owns the artist it decides what is wanted, so these controls are
   // frozen rather than hidden: the settings are still real and still shown, they
   // just do not govern until the artist is natively managed.
   const frozen = !artist.follow_governs;
-
-  const toggleType = (t: string) => {
-    const next = types.includes(t) ? types.filter((x) => x !== t) : [...types, t];
-    onChange({ follow_types: next.join(",") });
-  };
+  const shape = { follow_types: artist.follow_types ?? "", follow_secondary: artist.follow_secondary, follow_from_year: artist.follow_from_year || 0 };
 
   return (
     <div className="card" style={frozen ? { opacity: 0.75 } : undefined}>
@@ -1152,80 +1149,10 @@ function FollowSettings({
         {frozen
           ? `${manager} decides what is wanted for this artist; Autotaggerr mirrors it. These settings are kept but do not apply.`
           : artist.monitored
-            ? `Following wants ${types.join(", ") || "nothing"}${artist.follow_secondary ? ", including live albums, compilations and remixes" : ""}${cutoff > 0 ? ` released in ${cutoff} or later` : ""}, as they are released.`
+            ? `Following wants ${describeFollow(shape)}, as they are released.`
             : "Not following. These are what a follow would want."}
       </div>
-      <div className="row" style={{ gap: 6, flexWrap: "wrap" }}>
-        {FOLLOW_TYPES.map((t) => (
-          <button
-            key={t}
-            className={types.includes(t) ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
-            aria-pressed={types.includes(t)}
-            disabled={busy || frozen}
-            onClick={() => toggleType(t)}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
-      <label className="row" style={{ gap: 8, cursor: frozen ? "default" : "pointer", marginTop: 10 }}>
-        <input
-          type="checkbox"
-          checked={artist.follow_secondary}
-          disabled={busy || frozen}
-          onChange={(e) => onChange({ follow_secondary: e.target.checked })}
-        />
-        <span style={{ fontSize: 12 }}>Include live albums, compilations and remixes</span>
-      </label>
-      <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
-        Off by default: a full discography is mostly reissues, which buries what you actually lack.
-      </div>
-      {/* The back catalogue is the other half of the same problem the type filter
-          solves. Following an artist you already own the old records of otherwise
-          lists twenty albums you deliberately have — and the ones you actually want
-          to hear about are the new ones. */}
-      <div className="field" style={{ marginTop: 12 }}>
-        <label className="flabel" htmlFor="follow-from-year">Only from year</label>
-        <div className="row" style={{ gap: 8 }}>
-          <input
-            id="follow-from-year"
-            className="input"
-            type="number"
-            min={1900}
-            max={2200}
-            style={{ maxWidth: 120 }}
-            value={cutoff || ""}
-            disabled={busy || frozen}
-            placeholder="Any"
-            onChange={(e) => {
-              const next = e.target.value === "" ? 0 : Number(e.target.value);
-              if (Number.isNaN(next)) return;
-              onChange({ follow_from_year: next });
-            }}
-          />
-          {cutoff > 0 && (
-            <button
-              className="btn btn-ghost btn-sm"
-              disabled={busy || frozen}
-              onClick={() => onChange({ follow_from_year: 0 })}
-            >
-              Clear
-            </button>
-          )}
-          <button
-            className="btn btn-secondary btn-sm"
-            disabled={busy || frozen}
-            onClick={() => onChange({ follow_from_year: new Date().getFullYear() })}
-          >
-            From now on
-          </button>
-        </div>
-        <div className="dim" style={{ fontSize: 11, marginTop: 4 }}>
-          {cutoff > 0
-            ? `Albums first released before ${cutoff} are not wanted. Releases MusicBrainz has no date for are left out too — it cannot show they clear the cutoff.`
-            : "Blank wants the whole back catalogue. Set a year to be told only about what came after it."}
-        </div>
-      </div>
+      <FollowFields value={shape} onChange={onChange} disabled={busy || frozen} idPrefix="artist-follow" />
     </div>
   );
 }

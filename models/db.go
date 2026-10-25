@@ -139,6 +139,11 @@ const (
 	// copied into a library at the path its naming templates give them, pinned and
 	// tagged. Its items carry where each file came from (EventItem.From).
 	EventTypeFileImport = "file_import"
+	// EventTypeDiscographyRead is a pass reading artists' MusicBrainz discographies:
+	// every artist's catalogue, so coverage is measured against what they released
+	// rather than what happens to be stored, and the discography sync of artists just
+	// followed. Writes no file.
+	EventTypeDiscographyRead = "discography_read"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -1228,6 +1233,17 @@ type CollectionArtist struct {
 
 	LastSyncedAt *time.Time `json:"last_synced_at"`
 
+	// CatalogueCount is how many release-groups of this artist's MusicBrainz
+	// discography the artist's follow shape takes in (collection.FollowWants: by
+	// default studio albums and EPs), whether or not anything follows them — the
+	// denominator of "3 of 11 on disk". It is a count rather than stored rows on
+	// purpose: rows are what the collection holds and wants, and storing an
+	// unfollowed artist's whole catalogue would fill the missing list with albums
+	// nobody asked for. CatalogueReadAt is when the discography was last read; nil
+	// means never, which the UI says rather than showing owned-of-owned as complete.
+	CatalogueCount  int        `json:"catalogue_count"`
+	CatalogueReadAt *time.Time `json:"catalogue_read_at"`
+
 	// ManagerMissingAt is when a manager sync found this artist filed under a manager
 	// that no longer lists them — the *Not in Lidarr* finding, kept on the artist so
 	// their own page can say it and offer to join them to the artist the manager now
@@ -1589,6 +1605,7 @@ func AllDBModels() []any {
 		&DownloadClient{},
 		&DownloadClientCategory{},
 		&DownloadItem{},
+		&CollectionPolicy{},
 	}
 }
 

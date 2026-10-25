@@ -37,6 +37,7 @@ const (
 	jobDiscoverAll      jobKind = "discover_all"
 	jobDiscoverArtist   jobKind = "discover_artist"
 	jobImport           jobKind = "import"
+	jobDiscography      jobKind = "discography"
 )
 
 // fileWriting reports whether a kind rewrites audio files. File-writing jobs are

@@ -692,6 +692,13 @@ export interface CollectionArtist {
    */
   follow_from_year: number;
   last_synced_at: string | null;
+  /**
+   * How many release-groups of the MusicBrainz discography this artist's follow shape
+   * takes in, followed or not — the denominator of "3 of 11 on disk". Null read time:
+   * the discography has not been read yet.
+   */
+  catalogue_count: number;
+  catalogue_read_at: string | null;
   owned_count?: number;
   complete_count?: number;
   partial_count?: number;
@@ -1018,4 +1025,11 @@ export interface ItemTempo {
   bpm_write: BPMWrite;
   /** The effective floor, default already applied. */
   min_confidence: number;
+}
+
+/** What the collection does by itself: whether an artist found in your files is followed. */
+export interface CollectionPolicy {
+  new_artist_follow: "off" | "new" | "all";
+  follow_types: string;
+  follow_secondary: boolean;
 }

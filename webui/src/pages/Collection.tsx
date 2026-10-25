@@ -7,6 +7,7 @@ import { EmptyState, ErrorNote, Pill, Skeleton } from "../components/ui";
 import { useToast } from "../toast";
 import { MBLink } from "../components/MBLink";
 import { AddArtistModal } from "../components/AddArtistModal";
+import { FollowArtistsDialog, NewArtistsDialog } from "../components/FollowDialogs";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
 import { RunBar } from "../components/RunBar";
@@ -132,6 +133,8 @@ export default function Collection() {
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
   const hasLidarr = (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
   const [adding, setAdding] = useState(false);
+  const [following, setFollowing] = useState(false);
+  const [newArtists, setNewArtists] = useState(false);
   const [syncAsk, setSyncAsk] = useState(false);
   const [scanAsk, setScanAsk] = useState(false);
   const [choosingRefresh, setChoosingRefresh] = useState(false);
@@ -290,6 +293,17 @@ export default function Collection() {
         <h1>Collection</h1>
         <div className="row">
           <button className="btn btn-secondary btn-sm" onClick={() => setAdding(true)}>Add artist</button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setFollowing(true)}
+            disabled={artists.length === 0}
+            title="Follow several artists at once, so what they released is listed as missing"
+          >
+            Follow artists
+          </button>
+          <button className="btn btn-ghost btn-sm" onClick={() => setNewArtists(true)} title="Whether an artist found in your files is followed">
+            New artists
+          </button>
           {hasLidarr && (
             <button
               className="btn btn-secondary btn-sm"
@@ -460,7 +474,11 @@ export default function Collection() {
                     const owned = ar.owned_count ?? 0;
                     const complete = ar.complete_count ?? 0;
                     const partial = ar.partial_count ?? 0;
-                    const total = owned + (hasWanted(ar) ? ar.missing_count ?? 0 : 0);
+                    // Against the discography, when it has been read: an artist found in
+                    // your files has only what you own stored, and 3 of 3 is not complete
+                    // when they released eleven.
+                    const total = Math.max(ar.catalogue_count ?? 0, owned + (hasWanted(ar) ? ar.missing_count ?? 0 : 0));
+                    const unread = !ar.catalogue_read_at;
                     return (
                       <tr key={ar.mb_id}>
                         <td>
@@ -482,17 +500,22 @@ export default function Collection() {
                                 one shape all the way down a page of artists is worth
                                 more than the cell count on the short rows, and the
                                 number beside it already answers "how many". */}
-                            <CoverageBar
-                              total={total}
-                              owned={complete}
-                              partial={partial}
-                              label={`${ar.name} albums`}
-                              width={120}
-                              proportional
-                            />
+                            {/* Faded until the discography is read: what it shows is only
+                                what is stored, and a full bar would claim completeness. */}
+                            <span style={{ display: "inline-flex", opacity: unread ? 0.45 : 1 }}>
+                              <CoverageBar
+                                total={total}
+                                owned={complete}
+                                partial={partial}
+                                label={`${ar.name} albums`}
+                                width={120}
+                                proportional
+                              />
+                            </span>
                             <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
                               {owned}
                               {total > owned && <span className="dim">/{total}</span>}
+                              {unread && <span className="dim" title="The discography is queued to be read; until then only what is stored is counted">/?</span>}
                             </span>
                           </div>
                         </td>
@@ -533,6 +556,14 @@ export default function Collection() {
           onAdded={() => { setAdding(false); reload(); }}
         />
       )}
+      {following && (
+        <FollowArtistsDialog
+          artists={artists}
+          onClose={() => setFollowing(false)}
+          onDone={() => { setFollowing(false); reload(); }}
+        />
+      )}
+      {newArtists && <NewArtistsDialog onClose={() => setNewArtists(false)} />}
       {scanAsk && (
         <ScanDialog
           scope="the whole collection"

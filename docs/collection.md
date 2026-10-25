@@ -730,6 +730,76 @@ when a manager owns the artist, since Lidarr is the authority there. An explicit
 overrides the type filter: the UI must never refuse to keep a single or live album you just asked
 for.
 
+### Every artist has a catalogue
+
+An artist used to be measured against whatever release-groups happened to be stored for it, and
+that depended on **how the artist arrived**:
+
+- found in your files: rows only for the albums you own, so 3 albums of 11 read as **3 of 3**;
+- synced from Lidarr: what Lidarr's metadata profile lists;
+- added by hand: nothing at all.
+
+The live discography on the artist page hid the difference there, but the collection list and the
+coverage bar showed it.
+
+So every artist's MusicBrainz discography is read, however it arrived. The count of release-groups
+the artist's **follow shape** takes in is kept on the artist (`catalogue_count`, with
+`catalogue_read_at`), and coverage is measured against it: *3 of 11 on disk*. The shape applies
+whether or not the artist is followed: albums and EPs by default, narrowed by a cutoff, widened by
+the types chosen. It is what "their albums" means for that artist, and following later wants
+exactly that (`collection.RecordCatalogue`, through `FollowWants`).
+
+- **Reading is not wanting.** Only following or a pick stores rows for albums you do not own. The
+  count is a number on the artist, not stored rows, so an unfollowed artist's missing list stays
+  empty however large its discography. That keeps the rule the
+  [discography endpoint](#api) states: browsing must never inflate the missing count. Being a
+  column on the artist is also what lets the [cached collection list](#the-collection-list-is-kept-between-writes)
+  notice it change.
+- **A queued, rate-limited job** (`process.Runner.ReadCatalogues`, job kind `discography`, event
+  `discography_read`) reads every artist whose discography was never read, or was read over 30 days
+  ago (`catalogueMaxAge`). It runs:
+  - at startup (the backlog, the first time it is every artist);
+  - after the scheduled metadata refresh;
+  - whenever an artist is new to the collection, through the `collection.CatalogueReader` hook in
+    `upsertArtist` and `AddArtist`. The hook sits in the create branch only and only enqueues, like
+    the artwork hook.
+- **What gets synced:** a followed artist Autotaggerr governs is synced (`SyncArtist`, which also
+  records the catalogue), listing what the follow wants. Every other artist only has its catalogue
+  counted. An artist a manager governs is never synced here, because its catalog block is the
+  manager's.
+- **Failures and re-reads:** a failed read leaves `catalogue_read_at` empty, so the next pass tries
+  again. A pass with nothing to read records no event.
+- **Changing an unfollowed artist's follow types recounts the catalogue** (`updateFollow`), since
+  the shape is what decides the count.
+
+Until the discography is read, the UI says so (*discography not read yet*, a faded bar and `/?` in
+the list) rather than showing owned-of-owned as complete.
+
+### New artists
+
+Whether an artist the collection first meets in your files is **followed** is a collection-wide
+decision, so it lives on `collection_policies` (one row, `collection.LoadPolicy` / `SavePolicy`),
+not in `config.json`, which is process config. The decision covers artists brought in by a scan,
+an import or a Lidarr sync. **New artists** on the Collection page sets it:
+
+| `new_artist_follow` | A new artist is |
+|---|---|
+| `off` (default) | not followed: only what you own is listed |
+| `new` | followed from the year it was found, so you hear about what they release next, not the back catalogue you chose not to own |
+| `all` | followed for the whole discography |
+
+The follow types and secondary flag come from the policy too. It is applied once, when the row is
+created (`applyNewArtistPolicy`): an existing artist is never re-decided, and an artist a manager
+governs is never followed by it (`FollowGoverns`). The discography read that the new artist queues
+then syncs what the follow wants.
+
+**Following several at once** is **Follow artists** on the Collection page. It lists the artists
+Autotaggerr governs that nobody follows, all ticked, with one follow shape. `POST
+/collection/follow` writes the settings and queues the syncs as one `discography` job
+(`Runner.FollowArtists`). Artists a manager governs are skipped and named. **Add artist** follows
+in the same step, on by default, with the same controls (`FollowFields`, shared by all four places
+a follow is shaped).
+
 ### Following can start at a year
 
 `FollowFromYear` is the back-catalogue half of the same problem the type filter solves. Following an
@@ -906,7 +976,9 @@ repeated here because they are about *this* data model.
 | `GET /artists/:mbid/discography` | live MusicBrainz read of *all* release-group types, **not stored** — browsing a catalogue must never require committing to it, or inflate the missing count. Cached 6h; a stale copy beats an empty page when MB is down. |
 | `GET /artists/:mbid/release-groups/:rgid` | the group, every edition (annotated with owned state), and that group's desires, in one call |
 | `POST /artists` · `GET /search/artists` | add an artist you own nothing of |
-| `POST /artists/:mbid/follow` | follow settings, then re-sync with them |
+| `POST /artists/:mbid/follow` | follow settings, then re-sync with them (or recount the catalogue, when not following) |
+| `POST /collection/follow` | [follow several artists](#new-artists) with one shape; the syncs are queued (**202**), artists a manager governs are skipped and named |
+| `GET\|PUT /collection/policy` | whether [a new artist](#new-artists) found in your files is followed |
 | `POST\|DELETE /artists/:mbid/desires` | author or clear intent |
 | `POST /artists/:mbid/detach` | [take authority back](#detaching-a-manager) from the manager, keeping its decisions as manual wants. **409** when no manager governs the artist — the request is well-formed and was true of an earlier state, so the page is out of date rather than wrong. Idempotent. |
 | `DELETE /artists/:mbid/detach` | hand the artist back; provenance is re-derived at once. Kept wants stay manual. |
@@ -1037,6 +1109,13 @@ change between syncs: the monitored release is stored and wanted, it re-points w
 selection moves, it is pruned when monitoring stops, it is not invented when Lidarr selected no
 release, and it never overwrites a hand-authored want, appears on a native artist, or is disturbed by
 a rebuild that owns nothing.
+`collection/catalogue_test.go` covers the catalogue count by follow shape (default, cutoff, widened),
+the count a sync records, that a new artist — from files or by hand — asks once for its catalogue,
+and the new-artist policy (off, from now, everything, never for a Lidarr artist, never re-deciding an
+existing one). `process/catalogue_test.go` covers the job: never-read and stale discographies read,
+fresh ones left, a failed read retried, a followed artist synced while unfollowed and Lidarr artists
+only counted, and a pass with nothing to read recording nothing. `routers/follow_bulk_test.go`
+covers bulk follow, the policy routes and the recount on a follow-shape change.
 `TestSyncLidarrScopedToArtist` pins the property the artist scope exists for — the artist outside the
 scope is left untouched, not merely rewritten with the same values — and that an artist the mirror
 does not govern syncs *nothing* rather than everything, a scope silently widening to the whole

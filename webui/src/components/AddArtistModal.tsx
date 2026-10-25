@@ -6,6 +6,7 @@ import { ArtistInfo, ArtistSearchResult } from "../types";
 import { Modal, Pill } from "./ui";
 import { MBLink } from "./MBLink";
 import { useToast } from "../toast";
+import { DEFAULT_FOLLOW, FollowFields, FollowShape, describeFollow } from "./FollowFields";
 
 interface ReleaseGroupHit {
   id: string;
@@ -107,13 +108,29 @@ export function AddArtistModal({
     setBusy(true);
     try {
       await api.post("/artists", { mb_id: selected.id, name: selected.name });
-      toast("ok", `Added ${selected.name}`);
+      if (follow) {
+        // The follow is its own request, so an artist is added even when the
+        // discography sync behind the follow fails; the toast says which happened.
+        try {
+          await api.post(`/artists/${selected.id}/follow`, { monitored: true, ...shape });
+          toast("ok", `Added and following ${selected.name}`);
+        } catch (e) {
+          toast("err", `Added ${selected.name}, but following failed: ${errMsg(e)}`);
+        }
+      } else {
+        toast("ok", `Added ${selected.name}`);
+      }
       onAdded();
     } catch (e) {
       toast("err", errMsg(e));
       setBusy(false);
     }
   };
+
+  // Adding someone you own nothing of is nearly always wanting their records, so the
+  // follow is on by default; the shape is the same one an artist's page sets.
+  const [follow, setFollow] = useState(true);
+  const [shape, setShape] = useState<FollowShape>(DEFAULT_FOLLOW);
 
   const detail = selected ? details[selected.id] : undefined;
   const inCollection = !!selected && !!existing?.has(selected.id);
@@ -185,6 +202,18 @@ export function AddArtistModal({
           </div>
         )}
 
+        {selected && !inCollection && (
+          <div className="stack" style={{ gap: 8 }}>
+            <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+              <input type="checkbox" checked={follow} onChange={(e) => setFollow(e.target.checked)} />
+              <span>Follow {selected.name}</span>
+              <span className="dim" style={{ fontSize: 11 }}>
+                {follow ? `— wants ${describeFollow(shape)}, and what they release next` : "— only their page is added; nothing is wanted"}
+              </span>
+            </label>
+            {follow && <FollowFields value={shape} onChange={(patch) => setShape((cur) => ({ ...cur, ...patch }))} disabled={busy} idPrefix="add-artist" />}
+          </div>
+        )}
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost btn-sm" style={{ marginRight: "auto" }} onClick={onClose}>Cancel</button>
           {inCollection && selected ? (
@@ -193,7 +222,7 @@ export function AddArtistModal({
             </Link>
           ) : (
             <button type="button" className="btn btn-primary btn-sm" disabled={!selected || busy} onClick={add}>
-              {busy ? "Adding…" : selected ? `Add ${selected.name}` : "Add artist"}
+              {busy ? "Adding…" : selected ? `${follow ? "Add and follow" : "Add"} ${selected.name}` : "Add artist"}
             </button>
           )}
         </div>

@@ -233,6 +233,11 @@ func main() {
 	artworkRunner = artwork.NewRunner(db, files.ConfigFile)
 	collection.SetArtworkWarmer(artworkRunner)
 
+	// Every artist's discography is read, however the artist arrived, so the collection
+	// measures coverage against what they released rather than what is stored. New
+	// artists queue a read as they are created; the backlog is queued below.
+	collection.SetCatalogueReader(scanRunner)
+
 	// Tempo analysis has its own runner for the same reason, and one more: it decodes
 	// audio for hours on a first pass, and on the scan queue every scan would wait
 	// behind it. Instead it pauses between files while a file-writing job runs, so the
@@ -247,6 +252,9 @@ func main() {
 	healthChecker := health.NewChecker(db, plexClient)
 	if filePath == nil {
 		go healthChecker.Run()
+		// The backlog of artists whose discography was never read — every artist, the
+		// first time this runs. Queued, so it waits behind anything already waiting.
+		scanRunner.ReadCatalogues()
 		// Record which audio each pin stands for, for pins made before that was
 		// recorded. Off the main goroutine: it reads each pinned file once.
 		go components.BackfillPinnedAudioHashes(db)
@@ -265,8 +273,10 @@ func main() {
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrProcessCronSchedule },
 		},
 		settings.CronJob{
-			Name:     "metadata refresh",
-			Run:      func() { scanRunner.SyncDrift() },
+			Name: "metadata refresh",
+			// Discographies ride on the same schedule: the read is MusicBrainz work of
+			// the same kind, and the queue orders it behind the refresh.
+			Run:      func() { scanRunner.SyncDrift(); scanRunner.ReadCatalogues() },
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrMirrorCronSchedule },
 			Enabled:  func(c models.ConfigStruct) bool { return !c.AutotaggerrMirrorDisabled },
 		},

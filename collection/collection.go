@@ -1244,6 +1244,9 @@ func SyncArtist(db *gorm.DB, meta metadata.MetadataSource, artistMBID string) (w
 	if err != nil {
 		return 0, err
 	}
+	if err := RecordCatalogue(db, artist, groups); err != nil {
+		logger.Log.Warnf("failed to record the catalogue of %s: %s", artistMBID, err.Error())
+	}
 	// Pruning uses the *unfiltered* discography, deliberately: `groups` is everything
 	// MusicBrainz has, while the loop below only upserts the types this artist's
 	// follow settings want. Comparing stored rows against the filtered set would
@@ -1501,16 +1504,19 @@ func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
 		}
 		return nil
 	}
-	if err := db.Create(&models.CollectionArtist{
+	artist := models.CollectionArtist{
 		MBID: mbID, Name: name, ManagedBy: managedBy,
 		Origin: models.CollectionOriginLibrary,
-	}).Error; err != nil {
+	}
+	applyNewArtistPolicy(db, &artist)
+	if err := db.Create(&artist).Error; err != nil {
 		logger.Log.Warnf("failed to upsert artist %s: %s", mbID, err.Error())
 		return err
 	}
 	// Only on create: the update branch above returns before this, so a rebuild does
 	// not hand the whole collection to the warmer several times a day.
 	warmArtistArtwork(mbID)
+	readNewArtistCatalogue()
 	return nil
 }
 

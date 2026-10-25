@@ -39,6 +39,7 @@ const TYPE_LABELS: Record<string, string> = {
   collection_scan: "Collection scan",
   discover_files: "Scan with disk walk",
   file_import: "File import",
+  discography_read: "Discographies",
 };
 
 /**
@@ -67,6 +68,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Re-derives the collection from the files already indexed — no disk walk, no network, no file writes. It runs after tagging on purpose: it can only describe what this run has already recorded.",
   discover_files:
     "A Scan asked to walk the disk first. Files that moved keep their identity at the new path, matched on size and modification time; files with no identity are looked up with the manager. No tags are written — newly found files are tagged by the next processing run. The collection scan beneath it is the ordinary Scan, run on what the walk recorded.",
+  discography_read:
+    "Reads artists' MusicBrainz discographies, so the collection measures each artist against what they released rather than only what is stored for them. An artist you follow is synced, listing what the follow wants; any other only has the size of its catalogue recorded — reading a discography is not wanting it, so nothing appears as missing. Runs for every new artist, for anyone just followed, and on the metadata refresh schedule for discographies older than a month. No file is written.",
   file_import:
     "Loose files identified by hand and put into a library at the path its tagger profile names them. Each is pinned to the track chosen in the review and tagged; a file whose tags could not be written is still imported, and the next processing run tags it. Files it replaced were deleted only after the new file was in place.",
   lidarr_sync:
@@ -116,6 +119,7 @@ const JOB_KIND_LABELS: Record<string, string> = {
   refresh_library: "Metadata refresh",
   discover_all: "Scan with disk walk",
   discover_artist: "Scan with disk walk",
+  discography: "Discographies",
 };
 
 // isProcessJob distinguishes a file-walking processing run (which reports file

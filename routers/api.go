@@ -245,6 +245,9 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/artists/:mbid/detach", a.detachArtist)
 		protected.DELETE("/artists/:mbid/detach", a.reattachArtist)
 		protected.POST("/collection/sync-lidarr", a.syncLidarr)
+		protected.POST("/collection/follow", a.followArtists)
+		protected.GET("/collection/policy", a.getCollectionPolicy)
+		protected.PUT("/collection/policy", a.updateCollectionPolicy)
 		protected.POST("/artists/:mbid/sync-lidarr", a.syncLidarrArtist)
 
 		// Settings are admin-only: they carry the port, the schedules and the SMTP

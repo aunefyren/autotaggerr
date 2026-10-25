@@ -42,6 +42,7 @@ func AddArtist(db *gorm.DB, mbID, name string) (models.CollectionArtist, error) 
 	// yet — the discography sync creates those, and notifies from upsertReleaseGroup
 	// when it does — so this warms the portrait and backdrop only.
 	warmArtistArtwork(mbID)
+	readNewArtistCatalogue()
 	return artist, nil
 }
 

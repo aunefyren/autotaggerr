@@ -1188,7 +1188,7 @@ func (a *API) updateFollow(c *gin.Context) {
 	// would quietly want nothing (or everything) forever. Zero stays valid: it is how
 	// the cutoff is cleared.
 	if body.FollowFromYear != nil {
-		if year := *body.FollowFromYear; year != 0 && (year < minFollowFromYear || year > maxFollowFromYear) {
+		if year := *body.FollowFromYear; !validFollowYear(year) {
 			c.JSON(http.StatusBadRequest, gin.H{
 				"error": fmt.Sprintf("follow_from_year must be 0 (no cutoff) or between %d and %d",
 					minFollowFromYear, maxFollowFromYear),
@@ -1237,8 +1237,91 @@ func (a *API) updateFollow(c *gin.Context) {
 			return
 		}
 		wanted = n
+	} else if groups, _, err := a.meta().GetArtistReleaseGroups(mbid); err == nil {
+		// Not following, but the shape still decides what "their albums" are, so the
+		// catalogue count follows the settings. Best-effort: a failed read leaves the
+		// old count until the next discography pass.
+		if err := collection.RecordCatalogue(a.DB, artist, groups); err != nil {
+			logger.Log.Warnf("failed to record the catalogue of %s: %s", mbid, err.Error())
+		}
 	}
+	a.DB.Where("mb_id = ?", mbid).First(&artist)
 	c.JSON(http.StatusOK, gin.H{"artist": artist, "wanted": wanted})
+}
+
+// validFollowYear reports whether a follow cutoff is one MusicBrainz dates can occupy,
+// or zero for none.
+func validFollowYear(year int) bool {
+	return year == 0 || (year >= minFollowFromYear && year <= maxFollowFromYear)
+}
+
+// followArtists follows several artists with one set of follow settings — the bulk
+// form of the artist page's Follow. The settings are written here; the discography
+// syncs that list what they want are a queued job, since each is a rate-limited read.
+// An artist a manager governs is skipped and named: following would be stored, not
+// obeyed.
+func (a *API) followArtists(c *gin.Context) {
+	var body struct {
+		ArtistMBIDs     []string `json:"artist_mb_ids"`
+		FollowTypes     string   `json:"follow_types"`
+		FollowSecondary bool     `json:"follow_secondary"`
+		FollowFromYear  int      `json:"follow_from_year"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil || len(body.ArtistMBIDs) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "choose at least one artist"})
+		return
+	}
+	if !validFollowYear(body.FollowFromYear) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("follow_from_year must be 0 (no cutoff) or between %d and %d", minFollowFromYear, maxFollowFromYear)})
+		return
+	}
+	var artists []models.CollectionArtist
+	if err := a.DB.Where("mb_id IN ?", body.ArtistMBIDs).Find(&artists).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load the artists"})
+		return
+	}
+	followed, skipped := []string{}, []string{}
+	for _, artist := range artists {
+		if !collection.FollowGoverns(artist) {
+			skipped = append(skipped, artist.Name)
+			continue
+		}
+		if err := a.DB.Model(&artist).Updates(map[string]any{
+			"monitored": true, "follow_types": strings.TrimSpace(body.FollowTypes),
+			"follow_secondary": body.FollowSecondary, "follow_from_year": body.FollowFromYear,
+		}).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update " + artist.Name})
+			return
+		}
+		followed = append(followed, artist.MBID)
+	}
+	a.Scan.FollowArtists(followed)
+	c.JSON(http.StatusAccepted, gin.H{"followed": len(followed), "skipped": skipped})
+}
+
+// getCollectionPolicy and updateCollectionPolicy read and write what the collection
+// does by itself: today, whether an artist found in your files is followed.
+func (a *API) getCollectionPolicy(c *gin.Context) {
+	policy, err := collection.LoadPolicy(a.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load the collection policy"})
+		return
+	}
+	c.JSON(http.StatusOK, policy)
+}
+
+func (a *API) updateCollectionPolicy(c *gin.Context) {
+	var in models.CollectionPolicy
+	if err := c.ShouldBindJSON(&in); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	policy, err := collection.SavePolicy(a.DB, in)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, policy)
 }
 
 // releaseGroupDetail returns everything the release-group page needs in one call:
