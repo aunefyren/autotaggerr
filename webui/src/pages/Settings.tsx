@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { SettingsField, SettingsSaveResult, SettingsView } from "../types";
-import { ErrorNote, Note, Pill } from "../components/ui";
+import { ConfirmDialog, ErrorNote, Note, Pill } from "../components/ui";
 import { useToast } from "../toast";
 
 /** A pending edit. Only touched fields are held, so a save sends only what changed. */
@@ -99,6 +99,7 @@ export default function Settings() {
               onChange={(v) => set(field.key, v)}
             />
           ))}
+          {section.id === "mcp" && <ApiAccess />}
           {section.id === "email" && (
             <EmailTest
               pendingEdits={dirtyKeys.some(
@@ -179,6 +180,109 @@ function EmailTest({
           can override that.
         </p>
       )}
+    </div>
+  );
+}
+
+/**
+ * The MCP section's action: everything needed to connect an assistant. The endpoint
+ * takes the same API key as the REST API, and a key is only ever shown once — at the
+ * moment it is generated — so "connect" starts with generating one. Rotating replaces
+ * the old key everywhere it is used, which is what the confirmation says.
+ *
+ * The snippets carry the key once it exists and a placeholder before, so they are
+ * worth reading either way.
+ */
+function ApiAccess() {
+  const [key, setKey] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const toast = useToast();
+
+  const url = `${window.location.origin}/api/v1/mcp`;
+  const shownKey = key ?? "<your API key>";
+  const claudeCode = `claude mcp add --transport http autotaggerr ${url} --header "Authorization: Bearer ${shownKey}"`;
+  const json = JSON.stringify(
+    { mcpServers: { autotaggerr: { type: "http", url, headers: { Authorization: `Bearer ${shownKey}` } } } },
+    null,
+    2,
+  );
+
+  const rotate = async () => {
+    setBusy(true);
+    try {
+      const res = await api.post<{ api_key: string }>("/auth/me/api-key");
+      setKey(res.api_key);
+      setConfirming(false);
+      toast("ok", "New API key generated — copy it now, it is not shown again");
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="stack" style={{ gap: 10 }}>
+      <div className="row" style={{ gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <button className="btn btn-secondary btn-sm" onClick={() => setConfirming(true)} disabled={busy}>
+          Generate new API key
+        </button>
+        <span className="muted" style={{ fontSize: 12 }}>
+          {key
+            ? "This is the only time the key is shown. The snippets below include it."
+            : "Your key is not shown after it is made. Generate a new one to connect an assistant."}
+        </span>
+      </div>
+      {key && <Snippet label="API key" value={key} />}
+      <Snippet label="MCP endpoint" value={url} />
+      <Snippet label="Claude Code" value={claudeCode} />
+      <Snippet label="Client config (JSON)" value={json} />
+      {confirming && (
+        <ConfirmDialog
+          title="Generate a new API key?"
+          body={
+            <>
+              <p style={{ margin: 0 }}>
+                Your current key stops working immediately — for assistants, scripts and anything else that
+                uses it. Each of them needs the new key.
+              </p>
+              <p style={{ margin: 0 }}>The new key is shown once, here, and never again.</p>
+            </>
+          }
+          confirmLabel="Generate new key"
+          danger
+          busy={busy}
+          onConfirm={rotate}
+          onCancel={() => setConfirming(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+/** A read-only value to copy: identifiers and commands, so it is set in mono. */
+function Snippet({ label, value }: { label: string; value: string }) {
+  const toast = useToast();
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(value);
+      toast("ok", `${label} copied`);
+    } catch {
+      toast("err", "Could not copy — select the text instead");
+    }
+  };
+  return (
+    <div className="stack" style={{ gap: 4 }}>
+      <div className="row" style={{ gap: 8, alignItems: "center" }}>
+        <span className="setting-name">{label}</span>
+        <button className="btn btn-ghost btn-sm" onClick={copy}>
+          Copy
+        </button>
+      </div>
+      <div className="setting-readonly mono" style={{ whiteSpace: "pre-wrap" }}>
+        {value}
+      </div>
     </div>
   );
 }

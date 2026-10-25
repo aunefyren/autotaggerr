@@ -73,6 +73,20 @@ func (a *API) itemTempo(c *gin.Context) {
 		return
 	}
 
+	c.JSON(http.StatusOK, a.itemTempoInfo(item))
+}
+
+// itemTempoView is the tempo state of one file, for GET /library-items/:id/tempo and
+// the MCP get_file tool.
+type itemTempoView struct {
+	Tempo           *models.TrackTempo `json:"tempo"`
+	LibraryAnalyses bool               `json:"library_analyses"`
+	WritesTags      bool               `json:"writes_tags"`
+	BPMWrite        string             `json:"bpm_write"`
+	MinConfidence   float64            `json:"min_confidence"`
+}
+
+func (a *API) itemTempoInfo(item models.LibraryItem) itemTempoView {
 	var stored *models.TrackTempo
 	var row models.TrackTempo
 	if a.DB.Where("path = ?", item.Path).Limit(1).Find(&row).RowsAffected > 0 {
@@ -96,11 +110,11 @@ func (a *API) itemTempo(c *gin.Context) {
 		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{
-		"tempo":            stored,
-		"library_analyses": analyses,
-		"writes_tags":      writesTags,
-		"bpm_write":        bpmWrite,
-		"min_confidence":   floor,
-	})
+	return itemTempoView{
+		Tempo:           stored,
+		LibraryAnalyses: analyses,
+		WritesTags:      writesTags,
+		BPMWrite:        bpmWrite,
+		MinConfidence:   floor,
+	}
 }

@@ -313,39 +313,51 @@ func collectionFingerprint(db *gorm.DB) (string, error) {
 // when one of those tables does, which is rarely between two page loads, so it is kept
 // and served again until collectionFingerprint says otherwise.
 func (a *API) listArtists(c *gin.Context) {
+	out, err := a.artistList()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// artistList is the collection list behind GET /artists and the MCP list_artists
+// tool: served from the memo while collectionFingerprint says nothing changed,
+// computed afresh otherwise. Its errors are safe to show a client.
+func (a *API) artistList() ([]artistSummary, error) {
 	fingerprint, err := collectionFingerprint(a.DB)
 	if err == nil {
 		a.artists.mu.Lock()
 		if a.artists.fingerprint == fingerprint && a.artists.list != nil {
 			list := a.artists.list
 			a.artists.mu.Unlock()
-			c.JSON(http.StatusOK, list)
-			return
+			return list, nil
 		}
 		a.artists.mu.Unlock()
 	} else {
 		logger.Log.Warnf("failed to fingerprint the collection, computing the list afresh: %s", err.Error())
 	}
 
-	out, ok := a.computeArtistList(c)
-	if !ok {
-		return
+	out, err := a.computeArtistList()
+	if err != nil {
+		return nil, err
 	}
 	if fingerprint != "" {
 		a.artists.mu.Lock()
 		a.artists.fingerprint, a.artists.list = fingerprint, out
 		a.artists.mu.Unlock()
 	}
-	c.JSON(http.StatusOK, out)
+	return out, nil
 }
 
-// computeArtistList is the uncached body of listArtists. It writes the error response
-// itself and reports false when it did.
-func (a *API) computeArtistList(c *gin.Context) ([]artistSummary, bool) {
+// computeArtistList is the uncached body of artistList. The store's own error is
+// logged here and replaced by one naming what could not be read, which is what the
+// caller shows.
+func (a *API) computeArtistList() ([]artistSummary, error) {
 	var artists []models.CollectionArtist
 	if err := a.DB.Order("name").Find(&artists).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list artists"})
-		return nil, false
+		logger.Log.Errorf("failed to list artists: %s", err.Error())
+		return nil, errors.New("failed to list artists")
 	}
 
 	// Aggregated in Go rather than SQL so the complete/discrepancy rules have exactly
@@ -355,8 +367,8 @@ func (a *API) computeArtistList(c *gin.Context) ([]artistSummary, bool) {
 
 	var groups []models.CollectionReleaseGroup
 	if err := a.DB.Find(&groups).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list release groups"})
-		return nil, false
+		logger.Log.Errorf("failed to list release groups: %s", err.Error())
+		return nil, errors.New("failed to list release groups")
 	}
 	picked := map[string]map[string]bool{}
 	var desires []models.CollectionDesire
@@ -425,16 +437,41 @@ func (a *API) computeArtistList(c *gin.Context) ([]artistSummary, bool) {
 			PickedCount:   len(picked[ar.MBID]),
 		})
 	}
-	return out, true
+	return out, nil
 }
+
+// errArtistNotFound is the query methods' "no such artist in the collection".
+var errArtistNotFound = errors.New("artist not found")
 
 // getArtist returns an artist and its release-groups (owned + wanted).
 func (a *API) getArtist(c *gin.Context) {
-	mbid := c.Param("mbid")
+	detail, err := a.artistDetail(c.Param("mbid"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	body := gin.H{"artist": detail.Artist, "release_groups": detail.ReleaseGroups, "desires": detail.Desires}
+	if detail.Repair != nil {
+		body["repair"] = detail.Repair
+	}
+	c.JSON(http.StatusOK, body)
+}
+
+// artistDetailData is what GET /artists/:mbid and the MCP get_artist tool share.
+type artistDetailData struct {
+	Artist        artistView
+	ReleaseGroups []releaseGroupView
+	Desires       []models.CollectionDesire
+	Repair        *artistRepairView
+}
+
+// artistDetail loads one artist with its release-groups judged by the shared rules.
+// The only error is errArtistNotFound: the parts after the artist degrade to empty
+// with a warning, as the page always has.
+func (a *API) artistDetail(mbid string) (artistDetailData, error) {
 	var artist models.CollectionArtist
 	if err := a.DB.Where("mb_id = ?", mbid).First(&artist).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
-		return
+		return artistDetailData{}, errArtistNotFound
 	}
 	// Through the credit links, not artist_mb_id: a collaboration belongs on both
 	// artists' pages, and only one of them can be named in that column.
@@ -470,11 +507,12 @@ func (a *API) getArtist(c *gin.Context) {
 		view.OwnedEditions = editionCounts[rg.MBID]
 		views = append(views, view)
 	}
-	body := gin.H{"artist": newArtistView(artist), "release_groups": views, "desires": desires}
-	if repair := a.artistRepair(mbid); repair != nil {
-		body["repair"] = repair
-	}
-	c.JSON(http.StatusOK, body)
+	return artistDetailData{
+		Artist:        newArtistView(artist),
+		ReleaseGroups: views,
+		Desires:       desires,
+		Repair:        a.artistRepair(mbid),
+	}, nil
 }
 
 // markSameAlbum records that this album row is the same album as another of the
@@ -1329,15 +1367,37 @@ func (a *API) updateCollectionPolicy(c *gin.Context) {
 // desires that exist for it. Tracklists stay a separate, lazy call — fetching one
 // per edition up front would cost a rate-limited second each.
 func (a *API) releaseGroupDetail(c *gin.Context) {
-	artistMBID := c.Param("mbid")
-	rgMBID := c.Param("rgid")
-
-	var artist models.CollectionArtist
-	if err := a.DB.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+	detail, err := a.releaseGroupDetailData(c.Param("mbid"), c.Param("rgid"))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	c.JSON(http.StatusOK, gin.H{
+		"artist":        detail.Artist,
+		"release_group": detail.ReleaseGroup,
+		"editions":      detail.Editions,
+		"desires":       detail.Desires,
+	})
+}
 
+// releaseGroupDetailData is what GET /artists/:mbid/release-groups/:rgid and the MCP
+// get_album tool share.
+type releaseGroupDetailData struct {
+	Artist       artistView
+	ReleaseGroup releaseGroupView
+	Editions     []editionView
+	Desires      []models.CollectionDesire
+}
+
+// releaseGroupDetailData loads one release-group under an artist. It may reach
+// MusicBrainz (cache-first) for the edition list and, for a group nobody owns, the
+// discography. The only error is errArtistNotFound; an unreachable MusicBrainz leaves
+// the edition list to what is owned.
+func (a *API) releaseGroupDetailData(artistMBID, rgMBID string) (releaseGroupDetailData, error) {
+	var artist models.CollectionArtist
+	if err := a.DB.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
+		return releaseGroupDetailData{}, errArtistNotFound
+	}
 	// Prefer the stored row (it carries ownership); fall back to the cached
 	// discography so a release-group nobody owns still renders.
 	var rg models.CollectionReleaseGroup
@@ -1392,10 +1452,10 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 	}
 	view.OwnedEditions = len(owned)
 
-	c.JSON(http.StatusOK, gin.H{
-		"artist":        newArtistView(artist),
-		"release_group": view,
-		"editions":      annotateEditions(editions, owned),
-		"desires":       mine,
-	})
+	return releaseGroupDetailData{
+		Artist:       newArtistView(artist),
+		ReleaseGroup: view,
+		Editions:     annotateEditions(editions, owned),
+		Desires:      mine,
+	}, nil
 }

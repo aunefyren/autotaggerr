@@ -129,6 +129,32 @@ func TestApplyMirrorInversion(t *testing.T) {
 	}
 }
 
+// TestApplyMCPInversion: the page's "Allow AI assistants" is the file's
+// autotaggerr_mcp_disabled, inverted, and saving it is applying it.
+func TestApplyMCPInversion(t *testing.T) {
+	off, changed, err := Apply(baseConfig(), values(map[string]any{"autotaggerr_mcp_enabled": false}))
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !off.AutotaggerrMCPDisabled || len(changed) != 1 {
+		t.Fatalf("off = disabled %v, changed %v; want disabled and one change", off.AutotaggerrMCPDisabled, changed)
+	}
+	if applied := (*Runtime)(nil).Apply(off, changed); len(applied) != 1 || !strings.Contains(applied[0], "off") {
+		t.Errorf("applied = %v, want the endpoint reported off", applied)
+	}
+
+	on, changed, err := Apply(off, values(map[string]any{"autotaggerr_mcp_enabled": true}))
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if on.AutotaggerrMCPDisabled {
+		t.Error("turning MCP on should clear autotaggerr_mcp_disabled")
+	}
+	if applied := (*Runtime)(nil).Apply(on, changed); len(applied) != 1 || !strings.Contains(applied[0], "on") {
+		t.Errorf("applied = %v, want the endpoint reported on", applied)
+	}
+}
+
 func TestApplyRejects(t *testing.T) {
 	cfg := baseConfig()
 
@@ -229,11 +255,12 @@ func TestEveryConfigKeyHasAHome(t *testing.T) {
 			homed[field.Key] = true
 		}
 	}
-	// The two "keep this refreshed" switches and the Lidarr follow switch are stored
+	// The two "keep this refreshed" switches, the Lidarr follow switch and the MCP switch are stored
 	// inverted, so the page's key is not the file's.
 	homed["autotaggerr_mirror_disabled"] = true
 	homed["autotaggerr_artwork_disabled"] = true
 	homed["autotaggerr_lidarr_follow_disabled"] = true
+	homed["autotaggerr_mcp_disabled"] = true
 
 	structType := reflect.TypeOf(models.ConfigStruct{})
 	for i := 0; i < structType.NumField(); i++ {

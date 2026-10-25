@@ -256,6 +256,8 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrTempoCronSchedule = models.DefaultTempoCronSchedule
 	ConfigFile.AutotaggerrTempoConcurrency = models.DefaultTempoConcurrency
 
+	ConfigFile.AutotaggerrMCPDisabled = false
+
 	ConfigFile.AutotaggerrHealthCronSchedule = "0 */5 * * * *"
 
 	ConfigFile.AutotaggerrLidarrFollowDisabled = false

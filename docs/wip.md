@@ -9,7 +9,7 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 [tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md),
 [mb-migration.md](mb-migration.md), [mirror.md](mirror.md), [artwork.md](artwork.md),
 [authentication.md](authentication.md), [settings.md](settings.md), [tempo.md](tempo.md),
-[naming.md](naming.md), [import.md](import.md) and [downloads.md](downloads.md).
+[naming.md](naming.md), [import.md](import.md), [downloads.md](downloads.md) and [mcp.md](mcp.md).
 
 ## Open work
 
@@ -86,6 +86,32 @@ still open:
 
 ## Roadmap / ideas
 
+- **MCP server — what is left** ([mcp.md](mcp.md)). Phase 1 (read-only) has shipped.
+  - **Scoped keys** come first: an `api_keys` table — name, scope (`read` / `write`), created, last
+    used, stored **hashed** — replacing the single plaintext `User.APIKey`, so a user can hand an
+    assistant a key that cannot write. The role-split `getServer` becomes role × scope, and
+    `TestMCPToolsAreReadOnly` becomes "read-only unless the key may write". Today's key migrates in as
+    a `write` key named "default".
+  - **Actions enqueue, they do not run.** Tools for the four verbs (per library / artist /
+    release-group) put a job on `process.Runner`'s queue and return the event ID for `get_activity`.
+    Honest annotations: `IdempotentHint` where the queue dedups, `DestructiveHint` on Tag files and on
+    migration approval.
+  - **Collection edits** — follow / monitor, set and clear desires, attach / confirm a pin, approve /
+    dismiss migrations — each through the guards the REST handlers apply
+    (`requireIdentityEditable` and friends), extracted into query methods the way phase 1's reads were.
+  - **MusicBrainz search** arrives with them, as the input to *add artist* and *attach*; it is left
+    out of the reads because an uncached search loop would starve the job queue's rate limit.
+  - **Confirmation stays the client's job.** Stateless mode rules out elicitation, and clients
+    already ask before a non-read-only tool runs. Turn sessions on only if a long verb needs progress
+    notifications that polling `get_activity` cannot give.
+  - **Remote connectors (OAuth).** claude.ai and other hosted clients connect only via OAuth: protected
+    resource metadata (RFC 9728) named from `WWW-Authenticate`, client registration (dynamic, or a
+    client ID metadata document), and an authorization code flow with PKCE. Autotaggerr would be the
+    authorization server, its login (password or the OIDC providers) the consent screen, and the token
+    would carry the scoped-key scopes. Its own security review; nothing above depends on it.
+  - **Resources and prompts.** Resources (`autotaggerr://artist/{mbid}`) would duplicate the tools for
+    clients that browse them poorly; a "library health report" prompt fits once there are actions for
+    it to suggest.
 - **BPM playlists in Plex** (postponed from the tempo work, optional). Plex ignores BPM tags, so
   running playlists at a cadence (e.g. 160 steps/min) have to reach Plexamp as playlists. The design
   as agreed so far:

@@ -112,6 +112,13 @@ func (r *Runtime) Apply(cfg models.ConfigStruct, changed []string) []string {
 				r.setConcurrency(cfg.AutotaggerrProcessConcurrency)
 				applied = append(applied, "new scans will use the new worker count")
 			}
+		case "autotaggerr_mcp_enabled":
+			// Nothing to push: the MCP route reads the switch on every request.
+			if cfg.AutotaggerrMCPDisabled {
+				applied = append(applied, "the MCP endpoint is now off")
+			} else {
+				applied = append(applied, "the MCP endpoint is now on")
+			}
 		case "autotaggerr_tempo_concurrency":
 			// Nothing to push: the tempo runner reads the worker count from the config
 			// at the start of each pass, so saving it is applying it.

@@ -217,3 +217,77 @@ func TestCurrentUserWithoutMiddleware(t *testing.T) {
 		t.Error("CurrentUser accepted a non-User context value")
 	}
 }
+
+// bearerKeyRouter is guardedRouter with the MCP route's option, reporting the user
+// found on the request's context.Context as well as the Gin one — the MCP tool
+// handlers only ever see the former.
+func bearerKeyRouter(db *gorm.DB) *gin.Engine {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/guarded", Middleware(db, testKey, BearerAPIKey()), func(c *gin.Context) {
+		fromGin, ok := CurrentUser(c)
+		fromCtx, ctxOK := UserFromContext(c.Request.Context())
+		if !ok || !ctxOK || fromGin.ID != fromCtx.ID {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "user missing from one of the contexts"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"id": fromCtx.ID.String()})
+	})
+	return r
+}
+
+func TestMiddlewareBearerAPIKeyOption(t *testing.T) {
+	db := oidcTestDB(t)
+	user := middlewareUser(t, db)
+	token, err := IssueToken(user, testKey, DefaultTokenTTL)
+	if err != nil {
+		t.Fatalf("IssueToken: %v", err)
+	}
+	r := bearerKeyRouter(db)
+
+	for _, tc := range []struct{ name, header, value string }{
+		{"API key as Bearer", "Authorization", "Bearer api-key-123"},
+		// A session token still works on the same route: it is tried first.
+		{"session token", "Authorization", "Bearer " + token},
+		{"X-Api-Key", "X-Api-Key", "api-key-123"},
+	} {
+		w := guardedGet(r, tc.header, tc.value)
+		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), user.ID.String()) {
+			t.Errorf("%s = %d, want 200 as %s: %s", tc.name, w.Code, user.ID, w.Body.String())
+		}
+	}
+
+	for _, tc := range []struct{ name, value string }{
+		{"unknown key", "Bearer not-a-key"},
+		{"empty Bearer", "Bearer "},
+	} {
+		if w := guardedGet(r, "Authorization", tc.value); w.Code != http.StatusUnauthorized {
+			t.Errorf("%s = %d, want 401", tc.name, w.Code)
+		}
+	}
+
+	// Without the option the same header is refused: the default boundary is unmoved.
+	if w := guardedGet(guardedRouter(db), "Authorization", "Bearer api-key-123"); w.Code != http.StatusUnauthorized {
+		t.Errorf("API key as Bearer without the option = %d, want 401", w.Code)
+	}
+}
+
+func TestMiddlewareChallengesOn401(t *testing.T) {
+	db := oidcTestDB(t)
+	middlewareUser(t, db)
+	w := guardedGet(guardedRouter(db), "", "")
+	if got := w.Header().Get("WWW-Authenticate"); !strings.HasPrefix(got, "Bearer ") {
+		t.Errorf("WWW-Authenticate = %q, want a Bearer challenge", got)
+	}
+}
+
+func TestNewAPIKeyIsFreshEachTime(t *testing.T) {
+	a, err := NewAPIKey()
+	if err != nil {
+		t.Fatalf("NewAPIKey: %v", err)
+	}
+	b, _ := NewAPIKey()
+	if len(a) < 40 || a == b {
+		t.Errorf("keys %q and %q: want two distinct, long keys", a, b)
+	}
+}

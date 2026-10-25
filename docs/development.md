@@ -340,4 +340,5 @@ Feature docs:
 - `fingerprinting.md` — optional AcoustID identification.
 - `tempo.md` — optional BPM analysis: the detector, why a file is analysed once, its own runner.
 - `authentication.md` — local login, API keys, OIDC.
+- `mcp.md` — the read-only MCP server for AI assistants: connecting, the tools, and how they share query methods with the REST handlers.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.

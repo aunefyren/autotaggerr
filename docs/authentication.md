@@ -7,7 +7,7 @@ token minted by `auth.IssueToken`. Middleware, handlers and the SPA never care h
 |---|---|---|
 | Password | The UI login form | Username + bcrypt hash on `models.User` |
 | OIDC | The UI "Continue with …" buttons | An external identity provider |
-| API key | Scripts, automation | `X-Api-Key` header, per user |
+| API key | Scripts, automation, AI assistants | `X-Api-Key` header, per user (also `Authorization: Bearer` on the MCP endpoint) |
 
 **Password login always stays available.** There is no way to disable it, so a broken OIDC
 provider can never lock you out of your own instance.
@@ -39,6 +39,22 @@ The pragmas in [media-manager.md](media-manager.md#infrastructure) are what stop
 happening; this is what stops it being destructive when something else does. Guarded by
 `auth/middleware_test.go`, in both directions — an unreadable store must not become a blanket excuse
 that lets a bad credential through.
+
+## API keys
+
+Each user has one key. It is shown exactly once — when it is generated — and nothing reads it back:
+the first admin's key is printed to the first-boot log, and `POST /api/v1/auth/me/api-key` (the
+*Generate new API key* button under **Settings → AI assistants (MCP)**) replaces the caller's key and
+returns the new one. Rotating is therefore also how a lost key is recovered, and the old key stops
+working at once.
+
+A key goes in `X-Api-Key`. On the MCP endpoint only, it may also be sent as
+`Authorization: Bearer <key>`, because many MCP clients can send a bearer token but not an arbitrary
+header (`auth.BearerAPIKey`; see [mcp.md](mcp.md#authentication)). Every 401 carries
+`WWW-Authenticate: Bearer realm="autotaggerr"`.
+
+Keys are stored in plain text and grant everything their user can do. Named, scoped, hashed keys are
+open work ([wip.md](wip.md#roadmap--ideas)).
 
 ## OIDC setup
 

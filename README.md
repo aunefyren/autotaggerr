@@ -49,6 +49,11 @@ There are other solutions that try to fix this, like a Beets plugin that can run
   same form decides whether the result is written (`BPM` on FLAC, `TBPM` on MP3), only where a
   file has none or always, and above which confidence. See [docs/tempo.md](docs/tempo.md).
 
+- 🤖 **AI Assistant Access (MCP)**  
+  A read-only [Model Context Protocol](https://modelcontextprotocol.io) endpoint at `/api/v1/mcp`, so
+  an assistant such as Claude can answer "what am I missing?" or "which files failed?" from your
+  collection. Generate a key under **Settings → AI assistants (MCP)**. See [docs/mcp.md](docs/mcp.md).
+
 - 🧠 **Rate-Limited & Cached API Calls**  
   Avoid API abuse and repeated lookups with built-in caching and configurable request throttling.
 
@@ -157,6 +162,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"autotaggerr_lidarr_follow_cron_schedule": "0 */10 * * * *",
 	"autotaggerr_lidarr_follow_disabled": false,
 	"autotaggerr_log_level": "info",
+	"autotaggerr_mcp_disabled": false,
 	"autotaggerr_migration_review_artists": false,
 	"autotaggerr_migration_review_deletions": false,
 	"autotaggerr_migration_review_pinned": false,
@@ -227,6 +233,7 @@ starts.
 | `autotaggerr_mirror_cron_schedule` | — | — | string | 6-field cron for the mirror refresh. Default `0 0 3 * * *` (nightly 03:00). |
 | `autotaggerr_artwork_disabled` | — | — | bool | Turn the scheduled artwork fetch — and the automatic one for newly added artists and albums — off entirely. Images are still fetched on demand when a page asks. Default `false` (artwork is fetched ahead). |
 | `autotaggerr_artwork_cron_schedule` | — | — | string | 6-field cron for the artwork fetch. Default `0 0 5 * * *` (nightly 05:00). New rows fetch their own artwork as they arrive, so this is a backstop for expiry. |
+| `autotaggerr_mcp_disabled` | — | — | bool | Turn off the read-only MCP endpoint (`/api/v1/mcp`) that AI assistants connect to; it then answers 404. Default `false` (on — it takes the same API key as the REST API). Editable on **Settings → AI assistants (MCP)**, applies without a restart. See [docs/mcp.md](docs/mcp.md). |
 | `autotaggerr_tempo_cron_schedule` | — | — | string | 6-field cron for tempo analysis. Default `0 0 1 * * *` (nightly 01:00). Which libraries are analysed is set per library (**Libraries → edit**); with none opted in the pass does nothing. Editable on **Settings → Tempo analysis**. |
 | `autotaggerr_tempo_concurrency` | — | — | int | Files analysed in parallel. Default `2`. Analysis is CPU-bound, and a pass pauses while files are being written regardless. Editable on **Settings → Tempo analysis**. |
 | `autotaggerr_migration_review_releases` | — | — | bool | Hold merged **releases** for manual approval instead of re-pointing records automatically. Default `false` (apply). |

@@ -7,6 +7,7 @@ import (
 	"github.com/aunefyren/autotaggerr/artwork"
 	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/collection"
+	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
@@ -91,10 +92,15 @@ func (a *API) Register(rg *gin.RouterGroup) {
 	// keep it from being a useful proxy to abuse.
 	rg.GET("/artwork/:entity/:mbid", a.artwork)
 
+	// The MCP endpoint for AI assistants. Authenticated like everything below, but
+	// mounted on its own because it takes an API key as a Bearer token too.
+	a.registerMCP(rg)
+
 	protected := rg.Group("")
 	protected.Use(auth.Middleware(a.DB, a.SigningKey))
 	{
 		protected.GET("/auth/me", a.me)
+		protected.POST("/auth/me/api-key", a.rotateAPIKey)
 		protected.GET("/health", a.health)
 
 		// Which artwork kinds can actually be served, so the UI skips requests that
@@ -329,6 +335,30 @@ func (a *API) me(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, user)
+}
+
+// rotateAPIKey replaces the caller's API key and returns the new one. This is the
+// only time a key is ever shown: there is no endpoint that reads one back, the same
+// posture as the write-only credentials on managers and data sources. Rotating is
+// therefore also how a lost key is recovered, and the old key stops working at once.
+func (a *API) rotateAPIKey(c *gin.Context) {
+	user, ok := auth.CurrentUser(c)
+	if !ok {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+	key, err := auth.NewAPIKey()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate a key"})
+		return
+	}
+	if err := a.DB.Model(&models.User{}).Where("id = ?", user.ID).Update("api_key", key).Error; err != nil {
+		logger.Log.Errorf("failed to store a rotated API key for %s: %s", user.Username, err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store the new key"})
+		return
+	}
+	logger.Log.Infof("API key rotated for user %s", user.Username)
+	c.JSON(http.StatusOK, gin.H{"api_key": key})
 }
 
 // health returns a small summary of the configured domain. It requires auth (the

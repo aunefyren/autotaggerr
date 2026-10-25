@@ -396,40 +396,94 @@ func (a *API) processStatus(c *gin.Context) {
 // Filters: library_id, status, transient, q (path substring), mbid and pin_held.
 // Pagination: limit/offset.
 func (a *API) listLibraryItems(c *gin.Context) {
-	q := a.DB.Model(&models.LibraryItem{})
-
+	filter := itemFilter{
+		Status:  c.Query("status"),
+		Search:  c.Query("q"),
+		MBID:    c.Query("mbid"),
+		PinHeld: c.Query("pin_held") == "true",
+		Limit:   parseIntDefault(c.Query("limit"), defaultItemsLimit),
+		Offset:  parseIntDefault(c.Query("offset"), 0),
+	}
 	if raw := c.Query("library_id"); raw != "" {
 		id, err := uuid.Parse(raw)
 		if err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid library_id"})
 			return
 		}
-		q = q.Where("library_id = ?", id)
+		filter.LibraryID = &id
 	}
-	if status := c.Query("status"); status != "" {
-		q = q.Where("status = ?", status)
-	}
-	// "Will this fix itself?" — the split LastErrorTransient exists for. With
-	// status=error it separates an outage (MusicBrainz down, every file failing at
-	// once) from the failures someone has to look at; with status=unmatched it picks
-	// out the files waiting on a manager's second answer (models.InDiskView).
 	switch c.Query("transient") {
 	case "true":
-		q = q.Where("last_error_transient = ?", true)
+		filter.Transient = boolPtr(true)
 	case "false":
-		q = q.Where("last_error_transient = ?", false)
+		filter.Transient = boolPtr(false)
 	case "":
 	default:
 		c.JSON(http.StatusBadRequest, gin.H{"error": "transient must be true or false"})
 		return
 	}
-	if search := c.Query("q"); search != "" {
-		q = q.Where("path LIKE ?", "%"+search+"%")
+
+	page, err := a.libraryItems(filter)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"total":  page.Total,
+		"limit":  page.Limit,
+		"offset": page.Offset,
+		"items":  page.Items,
+	})
+}
+
+func boolPtr(v bool) *bool { return &v }
+
+// itemFilter is the correlation index's query, shared by GET /library-items and the
+// MCP list_files tool. Limit and Offset are clamped by libraryItems.
+type itemFilter struct {
+	LibraryID *uuid.UUID
+	Status    string
+	// Transient, when set, keeps only rows whose last error will (true) or will not
+	// (false) clear by itself.
+	Transient *bool
+	Search    string
+	MBID      string
+	PinHeld   bool
+	Limit     int
+	Offset    int
+}
+
+type itemPage struct {
+	Total         int64
+	Limit, Offset int
+	Items         []libraryItemView
+}
+
+// libraryItems runs one page of the index, ordered by path. Its errors are safe to
+// show a client.
+func (a *API) libraryItems(f itemFilter) (itemPage, error) {
+	q := a.DB.Model(&models.LibraryItem{})
+
+	if f.LibraryID != nil {
+		q = q.Where("library_id = ?", *f.LibraryID)
+	}
+	if f.Status != "" {
+		q = q.Where("status = ?", f.Status)
+	}
+	// "Will this fix itself?" — the split LastErrorTransient exists for. With
+	// status=error it separates an outage (MusicBrainz down, every file failing at
+	// once) from the failures someone has to look at; with status=unmatched it picks
+	// out the files waiting on a manager's second answer (models.InDiskView).
+	if f.Transient != nil {
+		q = q.Where("last_error_transient = ?", *f.Transient)
+	}
+	if f.Search != "" {
+		q = q.Where("path LIKE ?", "%"+f.Search+"%")
 	}
 	// Pins held for review (LibraryItem.PinHeld) — their own filter rather than a
 	// status, because a held file's status says what the last attempt did, and what
 	// it needs is a person.
-	if c.Query("pin_held") == "true" {
+	if f.PinHeld {
 		q = q.Where("pin_held = ?", true)
 	}
 	// "Show me the files behind this identifier" — the other half of the question
@@ -441,32 +495,30 @@ func (a *API) listLibraryItems(c *gin.Context) {
 	// An identifier nothing points at yields no rows rather than every row: an empty
 	// result is the honest answer to "which files depend on this", and quietly ignoring
 	// the filter would show a whole library under a heading naming one album.
-	if mbid := strings.TrimSpace(c.Query("mbid")); mbid != "" {
+	if mbid := strings.TrimSpace(f.MBID); mbid != "" {
 		q = q.Where("mb_release_id IN ?", a.releasesUnder(mbid))
 	}
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count items"})
-		return
+		return itemPage{}, errors.New("failed to count items")
 	}
 
-	limit := parseIntDefault(c.Query("limit"), defaultItemsLimit)
+	limit := f.Limit
 	if limit < 1 {
 		limit = defaultItemsLimit
 	}
 	if limit > maxItemsLimit {
 		limit = maxItemsLimit
 	}
-	offset := parseIntDefault(c.Query("offset"), 0)
+	offset := f.Offset
 	if offset < 0 {
 		offset = 0
 	}
 
 	var items []models.LibraryItem
 	if err := q.Order("path").Limit(limit).Offset(offset).Find(&items).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list items"})
-		return
+		return itemPage{}, errors.New("failed to list items")
 	}
 
 	// Annotate each row with whether its file's identity may be set by hand, resolved
@@ -487,13 +539,7 @@ func (a *API) listLibraryItems(c *gin.Context) {
 		}
 		views = append(views, libraryItemView{LibraryItem: item, IdentityEditable: editable})
 	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
-		"items":  views,
-	})
+	return itemPage{Total: total, Limit: limit, Offset: offset, Items: views}, nil
 }
 
 // libraryItemView is a library item plus whether its MB identity may be set by hand.
@@ -515,20 +561,45 @@ func (a *API) itemTags(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "item not found"})
 		return
 	}
-	tags, err := components.ComputeItemDiff(a.DB, a.meta(), item)
+	diff, err := a.itemTagDiff(item)
 	if err != nil {
 		c.JSON(http.StatusUnprocessableEntity, gin.H{"error": err.Error()})
 		return
 	}
-	// Where the file would live is reported beside its tags, never instead of them: a
-	// release the naming cannot render is no reason to hide what the tags would be.
-	response := gin.H{"item": item, "tags": tags}
-	if path, err := components.ComputeItemPath(a.DB, a.meta(), item); err != nil {
-		response["path_error"] = err.Error()
+	response := gin.H{"item": item, "tags": diff.Tags}
+	if diff.PathError != "" {
+		response["path_error"] = diff.PathError
 	} else {
-		response["path"] = path
+		response["path"] = diff.Path
 	}
 	c.JSON(http.StatusOK, response)
+}
+
+// itemTagDiffData is a file's current-vs-desired tags and where its profile would
+// put it, for GET /library-items/:id/tags and the MCP get_file tool.
+type itemTagDiffData struct {
+	Tags      []models.TagDiffEntry
+	Path      *models.PathDiff
+	PathError string
+}
+
+// itemTagDiff computes what a write would change. It reads the release through the
+// metadata source, so it may reach MusicBrainz. An error means no diff exists (the
+// file is not identified, or its release cannot be read); a path that cannot be
+// rendered is reported beside the tags, never instead of them — a release the naming
+// cannot render is no reason to hide what the tags would be.
+func (a *API) itemTagDiff(item models.LibraryItem) (itemTagDiffData, error) {
+	tags, err := components.ComputeItemDiff(a.DB, a.meta(), item)
+	if err != nil {
+		return itemTagDiffData{}, err
+	}
+	out := itemTagDiffData{Tags: tags}
+	if path, err := components.ComputeItemPath(a.DB, a.meta(), item); err != nil {
+		out.PathError = err.Error()
+	} else {
+		out.Path = path
+	}
+	return out, nil
 }
 
 func parseIntDefault(s string, def int) int {

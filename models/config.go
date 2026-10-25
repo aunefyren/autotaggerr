@@ -174,6 +174,14 @@ type ConfigStruct struct {
 	AutotaggerrArtworkDisabled     bool   `json:"autotaggerr_artwork_disabled"`
 	AutotaggerrArtworkCronSchedule string `json:"autotaggerr_artwork_cron_schedule"`
 
+	// MCP server: the read-only Model Context Protocol endpoint at /api/v1/mcp that AI
+	// assistants connect to (see docs/mcp.md). It is behind the same credentials as
+	// the REST API, so it is on by default; this is the switch for an instance that
+	// wants no assistant talking to it. Disabled rather than enabled for the reason
+	// the mirror key is: a bool absent from an existing config.json decodes as false,
+	// and false has to mean the default behaviour.
+	AutotaggerrMCPDisabled bool `json:"autotaggerr_mcp_disabled"`
+
 	// Tempo analysis. Whether a library is analysed at all is a per-library opt-in
 	// (Library.AnalyseTempo), so there is no on/off key here: with no library opted
 	// in, the scheduled pass finds nothing to do. Concurrency is its own knob rather

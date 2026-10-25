@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -30,17 +31,64 @@ const (
 // narrows the feed to one cascade. `nested=0` still returns runs only, for a caller
 // that wants the old shape.
 func (a *API) listEvents(c *gin.Context) {
-	evType := c.Query("type")
-	status := c.Query("status")
-	search := strings.ToLower(strings.TrimSpace(c.Query("q")))
-	parent := strings.TrimSpace(c.Query("parent"))
+	filter := eventFilter{
+		Type:   c.Query("type"),
+		Status: c.Query("status"),
+		Search: c.Query("q"),
+		Parent: strings.TrimSpace(c.Query("parent")),
+		// nested=0 still returns runs only, for a caller that wants the old shape.
+		RunsOnly: c.Query("nested") == "0",
+		Limit:    parseIntDefault(c.Query("limit"), defaultEventsLimit),
+		Offset:   parseIntDefault(c.Query("offset"), 0),
+	}
+	page, err := a.eventFeed(filter)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, errBadParent) {
+			status = http.StatusBadRequest
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":  page.Total,
+		"limit":  page.Limit,
+		"offset": page.Offset,
+		"events": page.Events,
+		"facets": a.eventFacets(filter.Type, filter.Status, page.search, filter.Parent),
+	})
+}
+
+// eventFilter is the Activity feed's query, shared by GET /events and the MCP
+// list_activity tool. Limit and Offset are clamped by eventFeed.
+type eventFilter struct {
+	Type, Status, Search, Parent string
+	RunsOnly                     bool
+	Limit, Offset                int
+}
+
+type eventPage struct {
+	Total         int64
+	Limit, Offset int
+	Events        []models.Event
+	// search is the normalised title filter, which the facets reuse.
+	search string
+}
+
+var errBadParent = errors.New("parent must be an event id")
+
+// eventFeed runs one page of the feed: newest first, annotated with each row's
+// relatives. Its errors are safe to show a client; errBadParent is the caller's fault.
+func (a *API) eventFeed(f eventFilter) (eventPage, error) {
+	search := strings.ToLower(strings.TrimSpace(f.Search))
 
 	q := a.DB.Model(&models.Event{})
-	if evType != "" {
-		q = q.Where("type = ?", evType)
+	if f.Type != "" {
+		q = q.Where("type = ?", f.Type)
 	}
-	if status != "" {
-		q = q.Where("status = ?", status)
+	if f.Status != "" {
+		q = q.Where("status = ?", f.Status)
 	}
 	if search != "" {
 		// LOWER on both sides rather than relying on LIKE's collation: SQLite folds
@@ -51,51 +99,41 @@ func (a *API) listEvents(c *gin.Context) {
 	// One cascade: the run itself and everything it spawned. The run is included
 	// because "show me this run" that omitted the run would be answering a narrower
 	// question than it was asked.
-	if parent != "" {
-		parentID, err := uuid.Parse(parent)
+	if f.Parent != "" {
+		parentID, err := uuid.Parse(f.Parent)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "parent must be an event id"})
-			return
+			return eventPage{}, errBadParent
 		}
 		q = q.Where("parent_id = ? OR id = ?", parentID, parentID)
 	}
 
-	if c.Query("nested") == "0" {
+	if f.RunsOnly {
 		q = q.Where("parent_id IS NULL")
 	}
 
 	var total int64
 	if err := q.Count(&total).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to count events"})
-		return
+		return eventPage{}, errors.New("failed to count events")
 	}
 
-	limit := parseIntDefault(c.Query("limit"), defaultEventsLimit)
+	limit := f.Limit
 	if limit < 1 {
 		limit = defaultEventsLimit
 	}
 	if limit > maxEventsLimit {
 		limit = maxEventsLimit
 	}
-	offset := parseIntDefault(c.Query("offset"), 0)
+	offset := f.Offset
 	if offset < 0 {
 		offset = 0
 	}
 
 	var rows []models.Event
 	if err := q.Order("started_at desc").Limit(limit).Offset(offset).Find(&rows).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list events"})
-		return
+		return eventPage{}, errors.New("failed to list events")
 	}
 	a.annotateFeed(rows)
-
-	c.JSON(http.StatusOK, gin.H{
-		"total":  total,
-		"limit":  limit,
-		"offset": offset,
-		"events": rows,
-		"facets": a.eventFacets(evType, status, search, parent),
-	})
+	return eventPage{Total: total, Limit: limit, Offset: offset, Events: rows, search: search}, nil
 }
 
 // eventFacets counts what each filter option would return, so a control can state its
@@ -292,12 +330,21 @@ func (a *API) getEvent(c *gin.Context) {
 	if !ok {
 		return
 	}
-	var ev models.Event
-	if err := a.DB.First(&ev, "id = ?", id).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "event not found"})
+	ev, err := a.eventDetail(id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
 		return
 	}
+	c.JSON(http.StatusOK, ev)
+}
 
+// eventDetail loads one event with its per-file detail rows and the stages it ran,
+// for GET /events/:id and the MCP get_activity tool.
+func (a *API) eventDetail(id uuid.UUID) (models.Event, error) {
+	var ev models.Event
+	if err := a.DB.First(&ev, "id = ?", id).Error; err != nil {
+		return ev, errors.New("event not found")
+	}
 	// The per-file detail rows come with the single-event fetch, not the feed: they
 	// are the reason to open an event, and a list of 50 events would otherwise carry
 	// thousands of them. Attached to the event rather than returned alongside it, so
@@ -321,6 +368,5 @@ func (a *API) getEvent(c *gin.Context) {
 		logger.Log.Warnf("failed to load stage events for event %s: %s", ev.ID, err.Error())
 	}
 	ev.Children = children
-
-	c.JSON(http.StatusOK, ev)
+	return ev, nil
 }

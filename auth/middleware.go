@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -26,21 +27,50 @@ const contextUserKey = "auth.user"
 // web UI clears the session on any 401, so a lock wait logged the user out.
 var errUnauthenticated = errors.New("unauthenticated")
 
+// Option adjusts what Middleware accepts on the routes it guards.
+type Option func(*options)
+
+type options struct {
+	bearerAPIKey bool
+}
+
+// BearerAPIKey also accepts an API key sent as `Authorization: Bearer <key>`.
+//
+// Opt-in per route because it exists for one kind of client: MCP clients, many of
+// which can be configured with a bearer token but not with an arbitrary header. A
+// Bearer value is tried as a session token first; only one that does not parse as a
+// token is looked up as a key, so a session keeps working on the same route.
+func BearerAPIKey() Option {
+	return func(o *options) { o.bearerAPIKey = true }
+}
+
 // Middleware authenticates each request by either a Bearer session token or an
 // X-Api-Key header, resolves the user from the database, and stores it in the
 // request context. A future OAuth flow issues the same Bearer token, so this
 // layer never needs to change.
 //
+// The user is stored twice: on the Gin context for handlers (CurrentUser), and on
+// the request's context.Context for code that is handed only that — the MCP tool
+// handlers, which never see a *gin.Context (UserFromContext).
+//
 // It answers 401 only when the credential is at fault, and 503 when the lookup could
 // not be performed. Saying 401 for an infrastructure failure is a claim about the
 // caller's identity that the server has not actually established, and clients act on
 // that claim by discarding a session that was never invalid.
-func Middleware(db *gorm.DB, signingKey []byte) gin.HandlerFunc {
+func Middleware(db *gorm.DB, signingKey []byte, opts ...Option) gin.HandlerFunc {
+	var o options
+	for _, opt := range opts {
+		opt(&o)
+	}
 	return func(c *gin.Context) {
-		user, err := userFromRequest(c, db, signingKey)
+		user, err := userFromRequest(c, db, signingKey, o)
 		switch {
 		case err == nil:
 		case errors.Is(err, errUnauthenticated):
+			// RFC 9110 requires the challenge on a 401, and MCP clients start their
+			// auth flow from it. Browsers show no prompt for the Bearer scheme, so the
+			// SPA is unaffected.
+			c.Header("WWW-Authenticate", `Bearer realm="autotaggerr"`)
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 			return
 		default:
@@ -55,11 +85,12 @@ func Middleware(db *gorm.DB, signingKey []byte) gin.HandlerFunc {
 			return
 		}
 		c.Set(contextUserKey, user)
+		c.Request = c.Request.WithContext(WithUser(c.Request.Context(), user))
 		c.Next()
 	}
 }
 
-func userFromRequest(c *gin.Context, db *gorm.DB, signingKey []byte) (models.User, error) {
+func userFromRequest(c *gin.Context, db *gorm.DB, signingKey []byte, o options) (models.User, error) {
 	var user models.User
 
 	// API key — programmatic access.
@@ -72,7 +103,14 @@ func userFromRequest(c *gin.Context, db *gorm.DB, signingKey []byte) (models.Use
 
 	// Bearer session token — interactive/UI access.
 	if raw, ok := strings.CutPrefix(c.GetHeader("Authorization"), "Bearer "); ok {
-		claims, err := ParseToken(strings.TrimSpace(raw), signingKey)
+		raw = strings.TrimSpace(raw)
+		claims, err := ParseToken(raw, signingKey)
+		if err != nil && o.bearerAPIKey && raw != "" {
+			if err := db.Where("api_key = ?", raw).First(&user).Error; err != nil {
+				return user, credentialError(err)
+			}
+			return user, nil
+		}
 		if err != nil {
 			return user, fmt.Errorf("%w: %v", errUnauthenticated, err)
 		}
@@ -102,5 +140,18 @@ func CurrentUser(c *gin.Context) (models.User, bool) {
 		return models.User{}, false
 	}
 	u, ok := v.(models.User)
+	return u, ok
+}
+
+type userContextKey struct{}
+
+// WithUser returns ctx carrying user, for UserFromContext.
+func WithUser(ctx context.Context, user models.User) context.Context {
+	return context.WithValue(ctx, userContextKey{}, user)
+}
+
+// UserFromContext returns the user Middleware stored on the request's context.
+func UserFromContext(ctx context.Context) (models.User, bool) {
+	u, ok := ctx.Value(userContextKey{}).(models.User)
 	return u, ok
 }

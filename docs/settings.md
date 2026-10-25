@@ -137,7 +137,7 @@ and an unattended pass on every boot was the price. Both verbs now have a button
 a restart is a restart — which matters most for the case the keys were worst for, a container that
 restarts on a health check and re-walks the whole library each time.
 
-## Email, and the one action on this page
+## Email, and the test message
 
 The **Email** section configures an SMTP server (`mail`, stdlib `net/smtp`). PLAIN auth is used
 only when a username is set — a local relay on 25 that wants no credentials is a normal deployment.
@@ -172,11 +172,19 @@ worse than no test at all. And the SMTP server's own refusal is returned verbati
 authentication failed` is the answer the admin came for, and summarising it away leaves them with
 nothing to act on.
 
+## AI assistants (MCP)
+
+The **AI assistants (MCP)** section holds the *Allow AI assistants* switch (stored inverted, as
+`autotaggerr_mcp_disabled`, for the reason the mirror switch is) and the page's other action:
+*Generate new API key*, behind a confirmation, which shows the new key once with ready-to-paste
+client config. The switch is live without a restart because the MCP route reads it on every request.
+See [mcp.md](mcp.md).
+
 ## Tests
 
 - `settings/schema_test.go` — the surface (no secret values, no read-only field claiming to be
   editable, unique keys) and validation, including the all-or-nothing property and the
-  `autotaggerr_mirror_disabled` inversion.
+  `autotaggerr_mirror_disabled` and `autotaggerr_mcp_disabled` inversions.
 - `settings/apply_test.go` — scheduling, rescheduling, cancelling a disabled job, the live effects,
   and the full save path against a temp `config.json` (`files.SetConfigPaths` is the seam).
 - `routers/settings_test.go` — the admin gate from both sides, 401 vs 403, that the response never
