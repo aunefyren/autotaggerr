@@ -1,5 +1,5 @@
-// Package health probes the configured external connections (Lidarr, Plex) on a
-// schedule and records the result in the Activity feed. It records an event only when
+// Package health probes the configured external connections (Lidarr, download clients,
+// Plex) on a schedule and records the result in the Activity feed. It records an event only when
 // a connection's health *changes*, so a frequent cadence does not bury the feed under
 // identical "healthy" rows — the state, not the heartbeat, is what is worth keeping.
 package health
@@ -109,7 +109,27 @@ func (c *Checker) probes() []service {
 		}
 		svcs = append(svcs, svc)
 	}
-	return append(svcs, c.services...)
+	return append(append(svcs, c.downloadClientProbes()...), c.services...)
+}
+
+// downloadClientProbes lists the enabled download clients, read per run for the
+// reason manager rows are: the probe uses the credentials the poller will.
+func (c *Checker) downloadClientProbes() []service {
+	var rows []models.DownloadClient
+	if err := c.db.Where("enabled = ?", true).Order("name").Find(&rows).Error; err != nil {
+		logger.Log.Warnf("health check could not read download clients: %s", err.Error())
+		return nil
+	}
+	svcs := make([]service, 0, len(rows))
+	for _, row := range rows {
+		client, err := modules.NewDownloadClient(row)
+		if err != nil {
+			logger.Log.Warnf("health check skipping download client %q: %s", row.Name, err.Error())
+			continue
+		}
+		svcs = append(svcs, service{key: "download:" + row.ID.String(), name: row.Name, check: client.HealthCheck})
+	}
+	return svcs
 }
 
 // Run probes every monitored service and records one health event when any service's

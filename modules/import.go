@@ -100,6 +100,19 @@ func ScanImportSource(root string) ([]ImportGroup, error) {
 		}
 	}
 
+	return GroupImportFiles(root, files, ""), nil
+}
+
+// GroupImportFiles groups audio files already known to lie under root by album
+// folder, as ScanImportSource does for the files it walks. It is the entry point for a
+// caller that has its own list — a download client, which knows which of a download's
+// files are complete — rather than whatever happens to be on disk.
+//
+// name stands in for the album folder's name when the files sit directly above root:
+// a single-file torrent's content is the file itself, and the folder it sits in is the
+// category's, which names nothing. Empty means no such name.
+func GroupImportFiles(root string, files []string, name string) []ImportGroup {
+	root = filepath.Clean(root)
 	byFolder := map[string][]string{}
 	for _, file := range files {
 		folder := importAlbumFolder(root, file)
@@ -110,12 +123,29 @@ func ScanImportSource(root string) ([]ImportGroup, error) {
 	for folder, members := range byFolder {
 		sort.Strings(members)
 		group := ImportGroup{Folder: folder, Files: members, Discs: discFolderCount(folder, members)}
-		importHint(&group, root)
+		importHint(&group, root, name)
 		group.ReleaseID, group.ReleaseIDsDisagree = agreedReleaseID(members)
 		groups = append(groups, group)
 	}
 	sort.Slice(groups, func(i, j int) bool { return groups[i].Folder < groups[j].Folder })
-	return groups, nil
+	return groups
+}
+
+// ImportGroupFolders is the album folders GroupImportFiles would make of files, without
+// reading any tags — what a caller needs to tell whether every album of a download has
+// been imported.
+func ImportGroupFolders(root string, files []string) []string {
+	root = filepath.Clean(root)
+	seen := map[string]bool{}
+	var out []string
+	for _, file := range files {
+		if folder := importAlbumFolder(root, file); !seen[folder] {
+			seen[folder] = true
+			out = append(out, folder)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // importAlbumFolder is the folder a file's album is: its own folder, or the one above
@@ -149,7 +179,10 @@ const (
 //     way under the folder they pointed at. Above the root the parent is wherever the
 //     downloads happen to live — "downloads", "complete", "config" — which is what the
 //     search used to be prefilled with.
-func importHint(group *ImportGroup, root string) {
+//
+// name, when given, is read in place of the album folder's name for a group whose
+// folder lies outside root (see GroupImportFiles).
+func importHint(group *ImportGroup, root, name string) {
 	artist, album, year := tagHint(group.Files)
 	if artist != "" {
 		group.Artist, group.ArtistFrom = artist, HintFromTags
@@ -161,7 +194,11 @@ func importHint(group *ImportGroup, root string) {
 		group.Year, group.YearFrom = year, HintFromTags
 	}
 
-	fArtist, fAlbum, fYear := ParseAlbumFolderName(filepath.Base(group.Folder))
+	folderName := filepath.Base(group.Folder)
+	if name != "" && !PathWithin(group.Folder, root) {
+		folderName = name
+	}
+	fArtist, fAlbum, fYear := ParseAlbumFolderName(folderName)
 	if group.Artist == "" && fArtist == "" {
 		if parent := filepath.Dir(group.Folder); parent != group.Folder && parent != filepath.Clean(root) && PathWithin(parent, root) {
 			fArtist = filepath.Base(parent)

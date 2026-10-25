@@ -88,6 +88,12 @@ type ImportPlan struct {
 	Root string
 	Mode modules.TransferMode
 	Rows []ImportRow
+	// Download is the download the files came from, when they came from one. Its
+	// album is marked queued here and settled when the job ends.
+	Download *ImportDownload
+	// Auto marks an import nobody reviewed: auto-import queued it because the files'
+	// own tags decided everything a review would have.
+	Auto bool
 }
 
 // ProposeImport maps sources onto a release's tracks by the folder-attach mapper and
@@ -197,12 +203,28 @@ func (r *Runner) Import(plan ImportPlan) error {
 	if err := CheckImportPlan(plan.Rows); err != nil {
 		return err
 	}
+	if plan.Download != nil {
+		// Checked and marked under one lock, so two imports of one album cannot both
+		// pass the check.
+		r.downloadMu.Lock()
+		err := r.checkImportDownload(plan)
+		if err == nil {
+			r.setDownloadGroupLocked(*plan.Download, models.DownloadGroupQueued)
+		}
+		r.downloadMu.Unlock()
+		if err != nil {
+			return err
+		}
+	}
 	title := importTitle(plan)
 	r.enqueue(job{jobImport, "import:" + uuid.NewString(), title, func() { r.importNow(plan, title) }})
 	return nil
 }
 
 func importTitle(plan ImportPlan) string {
+	if plan.Auto {
+		return fmt.Sprintf("Auto-import %s into %s", plan.Release.Title, plan.Library.Name)
+	}
 	return fmt.Sprintf("Import %s into %s", plan.Release.Title, plan.Library.Name)
 }
 
@@ -341,12 +363,27 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 		"mb_release_id":  plan.Release.ID,
 		"source":         plan.Root,
 		"mode":           string(plan.Mode),
+		"auto":           plan.Auto,
 		"files_imported": imported,
 		"files_replaced": replaced,
 		"errors":         len(failed) + tagFailures,
 	}
 	if scanErr != nil {
 		addWarnings(details, "The files were imported, but the collection could not be updated: "+scanErr.Error())
+	}
+	if plan.Download != nil {
+		// An album that failed in part is offered again: what failed is still in the
+		// download, and a second import plans around what the first one placed.
+		groupState := models.DownloadGroupImported
+		if imported == 0 || len(failed) > 0 || stopped {
+			groupState = models.DownloadGroupFailed
+		}
+		r.setDownloadGroup(*plan.Download, groupState)
+		var item models.DownloadItem
+		if r.db.First(&item, "id = ?", plan.Download.ItemID).Error == nil {
+			details["download"] = item.Name
+			details["download_id"] = item.RemoteID
+		}
 	}
 	if len(items) > r.detailRetention {
 		items = items[:r.detailRetention]

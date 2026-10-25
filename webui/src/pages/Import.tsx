@@ -4,6 +4,9 @@ import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import {
   ArtistSearchResult,
+  DownloadItem,
+  DownloadScan,
+  DownloadsList,
   ImportGroup,
   ImportPreview,
   ImportRow,
@@ -18,6 +21,7 @@ import { MBLink } from "../components/MBLink";
 import { ReleaseSearch, guessFields } from "../components/ReleaseSearch";
 import { PathInput } from "../components/PathInput";
 import { useToast } from "../toast";
+import { CopyWarning } from "./DownloadClients";
 
 /** A path relative to a folder above it, for display; the full path stays in the title. */
 function relativeTo(path: string, folder: string): string {
@@ -58,16 +62,342 @@ function hintSource(g: ImportGroup): string {
   return sources.has("tags") ? "from the files' tags" : "from the folder name";
 }
 
-/**
- * File import: loose files on the server into a library, at the path the library's
- * naming templates give them. The scanned folder lives in the URL (so Back and refresh
- * keep the scan) and in a short per-browser recent list.
- */
-export default function Import() {
-  const toast = useToast();
-  const [params, setParams] = useSearchParams();
+/** Which libraries can take an import: enabled, and not managed by Lidarr. */
+function useImportLibraries() {
   const libraries = useFetch<Library[]>(() => api.get("/libraries"));
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
+  // A library under Lidarr cannot take an import — Lidarr decides identity there and
+  // tracks its files by path — so it is listed, disabled, with the reason.
+  const lidarrManaged = (l: Library) =>
+    !!l.manager_id && managers.data?.find((m) => m.id === l.manager_id)?.type === "lidarr";
+  const eligible = (libraries.data ?? []).filter((l) => l.enabled && !lidarrManaged(l));
+  return { libraries, lidarrManaged, eligible };
+}
+
+type Source = "downloads" | "folder";
+
+/**
+ * File import: files on the server into a library, at the path the library's naming
+ * templates give them. They come from a download client's finished downloads, or from
+ * a folder scanned by hand; both open the same identify-and-review modal.
+ */
+export default function Import() {
+  const [params, setParams] = useSearchParams();
+  // A scanned path in the URL is a folder import someone was in the middle of.
+  const source: Source = (params.get("source") as Source) ?? (params.get("path") ? "folder" : "downloads");
+  const choose = (next: Source) => {
+    const p = new URLSearchParams(params);
+    p.set("source", next);
+    setParams(p, { replace: true });
+  };
+
+  return (
+    <div className="stack">
+      <div className="page-head">
+        <h1>Import</h1>
+      </div>
+      <p className="muted" style={{ margin: 0, maxWidth: "68ch", lineHeight: 1.55 }}>
+        Bring finished downloads into a library. Each album is identified once, every file is checked against
+        its track, and files land where the library's tagger profile names them.
+      </p>
+      <div className="tabs" role="tablist" aria-label="Where the files are">
+        <button type="button" role="tab" className="tab" aria-selected={source === "downloads"} onClick={() => choose("downloads")}>Downloads</button>
+        <button type="button" role="tab" className="tab" aria-selected={source === "folder"} onClick={() => choose("folder")}>Folder</button>
+      </div>
+      {source === "downloads" ? <DownloadsSource /> : <FolderSource />}
+    </div>
+  );
+}
+
+/**
+ * The finished downloads of every download client's watched categories. Each opens
+ * as an album scan — several albums for a discography — into the category's library.
+ */
+function DownloadsSource() {
+  const toast = useToast();
+  const { libraries, eligible } = useImportLibraries();
+  const list = useFetch<DownloadsList>(() => api.get("/import/downloads"));
+  const [checking, setChecking] = useState(false);
+  const [showDecided, setShowDecided] = useState(false);
+  const [expanded, setExpanded] = useState<{ item: DownloadItem; scan: DownloadScan } | null>(null);
+  const [opening, setOpening] = useState<string | null>(null);
+  const [open, setOpen] = useState<{ item: DownloadItem; scan: DownloadScan; group: ImportGroup } | null>(null);
+
+  const checkNow = async () => {
+    setChecking(true);
+    try {
+      await api.post<DownloadsList>("/import/downloads/poll", {});
+      list.reload();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const libraryOf = (item: DownloadItem) => eligible.find((l) => l.id === item.library_id) ?? null;
+
+  const start = async (item: DownloadItem) => {
+    setOpening(item.id);
+    try {
+      const scan = await api.get<DownloadScan>(`/import/downloads/${item.id}/scan`);
+      const waiting = scan.groups.filter((g) => !scan.states[g.folder] || scan.states[g.folder] === "failed");
+      // One album is opened straight away; several are listed to pick from.
+      if (scan.groups.length === 1 && waiting.length === 1) {
+        setExpanded(null);
+        setOpen({ item, scan, group: waiting[0] });
+      } else {
+        setExpanded({ item, scan });
+      }
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setOpening(null);
+    }
+  };
+
+  const act = async (item: DownloadItem, verb: "dismiss" | "restore") => {
+    try {
+      await api.post(`/import/downloads/${item.id}/${verb}`, {});
+      if (expanded?.item.id === item.id) setExpanded(null);
+      toast("ok", verb === "dismiss" ? `Dismissed ${item.name}` : `Restored ${item.name}`);
+      list.reload();
+    } catch (e) {
+      toast("err", errMsg(e));
+    }
+  };
+
+  if (list.err) return <ErrorNote message={list.err} />;
+  if (!list.data) return <span className="dim">Loading downloads…</span>;
+  const { clients, downloads } = list.data;
+
+  if (clients.length === 0) {
+    return (
+      <EmptyState
+        icon="⤓"
+        message="No download client yet. Add qBittorrent and its finished downloads are listed here, ready to import."
+        action={<Link className="btn btn-primary btn-sm" to="/download-clients">Add download client</Link>}
+      />
+    );
+  }
+
+  const waiting = downloads.filter((d) => d.state === "ready" || d.state === "unavailable");
+  const shown = showDecided ? downloads : waiting;
+  const decided = downloads.length - waiting.length;
+
+  return (
+    <div className="stack">
+      <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
+        <button className="btn btn-secondary btn-sm" onClick={checkNow} disabled={checking}>
+          {checking ? "Checking…" : "Check now"}
+        </button>
+        {clients.map((c) => (
+          <span key={c.id} className="dim" style={{ fontSize: 11 }}>
+            {c.name}:{" "}
+            {!c.enabled
+              ? "disabled"
+              : c.categories === 0
+                ? "no watched category"
+                : c.last_poll_at
+                  ? `checked ${new Date(c.last_poll_at).toLocaleString()}`
+                  : "not checked yet"}
+          </span>
+        ))}
+        {decided > 0 && (
+          <label className="row" style={{ gap: 6, fontSize: 12, cursor: "pointer", marginLeft: "auto" }}>
+            <input type="checkbox" checked={showDecided} onChange={(e) => setShowDecided(e.target.checked)} />
+            Show {decided} imported or dismissed
+          </label>
+        )}
+      </div>
+
+      {clients
+        .filter((c) => c.last_poll_error)
+        .map((c) => (
+          <ErrorNote key={c.id} message={`${c.name}: ${c.last_poll_error}`} />
+        ))}
+
+      {shown.length === 0 ? (
+        <EmptyState icon="⤓" message="No finished downloads waiting. Downloads in a watched category appear here once they finish." />
+      ) : (
+        <div className="tablewrap">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Download</th>
+                <th>Into</th>
+                <th style={{ textAlign: "right" }}>Files</th>
+                <th>State</th>
+                <th style={{ textAlign: "right" }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {shown.map((d) => {
+                const library = libraryOf(d);
+                const libraryName = libraries.data?.find((l) => l.id === d.library_id)?.name;
+                const importing = Object.values(d.groups).includes("queued");
+                return (
+                  <tr key={d.id}>
+                    <td>
+                      <div className="stack" style={{ gap: 2 }}>
+                        <span>{d.name}</span>
+                        <span className="path dim" style={{ fontSize: 11 }} title={d.remote_path}>{d.path}</span>
+                        {d.state === "unavailable" && d.reason && <span className="help-err" style={{ fontSize: 11 }}>{d.reason}</span>}
+                        {d.state === "imported" && d.reason && <span className="dim" style={{ fontSize: 11 }}>{d.reason}</span>}
+                        {d.state === "ready" && <AutoNotes notes={d.notes} />}
+                      </div>
+                    </td>
+                    <td>
+                      <div className="stack" style={{ gap: 2 }}>
+                        <span>{libraryName ?? <span className="dim">no library</span>}</span>
+                        <span className="dim mono" style={{ fontSize: 11 }}>{d.client_name} · {d.category}</span>
+                      </div>
+                    </td>
+                    <td className="mono" style={{ textAlign: "right" }}>
+                      {d.files.length}
+                      {d.albums > 1 && <div className="dim" style={{ fontSize: 11 }}>{d.albums} albums</div>}
+                    </td>
+                    <td>
+                      {importing ? (
+                        <Pill kind="scan">Importing</Pill>
+                      ) : d.state === "ready" && d.albums_imported > 0 ? (
+                        <Pill kind="chg">{d.albums_imported} of {d.albums} imported</Pill>
+                      ) : d.state === "ready" ? (
+                        <Pill kind="ok">Ready</Pill>
+                      ) : d.state === "unavailable" ? (
+                        <Pill kind="warn">Can't import</Pill>
+                      ) : d.state === "imported" ? (
+                        <Pill kind="off">Imported</Pill>
+                      ) : (
+                        <Pill kind="off">Dismissed</Pill>
+                      )}
+                    </td>
+                    <td>
+                      <div className="row" style={{ justifyContent: "flex-end" }}>
+                        {importing && <Link to="/activity" style={{ fontSize: 12 }}>View in Activity</Link>}
+                        {d.state === "ready" && !importing && (
+                          <button
+                            className="btn btn-secondary btn-sm"
+                            disabled={!library || opening === d.id}
+                            title={!library ? "The category's library cannot take an import — check it on Download clients" : undefined}
+                            onClick={() => start(d)}
+                          >
+                            {opening === d.id ? "Reading…" : "Import…"}
+                          </button>
+                        )}
+                        {(d.state === "ready" || d.state === "unavailable") && !importing && (
+                          <button className="btn btn-ghost btn-sm" onClick={() => act(d, "dismiss")} title="Stop offering this download. Nothing in the client or on disk changes.">
+                            Dismiss
+                          </button>
+                        )}
+                        {d.state === "dismissed" && (
+                          <button className="btn btn-ghost btn-sm" onClick={() => act(d, "restore")}>Restore</button>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {expanded && (
+        <div className="card stack">
+          <div className="row" style={{ justifyContent: "space-between" }}>
+            <strong>{expanded.item.name}</strong>
+            <button className="btn btn-ghost btn-sm" onClick={() => setExpanded(null)}>Close</button>
+          </div>
+          <span className="dim" style={{ fontSize: 12 }}>
+            {expanded.scan.groups.length} album folder{expanded.scan.groups.length === 1 ? "" : "s"} — each is identified and imported on its own.
+          </span>
+          <div className="tablewrap">
+            <table className="data">
+              <thead>
+                <tr><th>Folder</th><th>Looks like</th><th style={{ textAlign: "right" }}>Files</th><th>State</th><th style={{ textAlign: "right" }}>Actions</th></tr>
+              </thead>
+              <tbody>
+                {expanded.scan.groups.map((g) => {
+                  const state = expanded.scan.states[g.folder];
+                  const looksLike = [g.artist, g.album].filter(Boolean).join(" — ");
+                  return (
+                    <tr key={g.folder}>
+                      <td><span className="path" title={g.folder}>{relativeTo(g.folder, expanded.scan.root) || "."}</span></td>
+                      <td>
+                        <div className="stack" style={{ gap: 2 }}>
+                          <span>{looksLike || <span className="dim">Nothing to go on — search by hand</span>}{g.year ? <span className="dim"> ({g.year})</span> : null}</span>
+                          {!state && expanded.scan.notes?.[g.folder] && (
+                            <span className="dim" style={{ fontSize: 11 }}>Not imported automatically: {expanded.scan.notes[g.folder]}</span>
+                          )}
+                        </div>
+                      </td>
+                      <td className="mono" style={{ textAlign: "right" }}>{g.files.length}</td>
+                      <td>
+                        {state === "imported" ? <Pill kind="off">Imported</Pill> : state === "queued" ? <Pill kind="scan">Importing</Pill> : state === "failed" ? <Pill kind="err">Failed — try again</Pill> : <Pill kind="ok">Ready</Pill>}
+                      </td>
+                      <td>
+                        <div className="row" style={{ justifyContent: "flex-end" }}>
+                          {(!state || state === "failed") && (
+                            <button
+                              className="btn btn-secondary btn-sm"
+                              disabled={g.files.length > expanded.scan.max_files}
+                              title={g.files.length > expanded.scan.max_files ? `Import at most ${expanded.scan.max_files} files at a time` : undefined}
+                              onClick={() => setOpen({ ...expanded, group: g })}
+                            >
+                              Import…
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {open && libraryOf(open.item) && (
+        <ImportModal
+          group={open.group}
+          root={open.scan.root}
+          library={libraryOf(open.item)!}
+          download={{ id: open.item.id, folder: open.group.folder, seeding: open.scan.seeding }}
+          onClose={() => setOpen(null)}
+          onQueued={() => {
+            setOpen(null);
+            setExpanded(null);
+            list.reload();
+            toast("ok", "Import queued — follow it on Activity");
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+/** Why auto-import left a download's albums for review: the first reason, and how many more. */
+function AutoNotes({ notes }: { notes: Record<string, string> }) {
+  const reasons = Object.values(notes ?? {});
+  if (reasons.length === 0) return null;
+  return (
+    <span className="dim" style={{ fontSize: 11 }}>
+      Not imported automatically: {reasons[0]}
+      {reasons.length > 1 ? ` (and ${reasons.length - 1} more album${reasons.length === 2 ? "" : "s"})` : ""}
+    </span>
+  );
+}
+
+/**
+ * A folder scanned by hand. The scanned folder lives in the URL (so Back and refresh
+ * keep the scan) and in a short per-browser recent list.
+ */
+function FolderSource() {
+  const toast = useToast();
+  const [params, setParams] = useSearchParams();
+  const { libraries, lidarrManaged, eligible } = useImportLibraries();
   const [path, setPath] = useState(params.get("path") ?? "");
   const [recent, setRecent] = useState<string[]>(loadRecent);
   const [scan, setScan] = useState<ImportScan | null>(null);
@@ -77,11 +407,6 @@ export default function Import() {
   const [open, setOpen] = useState<ImportGroup | null>(null);
   const [queued, setQueued] = useState<Set<string>>(new Set());
 
-  // A library under Lidarr cannot take an import — Lidarr decides identity there and
-  // tracks its files by path — so it is listed, disabled, with the reason.
-  const lidarrManaged = (l: Library) =>
-    !!l.manager_id && managers.data?.find((m) => m.id === l.manager_id)?.type === "lidarr";
-  const eligible = (libraries.data ?? []).filter((l) => l.enabled && !lidarrManaged(l));
   useEffect(() => {
     if (eligible.length > 0 && !eligible.some((l) => l.id === libraryId)) setLibraryId(eligible[0].id);
   }, [eligible, libraryId]);
@@ -130,14 +455,9 @@ export default function Import() {
 
   return (
     <div className="stack">
-      <div className="page-head">
-        <h1>Import</h1>
-      </div>
       <p className="muted" style={{ margin: 0, maxWidth: "68ch", lineHeight: 1.55 }}>
-        Bring finished downloads into a library. Point at the folder your downloader or rip tool leaves
-        albums in — it is only read from, and files leave it when you import them. Each album is identified
-        once, every file is checked against its track, and files land where the library's tagger profile
-        names them.
+        Point at the folder your downloader or rip tool leaves albums in — it is only read from, and files
+        leave it when you import them with Move.
       </p>
 
       <form
@@ -337,12 +657,15 @@ function ImportModal({
   group,
   root,
   library,
+  download,
   onClose,
   onQueued,
 }: {
   group: ImportGroup;
   root: string;
   library: Library;
+  /** The download the files came from, and which album of it this is. */
+  download?: { id: string; folder: string; seeding: boolean };
   onClose: () => void;
   onQueued: () => void;
 }) {
@@ -352,9 +675,11 @@ function ImportModal({
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [mode, setMode] = useState<"move" | "copy">("move");
+  // A download the client still holds is copied: moving it would break the torrent.
+  const [mode, setMode] = useState<"move" | "copy">(download ? "copy" : "move");
 
   const base = { library_id: library.id, root };
+  const downloadRef = download ? { download_id: download.id, download_folder: download.folder } : {};
 
   const review = async (mbid: string) => {
     setLoading(true);
@@ -393,7 +718,7 @@ function ImportModal({
     if (!preview) return;
     setBusy(true);
     try {
-      await api.post("/import", { ...base, mb_release_id: preview.release.mb_id, mode, rows: preview.rows });
+      await api.post("/import", { ...base, ...downloadRef, mb_release_id: preview.release.mb_id, mode, rows: preview.rows });
       onQueued();
     } catch (e) {
       toast("err", errMsg(e));
@@ -437,6 +762,7 @@ function ImportModal({
             group={group}
             preview={preview}
             mode={mode}
+            copyOnly={!!download?.seeding}
             busy={busy}
             onMode={setMode}
             onEdit={editRow}
@@ -733,6 +1059,7 @@ function Review({
   group,
   preview,
   mode,
+  copyOnly,
   busy,
   onMode,
   onEdit,
@@ -743,6 +1070,8 @@ function Review({
   group: ImportGroup;
   preview: ImportPreview;
   mode: "move" | "copy";
+  /** The files are a seeding download's, which are copied and never moved. */
+  copyOnly: boolean;
   busy: boolean;
   onMode: (m: "move" | "copy") => void;
   onEdit: (source: string, patch: Partial<ImportRow>) => void;
@@ -857,17 +1186,21 @@ function Review({
         </table>
       </div>
 
-      <div className="row" style={{ gap: 16, flexWrap: "wrap" }} role="radiogroup" aria-label="How files are put into the library">
-        {(["move", "copy"] as const).map((m) => (
-          <label key={m} className="row" style={{ gap: 6, cursor: "pointer" }}>
-            <input type="radio" name="import-mode" checked={mode === m} disabled={busy} onChange={() => onMode(m)} />
-            <span>{m === "move" ? "Move" : "Copy"}</span>
-          </label>
-        ))}
-        <span className="dim" style={{ fontSize: 11 }}>
-          {mode === "move" ? "The source files are removed, and folders left empty are cleaned up." : "The source files are left where they are."}
-        </span>
-      </div>
+      {copyOnly ? (
+        <CopyWarning />
+      ) : (
+        <div className="row" style={{ gap: 16, flexWrap: "wrap" }} role="radiogroup" aria-label="How files are put into the library">
+          {(["move", "copy"] as const).map((m) => (
+            <label key={m} className="row" style={{ gap: 6, cursor: "pointer" }}>
+              <input type="radio" name="import-mode" checked={mode === m} disabled={busy} onChange={() => onMode(m)} />
+              <span>{m === "move" ? "Move" : "Copy"}</span>
+            </label>
+          ))}
+          <span className="dim" style={{ fontSize: 11 }}>
+            {mode === "move" ? "The source files are removed, and folders left empty are cleaned up." : "The source files are left where they are."}
+          </span>
+        </div>
+      )}
 
       {preview.problem && <span className="help-err">{preview.problem}</span>}
 

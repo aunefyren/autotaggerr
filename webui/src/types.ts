@@ -257,6 +257,83 @@ export interface ImportScan {
   max_files: number;
 }
 
+/** A remote path prefix as a download client reports it, and the same folder on this host. */
+export interface PathMapping {
+  remote: string;
+  local: string;
+}
+
+export interface DownloadClientCategory {
+  id?: string;
+  category: string;
+  library_id: string;
+  /** Import this category's downloads without a review when the match is certain. */
+  auto_import: boolean;
+}
+
+/** A configured download client. The password is never returned, only whether one is set. */
+export interface DownloadClient {
+  id: string;
+  name: string;
+  type: "qbittorrent";
+  enabled: boolean;
+  base_url: string;
+  username: string;
+  password_set: boolean;
+  path_mappings: PathMapping[];
+  categories: DownloadClientCategory[];
+  last_poll_at: string | null;
+  last_poll_error?: string;
+}
+
+export type DownloadState = "ready" | "unavailable" | "imported" | "dismissed";
+
+/** A finished download in a watched category, offered on the Import page. */
+export interface DownloadItem {
+  id: string;
+  client_id: string;
+  client_name: string;
+  remote_id: string;
+  name: string;
+  category: string;
+  library_id: string;
+  /** The download's folder (or file) on this host; remote_path as the client reported it. */
+  path: string;
+  remote_path: string;
+  files: string[];
+  size: number;
+  state: DownloadState;
+  reason?: string;
+  /** What happened to each album folder: "queued" | "imported" | "failed". */
+  groups: Record<string, string>;
+  /** Why auto-import left an album for review, by album folder. */
+  notes: Record<string, string>;
+  seeding: boolean;
+  completed_at: string | null;
+  imported_at: string | null;
+  albums: number;
+  albums_imported: number;
+}
+
+export interface DownloadsList {
+  clients: {
+    id: string;
+    name: string;
+    enabled: boolean;
+    categories: number;
+    last_poll_at: string | null;
+    last_poll_error?: string;
+  }[];
+  downloads: DownloadItem[];
+}
+
+/** A download's albums, in a folder scan's shape, plus what happened to each. */
+export interface DownloadScan extends ImportScan {
+  states: Record<string, string>;
+  notes: Record<string, string> | null;
+  seeding: boolean;
+}
+
 export type ImportConflict = "" | "exists" | "duplicate" | "clash";
 
 /** One file of an import, as planned by the server. An empty track ID is a skip. */

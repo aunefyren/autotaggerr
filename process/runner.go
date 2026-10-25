@@ -144,6 +144,12 @@ type Runner struct {
 	// followMu keeps two Lidarr-history passes from overlapping (see FollowLidarr).
 	// Separate from jobMu because the pass is not a queued job.
 	followMu sync.Mutex
+	// downloadMu keeps two download-client polls from overlapping (see PollDownloads),
+	// and an import settling its download from racing one.
+	downloadMu sync.Mutex
+	// autoMu keeps two auto-import passes from overlapping (see autoImportDownloads).
+	// Separate from downloadMu, which the imports it queues take.
+	autoMu sync.Mutex
 
 	// The job queue: a single worker (started in NewRunner) drains `queue` one at a
 	// time, so every background verb is serial and visible. `current` is the executing

@@ -147,6 +147,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 {
 	"autotaggerr_artwork_cron_schedule": "0 0 5 * * *",
 	"autotaggerr_artwork_disabled": false,
+	"autotaggerr_download_poll_cron_schedule": "0 */2 * * * *",
 	"autotaggerr_environment": "prod",
 	"autotaggerr_event_detail_retention": 500,
 	"autotaggerr_event_retention": 200,
@@ -221,6 +222,7 @@ starts.
 | `autotaggerr_process_concurrency` | `-concurrency` | `concurrency` | int | Number of files processed in parallel per library. `1` = serial. Default `4`. |
 | `autotaggerr_lidarr_follow_disabled` | — | — | bool | Stop reading Lidarr's history for files it imported, upgraded, deleted or renamed. Default `false` (followed: the artists involved are processed again within minutes). Editable on **Settings → Scanning**. |
 | `autotaggerr_lidarr_follow_cron_schedule` | — | — | string | 6-field cron for reading Lidarr's history. Default `0 */10 * * * *` (every ten minutes). A pass that finds nothing records nothing. |
+| `autotaggerr_download_poll_cron_schedule` | — | — | string | 6-field cron for checking download clients for finished downloads to offer on Import. Default `0 */2 * * * *` (every two minutes). Nothing is imported without a review. |
 | `autotaggerr_mirror_disabled` | — | — | bool | Turn the scheduled MusicBrainz mirror refresh off entirely. Default `false` (the mirror runs). |
 | `autotaggerr_mirror_cron_schedule` | — | — | string | 6-field cron for the mirror refresh. Default `0 0 3 * * *` (nightly 03:00). |
 | `autotaggerr_artwork_disabled` | — | — | bool | Turn the scheduled artwork fetch — and the automatic one for newly added artists and albums — off entirely. Images are still fetched on demand when a page asks. Default `false` (artwork is fetched ahead). |

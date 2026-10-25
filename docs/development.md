@@ -328,6 +328,8 @@ Feature docs:
 - `scanning.md` — scans, skip-unchanged, drift sync, activity events, caching and concurrency.
 - `tagging.md` — what gets written to a file, and why idempotency is the property that matters.
 - `import.md` — file import: loose files into a library, conflicts and replacement, the job.
+- `downloads.md` — download clients (qBittorrent): watched categories, path mappings, the poller,
+  and importing a finished download through the file import.
 - `naming.md` — naming templates on the tagger profile: where a file belongs, and the structural
   rules that keep any template readable by everything that parses the layout.
 - `artist-credit-tagging.md` — how MusicBrainz artist credits (incl. featuring artists) become

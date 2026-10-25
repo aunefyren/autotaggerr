@@ -9,6 +9,7 @@ const NAV = [
   { to: "/libraries", label: "Libraries", ic: "▤" },
   { to: "/managers", label: "Managers", ic: "◇" },
   { to: "/data-sources", label: "Data sources", ic: "⛃" },
+  { to: "/download-clients", label: "Download clients", ic: "⤓", adminOnly: true },
   { to: "/tagger-profiles", label: "Tagger profiles", ic: "✎" },
   { to: "/items", label: "Items", ic: "≣" },
   { to: "/import", label: "Import", ic: "⇣", adminOnly: true },

@@ -272,4 +272,5 @@ consults the guide and either follows it or reshapes it *in the same change*.
 - [tagging.md](tagging.md) — what gets written to a file.
 - [naming.md](naming.md) — where a file belongs: the tagger profile's naming templates.
 - [import.md](import.md) — bringing loose files into a library.
+- [downloads.md](downloads.md) — finished downloads from a download client, through the import.
 - [authentication.md](authentication.md) — local login, API keys, OIDC.

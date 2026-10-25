@@ -1586,6 +1586,9 @@ func AllDBModels() []any {
 		&AcoustIDLookup{},
 		&TrackTempo{},
 		&DataMigration{},
+		&DownloadClient{},
+		&DownloadClientCategory{},
+		&DownloadItem{},
 	}
 }
 

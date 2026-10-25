@@ -263,6 +263,19 @@ func (a *API) Register(rg *gin.RouterGroup) {
 			admin.GET("/import/folders", a.importFolders)
 			admin.POST("/import/preview", a.importPreview)
 			admin.POST("/import", a.importFiles)
+
+			// Download clients, and the finished downloads they offer for import.
+			admin.GET("/download-clients", a.listDownloadClients)
+			admin.POST("/download-clients", a.createDownloadClient)
+			admin.GET("/download-clients/:id", a.getDownloadClient)
+			admin.PUT("/download-clients/:id", a.updateDownloadClient)
+			admin.DELETE("/download-clients/:id", a.deleteDownloadClient)
+			admin.POST("/download-clients/:id/test", a.testDownloadClient)
+			admin.GET("/import/downloads", a.listDownloads)
+			admin.POST("/import/downloads/poll", a.pollDownloads)
+			admin.GET("/import/downloads/:id/scan", a.scanDownload)
+			admin.POST("/import/downloads/:id/dismiss", a.dismissDownload)
+			admin.POST("/import/downloads/:id/restore", a.restoreDownload)
 		}
 	}
 }

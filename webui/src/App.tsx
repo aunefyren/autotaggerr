@@ -17,6 +17,7 @@ import Migrations from "./pages/Migrations";
 import Mirror from "./pages/Mirror";
 import Settings from "./pages/Settings";
 import Import from "./pages/Import";
+import DownloadClients from "./pages/DownloadClients";
 
 export default function App() {
   const { user, loading } = useAuth();
@@ -50,6 +51,7 @@ export default function App() {
         <Route path="/items" element={<Items />} />
         {/* Admin-only server-side: an import reads and moves files anywhere on the server. */}
         <Route path="/import" element={user.role === "admin" ? <Import /> : <Navigate to="/" replace />} />
+        <Route path="/download-clients" element={user.role === "admin" ? <DownloadClients /> : <Navigate to="/" replace />} />
         <Route path="/collection" element={<Collection />} />
         <Route path="/collection/:mbid" element={<Artist />} />
         <Route path="/collection/:mbid/:rgid" element={<ReleaseGroup />} />

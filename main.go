@@ -211,6 +211,10 @@ func main() {
 	// is happening that is not. Startup-only, for the reason ReconcileRunning is.
 	migration.ReconcileQueued(db)
 
+	// And for albums of a download marked as being imported: the job that would have
+	// settled them did not survive the restart either.
+	process.ReconcileDownloads(db)
+
 	// Shared scan runner: the cron job, the startup run, and the API all drive
 	// library processing through this one instance (single-run guard + status).
 	scanRunner = process.NewRunner(db, plexClient, files.ConfigFile)
@@ -286,6 +290,13 @@ func main() {
 			Run:      scanRunner.FollowLidarr,
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrLidarrFollowCronSchedule },
 			Enabled:  func(c models.ConfigStruct) bool { return !c.AutotaggerrLidarrFollowDisabled },
+		},
+		settings.CronJob{
+			// Lists finished downloads for the Import page; imports nothing by itself.
+			// Not queued — see process.Runner.PollDownloads.
+			Name:     "download clients",
+			Run:      scanRunner.PollDownloads,
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrDownloadPollCronSchedule },
 		},
 		settings.CronJob{
 			Name:     "health check",

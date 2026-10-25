@@ -108,6 +108,10 @@ type importRequest struct {
 	Mode        string              `json:"mode"`
 	Sources     []string            `json:"sources"`
 	Rows        []process.ImportRow `json:"rows"`
+	// DownloadID and DownloadFolder name the download and the album of it the files
+	// come from, when they come from the Downloads list.
+	DownloadID     *uuid.UUID `json:"download_id"`
+	DownloadFolder string     `json:"download_folder"`
 }
 
 // importContext validates everything a preview and an import share, and loads the
@@ -216,6 +220,10 @@ func (a *API) importFiles(c *gin.Context) {
 	mode := modules.TransferMode(in.Mode)
 	if mode == "" {
 		mode = modules.TransferMove
+		if in.DownloadID != nil {
+			// A download is the client's until the torrent is removed.
+			mode = modules.TransferCopy
+		}
 	}
 	if mode != modules.TransferMove && mode != modules.TransferCopy {
 		c.JSON(http.StatusBadRequest, gin.H{"error": `mode is "move" or "copy"`})
@@ -232,6 +240,9 @@ func (a *API) importFiles(c *gin.Context) {
 		Root:    root,
 		Mode:    mode,
 		Rows:    a.Scan.PlanImport(library, release, in.Rows),
+	}
+	if in.DownloadID != nil {
+		plan.Download = &process.ImportDownload{ItemID: *in.DownloadID, Folder: filepath.Clean(in.DownloadFolder)}
 	}
 	if err := a.Scan.Import(plan); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error(), "rows": plan.Rows})

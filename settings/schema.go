@@ -164,6 +164,13 @@ func Sections() []Section {
 					get:         func(c models.ConfigStruct) any { return c.AutotaggerrLidarrFollowCronSchedule },
 					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrLidarrFollowCronSchedule = v }, validCron),
 				},
+				{
+					Key: "autotaggerr_download_poll_cron_schedule", Label: "Download client schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "How often download clients are checked for finished downloads to offer on the Import page. Nothing is imported without a review.",
+					Placeholder: models.DefaultDownloadPollCronSchedule,
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrDownloadPollCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrDownloadPollCronSchedule = v }, validCron),
+				},
 			},
 		},
 		{

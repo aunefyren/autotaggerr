@@ -141,6 +141,7 @@ refusal, preview and the 400s).
 
 ## Related
 
+- [downloads.md](downloads.md) — finished downloads from a download client, offered for import.
 - [naming.md](naming.md) — where a file goes.
 - [attach.md](attach.md) — the identification it reuses, and pins.
 - [scanning.md](scanning.md#the-job-queue) — the queue the job runs on.
