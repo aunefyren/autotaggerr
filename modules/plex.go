@@ -519,3 +519,43 @@ func plexFolderKey(sectionKey, folder string) string {
 	sum := sha256.Sum256([]byte(sectionKey + "\x00" + folder))
 	return "folder:" + hex.EncodeToString(sum[:16])
 }
+
+// ForgetPlexFolder drops what the cache knows about one album folder, in every section
+// scope — for a folder whose files have just been moved away.
+func ForgetPlexFolder(folder string) {
+	plexAlbumKeyCacheMu.Lock()
+	var dropped []string
+	for k, v := range plexAlbumKeyCache {
+		if v.Folder == folder {
+			delete(plexAlbumKeyCache, k)
+			dropped = append(dropped, k)
+		}
+	}
+	plexAlbumKeyCacheMu.Unlock()
+	for _, k := range dropped {
+		providerCacheDrop(models.ProviderCachePlexAlbumKeys, k)
+	}
+}
+
+// ScanSections asks Plex to scan the client's section — or every music section — for
+// changes. A moved file is found by a scan, not by refreshing the album it left: the
+// album's metadata refresh re-reads files that are no longer at their paths. Plex scans
+// only folders that changed, so asking for the whole section is cheap.
+func (p *PlexClient) ScanSections() error {
+	sections, err := p.searchSections()
+	if err != nil {
+		return err
+	}
+	for _, key := range sections {
+		u := p.buildURL("/library/sections/"+url.PathEscape(key)+"/refresh", nil)
+		resp, err := p.HTTP.Get(u)
+		if err != nil {
+			return err
+		}
+		resp.Body.Close()
+		if resp.StatusCode >= 300 {
+			return fmt.Errorf("plex section %s scan: %s", key, resp.Status)
+		}
+	}
+	return nil
+}

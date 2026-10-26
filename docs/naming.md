@@ -151,6 +151,43 @@ previews moves for these characters, this list is what to correct.
   files by path, and moving one would orphan Lidarr's record of it. The proposal is still shown,
   because it is what the profile says.
 
+## Organise
+
+**Organise** moves a library's, an artist's or an album's files to where their library's naming
+templates put them (*Libraries → Organise*, and the same on the artist and album pages). It is two
+steps, always, and the first moves nothing:
+
+1. **The dry run** (`POST /organise/preview`, `process.Runner.PlanOrganise`) renders every
+   identified file of the scope through `RenderLibraryPath` — the renderer the import and the
+   item's `PATH` row use, so the three cannot disagree — and lists each file whose path would change
+   as a row of the review table: from, struck, and to, in the diff's colours, each with its own
+   **Skip**. Files that cannot be moved are listed apart with the reason (no identity, a release that
+   cannot be read, a Lidarr library), and the files already in place are counted. Releases are read
+   cache-first, so a library processed recently costs no request.
+2. **The commit** (`POST /organise`, a queued file-writing job) plans again when it runs and makes
+   only the moves that are still exactly what was reviewed; anything that changed meanwhile is
+   reported in Activity rather than guessed at.
+
+**Conflicts block the commit**, as the review step asks: two files rendering one path (`clash` —
+one is misidentified, or the templates do not tell them apart) and a target something outside the
+plan already occupies (`exists` — Organise never deletes). Compared without case, since on a
+case-insensitive filesystem they are one file. A target another move of the plan is leaving is
+*not* a conflict: the job moves in **two phases**, every file first to a hidden temporary name
+beside its target and then into place, so a swap or a chain within the plan cannot land on a file
+it is about to move. The index follows in the same two phases, since a path is unique there too.
+
+**What moves with a file**: its `library_items` row — identity, pin and all — and the rows keyed by
+its path, the tempo analysis and the fingerprint lookup, in one transaction per phase. Folders the
+moves emptied are removed (deepest first, never the library root, never a folder still holding a
+cover or cue sheet), the Plex folder cache forgets them, and Plex is asked to **scan** the library's
+section — a moved file is found by a scan; refreshing the album it left would only re-read files no
+longer there.
+
+**A Lidarr library is never organised.** Lidarr tracks its files by path, so a file moved under it
+is a file Lidarr has lost: the dry run of such a library is refused (409), and an artist or album
+with files in one lists those files as not movable. The buttons are disabled where they could only
+refuse. Lidarr renames its own files (*Media Management → Rename Tracks*).
+
 ## Tests
 
 `modules/naming_test.go` (defaults, Lidarr's defaults accepted, the video rule, token spellings,

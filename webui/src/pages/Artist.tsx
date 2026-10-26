@@ -10,6 +10,7 @@ import { useToast } from "../toast";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
+import { OrganiseDialog } from "../components/OrganiseDialog";
 import { ScanDialog } from "../components/ScanDialog";
 import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
@@ -176,6 +177,7 @@ export default function Artist() {
   // both being open at once is not a state that should be representable.
   const [authorityAsk, setAuthorityAsk] = useState<"detach" | "reattach" | null>(null);
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
+  const [organiseAsk, setOrganiseAsk] = useState(false);
 
   const artist = detail.data?.artist;
   const groups = disco.data ?? detail.data?.release_groups ?? [];
@@ -594,6 +596,18 @@ export default function Artist() {
         </button>
         <button
           className="btn btn-ghost btn-sm"
+          disabled={running || artist?.managed_by === "lidarr"}
+          title={
+            artist?.managed_by === "lidarr"
+              ? "Lidarr names this artist's files — rename them in Lidarr."
+              : "Move this artist's files to where their library's naming templates put them. Shows every move for review first; nothing moves until you confirm."
+          }
+          onClick={() => setOrganiseAsk(true)}
+        >
+          Organise
+        </button>
+        <button
+          className="btn btn-ghost btn-sm"
           disabled={running}
           title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
           // The same verb as the collection's, so it opens the same dialog. Forcing is
@@ -704,6 +718,10 @@ export default function Artist() {
           onConfirm={syncLidarr}
           onCancel={() => setSyncAsk(false)}
         />
+      )}
+
+      {organiseAsk && (
+        <OrganiseDialog scope={{ artist_mb_id: mbid }} title={artist?.name ?? "this artist"} onClose={() => setOrganiseAsk(false)} />
       )}
 
       {recorrelateAsk && (

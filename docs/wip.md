@@ -90,8 +90,8 @@ still open:
   says why. What still reads the layout: the collection's per-artist actions take the artist folder
   as the folder to rescan (`collection.ArtistTargets`, which falls back to the file's own folder),
   and folder attach and the disc guard read the disc folder. A file Lidarr has no track file for is
-  Lidarr's to import; the Organise verb (roadmap) is what moves misplaced files where their profile
-  names them.
+  Lidarr's to import; in a native library, Organise moves misplaced files where their profile names
+  them ([naming.md](naming.md#organise)).
 
 - **Links out — what is left.** Artist and album pages link into the Lidarr that holds them and the
   album page into Plex ([collection.md](collection.md#links-into-the-managers),
@@ -167,13 +167,11 @@ still open:
   [scanning.md](scanning.md)) on a `process.Scope` built to extend. A release-group or single-album
   scope needs a new constructor and UI, not new machinery — worth doing once the artist actions have
   been used against a real library.
-- **Organise — moving files to where their profile names them.** The templates, the renderer and
-  the per-file `PATH` preview have shipped ([naming.md](naming.md)); nothing moves a file yet. What
-  is left is the verb: a dry run over a scope listing every proposed move as a review table (the
-  style guide's *Review step*), conflicts — two files rendering one path — blocking the commit,
-  then the move itself, keeping `library_items` rows, pins and tempo keyed to the new path, and
-  pruning folders left empty. It must refuse under a Lidarr manager, which tracks its files by
-  path. A move also needs a Plex refresh of both the old and new album.
+- **Organise — what is left** ([naming.md](naming.md#organise)). The dry run, the review table, the
+  two-phase move and Lidarr's refusal have shipped. Not yet: an MCP tool (a dry run an assistant could
+  show, and a commit behind the write scope), moving extra files (covers, cue sheets) with their album
+  rather than leaving them in the old folder, and organising on a schedule or after each import —
+  deliberately not done, since a move nobody reviewed is the thing the review step exists to prevent.
 - **Several libraries — what is left** ([collection.md](collection.md#several-libraries)). Copies
   counted as tracks, the catalog comparison, the library on every collection surface, edition naming
   tokens, Clean/The tokens, the import's `other_edition` guard, authority per library (wants,

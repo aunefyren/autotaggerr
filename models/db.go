@@ -150,6 +150,9 @@ const (
 	// and all, once it stopped seeding them (DownloadClient.RemoveAfterSeeding). The one
 	// place Autotaggerr deletes files it did not put somewhere, so each is listed.
 	EventTypeDownloadRemoved = "download_removed"
+	// EventTypeOrganise is files moved to where their library's naming templates put
+	// them, after a review. Its items carry where each came from (EventItem.From).
+	EventTypeOrganise = "organise"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"

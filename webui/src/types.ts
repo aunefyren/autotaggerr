@@ -1142,3 +1142,31 @@ export interface CollectionPolicy {
   follow_types: string;
   follow_secondary: boolean;
 }
+
+/** What an organise covers: exactly one of the three. */
+export interface OrganiseScope {
+  library_id?: string;
+  artist_mb_id?: string;
+  release_group_mb_id?: string;
+}
+
+/** One file of an organise: a proposed move, or one that cannot be made (reason). */
+export interface OrganiseRow {
+  item_id: string;
+  library_id: string;
+  from: string;
+  to?: string;
+  from_rel: string;
+  to_rel?: string;
+  conflict?: "" | "clash" | "exists";
+  reason?: string;
+  skip?: boolean;
+}
+
+/** POST /organise/preview — the dry run. */
+export interface OrganisePlan {
+  moves: OrganiseRow[];
+  skipped: OrganiseRow[];
+  in_place: number;
+  libraries: string[];
+}

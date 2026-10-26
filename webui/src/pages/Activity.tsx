@@ -41,6 +41,7 @@ const TYPE_LABELS: Record<string, string> = {
   file_import: "File import",
   discography_read: "Discographies",
   download_removed: "Downloads removed",
+  organise: "Organise",
 };
 
 /**
@@ -79,6 +80,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Lidarr imported, upgraded, deleted or renamed files for these artists since the last check. Their cached Lidarr answers were dropped and a processing run queued for each, so the new files are identified and tagged now rather than at the next scheduled scan. Only recorded when there was something to follow.",
   plex_refresh:
     "Tells Plex to re-read the albums this run touched. One event per run rather than per album, which would flood the feed — the albums themselves are listed below.",
+  organise:
+    "Files moved to where their library's naming templates put them, after the review that listed every move. Each row shows where the file came from. Its identity, pin, tempo analysis and fingerprint moved with it; folders the moves emptied were removed, and Plex was asked to rescan. Nothing was deleted and no tags were written.",
   download_removed:
     "Imported downloads removed from their client, files and all, because the client is set to remove them once they finish seeding. Only downloads Autotaggerr imported in full, and only once the client stopped them for reaching a share limit set there — a torrent paused by hand is never removed. Every album was already in the library; this removes the second copy.",
   tag_files:

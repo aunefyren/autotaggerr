@@ -201,8 +201,8 @@ is no longer the reason, and the index says what is: an unmatched row keeps `err
 reason (`modules.UnmatchedReason`) — Lidarr never imported it (its *Manual Import*), or it moved
 since Lidarr last looked (refresh the artist). Only error rows read `error` as a failure; the Items
 page shows the reason under an unmatched row in the muted colour. Both fixes are Lidarr's, since it
-owns identity there; in a native library an unmatched file is attached by hand or imported. Moving
-misplaced files to where their profile names them is the Organise verb on the roadmap.
+owns identity there; in a native library an unmatched file is attached by hand or imported. In a native
+library, [Organise](naming.md#organise) moves misplaced files to where their profile names them.
 
 Guarded by `TestLidarrClientReportsLoginPage`, `…ReportsCrossHostRedirect`,
 `TestLidarrFindArtistByNameNotFound` and `TestResolveCorrelationKeepsLidarrCause`.

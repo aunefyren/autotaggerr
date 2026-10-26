@@ -15,6 +15,7 @@ import {
 } from "../types";
 import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
+import { OrganiseDialog } from "../components/OrganiseDialog";
 import { MBLink } from "../components/MBLink";
 import { ExternalLinks } from "../components/ExternalLinks";
 import { mediaSummary } from "../components/mediaSummary";
@@ -80,6 +81,7 @@ export default function ReleaseGroup() {
 
   const [busy, setBusy] = useState(false);
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
+  const [organiseAsk, setOrganiseAsk] = useState(false);
   const [sameAsk, setSameAsk] = useState(false);
 
   // Re-correlate queues on the shared job runner, so the global status is what says
@@ -384,6 +386,14 @@ export default function ReleaseGroup() {
           )}
           <button
             className="btn btn-ghost btn-sm"
+            disabled={busy || loading || running || !rg?.owned}
+            title={rg?.owned ? "Move this album's files to where their library's naming templates put them. Shows every move for review first." : "Nothing of this album is on disk, so there is nothing to organise."}
+            onClick={() => setOrganiseAsk(true)}
+          >
+            Organise
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
             style={{ color: "var(--danger-text)" }}
             disabled={busy || loading || running || !rg?.owned}
             title={
@@ -411,6 +421,10 @@ export default function ReleaseGroup() {
           manager={managerLabel}
           onCancel={() => setSameAsk(false)}
         />
+      )}
+
+      {organiseAsk && (
+        <OrganiseDialog scope={{ release_group_mb_id: rgid }} title={rg?.title ?? "this album"} onClose={() => setOrganiseAsk(false)} />
       )}
 
       {recorrelateAsk && (

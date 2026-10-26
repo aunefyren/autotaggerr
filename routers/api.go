@@ -159,6 +159,8 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/libraries/:id/retag", a.retagLibrary)
 		protected.POST("/libraries/:id/recorrelate", a.recorrelateLibrary)
 		protected.GET("/plex/sections", a.plexSections)
+		protected.POST("/organise/preview", a.previewOrganise)
+		protected.POST("/organise", a.organise)
 
 		// Library items (the correlation index)
 		protected.GET("/library-items", a.listLibraryItems)

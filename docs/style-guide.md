@@ -503,6 +503,10 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   carries its own **Replace** checkbox in `--danger-text`, with every file it removes in the
   `title`, and the commit is refused until each such row is ticked or skipped. That tick is the
   per-row consent the absent second dialog would otherwise have asked for, at the row it is about.
+  The blocking rows are `tr.row-conflict` (a `--danger-bg` fill and a 2px `--danger` leading bar,
+  the edited-setting bar's shape) and a skipped row `tr.row-skipped` (dimmed), so every review table
+  marks them the same way. Conflicts are recomputed as rows are skipped — skipping one side of a
+  clash frees the other — and the server checks again on commit.
 - **Setting row** (`.setting-row`, `Settings.tsx`) — a settings page is a list of *definitions*, not
   a form filled top to bottom, so each row is two columns: name + config key + help on the left, the
   control on the right at a fixed width, so a column of inputs reads as a column. The config key is

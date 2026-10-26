@@ -690,3 +690,9 @@ table.data tbody tr.group-foot:hover td { background: var(--surface-2); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* A review-table row that blocks the commit (style guide: Review step). The fill says
+   which row, the leading bar says it the way an edited setting row is marked. */
+tr.row-conflict td { background: var(--danger-bg); }
+tr.row-conflict td:first-child { box-shadow: inset 2px 0 0 var(--danger); }
+tr.row-skipped td { opacity: 0.5; }

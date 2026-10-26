@@ -5,6 +5,7 @@ import { useFetch } from "../hooks";
 import { BPMWrite, Library, Manager, PlexSections, TaggerProfile, TempoStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
+import { OrganiseDialog } from "../components/OrganiseDialog";
 import { TempoAnalysis } from "../components/TempoAnalysis";
 import { useToast } from "../toast";
 import { useSetup } from "../setup";
@@ -24,6 +25,7 @@ export default function Libraries() {
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Library | null>(null);
   const [recorrelating, setRecorrelating] = useState<Library | null>(null);
+  const [organising, setOrganising] = useState<Library | null>(null);
   const [busy, setBusy] = useState(false);
   // Bumped whenever a library changes, so the tempo card re-reads how many libraries
   // opt in rather than contradicting the table above it.
@@ -34,6 +36,7 @@ export default function Libraries() {
     managers: managers.data ?? [],
     profiles: profiles.data ?? [],
   };
+  const managerOf = (l: Library) => (l.manager_id ? options.managers.find((m) => m.id === l.manager_id) : undefined);
   const managerName = (id: string | null) => (id ? options.managers.find((m) => m.id === id)?.name : undefined);
   // Only once the managers have loaded: before that every assigned manager would read
   // as missing for a frame.
@@ -203,6 +206,18 @@ export default function Libraries() {
                       </button>
                       <button
                         className="btn btn-ghost btn-sm"
+                        disabled={managerOf(l)?.type === "lidarr"}
+                        onClick={() => setOrganising(l)}
+                        title={
+                          managerOf(l)?.type === "lidarr"
+                            ? "Lidarr names this library's files — rename them in Lidarr."
+                            : "Move files to where this library's naming templates put them. Shows every move for review first; nothing moves until you confirm."
+                        }
+                      >
+                        Organise
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
                         style={{ color: "var(--danger-text)" }}
                         onClick={() => setRecorrelating(l)}
                         title="Ask the manager what every file in this library is, ignoring the cached answers and the unchanged-file skip, and rewrite the tags to match. The repair for a re-pointed Lidarr. Writes tags, and discards every manual pin the manager governs — the artist and album pages carry narrower forms of this."
@@ -222,6 +237,10 @@ export default function Libraries() {
       )}
 
       {libs.data && libs.data.length > 0 && <TempoAnalysis version={tempoVersion} />}
+
+      {organising && (
+        <OrganiseDialog scope={{ library_id: organising.id }} title={organising.name} onClose={() => setOrganising(null)} />
+      )}
 
       {recorrelating && (
         <RecorrelateDialog

@@ -37,6 +37,7 @@ const (
 	jobDiscoverAll      jobKind = "discover_all"
 	jobDiscoverArtist   jobKind = "discover_artist"
 	jobImport           jobKind = "import"
+	jobOrganise         jobKind = "organise"
 	jobDiscography      jobKind = "discography"
 )
 
@@ -45,7 +46,7 @@ const (
 // behind a hours-long refresh — but a job already running is never preempted.
 func (k jobKind) fileWriting() bool {
 	switch k {
-	case jobProcessAll, jobProcessLibrary, jobProcessArtist, jobRetagAll, jobRetagLibrary, jobRetagArtist, jobForceRecorrelate, jobImport:
+	case jobProcessAll, jobProcessLibrary, jobProcessArtist, jobRetagAll, jobRetagLibrary, jobRetagArtist, jobForceRecorrelate, jobImport, jobOrganise:
 		return true
 	}
 	return false
