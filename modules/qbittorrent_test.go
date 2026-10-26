@@ -33,6 +33,12 @@ type fakeQBittorrent struct {
 	torrents map[string][]map[string]any // by category
 	files    map[string][]map[string]any // by hash
 	tagged   []string                    // "hash:tag"
+	// categories qBittorrent has; moved records setCategory as "hash:category".
+	categories map[string]bool
+	moved      []string
+	// limits answers torrents/info?hashes=…; deleted records torrents/delete.
+	limits  []map[string]any
+	deleted []string
 }
 
 func newFakeQBittorrent(t *testing.T) *fakeQBittorrent {
@@ -89,6 +95,10 @@ func (f *fakeQBittorrent) serve(w http.ResponseWriter, r *http.Request) {
 	case "/api/v2/app/version":
 		_, _ = w.Write([]byte("v5.0.3"))
 	case "/api/v2/torrents/info":
+		if r.URL.Query().Get("hashes") != "" {
+			_ = json.NewEncoder(w).Encode(f.limits)
+			return
+		}
 		if r.URL.Query().Get("filter") != "completed" {
 			f.t.Errorf("torrents/info filter = %q, want completed", r.URL.Query().Get("filter"))
 		}
@@ -98,6 +108,29 @@ func (f *fakeQBittorrent) serve(w http.ResponseWriter, r *http.Request) {
 	case "/api/v2/torrents/addTags":
 		_ = r.ParseForm()
 		f.tagged = append(f.tagged, r.Form.Get("hashes")+":"+r.Form.Get("tags"))
+	case "/api/v2/torrents/createCategory":
+		_ = r.ParseForm()
+		if f.categories == nil {
+			f.categories = map[string]bool{}
+		}
+		if f.categories[r.Form.Get("category")] {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		f.categories[r.Form.Get("category")] = true
+	case "/api/v2/torrents/setCategory":
+		_ = r.ParseForm()
+		if !f.categories[r.Form.Get("category")] {
+			w.WriteHeader(http.StatusConflict)
+			return
+		}
+		f.moved = append(f.moved, r.Form.Get("hashes")+":"+r.Form.Get("category"))
+	case "/api/v2/torrents/delete":
+		_ = r.ParseForm()
+		if r.Form.Get("deleteFiles") != "true" {
+			f.t.Errorf("delete without its files: %v", r.Form)
+		}
+		f.deleted = append(f.deleted, r.Form.Get("hashes"))
 	default:
 		w.WriteHeader(http.StatusNotFound)
 	}
@@ -249,7 +282,7 @@ func TestQBittorrentFilesAndTag(t *testing.T) {
 		t.Errorf("windows path = %q", files[0].Path)
 	}
 
-	if err := client.MarkImported("a"); err != nil {
+	if err := client.MarkImported("a", "music", ""); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(f.tagged, []string{"a:" + models.DownloadClientImportedTag}) {
@@ -261,8 +294,16 @@ func TestNewDownloadClient(t *testing.T) {
 	if _, err := NewDownloadClient(models.DownloadClient{Name: "q", Type: models.DownloadClientTypeQBittorrent}); err == nil {
 		t.Error("a client without a base URL was built")
 	}
-	if _, err := NewDownloadClient(models.DownloadClient{Name: "q", Type: "transmission", BaseURL: "http://x"}); err == nil {
+	if _, err := NewDownloadClient(models.DownloadClient{Name: "q", Type: "deluge", BaseURL: "http://x"}); err == nil {
 		t.Error("an unsupported type was built")
+	}
+	if _, err := NewDownloadClient(models.DownloadClient{Name: "s", Type: models.DownloadClientTypeSABnzbd, BaseURL: "http://x"}); err == nil {
+		t.Error("SABnzbd without an API key was built")
+	}
+	for _, kind := range []string{models.DownloadClientTypeTransmission, models.DownloadClientTypeSABnzbd} {
+		if c, err := NewDownloadClient(models.DownloadClient{Name: "c", Type: kind, BaseURL: "http://x", Password: "key"}); err != nil || c == nil {
+			t.Errorf("%s = %v, %v", kind, c, err)
+		}
 	}
 	if c, err := NewDownloadClient(models.DownloadClient{Name: "q", Type: models.DownloadClientTypeQBittorrent, BaseURL: "http://x"}); err != nil || c == nil {
 		t.Errorf("qbittorrent = %v, %v", c, err)
@@ -322,5 +363,45 @@ func TestImportGroupFolders(t *testing.T) {
 	want := []string{root, filepath.Join(root, "Bonus")}
 	if got := ImportGroupFolders(root, files); !reflect.DeepEqual(got, want) {
 		t.Errorf("folders = %v, want %v", got, want)
+	}
+}
+
+// The post-import category is created when qBittorrent lacks it — and a 409 to
+// creating one it already has is not a failure — then set.
+func TestQBittorrentMarkImportedMovesToACategory(t *testing.T) {
+	f := newFakeQBittorrent(t)
+	client := NewQBittorrentClient(f.server.URL, "admin", "secret")
+	for _, hash := range []string{"a", "b"} {
+		if err := client.MarkImported(hash, "music", "music-done"); err != nil {
+			t.Fatalf("MarkImported(%s): %v", hash, err)
+		}
+	}
+	if !reflect.DeepEqual(f.moved, []string{"a:music-done", "b:music-done"}) {
+		t.Errorf("moved = %v", f.moved)
+	}
+}
+
+// Stopped is not done: a torrent paused by hand is stopped too. Done is stopped with a
+// share limit set and reached; no limits is never done.
+func TestQBittorrentSeedingDone(t *testing.T) {
+	f := newFakeQBittorrent(t)
+	f.limits = []map[string]any{
+		{"hash": "ratio", "state": "stoppedUP", "ratio": 2.0, "max_ratio": 2.0, "seeding_time": 10, "max_seeding_time": -1},
+		{"hash": "time", "state": "pausedUP", "ratio": 0.1, "max_ratio": -1, "seeding_time": 3600, "max_seeding_time": 60},
+		{"hash": "manual", "state": "stoppedUP", "ratio": 0.5, "max_ratio": 2.0, "seeding_time": 10, "max_seeding_time": -1},
+		{"hash": "nolimit", "state": "stoppedUP", "ratio": 9.0, "max_ratio": -1, "seeding_time": 99999, "max_seeding_time": -1},
+		{"hash": "seeding", "state": "uploading", "ratio": 3.0, "max_ratio": 2.0, "seeding_time": 10, "max_seeding_time": -1},
+	}
+	client := NewQBittorrentClient(f.server.URL, "admin", "secret")
+	done, err := client.SeedingDone([]string{"ratio", "time", "manual", "nolimit", "seeding", "gone"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{"ratio": true, "time": true, "manual": false, "nolimit": false, "seeding": false}
+	if !reflect.DeepEqual(done, want) {
+		t.Errorf("done = %v, want %v", done, want)
+	}
+	if err := client.Remove("ratio"); err != nil || !reflect.DeepEqual(f.deleted, []string{"ratio"}) {
+		t.Errorf("Remove = %v, deleted %v", err, f.deleted)
 	}
 }

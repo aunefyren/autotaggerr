@@ -16,6 +16,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -356,6 +357,9 @@ func (r *Runner) Import(plan ImportPlan) error {
 	if err := CheckImportPlan(plan.Rows); err != nil {
 		return err
 	}
+	if err := checkImportSpace(plan.Library, plan.Rows, plan.Mode); err != nil {
+		return err
+	}
 	if plan.Download != nil {
 		// Checked and marked under one lock, so two imports of one album cannot both
 		// pass the check.
@@ -372,6 +376,66 @@ func (r *Runner) Import(plan ImportPlan) error {
 	title := importTitle(plan)
 	r.enqueue(job{jobImport, "import:" + uuid.NewString(), title, func() { r.importNow(plan, title) }})
 	return nil
+}
+
+// ErrImportNoSpace is an import the library's filesystem cannot hold.
+var ErrImportNoSpace = errors.New("not enough free space in the library")
+
+// importSpaceMargin is left free beyond what the files take: tag writes grow files a
+// little, and a disk filled to the last byte breaks more than this import.
+const importSpaceMargin = 64 << 20
+
+// freeBytes reads a filesystem's free space. A var so a test can stand in a full disk.
+var freeBytes = utilities.FreeBytes
+
+// checkImportSpace refuses an import the library's filesystem cannot hold. A copy
+// needs room for every file; a move only for the files on another filesystem, since a
+// move within one is a rename. A download is always copied, so a seeding album needs
+// its full size again — the case this exists for. A filesystem that cannot be asked
+// is let through: refusing on a failed probe would block imports for a reason that
+// has nothing to do with space.
+func checkImportSpace(library models.Library, rows []ImportRow, mode modules.TransferMode) error {
+	var need int64
+	for _, row := range rows {
+		if row.skipped() {
+			continue
+		}
+		info, err := os.Stat(row.Source)
+		if err != nil {
+			continue // importRowReady reports a missing source
+		}
+		if mode == modules.TransferMove && utilities.SameFilesystem(row.Source, library.Path) {
+			continue
+		}
+		need += info.Size()
+	}
+	if need == 0 {
+		return nil
+	}
+	free, err := freeBytes(library.Path)
+	if err != nil {
+		logger.Log.Debugf("could not read the free space of %s: %s", library.Path, err.Error())
+		return nil
+	}
+	if uint64(need)+importSpaceMargin > free {
+		return fmt.Errorf("%w: these files take %s and %s has %s free — make room, or import fewer at a time",
+			ErrImportNoSpace, formatBytes(uint64(need)), library.Name, formatBytes(free))
+	}
+	return nil
+}
+
+// formatBytes is a size for a sentence: 1.4 GB, 820 MB.
+func formatBytes(n uint64) string {
+	const unit = 1000
+	if n < unit {
+		return fmt.Sprintf("%d B", n)
+	}
+	div, exp := uint64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "kMGTPE"[exp])
 }
 
 func importTitle(plan ImportPlan) string {
@@ -399,6 +463,17 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 		if !row.skipped() {
 			todo = append(todo, row)
 		}
+	}
+	// Again at the start of the job: the queue may have run something else first, and
+	// a disk that filled up meanwhile would otherwise fail file by file, leaving half
+	// an album in the library.
+	if err := checkImportSpace(plan.Library, todo, plan.Mode); err != nil {
+		if plan.Download != nil {
+			// Offered again, like any failed album, once there is room.
+			r.setDownloadGroup(*plan.Download, models.DownloadGroupFailed)
+		}
+		events.Finish(r.db, event, models.EventStatusError, err.Error(), map[string]any{"error": err.Error()})
+		return
 	}
 	r.progTotal.Store(int64(len(todo)))
 	r.setPhase(PhaseImporting)

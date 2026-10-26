@@ -141,16 +141,11 @@ still open:
   - Ordering by play count was asked about and deferred with the rest: it needs Plex's move-item
     API on top of add/remove.
 
-- **Download clients — what is left** ([downloads.md](downloads.md)). The inbox and auto-import
-  have shipped: qBittorrent, category → library mappings with a per-category auto-import switch,
-  path mappings, the poller, the Downloads tab, copy while seeding, and the `autotaggerr-imported`
-  tag. Still open:
-  - *A free-space check before copying*, since a copy doubles an album's space.
-  - *A post-import category*, as an option beside the tag.
-  - *Removing the torrent once seeding is done*, then the copy-twice cost goes away. It needs the
-    client's share-limit state and a careful delete.
-  - *Other clients* (Transmission, Deluge, SABnzbd/NZBGet), behind `modules.DownloadClient`. A usenet
-    client holds nothing after it finishes, so `Seeding` is false and Move is allowed.
+- **Download clients — what is left** ([downloads.md](downloads.md)). qBittorrent, Transmission and
+  SABnzbd, auto-import, the free-space check, the post-import category and removal once seeding is
+  done have shipped. Still open:
+  - *Deluge and NZBGet*, behind `modules.DownloadClient` like the rest. Deluge needs its Label plugin
+    for categories; NZBGet would read like SABnzbd (`FilesOnDisk`, nothing seeds).
   - Extra files and AcoustID suggestions are the file import's open items, and apply here unchanged.
 - **Additional audio formats** (OGG, M4A/AAC, …). Tagging covers FLAC (`metaflac`) and MP3
   (`bogem/id3v2`) only.

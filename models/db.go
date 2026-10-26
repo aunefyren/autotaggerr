@@ -146,6 +146,10 @@ const (
 	// rather than what happens to be stored, and the discography sync of artists just
 	// followed. Writes no file.
 	EventTypeDiscographyRead = "discography_read"
+	// EventTypeDownloadRemoved is imported downloads removed from their client, files
+	// and all, once it stopped seeding them (DownloadClient.RemoveAfterSeeding). The one
+	// place Autotaggerr deletes files it did not put somewhere, so each is listed.
+	EventTypeDownloadRemoved = "download_removed"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"

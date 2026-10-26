@@ -23,6 +23,30 @@ type fakeDownloadClient struct {
 	finishErr error
 	marked    []string
 	asked     [][]string
+	// movedTo records the post-import category each mark asked for, by ID.
+	movedTo map[string]string
+	// done is what SeedingDone answers; removed records what Remove was asked to delete.
+	done    map[string]bool
+	removed []string
+}
+
+func (f *fakeDownloadClient) SeedingDone(ids []string) (map[string]bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := map[string]bool{}
+	for _, id := range ids {
+		if done, ok := f.done[id]; ok {
+			out[id] = done
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeDownloadClient) Remove(id string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.removed = append(f.removed, id)
+	return nil
 }
 
 func (f *fakeDownloadClient) Finished(categories []string) ([]modules.Download, error) {
@@ -41,10 +65,14 @@ func (f *fakeDownloadClient) Files(d modules.Download) ([]modules.DownloadFile, 
 	return f.files[d.ID], nil
 }
 
-func (f *fakeDownloadClient) MarkImported(id string) error {
+func (f *fakeDownloadClient) MarkImported(id, _, to string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.marked = append(f.marked, id)
+	if f.movedTo == nil {
+		f.movedTo = map[string]string{}
+	}
+	f.movedTo[id] = to
 	return nil
 }
 
@@ -309,4 +337,79 @@ func TestDownloadSourceName(t *testing.T) {
 	if got := DownloadSourceName(models.DownloadItem{Name: "Band - Album.2020"}); got != "Band - Album.2020" {
 		t.Errorf("folder = %q", got)
 	}
+}
+
+// TestImportedDownloadIsMovedAndRemovedAfterSeeding: with the client's post-import
+// category set, the import moves the download there; with removal on, it is removed —
+// files and all — once the client says a share limit stopped it, and not before. A
+// download known only by another database's tag is never removed.
+func TestImportedDownloadIsMovedAndRemovedAfterSeeding(t *testing.T) {
+	w, fake, item := downloadWorld(t)
+	if err := w.db.Model(&models.DownloadClient{}).Where("id = ?", item.ClientID).
+		Updates(map[string]any{"imported_category": "music-done", "remove_after_seeding": true}).Error; err != nil {
+		t.Fatal(err)
+	}
+	// Imported by someone else: tagged in the client, nothing recorded here.
+	foreign := models.DownloadItem{ClientID: item.ClientID, RemoteID: "foreign", Name: "Foreign", State: models.DownloadStateImported}
+	if err := w.db.Create(&foreign).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rows := w.runner.ProposeImport(w.library, w.release, item.Files)
+	plan := ImportPlan{Library: w.library, Release: w.release, Root: item.Path, Mode: modules.TransferCopy, Rows: rows,
+		Download: &ImportDownload{ItemID: item.ID, Folder: item.Path}}
+	if err := w.runner.Import(plan); err != nil {
+		t.Fatal(err)
+	}
+	w.runner.waitIdle(t)
+	if fake.movedTo["hash1"] != "music-done" {
+		t.Errorf("moved to %q, want music-done", fake.movedTo["hash1"])
+	}
+
+	// Still seeding: nothing removed.
+	fake.done = map[string]bool{"hash1": false, "foreign": true}
+	w.runner.PollDownloads()
+	if len(fake.removed) != 0 {
+		t.Fatalf("removed %v while seeding, or a foreign download", fake.removed)
+	}
+
+	// Stopped by its share limit, and gone from the watched category: removed once.
+	fake.downloads = nil
+	fake.done = map[string]bool{"hash1": true, "foreign": true}
+	w.runner.PollDownloads()
+	w.runner.PollDownloads()
+	if strings.Join(fake.removed, ",") != "hash1" {
+		t.Errorf("removed = %v, want hash1 once", fake.removed)
+	}
+	got := downloadItems(t, w.db)["hash1"]
+	if got.RemovedAt == nil || got.Seeding || !strings.Contains(got.Reason, "after it finished seeding") {
+		t.Errorf("download after removal = %+v", got)
+	}
+	var removals []models.Event
+	w.db.Where("type = ?", models.EventTypeDownloadRemoved).Find(&removals)
+	if len(removals) != 1 || removals[0].Status != models.EventStatusOK {
+		t.Errorf("removal events = %+v, want one", removals)
+	}
+}
+
+// TestPollReadsAUsenetDownloadFromDisk: a client that cannot list files (SABnzbd) has
+// them read from the mapped folder, and a download nothing seeds may be moved.
+func TestPollReadsAUsenetDownloadFromDisk(t *testing.T) {
+	w := newImportWorld(t)
+	fake := &fakeDownloadClient{downloads: []modules.Download{{ID: "nzo1", Name: "Band - Album", Category: "music",
+		Path: "/downloads/Band - Album", FilesOnDisk: true, CompletedAt: time.Now().Add(-time.Hour)}}}
+	useFakeDownloadClient(t, fake)
+	newDownloadClientRow(t, w.db, w.library, w.root)
+	w.runner.PollDownloads()
+	item := downloadItems(t, w.db)["nzo1"]
+	if item.State != models.DownloadStateReady || len(item.Files) != 2 || item.Seeding {
+		t.Fatalf("download = %s %q files %v seeding %v", item.State, item.Reason, item.Files, item.Seeding)
+	}
+	rows := w.runner.ProposeImport(w.library, w.release, item.Files)
+	plan := ImportPlan{Library: w.library, Release: w.release, Root: item.Path, Mode: modules.TransferMove, Rows: rows,
+		Download: &ImportDownload{ItemID: item.ID, Folder: item.Path}}
+	if err := w.runner.Import(plan); err != nil {
+		t.Errorf("moving a download nothing seeds = %v", err)
+	}
+	w.runner.waitIdle(t)
 }

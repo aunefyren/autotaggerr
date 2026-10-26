@@ -1,7 +1,7 @@
 # Feature: importing from a download client
 
 Finished downloads offered for import, without typing a path. A **download client** (qBittorrent,
-for now) is watched for finished downloads in the categories mapped to a library, and each one is
+Transmission or SABnzbd) is watched for finished downloads in the categories mapped to a library, and each one is
 listed on **Import → Downloads**. Opening one runs the same identify-and-review modal as a folder
 import ([import.md](import.md)). Nothing is imported without that review, unless the category is
 set to [import automatically](#auto-import) and the album's own tags leave nothing to decide.
@@ -15,8 +15,9 @@ against the album. Its import is mostly a check against what it already expected
 Autotaggerr grabs nothing. The client is only a **source and a trigger**: it says which folder holds
 a finished download and when it is ready. Identification is still the files' own business, by the
 import's hints and the release ID in the tags. What Lidarr also does and this does not, deliberately:
-search indexers, unpack archives (Lidarr leaves that to Unpackerr too), hardlink, remove torrents
-after seeding, import extra files.
+search indexers, unpack archives (Lidarr leaves that to Unpackerr too), hardlink, import extra files.
+Removing a torrent after seeding it does do, but only when asked — see
+[once every album is imported](#once-every-album-is-imported).
 
 ## Download clients
 
@@ -25,9 +26,15 @@ read from and what library they go into). The table is `download_clients`. It is
 because a data source answers questions about music and shares nothing else with a client that has
 a login, watched categories and path mappings.
 
+- **Type**: `qbittorrent`, `transmission` or `sabnzbd` (`models.DownloadClientTypes`), fixed once
+  saved — a different type is a different client, and its categories, mappings and history would
+  not carry over. `models.DownloadClientSeeds` tells the torrent clients, which hold a download's
+  files after it finishes, from the usenet one, which does not.
 - **Base URL, username, password.** Both credentials may be empty for a qBittorrent that bypasses
-  authentication for this host. The password is write-only (`json:"-"`); the API returns
-  `password_set` instead. An edit that omits it keeps the stored one.
+  authentication for this host, or a Transmission whose RPC asks for none. SABnzbd has no login:
+  its API key is stored in the password field, required, and the form calls it that. The password
+  is write-only (`json:"-"`); the API returns `password_set` instead. An edit that omits it keeps
+  the stored one.
 - **Watched categories** (`download_client_categories`), each mapped to one library. Only mapped
   categories are ever read, so a Lidarr using the same client under its own category is left alone.
   The target library must pass Import's gate, which means it is not Lidarr-managed. That is checked
@@ -89,7 +96,12 @@ progress is kept on the row (`groups`, by album folder: `queued`, `imported` or 
 - **Copy, always, while the client holds the files.** No hardlinks (tagging one rewrites the
   torrent's file) and no move, which would pull the file out from under the client. The review shows
   a warning in place of the Move/Copy choice: the album takes its space twice until the torrent is
-  removed. `Runner.Import` refuses a move with `ErrDownloadMustCopy`, whoever asks.
+  removed. `Runner.Import` refuses a move with `ErrDownloadMustCopy`, whoever asks. A SABnzbd
+  download is held by nothing (`seeding` false), so its review offers Move as a folder import does.
+- **An import that would not fit is refused before anything is copied** — when it is queued, and
+  again when the job starts, since the queue may have run something else first
+  ([import.md](import.md#free-space)). A seeding album needs its full size again, which is the case
+  this exists for.
 - **One album is queued at a time.** `POST /import` takes `download_id` and `download_folder`. The
   check (the folder is an album of this download, and it is not already queued or imported) and the
   queued mark happen under one lock, so a double-click cannot queue an album twice.
@@ -104,6 +116,30 @@ progress is kept on the row (`groups`, by album folder: `queued`, `imported` or 
   survive a restart, so a surviving queued mark is a job that will never run.
 
 The `file_import` event carries the download's name and hash.
+
+## Once every album is imported
+
+The imported tag is always written (torrent clients). Two more things a torrent client row can ask
+for, both off unless set, and both refused for SABnzbd, whose history keeps nothing to move or remove:
+
+- **Move to a category** (`imported_category`): the download is moved there beside the tag, out of
+  the watched category — into one the client seeds or stores differently. It may not be a watched
+  category itself. qBittorrent is asked to create it first (a 409 for one it has is not a failure);
+  in Transmission it swaps the watched label for this one and keeps the rest. Moved out of a watched
+  category, the download is history here, as any download that leaves one is.
+- **Remove once it finishes seeding** (`remove_after_seeding`): the end of the copy's second space.
+  After each poll, `Runner.removeFinishedSeeds` asks the client (`modules.SeedRemover`) about the
+  downloads it imported and removes, files and all, those the client stopped *for reaching a share
+  limit set there*. It is careful by construction, since these are files Autotaggerr did not put
+  there:
+  - only downloads imported here in full, every album (`Groups` all imported) — one known only by
+    another database's tag is never touched;
+  - only a limit, never a pause: qBittorrent's torrent has to be stopped *and* have reached its
+    effective `max_ratio` or `max_seeding_time` (no limit, never done); Transmission's `isFinished`
+    is set only by a seed ratio or idle limit;
+  - looked up by ID, so a download moved to the post-import category is still found;
+  - each removal is a `download_removed` Activity row, failures included, and the download keeps
+    `removed_at` and says why.
 
 ## Auto-import
 
@@ -145,6 +181,27 @@ behind its own `TryLock`. **Each download is looked at once** (`auto_checked_at`
 - MusicBrainz being unreachable is the one reason to look again on the next poll. It says nothing
   about the album.
 
+## Transmission specifics
+
+`modules.TransmissionClient`, the RPC at `/transmission/rpc` (a base URL already ending in `/rpc`
+is used as it is). Basic auth when the daemon asks for it, and Transmission's CSRF guard: a request
+without the current `X-Transmission-Session-Id` is answered 409 with the id, and sent once more with
+it — a guard that keeps refusing is reported as a proxy stripping the header. Transmission has no
+categories, only **labels** (3.0 on), so a watched category is a label, the imported mark is a label,
+and the post-import category swaps labels. A torrent counts finished at 100% with nothing left, no
+local error, and stopped, queued to seed or seeding; files come from `torrent-get` with `fileStats`,
+a deselected one never complete. A 403 is the RPC whitelist refusing this host, and said so.
+
+## SABnzbd specifics
+
+`modules.SABnzbdClient`, the `/api` with an API key. A finished job is a **Completed** history entry
+in a watched category (compared without case — SABnzbd lowercases them), read 200 newest at a time;
+its `storage` is the final folder. SABnzbd cannot list a job's files, so the download is marked
+`FilesOnDisk` and the poller reads its folder here, after the path mapping, as it would a folder
+import. Nothing seeds: the download is not `seeding`, the import may move it, and there is nothing
+to mark, move or remove in the client — the history has no tags, so the database row is the only
+record. A refused key is a 200 with `status: false`, reported as the key.
+
 ## qBittorrent specifics
 
 `modules.QBittorrentClient`, Web API v2:
@@ -160,6 +217,9 @@ behind its own `TryLock`. **Each download is looked at once** (`auto_checked_at`
   without it, which is the classic "works in curl, fails in code" failure. A 403 that comes right
   after a successful login is reported as a reverse proxy not passing the Host header through.
 - **A file's path is the save path plus the file's name**, joined with the client's own separator.
+- **Seeding is done** when a torrent is `pausedUP`/`stoppedUP` and its effective share limit was
+  reached: `ratio >= max_ratio` or `seeding_time >= max_seeding_time` (minutes against seconds),
+  with `-1` meaning no limit. A torrent stopped by hand, or with no limits, is never done.
 
 ## Tests
 
@@ -172,7 +232,13 @@ behind its own `TryLock`. **Each download is looked at once** (`auto_checked_at`
   partial-track-ID cases left with their notes. It also checks that a file already in the library
   is never replaced, and that the switch is off by default and still reaches waiting downloads
   once turned on.
+- `modules/transmission_test.go` and `modules/sabnzbd_test.go`: each against a fake that enforces its
+  handshake (Transmission's session id and basic auth; SABnzbd's key). Labels as categories, the
+  label swap, settled states, file completeness, `isFinished` versus a pause; SABnzbd's completed
+  history only, and a refused key.
 - `process/downloads_test.go`: the poller against a fake client (`newDownloadClient` is a var).
+  Includes the post-import category reaching the client, removal only once a limit stopped it (once,
+  never a foreign download, recorded in Activity), and a usenet download read from disk and moved.
   Covers ready, unavailable and settling downloads, the tag on an unseen download, a fixed mapping,
   forgetting, and a failed read recording no event. End to end: copy only, no double queue, album
   and download marked imported, and the client told. Also `ReconcileDownloads`.

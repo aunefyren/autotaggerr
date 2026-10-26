@@ -1,6 +1,7 @@
 package process
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -322,5 +323,36 @@ func TestImportRowReadyRefusesUnreviewedReplacement(t *testing.T) {
 	}
 	if err := importRowReady(row, map[string]bool{"/lib/a.flac": true}); err != nil {
 		t.Errorf("a reviewed one is fine: %v", err)
+	}
+}
+
+// An import the library's filesystem cannot hold is refused when it is queued, and a
+// move within one filesystem — a rename — needs no room at all.
+func TestImportRefusesWithoutSpace(t *testing.T) {
+	w := newImportWorld(t)
+	original := freeBytes
+	t.Cleanup(func() { freeBytes = original })
+	freeBytes = func(string) (uint64, error) { return 1 << 20, nil } // 1 MB
+
+	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	plan := ImportPlan{Library: w.library, Release: w.release, Rows: rows, Mode: modules.TransferCopy, Root: w.root}
+	err := w.runner.Import(plan)
+	if !errors.Is(err, ErrImportNoSpace) || !strings.Contains(err.Error(), "free") {
+		t.Fatalf("copy into a full library = %v, want ErrImportNoSpace naming the space", err)
+	}
+
+	// Both sides of a test share one temp filesystem, so a move is a rename.
+	plan.Mode = modules.TransferMove
+	if err := checkImportSpace(w.library, rows, plan.Mode); err != nil {
+		t.Errorf("a move within one filesystem was refused for space: %v", err)
+	}
+
+	// A filesystem that cannot be asked does not block the import.
+	freeBytes = func(string) (uint64, error) { return 0, errors.New("statfs failed") }
+	if err := checkImportSpace(w.library, rows, modules.TransferCopy); err != nil {
+		t.Errorf("an unreadable free space blocked the import: %v", err)
+	}
+	if got := formatBytes(1_400_000_000); got != "1.4 GB" {
+		t.Errorf("formatBytes = %q", got)
 	}
 }

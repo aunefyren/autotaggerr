@@ -175,7 +175,7 @@ function DownloadsSource() {
     return (
       <EmptyState
         icon="⤓"
-        message="No download client yet. Add qBittorrent and its finished downloads are listed here, ready to import."
+        message="No download client yet. Add qBittorrent, Transmission or SABnzbd and its finished downloads are listed here, ready to import."
         action={<Link className="btn btn-primary btn-sm" to="/download-clients">Add download client</Link>}
       />
     );

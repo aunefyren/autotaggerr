@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
@@ -175,6 +176,90 @@ func (r *Runner) pollClient(row models.DownloadClient) {
 			r.db.Model(&item).Update("seeding", false)
 		}
 	}
+
+	r.removeFinishedSeeds(row, client)
+}
+
+// removeFinishedSeeds removes, files and all, the downloads Autotaggerr imported in
+// full that the client has stopped seeding by its own share limits — when the client
+// row asks for it. The album is in the library by then, so the client's copy is the
+// second one, and keeping it costs its full size for nothing.
+//
+// Careful by construction, since this deletes files Autotaggerr did not put there:
+//   - only rows imported here, every album of them (Groups all imported) — a download
+//     another database imported, known only by its tag, is left alone;
+//   - only when the client says a share limit stopped it, never a pause by hand;
+//   - looked up by ID, so a download moved to the post-import category is still found;
+//   - each removal recorded in Activity, failures included.
+func (r *Runner) removeFinishedSeeds(row models.DownloadClient, client modules.DownloadClient) {
+	if !row.RemoveAfterSeeding {
+		return
+	}
+	remover, ok := client.(modules.SeedRemover)
+	if !ok {
+		return
+	}
+	var candidates []models.DownloadItem
+	if err := r.db.Where("client_id = ? AND state = ? AND removed_at IS NULL", row.ID, models.DownloadStateImported).
+		Find(&candidates).Error; err != nil {
+		logger.Log.Warnf("failed to load imported downloads of %q: %s", row.Name, err.Error())
+		return
+	}
+	var items []models.DownloadItem
+	var ids []string
+	for _, item := range candidates {
+		if len(item.Groups) > 0 && allGroupsImported(item) {
+			items = append(items, item)
+			ids = append(ids, item.RemoteID)
+		}
+	}
+	if len(ids) == 0 {
+		return
+	}
+	done, err := remover.SeedingDone(ids)
+	if err != nil {
+		logger.Log.Warnf("failed to read seeding state from %q: %s", row.Name, err.Error())
+		return
+	}
+	var event *models.Event
+	var rows []models.EventItem
+	removed, failed := 0, 0
+	for _, item := range items {
+		if !done[item.RemoteID] {
+			continue
+		}
+		if event == nil {
+			event = events.Begin(r.db, models.EventTypeDownloadRemoved, "Remove finished downloads from "+row.Name)
+		}
+		eventItem := models.EventItem{Path: item.Path, Kind: models.EventItemKindFile, Status: models.EventItemStatusGone}
+		if err := remover.Remove(item.RemoteID); err != nil {
+			failed++
+			eventItem.Status, eventItem.Error = models.EventItemStatusError, err.Error()
+			rows = append(rows, eventItem)
+			logger.Log.Warnf("failed to remove download %q from %q: %s", item.Name, row.Name, err.Error())
+			continue
+		}
+		removed++
+		rows = append(rows, eventItem)
+		now := time.Now()
+		r.db.Model(&item).Updates(map[string]any{"removed_at": &now, "seeding": false,
+			"reason": "removed from " + row.Name + " after it finished seeding"})
+		logger.Log.Infof("removed download %q from %q after it finished seeding", item.Name, row.Name)
+	}
+	if event == nil {
+		return
+	}
+	status := models.EventStatusOK
+	if failed > 0 {
+		status = models.EventStatusError
+	}
+	event.Stats = []models.EventStat{
+		{Label: "Removed", Value: removed, Filter: models.EventItemStatusGone},
+		{Label: "Failed", Value: failed, Kind: models.EventStatBad, Filter: models.EventItemStatusError},
+	}
+	events.Finish(r.db, event, status, fmt.Sprintf("%d download(s) removed · %d failed", removed, failed),
+		map[string]any{"client": row.Name, "removed": removed, "failed": failed})
+	events.AddItems(r.db, event, rows)
 }
 
 // readDownloadFiles lists a download's complete audio files as this host sees them,
@@ -183,16 +268,31 @@ func (r *Runner) readDownloadFiles(client modules.DownloadClient, row models.Dow
 	item.State, item.Reason, item.Files = models.DownloadStateUnavailable, "", nil
 	item.Path = modules.MapRemotePath(d.Path, row.PathMappings)
 
-	files, err := client.Files(d)
-	if err != nil {
-		item.Reason = "could not list its files: " + err.Error()
-		return
-	}
 	var audio []string
-	for _, f := range files {
-		local := modules.MapRemotePath(f.Path, row.PathMappings)
-		if f.Complete && modules.IsSupportedAudioFile(local) {
-			audio = append(audio, local)
+	if d.FilesOnDisk {
+		// The client names a folder and nothing in it (a usenet client's history), so
+		// the folder is read here, where the mapping has already been applied.
+		if _, err := os.Stat(item.Path); err != nil {
+			item.Reason = fmt.Sprintf("its files are not at %s on this host — add a path mapping for %s", item.Path, remoteParent(d.Path))
+			return
+		}
+		_ = filepath.WalkDir(item.Path, func(p string, entry os.DirEntry, err error) error {
+			if err == nil && !entry.IsDir() && modules.IsSupportedAudioFile(p) {
+				audio = append(audio, p)
+			}
+			return nil
+		})
+	} else {
+		files, err := client.Files(d)
+		if err != nil {
+			item.Reason = "could not list its files: " + err.Error()
+			return
+		}
+		for _, f := range files {
+			local := modules.MapRemotePath(f.Path, row.PathMappings)
+			if f.Complete && modules.IsSupportedAudioFile(local) {
+				audio = append(audio, local)
+			}
 		}
 	}
 	if len(audio) == 0 {
@@ -369,7 +469,7 @@ func (r *Runner) tellClientImported(item models.DownloadItem) error {
 	if err != nil {
 		return err
 	}
-	return client.MarkImported(item.RemoteID)
+	return client.MarkImported(item.RemoteID, item.Category, row.ImportedCategory)
 }
 
 // ReconcileDownloads forgets album imports left queued by a process that has since

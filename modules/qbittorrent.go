@@ -167,10 +167,67 @@ func (c *QBittorrentClient) Files(d Download) ([]DownloadFile, error) {
 	return out, nil
 }
 
-// MarkImported tags a torrent as imported.
-func (c *QBittorrentClient) MarkImported(id string) error {
+// MarkImported tags a torrent as imported and, when category is set, moves it there.
+// The category is created first: qBittorrent refuses to set one it does not have, and
+// answers 409 to creating one it does, which is not a failure here.
+func (c *QBittorrentClient) MarkImported(id, _, category string) error {
 	form := url.Values{"hashes": {id}, "tags": {models.DownloadClientImportedTag}}
-	return c.postForm("/api/v2/torrents/addTags", form)
+	if err := c.postForm("/api/v2/torrents/addTags", form); err != nil {
+		return err
+	}
+	if category = strings.TrimSpace(category); category == "" {
+		return nil
+	}
+	if err := c.postForm("/api/v2/torrents/createCategory", url.Values{"category": {category}}); err != nil &&
+		!strings.Contains(err.Error(), "409") {
+		return fmt.Errorf("could not create the category %q: %w", category, err)
+	}
+	if err := c.postForm("/api/v2/torrents/setCategory", url.Values{"hashes": {id}, "category": {category}}); err != nil {
+		return fmt.Errorf("tagged, but could not move it to the category %q: %w", category, err)
+	}
+	return nil
+}
+
+// qbittorrentStopped is a finished torrent qBittorrent is no longer seeding. stoppedUP
+// is qBittorrent 5's name for pausedUP.
+var qbittorrentStopped = map[string]bool{"pausedUP": true, "stoppedUP": true}
+
+// qbittorrentLimits is the part of /torrents/info that says whether a torrent was
+// stopped by its share limits. max_ratio and max_seeding_time are the limits in force
+// for the torrent — its own, or the global ones it inherits — with -1 for none; the
+// seeding time limit is in minutes and the seeding time in seconds.
+type qbittorrentLimits struct {
+	Hash           string  `json:"hash"`
+	State          string  `json:"state"`
+	Ratio          float64 `json:"ratio"`
+	MaxRatio       float64 `json:"max_ratio"`
+	SeedingTime    int64   `json:"seeding_time"`
+	MaxSeedingTime int64   `json:"max_seeding_time"`
+}
+
+// SeedingDone reports which torrents qBittorrent stopped for reaching a share limit.
+// Stopped is not enough — a torrent paused by hand is stopped too — so a limit has to
+// be set and reached; a torrent with no limits is never done.
+func (c *QBittorrentClient) SeedingDone(ids []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(ids) == 0 {
+		return out, nil
+	}
+	var torrents []qbittorrentLimits
+	if err := c.getJSON("/api/v2/torrents/info?"+url.Values{"hashes": {strings.Join(ids, "|")}}.Encode(), &torrents); err != nil {
+		return nil, err
+	}
+	for _, t := range torrents {
+		ratioReached := t.MaxRatio >= 0 && t.Ratio >= t.MaxRatio
+		timeReached := t.MaxSeedingTime >= 0 && t.SeedingTime >= t.MaxSeedingTime*60
+		out[t.Hash] = qbittorrentStopped[t.State] && (ratioReached || timeReached)
+	}
+	return out, nil
+}
+
+// Remove deletes a torrent and its files.
+func (c *QBittorrentClient) Remove(id string) error {
+	return c.postForm("/api/v2/torrents/delete", url.Values{"hashes": {id}, "deleteFiles": {"true"}})
 }
 
 // HealthCheck logs in and reads the version — the smallest request that proves both

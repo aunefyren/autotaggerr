@@ -85,6 +85,11 @@ func TestDownloadClientValidation(t *testing.T) {
 		{"relative mapping", func(b map[string]any) {
 			b["path_mappings"] = []map[string]any{{"remote": "/downloads", "local": "mnt/x"}}
 		}, "not a full path"},
+		{"sabnzbd without a key", func(b map[string]any) { b["type"] = "sabnzbd" }, "API key"},
+		{"sabnzbd removing after seeding", func(b map[string]any) {
+			b["type"], b["password"], b["remove_after_seeding"] = "sabnzbd", "key", true
+		}, "usenet client keeps nothing"},
+		{"imported category is watched", func(b map[string]any) { b["imported_category"] = "music" }, "is a watched category"},
 	} {
 		body := base()
 		tc.change(body)

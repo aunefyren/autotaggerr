@@ -40,6 +40,7 @@ const TYPE_LABELS: Record<string, string> = {
   discover_files: "Scan with disk walk",
   file_import: "File import",
   discography_read: "Discographies",
+  download_removed: "Downloads removed",
 };
 
 /**
@@ -78,6 +79,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Lidarr imported, upgraded, deleted or renamed files for these artists since the last check. Their cached Lidarr answers were dropped and a processing run queued for each, so the new files are identified and tagged now rather than at the next scheduled scan. Only recorded when there was something to follow.",
   plex_refresh:
     "Tells Plex to re-read the albums this run touched. One event per run rather than per album, which would flood the feed — the albums themselves are listed below.",
+  download_removed:
+    "Imported downloads removed from their client, files and all, because the client is set to remove them once they finish seeding. Only downloads Autotaggerr imported in full, and only once the client stopped them for reaching a share limit set there — a torrent paused by hand is never removed. Every album was already in the library; this removes the second copy.",
   tag_files:
     "Everything this pass wrote to disk. The walk finds files whose tags no longer match what Autotaggerr knows; the drift half rewrites files whose release changed upstream, which the walk cannot see because the file itself has not moved.",
 };

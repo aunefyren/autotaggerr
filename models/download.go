@@ -15,12 +15,22 @@ import (
 // is shared with nothing in that table.
 
 const (
-	DownloadClientTypeQBittorrent = "qbittorrent"
+	DownloadClientTypeQBittorrent  = "qbittorrent"
+	DownloadClientTypeTransmission = "transmission"
+	DownloadClientTypeSABnzbd      = "sabnzbd"
 )
 
 // DownloadClientTypes lists the client types the app can talk to, in the order the UI
 // offers them.
-var DownloadClientTypes = []string{DownloadClientTypeQBittorrent}
+var DownloadClientTypes = []string{DownloadClientTypeQBittorrent, DownloadClientTypeTransmission, DownloadClientTypeSABnzbd}
+
+// DownloadClientSeeds reports whether a client type holds a download's files after it
+// finishes. A torrent client does, for as long as the torrent exists, so an import
+// copies; a usenet client is done with them, so an import may move them, and nothing
+// is left to seed or remove.
+func DownloadClientSeeds(clientType string) bool {
+	return clientType != DownloadClientTypeSABnzbd
+}
 
 // DownloadClientImportedTag is the tag a download is given in its client once every
 // album in it has been imported. It is the one thing Autotaggerr writes to a download
@@ -45,9 +55,19 @@ type DownloadClient struct {
 	BaseURL string `json:"base_url"`
 	// Username and Password log in to the client's Web API. Both may be empty for a
 	// client that skips authentication for this host (qBittorrent's localhost and
-	// subnet bypass). The password is write-only, like the other credentials.
+	// subnet bypass). The password is write-only, like the other credentials. For
+	// SABnzbd, which has no login, Password holds the API key and Username is unused.
 	Username string `json:"username"`
 	Password string `json:"-"`
+	// ImportedCategory, when set, is the category a download is moved to once every
+	// album in it is imported, beside the imported tag — out of the watched category,
+	// into one the client may treat differently (a slower seed, a different folder).
+	// Torrent clients only: a usenet client's history has no category to change.
+	ImportedCategory string `json:"imported_category"`
+	// RemoveAfterSeeding removes an imported download, files and all, once the client
+	// has stopped it for reaching its own share limits — when the album's second copy
+	// stops being worth its space. Off unless asked for; torrent clients only.
+	RemoveAfterSeeding bool `json:"remove_after_seeding"`
 	// PathMappings are tried longest remote prefix first; a path no mapping matches
 	// is used as the client reported it, which is right when both run on one host.
 	PathMappings []PathMapping `gorm:"serializer:json" json:"path_mappings"`
@@ -136,6 +156,9 @@ type DownloadItem struct {
 	Seeding     bool       `json:"seeding"`
 	CompletedAt *time.Time `json:"completed_at"`
 	ImportedAt  *time.Time `json:"imported_at"`
+	// RemovedAt is when Autotaggerr removed the download from its client after it
+	// finished seeding (DownloadClient.RemoveAfterSeeding).
+	RemovedAt *time.Time `json:"removed_at,omitempty"`
 	// SeenAt is the last poll that found the download in its client.
 	SeenAt *time.Time `json:"seen_at"`
 }

@@ -37,9 +37,11 @@ type downloadClientInput struct {
 	Username *string `json:"username"`
 	// Password is write-only: settable here, never returned (json:"-" on the model).
 	// Absent keeps the stored one.
-	Password     *string                  `json:"password"`
-	PathMappings *[]models.PathMapping    `json:"path_mappings"`
-	Categories   *[]downloadCategoryInput `json:"categories"`
+	Password           *string                  `json:"password"`
+	PathMappings       *[]models.PathMapping    `json:"path_mappings"`
+	Categories         *[]downloadCategoryInput `json:"categories"`
+	ImportedCategory   *string                  `json:"imported_category"`
+	RemoveAfterSeeding *bool                    `json:"remove_after_seeding"`
 }
 
 func (in downloadClientInput) apply(row *models.DownloadClient) {
@@ -61,6 +63,12 @@ func (in downloadClientInput) apply(row *models.DownloadClient) {
 	if in.Password != nil {
 		row.Password = *in.Password
 	}
+	if in.ImportedCategory != nil {
+		row.ImportedCategory = strings.TrimSpace(*in.ImportedCategory)
+	}
+	if in.RemoveAfterSeeding != nil {
+		row.RemoveAfterSeeding = *in.RemoveAfterSeeding
+	}
 	if in.PathMappings != nil {
 		mappings := make([]models.PathMapping, 0, len(*in.PathMappings))
 		for _, m := range *in.PathMappings {
@@ -81,6 +89,17 @@ func (a *API) validateDownloadClient(row models.DownloadClient, categories []dow
 	}
 	if u, err := url.Parse(row.BaseURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "the base URL must be a full http:// or https:// address, like http://192.168.1.10:8080"
+	}
+	if row.Type == models.DownloadClientTypeSABnzbd && strings.TrimSpace(row.Password) == "" {
+		return "SABnzbd needs its API key — Config → General → Security in SABnzbd"
+	}
+	if !models.DownloadClientSeeds(row.Type) && (row.ImportedCategory != "" || row.RemoveAfterSeeding) {
+		return "a usenet client keeps nothing after a download finishes, so there is no category to move it to and nothing to remove"
+	}
+	if row.ImportedCategory != "" && slices.ContainsFunc(categories, func(c downloadCategoryInput) bool {
+		return strings.TrimSpace(c.Category) == row.ImportedCategory
+	}) {
+		return fmt.Sprintf("%q is a watched category — choose one outside them, or an imported download stays among the ones being watched", row.ImportedCategory)
 	}
 	for _, m := range row.PathMappings {
 		if m.Remote == "" || m.Local == "" {

@@ -40,6 +40,10 @@ type Download struct {
 	// Imported is whether the download already carries the imported mark — the second
 	// record of an import, which outlives the database.
 	Imported bool
+	// FilesOnDisk says the client cannot list the download's files, so they are read
+	// from its folder here, once the path is mapped. A usenet client's history names a
+	// folder and nothing in it.
+	FilesOnDisk bool
 }
 
 // DownloadFile is one file of a download, as its client sees it.
@@ -63,10 +67,25 @@ type DownloadClient interface {
 	Finished(categories []string) ([]Download, error)
 	// Files lists a download's files.
 	Files(d Download) ([]DownloadFile, error)
-	// MarkImported records in the client that a download has been imported. It is the
-	// only write Autotaggerr makes to a download client.
-	MarkImported(id string) error
+	// MarkImported records in the client that a download has been imported, and when
+	// to is set, moves it from its category to that one. Besides removing a download
+	// that finished seeding (SeedRemover), it is the only write Autotaggerr makes to a
+	// client.
+	MarkImported(id, from, to string) error
 	HealthCheck() (bool, error)
+}
+
+// SeedRemover is a client whose downloads seed after finishing, and which can say when
+// that is over and remove them. Torrent clients implement it; a usenet client, which
+// holds nothing after it finishes, does not.
+type SeedRemover interface {
+	// SeedingDone reports, for each of these downloads the client still has, whether
+	// the client stopped it for reaching its own share limits — a ratio or seeding-time
+	// limit set in the client, not a pause by hand. A download absent from the answer
+	// is gone from the client.
+	SeedingDone(ids []string) (map[string]bool, error)
+	// Remove deletes a download from the client together with its files.
+	Remove(id string) error
 }
 
 // NewDownloadClient builds the client for a configured row.
@@ -77,6 +96,19 @@ func NewDownloadClient(row models.DownloadClient) (DownloadClient, error) {
 			return nil, fmt.Errorf("download client %q has no base URL", row.Name)
 		}
 		return NewQBittorrentClient(row.BaseURL, row.Username, row.Password), nil
+	case models.DownloadClientTypeTransmission:
+		if strings.TrimSpace(row.BaseURL) == "" {
+			return nil, fmt.Errorf("download client %q has no base URL", row.Name)
+		}
+		return NewTransmissionClient(row.BaseURL, row.Username, row.Password), nil
+	case models.DownloadClientTypeSABnzbd:
+		if strings.TrimSpace(row.BaseURL) == "" {
+			return nil, fmt.Errorf("download client %q has no base URL", row.Name)
+		}
+		if strings.TrimSpace(row.Password) == "" {
+			return nil, fmt.Errorf("download client %q has no API key", row.Name)
+		}
+		return NewSABnzbdClient(row.BaseURL, row.Password), nil
 	}
 	return nil, fmt.Errorf("download client %q has an unsupported type %q", row.Name, row.Type)
 }

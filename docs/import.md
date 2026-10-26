@@ -112,6 +112,17 @@ while the import sat in the queue, and refuses a row whose replacements include 
 not in the plan the reviewer agreed to (`importRowReady`): a replacement is only ever of something
 someone saw.
 
+## Free space
+
+An import the library's filesystem cannot hold is refused, with how much it needs and how much there
+is (`ErrImportNoSpace`), when it is queued — so the reviewer hears it at once — and again when the
+job starts, since the queue may have run something else meanwhile. A copy needs room for every file;
+a move only for files on another filesystem, since a move within one is a rename. 64 MB is kept
+spare beyond the files, for the tags written into them. A filesystem that cannot be asked lets the
+import through: refusing on a failed probe would block imports for a reason that has nothing to do
+with space. `utilities.FreeBytes` and `SameFilesystem` are build-tagged (`statfs` and device numbers;
+`GetDiskFreeSpaceEx` and volume names on Windows).
+
 ## The job
 
 `Runner.importNow`, one file at a time under the queue's job lock, as job kind `import`

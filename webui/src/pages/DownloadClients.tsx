@@ -2,7 +2,16 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { DownloadClient, DownloadClientCategory, Library, Manager, PathMapping } from "../types";
+import {
+  DOWNLOAD_CLIENT_LABEL,
+  DownloadClient,
+  DownloadClientCategory,
+  DownloadClientType,
+  Library,
+  Manager,
+  PathMapping,
+  downloadClientSeeds,
+} from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { useToast } from "../toast";
 import { useSetup } from "../setup";
@@ -20,9 +29,11 @@ type ClientTest = {
 export function CopyWarning() {
   return (
     <Note kind="warn" title="Imported albums take space twice">
-      While a torrent is in qBittorrent its files are copied into the library, never moved — moving them
-      would break the torrent. Each imported album therefore takes its space twice until you remove the
-      torrent in qBittorrent.
+      While a torrent client holds a download its files are copied into the library, never moved — moving them
+      would break the torrent. Each imported album therefore takes its space twice until the torrent is removed:
+      by hand, or by Autotaggerr once it finishes seeding, when the client is set to. An import that would not
+      fit in the library is refused before anything is copied. A usenet client keeps nothing, so its downloads
+      may be moved.
     </Note>
   );
 }
@@ -45,7 +56,7 @@ export default function DownloadClients() {
   const libraryName = (id: string) => libraries.data?.find((l) => l.id === id)?.name ?? "missing library";
 
   const remove = async (c: DownloadClient) => {
-    if (!confirm(`Remove download client "${c.name}"? Its downloads leave the Import page; nothing in qBittorrent or on disk changes.`)) return;
+    if (!confirm(`Remove download client "${c.name}"? Its downloads leave the Import page; nothing in ${DOWNLOAD_CLIENT_LABEL[c.type]} or on disk changes.`)) return;
     try {
       await api.del(`/download-clients/${c.id}`);
       toast("ok", `Removed ${c.name}`);
@@ -76,16 +87,17 @@ export default function DownloadClients() {
       </div>
       <p className="muted" style={{ margin: 0, maxWidth: "68ch", lineHeight: 1.55 }}>
         Finished downloads in a watched category are listed on <Link to="/import">Import</Link>, ready to be
-        identified and imported into that category's library. Nothing is imported without your review, and
-        the only change Autotaggerr makes in the client is a <span className="mono">autotaggerr-imported</span> tag
-        on a torrent once every album in it is in. Other categories — Lidarr's, say — are never read.
+        identified and imported into that category's library. Nothing is imported without your review unless a
+        category imports automatically. Once every album of a torrent is in, it is tagged{" "}
+        <span className="mono">autotaggerr-imported</span> — and, if you ask for it, moved to another category,
+        and removed once it finishes seeding. Other categories — Lidarr's, say — are never read.
       </p>
 
       {err && <ErrorNote message={err} />}
       {!err && !loading && data && data.length === 0 && (
         <EmptyState
           icon="⇣"
-          message="No download client yet. Add qBittorrent to have its finished downloads offered for import."
+          message="No download client yet. Add qBittorrent, Transmission or SABnzbd to have its finished downloads offered for import."
           action={<button className="btn btn-primary btn-sm" onClick={() => setEditing("new")}>Add download client</button>}
         />
       )}
@@ -94,12 +106,13 @@ export default function DownloadClients() {
         <div className="tablewrap">
           <table className="data">
             <thead>
-              <tr><th>Name</th><th>Base URL</th><th>Watches</th><th>State</th><th style={{ textAlign: "right" }}>Actions</th></tr>
+              <tr><th>Name</th><th>Client</th><th>Base URL</th><th>Watches</th><th>State</th><th style={{ textAlign: "right" }}>Actions</th></tr>
             </thead>
             <tbody>
               {data.map((c) => (
                 <tr key={c.id}>
                   <td style={{ color: "var(--text)" }}>{c.name}</td>
+                  <td>{DOWNLOAD_CLIENT_LABEL[c.type] ?? c.type}</td>
                   <td><span className="path">{c.base_url}</span></td>
                   <td>
                     {c.categories.length === 0 ? (
@@ -157,7 +170,7 @@ export default function DownloadClients() {
         );
       })}
 
-      {data && data.length > 0 && <CopyWarning />}
+      {data?.some((c) => downloadClientSeeds(c.type)) && <CopyWarning />}
 
       {editing && (
         <ClientForm
@@ -191,7 +204,15 @@ function ClientForm({
   onSaved: (name: string) => void;
 }) {
   const toast = useToast();
+  const [type, setType] = useState<DownloadClientType>(client?.type ?? "qbittorrent");
   const [name, setName] = useState(client?.name ?? "qBittorrent");
+  const [importedCategory, setImportedCategory] = useState(client?.imported_category ?? "");
+  const [removeAfterSeeding, setRemoveAfterSeeding] = useState(client?.remove_after_seeding ?? false);
+  const label = DOWNLOAD_CLIENT_LABEL[type];
+  const seeds = downloadClientSeeds(type);
+  const usenet = type === "sabnzbd";
+  // Transmission has labels where the others have categories; the field is the same.
+  const categoryWord = type === "transmission" ? "label" : "category";
   const [enabled, setEnabled] = useState(client?.enabled ?? true);
   const [baseUrl, setBaseUrl] = useState(client?.base_url ?? "");
   const [username, setUsername] = useState(client?.username ?? "");
@@ -215,10 +236,12 @@ function ClientForm({
     try {
       const body: Record<string, unknown> = {
         name,
-        type: "qbittorrent",
+        type,
         enabled,
         base_url: baseUrl,
-        username,
+        username: usenet ? "" : username,
+        imported_category: seeds ? importedCategory.trim() : "",
+        remove_after_seeding: seeds && removeAfterSeeding,
         path_mappings: mappings,
         categories: categories.map((c) => ({ category: c.category, library_id: c.library_id, auto_import: !!c.auto_import })),
       };
@@ -242,8 +265,22 @@ function ClientForm({
           </div>
           <div className="field" style={{ flex: "0 1 160px" }}>
             <label className="flabel" htmlFor="dc-type">Type</label>
-            <select id="dc-type" className="select" value="qbittorrent" disabled>
-              <option value="qbittorrent">qBittorrent</option>
+            {/* Fixed once saved: a different client type is a different client, and its
+                categories, mappings and history would not carry over. */}
+            <select
+              id="dc-type"
+              className="select"
+              value={type}
+              disabled={!!client}
+              onChange={(e) => {
+                const next = e.target.value as DownloadClientType;
+                if (name === label) setName(DOWNLOAD_CLIENT_LABEL[next]);
+                setType(next);
+              }}
+            >
+              {(Object.keys(DOWNLOAD_CLIENT_LABEL) as DownloadClientType[]).map((t) => (
+                <option key={t} value={t}>{DOWNLOAD_CLIENT_LABEL[t]}</option>
+              ))}
             </select>
           </div>
         </div>
@@ -255,8 +292,29 @@ function ClientForm({
         )}
         <div className="field">
           <label className="flabel" htmlFor="dc-url">Web UI address</label>
-          <input id="dc-url" className="input mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://192.168.1.10:8080" />
+          <input
+            id="dc-url"
+            className="input mono"
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            placeholder={type === "transmission" ? "http://192.168.1.10:9091" : "http://192.168.1.10:8080"}
+          />
         </div>
+        {usenet ? (
+          <div className="field">
+            <label className="flabel" htmlFor="dc-pass">API key</label>
+            <input
+              id="dc-pass"
+              type="password"
+              className="input mono"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              autoComplete="new-password"
+              placeholder={client?.password_set ? "leave blank to keep the current key" : "Config → General → Security in SABnzbd"}
+            />
+          </div>
+        ) : (
+        <>
         <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
           <div className="field" style={{ flex: "1 1 200px" }}>
             <label className="flabel" htmlFor="dc-user">Username</label>
@@ -276,12 +334,16 @@ function ClientForm({
           </div>
         </div>
         <p className="muted" style={{ margin: "-4px 0 0", fontSize: 12 }}>
-          Leave both empty if qBittorrent lets this host skip authentication (<em>Bypass authentication for clients
-          on localhost</em> or <em>in whitelisted IP subnets</em>).
+          {type === "transmission"
+            ? "Leave both empty if Transmission's RPC asks for no authentication."
+            : <>Leave both empty if qBittorrent lets this host skip authentication (<em>Bypass authentication for clients
+              on localhost</em> or <em>in whitelisted IP subnets</em>).</>}
         </p>
+        </>
+        )}
 
         <div className="stack" style={{ gap: 8 }}>
-          <span className="flabel">Watched categories</span>
+          <span className="flabel">Watched {categoryWord === "label" ? "labels" : "categories"}</span>
           {categories.length === 0 && <span className="dim" style={{ fontSize: 12 }}>None yet — without one, nothing is read from this client.</span>}
           {categories.map((c, i) => (
             <div key={i} className="row" style={{ gap: 8, flexWrap: "wrap" }}>
@@ -291,7 +353,7 @@ function ClientForm({
                 value={c.category}
                 onChange={(e) => setCategory(i, { category: e.target.value })}
                 placeholder="music"
-                aria-label="Category"
+                aria-label={categoryWord === "label" ? "Label" : "Category"}
               />
               <span className="dim" aria-hidden="true">→</span>
               <select className="select" style={{ flex: "1 1 200px" }} value={c.library_id} onChange={(e) => setCategory(i, { library_id: e.target.value })} aria-label={`Library for ${c.category || "this category"}`}>
@@ -312,10 +374,12 @@ function ClientForm({
           ))}
           <div>
             <button type="button" className="btn btn-secondary btn-sm" onClick={() => setCategories((cur) => [...cur, { category: "", library_id: eligible[0]?.id ?? "", auto_import: false }])}>
-              Add category
+              Add {categoryWord}
             </button>
           </div>
-          <span className="dim" style={{ fontSize: 11 }}>The category set on the torrent in qBittorrent, exactly. Use one Lidarr does not.</span>
+          <span className="dim" style={{ fontSize: 11 }}>
+            The {categoryWord} set on the download in {label}, exactly{usenet ? " (SABnzbd keeps them lowercase)" : ""}. Use one Lidarr does not.
+          </span>
           {categories.some((c) => c.auto_import) && (
             <p className="muted" style={{ margin: 0, fontSize: 12, maxWidth: "68ch" }}>
               <strong>Import automatically</strong> imports an album without a review only when its own tags decide
@@ -330,11 +394,11 @@ function ClientForm({
         <div className="stack" style={{ gap: 8 }}>
           <span className="flabel">Path mappings</span>
           {mappings.length === 0 && (
-            <span className="dim" style={{ fontSize: 12 }}>None — qBittorrent's paths are read as they are, which is right when both run on one host.</span>
+            <span className="dim" style={{ fontSize: 12 }}>None — {label}'s paths are read as they are, which is right when both run on one host.</span>
           )}
           {mappings.map((m, i) => (
             <div key={i} className="row" style={{ gap: 8, flexWrap: "wrap" }}>
-              <input className="input mono" style={{ flex: "1 1 200px" }} value={m.remote} onChange={(e) => setMapping(i, { remote: e.target.value })} placeholder="/downloads" aria-label="Path in qBittorrent" />
+              <input className="input mono" style={{ flex: "1 1 200px" }} value={m.remote} onChange={(e) => setMapping(i, { remote: e.target.value })} placeholder="/downloads" aria-label={`Path in ${label}`} />
               <span className="dim" aria-hidden="true">→</span>
               <input className="input mono" style={{ flex: "1 1 200px" }} value={m.local} onChange={(e) => setMapping(i, { local: e.target.value })} placeholder="/mnt/torrents" aria-label="Same folder on this host" />
               <button type="button" className="btn btn-ghost btn-sm" onClick={() => setMappings((cur) => cur.filter((_, j) => j !== i))}>Remove</button>
@@ -346,12 +410,44 @@ function ClientForm({
             </button>
           </div>
           <span className="dim" style={{ fontSize: 11 }}>
-            When qBittorrent runs in another container or on another machine: the folder as qBittorrent reports it, and
+            When {label} runs in another container or on another machine: the folder as {label} reports it, and
             where the same folder is on this host.
           </span>
         </div>
 
-        <CopyWarning />
+        {seeds && (
+          <div className="stack" style={{ gap: 8 }}>
+            <span className="flabel">Once every album is imported</span>
+            <div className="field">
+              <label className="flabel" htmlFor="dc-done-cat">Move to {categoryWord}</label>
+              <input
+                id="dc-done-cat"
+                className="input mono"
+                value={importedCategory}
+                onChange={(e) => setImportedCategory(e.target.value)}
+                placeholder="leave empty to leave it where it is"
+              />
+              <span className="dim" style={{ fontSize: 11 }}>
+                Besides the <span className="mono">autotaggerr-imported</span> tag — for a {categoryWord} {label} seeds or
+                stores differently. Not one of the watched ones.
+              </span>
+            </div>
+            <label className="row" style={{ gap: 8, cursor: "pointer", alignItems: "flex-start" }}>
+              <input type="checkbox" checked={removeAfterSeeding} onChange={(e) => setRemoveAfterSeeding(e.target.checked)} style={{ marginTop: 2 }} />
+              <span>
+                Remove it, with its files, once it finishes seeding
+                <br />
+                <span className="dim" style={{ fontSize: 11 }}>
+                  Only when {label} stopped it for reaching a share limit you set there — a ratio or seeding time — never a
+                  torrent paused by hand, and only one Autotaggerr imported in full. Each removal is listed in Activity.
+                  This is what ends the copy's second space.
+                </span>
+              </span>
+            </label>
+          </div>
+        )}
+
+        {seeds && <CopyWarning />}
 
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>

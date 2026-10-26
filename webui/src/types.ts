@@ -299,10 +299,22 @@ export interface DownloadClientCategory {
 }
 
 /** A configured download client. The password is never returned, only whether one is set. */
+export type DownloadClientType = "qbittorrent" | "transmission" | "sabnzbd";
+
+/** Display names, in the order the form offers them. */
+export const DOWNLOAD_CLIENT_LABEL: Record<DownloadClientType, string> = {
+  qbittorrent: "qBittorrent",
+  transmission: "Transmission",
+  sabnzbd: "SABnzbd",
+};
+
+/** Whether a client type holds a download's files after it finishes (mirrors models.DownloadClientSeeds). */
+export const downloadClientSeeds = (type: DownloadClientType) => type !== "sabnzbd";
+
 export interface DownloadClient {
   id: string;
   name: string;
-  type: "qbittorrent";
+  type: DownloadClientType;
   enabled: boolean;
   base_url: string;
   username: string;
@@ -311,6 +323,10 @@ export interface DownloadClient {
   categories: DownloadClientCategory[];
   last_poll_at: string | null;
   last_poll_error?: string;
+  /** Torrent clients: the category an imported download is moved to; "" leaves it. */
+  imported_category: string;
+  /** Torrent clients: remove an imported download, files and all, once its share limit stopped it. */
+  remove_after_seeding: boolean;
 }
 
 export type DownloadState = "ready" | "unavailable" | "imported" | "dismissed";
