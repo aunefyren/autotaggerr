@@ -2188,6 +2188,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			stats.Failures = append(stats.Failures, fmt.Sprintf("%s: %s", m.Name, err.Error()))
 			continue
 		}
+		recordArtistLinks(db, m.ID, lidarrArtists, inCollection)
 		for _, la := range lidarrArtists {
 			if la.ForeignArtistID != "" && !inCollection[la.ForeignArtistID] {
 				strangers = append(strangers, la)
@@ -2229,6 +2230,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			}
 			l.fetched++
 			l.albums = append(l.albums, albums...)
+			recordAlbumLinks(db, m.ID, la.ForeignArtistID, albums)
 		}
 	}
 

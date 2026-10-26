@@ -86,11 +86,13 @@ still open:
 
 - Files are expected to have a certain path, mostly because we are trying to match with Lidarr path/files. This needs to change. We should attempt to match (if Lidarr managed), but also accept that files might be placed wrong/badly named. The move/rename module can fix this, but we must attempt to match the files meanwhile. Not being able to match is another beast. That should be fixed using an import/fix function.
 
-- We should attempt to link data properly to Lidarr and Plex assets in the backend. Also in the UI with hot links where applicable. Proper linking to Plex for instance will later allow us to better refresh albums, and perhaps to playlists.
-  Plex now resolves an album *by its file* ([scanning.md](scanning.md#which-album-in-which-section)),
-  so the answer is trustworthy enough to store — but it is only cached for an hour, per folder, and
-  only for files whose tags changed. Linking means keeping the ratingKey on the album (or the
-  edition, per library) and resolving it for everything, not only what a run touched.
+- **Links out — what is left.** Artist and album pages link into the Lidarr that holds them and the
+  album page into Plex ([collection.md](collection.md#links-into-the-managers),
+  [scanning.md](scanning.md#links-into-plex)). Not linked yet: the Plex *artist* (its key is the
+  album's `parentKey` one level up, so it is one more field on the same lookup), an edition or track
+  in either service, and anything from the collection list. Plex links are resolved on demand rather
+  than for the whole collection; a pass that resolves every album would make them instant and let a
+  refresh skip the lookup, at the cost of a few Plex requests per album once a month.
 
 - If Plex is reworked/decoupled, Jellyfin support should be considered. Plex is now per library
   (a section or none, on the library row) and matched by file path, which is the shape a second

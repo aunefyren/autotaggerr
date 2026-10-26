@@ -168,6 +168,7 @@ function EditManager({ manager, onClose, onSaved }: { manager: Manager; onClose:
   const [name, setName] = useState(manager.name);
   const [enabled, setEnabled] = useState(manager.enabled);
   const [baseUrl, setBaseUrl] = useState(manager.lidarr_base_url ?? "");
+  const [webUrl, setWebUrl] = useState(manager.lidarr_web_url ?? "");
   const [apiKey, setApiKey] = useState("");
   const [cookie, setCookie] = useState("");
   const [allowRefresh, setAllowRefresh] = useState(!manager.lidarr_skip_artist_refresh);
@@ -180,6 +181,7 @@ function EditManager({ manager, onClose, onSaved }: { manager: Manager; onClose:
       const body: Record<string, unknown> = { name, enabled };
       if (manager.type === "lidarr") {
         body.lidarr_base_url = baseUrl;
+        body.lidarr_web_url = webUrl;
         if (apiKey) body.lidarr_api_key = apiKey; // omit to keep the stored key
         if (cookie) body.lidarr_header_cookie = cookie; // omit to keep the stored cookie
         // Stored inverted so an old row (false) means "allowed"; the checkbox reads
@@ -210,6 +212,19 @@ function EditManager({ manager, onClose, onSaved }: { manager: Manager; onClose:
             <div className="field">
               <label className="flabel">Lidarr base URL</label>
               <input className="input mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+            </div>
+            <div className="field">
+              <label className="flabel">Link address</label>
+              <input
+                className="input mono"
+                value={webUrl}
+                onChange={(e) => setWebUrl(e.target.value)}
+                placeholder={baseUrl || "same as the base URL"}
+              />
+              <span className="dim" style={{ fontSize: 11 }}>
+                Where your browser reaches Lidarr, for the Lidarr links on artist and album pages. Leave empty
+                unless the base URL is one only the server can reach, such as a Docker service name.
+              </span>
             </div>
             <div className="field">
               <label className="flabel">Lidarr API key</label>

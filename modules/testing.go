@@ -90,3 +90,31 @@ func SetMetaflacAvailableForTest(t *testing.T, ok bool) {
 		metaflacMu.Unlock()
 	})
 }
+
+// SeedMusicBrainzReleaseForTest puts a release straight into the release cache, for a
+// caller that reads it cache-only (CachedRelease) and has no stub server to fetch from.
+// The entry is removed on cleanup.
+func SeedMusicBrainzReleaseForTest(t *testing.T, release models.MusicBrainzReleaseResponse) {
+	t.Helper()
+	now := time.Now()
+	musicbrainzReleaseCacheMu.Lock()
+	musicbrainzReleaseCache[release.ID] = models.CachedMusicBrainzRelease{Release: release, Timestamp: now, ExpiresAt: now.Add(time.Hour)}
+	musicbrainzReleaseCacheMu.Unlock()
+	t.Cleanup(func() {
+		musicbrainzReleaseCacheMu.Lock()
+		delete(musicbrainzReleaseCache, release.ID)
+		musicbrainzReleaseCacheMu.Unlock()
+	})
+}
+
+// ResetPlexAlbumCacheForTest empties the Plex folder cache, before and after the test.
+func ResetPlexAlbumCacheForTest(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		plexAlbumKeyCacheMu.Lock()
+		plexAlbumKeyCache = map[string]models.PlexAlbumKeyCache{}
+		plexAlbumKeyCacheMu.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+}

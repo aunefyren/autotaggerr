@@ -212,6 +212,7 @@ type managerInput struct {
 	LidarrBaseURL      *string `json:"lidarr_base_url"`
 	LidarrAPIKey       *string `json:"lidarr_api_key"`
 	LidarrHeaderCookie *string `json:"lidarr_header_cookie"`
+	LidarrWebURL       *string `json:"lidarr_web_url"`
 	// Pointer like every other field here: absent means "leave it alone", which is
 	// what lets the UI PATCH one setting without resending the API key.
 	LidarrSkipArtistRefresh *bool `json:"lidarr_skip_artist_refresh"`
@@ -238,6 +239,9 @@ func (in managerInput) apply(m *models.Manager) {
 	}
 	if in.LidarrHeaderCookie != nil {
 		m.LidarrHeaderCookie = *in.LidarrHeaderCookie
+	}
+	if in.LidarrWebURL != nil {
+		m.LidarrWebURL = strings.TrimSpace(*in.LidarrWebURL)
 	}
 	if in.LidarrSkipArtistRefresh != nil {
 		m.LidarrSkipArtistRefresh = *in.LidarrSkipArtistRefresh

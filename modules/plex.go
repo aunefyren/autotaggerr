@@ -22,10 +22,16 @@ import (
 )
 
 var (
-	plexAlbumKeyCachePath     = "config/plex_album_keys.json"
-	plexAlbumKeyCacheDuration = time.Hour // 1 hour
-	plexAlbumKeyCache         = map[string]models.PlexAlbumKeyCache{}
-	plexAlbumKeyCacheMu       sync.RWMutex
+	plexAlbumKeyCachePath = "config/plex_album_keys.json"
+	// plexAlbumKeyCacheDuration is how long a folder's album is believed. Long, because
+	// the answer was checked against the file itself and is what an album page links
+	// to; a refresh Plex refuses drops it early (InvalidatePlexAlbum).
+	plexAlbumKeyCacheDuration = 30 * 24 * time.Hour
+	// plexAlbumMissingDuration is how long "Plex does not hold this folder" is
+	// believed. Short: Plex's own scan is what changes it, and nothing tells us when.
+	plexAlbumMissingDuration = time.Hour
+	plexAlbumKeyCache        = map[string]models.PlexAlbumKeyCache{}
+	plexAlbumKeyCacheMu      sync.RWMutex
 )
 
 type PlexClient struct {
@@ -36,6 +42,14 @@ type PlexClient struct {
 	// music section — the file-path check is what picks the album, so searching wide
 	// costs requests, never correctness. Set per library by ForLibrary.
 	SectionKey string
+	// identity is the server's machine identifier, fetched once and shared by every
+	// copy ForLibrary makes; links into Plex's web app are addressed by it.
+	identity *plexIdentity
+}
+
+type plexIdentity struct {
+	mu        sync.Mutex
+	machineID string
 }
 
 // ForLibrary is the client as one library uses it: narrowed to the library's Plex
@@ -53,10 +67,45 @@ func (p *PlexClient) ForLibrary(library models.Library) *PlexClient {
 
 func NewPlexClient(baseURL, token string) *PlexClient {
 	return &PlexClient{
-		BaseURL: strings.TrimRight(baseURL, "/"),
-		Token:   token,
-		HTTP:    &http.Client{Timeout: 10 * time.Second},
+		BaseURL:  strings.TrimRight(baseURL, "/"),
+		Token:    token,
+		HTTP:     &http.Client{Timeout: 10 * time.Second},
+		identity: &plexIdentity{},
 	}
+}
+
+// MachineIdentifier is the server's ID, from /identity, asked once per process. A
+// failure is not remembered, so a Plex that was down answers next time.
+func (p *PlexClient) MachineIdentifier() (string, error) {
+	if p.identity == nil {
+		p.identity = &plexIdentity{}
+	}
+	p.identity.mu.Lock()
+	defer p.identity.mu.Unlock()
+	if p.identity.machineID != "" {
+		return p.identity.machineID, nil
+	}
+	var id models.PlexIdentity
+	if err := p.get("/identity", &id); err != nil {
+		return "", err
+	}
+	if id.MachineIdentifier == "" {
+		return "", errors.New("plex /identity named no machine identifier")
+	}
+	p.identity.machineID = id.MachineIdentifier
+	return id.MachineIdentifier, nil
+}
+
+// AlbumWebURL is a link to one album in Plex's web app, through app.plex.tv: it
+// reaches the server from any browser signed in to the account, where the base URL
+// Autotaggerr talks to is often an address only it can reach.
+func (p *PlexClient) AlbumWebURL(albumKey string) (string, error) {
+	machineID, err := p.MachineIdentifier()
+	if err != nil {
+		return "", err
+	}
+	return "https://app.plex.tv/desktop/#!/server/" + url.PathEscape(machineID) +
+		"/details?key=" + url.QueryEscape(normalizeAlbumKey(albumKey)), nil
 }
 
 func (p *PlexClient) get(path string, dst any) error {
@@ -367,13 +416,14 @@ func PlexLoadAlbumKeyCache() error {
 	return providerCacheRestore(models.ProviderCachePlexAlbumKeys, plexAlbumKeyCache)
 }
 
-// PlexRefreshForFile queues a refresh of the Plex album holding a file whose tags
-// just changed. The answer is cached per album folder — not per album title, which
-// two albums can share — and a folder Plex does not hold is cached too, so an album
-// missing from Plex costs one lookup rather than one per track.
-func PlexRefreshForFile(refreshSet *AlbumRefreshSet, plexClient *PlexClient, filePath, rootDir, albumTitle, releaseArtist, trackTitle string) error {
+// PlexAlbumForFile is the Plex album holding a file, or "" when Plex holds none. The
+// answer is cached per album folder and section scope — not per album title, which
+// two albums can share — for a month when found and an hour when not, so an album
+// missing from Plex costs one lookup rather than one per track. The refresh path and
+// the album page's link both ask here, so a page opened after a run costs nothing.
+func PlexAlbumForFile(plexClient *PlexClient, filePath, rootDir, albumTitle, releaseArtist, trackTitle string) (string, error) {
 	if plexClient == nil {
-		return nil
+		return "", nil
 	}
 	folder := filepath.Dir(filePath)
 	cacheKey := plexFolderKey(plexClient.SectionKey, folder)
@@ -381,32 +431,85 @@ func PlexRefreshForFile(refreshSet *AlbumRefreshSet, plexClient *PlexClient, fil
 	plexAlbumKeyCacheMu.RLock()
 	cached, ok := plexAlbumKeyCache[cacheKey]
 	plexAlbumKeyCacheMu.RUnlock()
-
-	albumKey := ""
-	if ok && time.Since(cached.Timestamp) < plexAlbumKeyCacheDuration {
-		albumKey = cached.AlbumKey
-	} else {
-		// Failures here are non-fatal: the file's tags were already written; we just
-		// can't queue a Plex refresh for it. Return the wrapped cause without logging
-		// — the caller logs it once at Warn level with the album context.
-		resolved, err := plexClient.ResolveAlbumForFile(filePath, rootDir, releaseArtist, albumTitle, trackTitle)
-		if err != nil && !errors.Is(err, ErrPlexAlbumNotFound) {
-			return fmt.Errorf("resolve Plex album for %q: %w", albumTitle, err)
-		}
-		albumKey = resolved
-		entry := models.PlexAlbumKeyCache{AlbumKey: albumKey, Title: albumTitle, Folder: folder, Timestamp: time.Now()}
-		plexAlbumKeyCacheMu.Lock()
-		plexAlbumKeyCache[cacheKey] = entry
-		plexAlbumKeyCacheMu.Unlock()
-		providerCachePut(models.ProviderCachePlexAlbumKeys, cacheKey, entry, plexAlbumKeyCacheDuration)
+	if ok && time.Since(cached.Timestamp) < plexAlbumTTL(cached.AlbumKey) {
+		return cached.AlbumKey, nil
 	}
 
+	resolved, err := plexClient.ResolveAlbumForFile(filePath, rootDir, releaseArtist, albumTitle, trackTitle)
+	if err != nil && !errors.Is(err, ErrPlexAlbumNotFound) {
+		return "", err
+	}
+	entry := models.PlexAlbumKeyCache{AlbumKey: resolved, Title: albumTitle, Folder: folder, Timestamp: time.Now()}
+	plexAlbumKeyCacheMu.Lock()
+	plexAlbumKeyCache[cacheKey] = entry
+	plexAlbumKeyCacheMu.Unlock()
+	providerCachePut(models.ProviderCachePlexAlbumKeys, cacheKey, entry, plexAlbumTTL(resolved))
+	return resolved, nil
+}
+
+func plexAlbumTTL(albumKey string) time.Duration {
+	if albumKey == "" {
+		return plexAlbumMissingDuration
+	}
+	return plexAlbumKeyCacheDuration
+}
+
+// InvalidatePlexAlbum forgets every folder resolved to this album. Called when Plex
+// refuses a refresh of it: a month-long answer has to be dropped the moment Plex says
+// the album is not what it was — merged, re-matched or deleted — or every later run
+// would refresh the same dead key.
+func InvalidatePlexAlbum(albumKey string) {
+	albumKey = normalizeAlbumKey(albumKey)
+	plexAlbumKeyCacheMu.Lock()
+	var dropped []string
+	for k, v := range plexAlbumKeyCache {
+		if normalizeAlbumKey(v.AlbumKey) == albumKey {
+			delete(plexAlbumKeyCache, k)
+			dropped = append(dropped, k)
+		}
+	}
+	plexAlbumKeyCacheMu.Unlock()
+	for _, k := range dropped {
+		providerCacheDrop(models.ProviderCachePlexAlbumKeys, k)
+	}
+}
+
+// PlexRefreshForFile queues a refresh of the Plex album holding a file whose tags
+// just changed. A file no album holds queues nothing.
+func PlexRefreshForFile(refreshSet *AlbumRefreshSet, plexClient *PlexClient, filePath, rootDir, albumTitle, releaseArtist, trackTitle string) error {
+	albumKey, err := PlexAlbumForFile(plexClient, filePath, rootDir, albumTitle, releaseArtist, trackTitle)
+	if err != nil {
+		// Non-fatal: the file's tags were already written; we just can't queue a Plex
+		// refresh for it. The caller logs it once at Warn level with the album context.
+		return fmt.Errorf("resolve Plex album for %q: %w", albumTitle, err)
+	}
 	if albumKey == "" {
 		logger.Log.Debugf("no Plex album holds %s; nothing to refresh", filePath)
 		return nil
 	}
 	refreshSet.Add(albumTitle, albumKey)
 	return nil
+}
+
+// PlexAlbumForItem is PlexAlbumForFile for an indexed file, with the names the
+// search needs read from its cached release the way the tagging path derives them.
+// ok is false when the release is not cached — then there is nothing to search by,
+// and the caller has no link rather than a wrong one.
+func PlexAlbumForItem(plexClient *PlexClient, filePath, rootDir string, correlation models.Correlation) (key string, ok bool, err error) {
+	release, cached := CachedRelease(correlation.MBReleaseID)
+	if !cached {
+		return "", false, nil
+	}
+	track, media, found := matchCorrelatedTrack(release, correlation)
+	if !found {
+		return "", false, nil
+	}
+	tags, err := BuildFileTags(track, media, release, models.TaggerSettings{})
+	if err != nil {
+		return "", false, err
+	}
+	key, err = PlexAlbumForFile(plexClient, filePath, rootDir, release.Title, tags.AlbumArtist, track.Title)
+	return key, err == nil, err
 }
 
 // plexFolderKey is the cache key for one album folder in one section scope. Hashed:

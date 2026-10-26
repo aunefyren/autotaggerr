@@ -347,6 +347,7 @@ func main() {
 		for albumName, albumKey := range refreshSet.Snapshot() {
 			if err := plexClient.RefreshAlbum(albumKey); err != nil {
 				logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
+				modules.InvalidatePlexAlbum(albumKey)
 			}
 			logger.Log.Debug("triggered Plex refresh for album: " + albumName)
 		}

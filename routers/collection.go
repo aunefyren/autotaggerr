@@ -594,7 +594,8 @@ func (a *API) getArtist(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	body := gin.H{"artist": detail.Artist, "release_groups": detail.ReleaseGroups, "desires": detail.Desires}
+	body := gin.H{"artist": detail.Artist, "release_groups": detail.ReleaseGroups, "desires": detail.Desires,
+		"links": a.managerLinks(models.ManagerLinkArtist, detail.Artist.MBID)}
 	if detail.Repair != nil {
 		body["repair"] = detail.Repair
 	}
@@ -1510,7 +1511,21 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 		"editions":      detail.Editions,
 		"desires":       detail.Desires,
 		"credits":       detail.Credits,
+		"links":         a.managerLinks(models.ManagerLinkReleaseGroup, c.Param("rgid")),
 	})
+}
+
+// managerLinks is the links into the managers holding an entity, never nil so the
+// page can map it. Best-effort: a failed read costs the links, not the page.
+func (a *API) managerLinks(entityType, mbid string) []collection.ExternalLink {
+	links, err := collection.ManagerLinks(a.DB, entityType, mbid)
+	if err != nil {
+		logger.Log.Warnf("failed to load the manager links of %s: %s", mbid, err.Error())
+	}
+	if links == nil {
+		links = []collection.ExternalLink{}
+	}
+	return links
 }
 
 // creditView is one artist credited on an album, in credit order. The page is reached

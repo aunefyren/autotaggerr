@@ -372,6 +372,20 @@ own stage — reporting identically: `SyncEventStats`, `SyncEventItems`, `SyncEv
 `SyncSummaryLine`. They existed as three copies of the same four lines, which is how one verb ends
 up with three vocabularies.
 
+#### Links into the managers
+
+As it lists each manager, the pass records which manager holds which artist and album
+(`models.ManagerLink`, with Lidarr's own ID): a manager's artist links are replaced whenever its
+artist list is read, and its album links for one artist whenever that artist's albums are. Answering
+"which Lidarr has this?" from what the managers said, rather than from where the files are, is what
+keeps it right with two managers. The artist and album pages turn the rows into links
+(`collection.ManagerLinks`, `links` on both payloads) — Lidarr addresses both by MusicBrainz ID,
+`/artist/<mbid>` and `/album/<mbid>`, so the row only has to name the manager. The address is the
+manager's **Link address** (`LidarrWebURL`) when set, else its base URL, since the API address is
+often one only the server can reach (a Docker service name). Disabled managers link nowhere. An album
+filed under another artist of the same manager keeps the first listing's row; a collaboration links
+once, not twice.
+
 #### A pass reports what it could not account for
 
 `SyncStats` carries two findings beyond the counts, and both were previously log lines and nothing

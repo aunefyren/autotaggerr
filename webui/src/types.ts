@@ -55,6 +55,8 @@ export interface Manager {
   type: string;
   enabled: boolean;
   lidarr_base_url?: string;
+  /** Where a browser reaches Lidarr, for links; empty means the base URL. */
+  lidarr_web_url?: string;
   // Stored inverted so that a row written before the field existed means "allowed";
   // the form shows it the other way up.
   lidarr_skip_artist_refresh?: boolean;
@@ -857,10 +859,20 @@ export interface ArtistInfo {
   genres: string[] | null;
 }
 
+/** A link to where an entity lives outside Autotaggerr — a Lidarr, a Plex library. */
+export interface ExternalLink {
+  kind: string;
+  /** The manager or library, to tell two of one kind apart. */
+  name: string;
+  url: string;
+}
+
 export interface ArtistDetail {
   artist: CollectionArtist;
   release_groups: CollectionReleaseGroup[];
   desires: CollectionDesire[];
+  /** The managers holding this artist, as links into each one's UI. */
+  links?: ExternalLink[];
   /**
    * Present only when some of the artist's albums carry a MusicBrainz ID that resolves
    * nowhere while a manager still lists them — what a manager refresh repairs.

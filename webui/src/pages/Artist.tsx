@@ -5,6 +5,7 @@ import { useFetch } from "../hooks";
 import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, Manager, ScanStatus } from "../types";
 import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
+import { ExternalLinks } from "../components/ExternalLinks";
 import { useToast } from "../toast";
 import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
@@ -467,6 +468,7 @@ export default function Artist() {
             )}
             <span className="sep">·</span>
             <MBLink entity="artist" mbid={mbid} />
+            <ExternalLinks links={detail.data?.links} />
           </div>
         </div>
 

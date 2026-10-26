@@ -1214,9 +1214,23 @@ every section is therefore a safe default — the file check picks the album, so
 requests, never correctness — and naming the section only saves those requests.
 
 The answer is cached per **album folder and section scope** (`provider_cache`, source
-`plex_album_keys`, an hour), keyed by a hash since a path can outrun the key column; the folder and
-title ride in the payload. "Plex does not hold this folder" is cached too, so an album missing from
-Plex costs one lookup rather than one per track. The library form offers the sections through
+`plex_album_keys`), keyed by a hash since a path can outrun the key column; the folder and title ride
+in the payload. A found album is kept for **30 days** — it was checked against the file itself — and
+"Plex does not hold this folder" for an hour, since Plex's own scan changes it and nothing says when;
+so an album missing from Plex costs one lookup rather than one per track. A refresh Plex refuses drops
+every folder resolved to that album (`InvalidatePlexAlbum`), so a key Plex merged or deleted is looked
+up again on the next run rather than refreshed forever.
+
+### Links into Plex
+
+The album page links to the album in Plex, once per library holding its files
+(`GET /artists/:mbid/release-groups/:rgid/plex`). It is the same lookup (`PlexAlbumForFile`, by way
+of `PlexAlbumForItem`, which reads the search names from the cached release the way tagging derives
+them), so after a run that touched the album the answer is already cached; otherwise the request asks
+Plex, which is why it is its own call and the page does not wait on it. Links go through
+`app.plex.tv/desktop/#!/server/<machine id>/details?key=…`, which reaches the server from any
+browser signed in to the account — the base URL Autotaggerr talks to is often internal. The machine
+identifier comes from `/identity`, asked once per process. The library form offers the sections through
 `GET /plex/sections`, which reports a Plex that does not answer in its body rather than failing, so
 *every section* can still be chosen.
 

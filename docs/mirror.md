@@ -73,7 +73,7 @@ makes a cold start rare; it does not replace the fallback.
 | Cover art / artist images | files under `config/artwork/`, indexed by `artwork_cache_entries` | 30 d |
 | "No artwork for this MBID" | `artwork_cache_entries` with `missing = true` | 7 d |
 | Lidarr artists / albums / tracks / track files | `provider_cache`, one source each | 1 h |
-| Plex album keys, per album folder (and "not in Plex") | `provider_cache`, source `plex_album_keys` | 1 h |
+| Plex album keys, per album folder (and "not in Plex") | `provider_cache`, source `plex_album_keys` | 30 d found, 1 h not |
 | AcoustID fingerprints and candidates | `acoustid_lookups` | by file size + mtime |
 | Release / artist **search** | not cached | — |
 

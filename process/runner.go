@@ -2221,6 +2221,9 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 		item := models.EventItem{Path: albumName, Kind: models.EventItemKindAlbum, Status: models.EventItemStatusRefreshed}
 		if err := r.plex.RefreshAlbum(albumKey); err != nil {
 			logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
+			// The key came from a month-long cache; whatever Plex did to the album, the
+			// next run should look it up again rather than refresh the same key.
+			modules.InvalidatePlexAlbum(albumKey)
 			failed = append(failed, albumName)
 			item.Status = models.EventItemStatusError
 			item.Error = err.Error()

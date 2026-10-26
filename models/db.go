@@ -277,6 +277,10 @@ type Manager struct {
 	LidarrBaseURL      string `json:"lidarr_base_url,omitempty"`
 	LidarrAPIKey       string `json:"-"`
 	LidarrHeaderCookie string `json:"-"`
+	// LidarrWebURL is where a browser reaches this Lidarr, for links into it. Empty
+	// means LidarrBaseURL, which is right unless the API address is one only the
+	// server can reach — a Docker service name, say.
+	LidarrWebURL string `json:"lidarr_web_url,omitempty"`
 
 	// LidarrSkipArtistRefresh turns off the one write Autotaggerr makes to this
 	// manager: asking it to refresh an artist whose album IDs have stopped resolving.
@@ -1710,7 +1714,35 @@ func AllDBModels() []any {
 		&DownloadClientCategory{},
 		&DownloadItem{},
 		&CollectionPolicy{},
+		&ManagerLink{},
 	}
+}
+
+// Entity types a ManagerLink can name.
+const (
+	ManagerLinkArtist       = "artist"
+	ManagerLinkReleaseGroup = "release_group"
+)
+
+// ManagerLink records that one manager holds an artist or an album, and under which
+// of its own IDs. Written by the Lidarr mirror as it lists each manager, so "which
+// Lidarr has this?" is answered from what the managers said rather than inferred
+// from file locations — with two managers, that inference is the wrong one exactly
+// when it matters. It is what a link into the manager's own UI is built from.
+//
+// Replaced per listing: a manager's artist links when its artist list is read, and
+// its album links for one artist when that artist's albums are. A manager deleted
+// leaves rows no read joins to.
+type ManagerLink struct {
+	Base
+	ManagerID  uuid.UUID `gorm:"type:uuid;uniqueIndex:idx_manager_link;not null" json:"manager_id"`
+	EntityType string    `gorm:"size:32;uniqueIndex:idx_manager_link;not null" json:"entity_type"`
+	MBID       string    `gorm:"size:64;uniqueIndex:idx_manager_link;index;not null" json:"mb_id"`
+	// ArtistMBID is, for an album, the artist the manager holds it under — which for a
+	// collaboration may not be the artist whose page links to it.
+	ArtistMBID string `gorm:"size:64;index" json:"artist_mb_id,omitempty"`
+	// ExternalID is the manager's own numeric ID (Lidarr's artist or album id).
+	ExternalID int64 `json:"external_id"`
 }
 
 // DataMigration records a one-time data change that has been applied. AutoMigrate

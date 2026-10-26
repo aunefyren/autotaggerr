@@ -251,6 +251,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artists/:mbid/info", a.artistInfo)
 		protected.GET("/artists/:mbid/discography", a.discography)
 		protected.GET("/artists/:mbid/release-groups/:rgid", a.releaseGroupDetail)
+		protected.GET("/artists/:mbid/release-groups/:rgid/plex", a.albumPlexLinks)
 		protected.POST("/artists/:mbid/release-groups/:rgid/same-as", a.markSameAlbum)
 		protected.POST("/artists/:mbid/follow", a.updateFollow)
 		protected.POST("/artists/:mbid/desires", a.setDesire)

@@ -9,12 +9,14 @@ import {
   CollectionDesire,
   CollectionReleaseGroup,
   Edition,
+  ExternalLink,
   ReleaseTracks,
   ScanStatus,
 } from "../types";
 import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { MBLink } from "../components/MBLink";
+import { ExternalLinks } from "../components/ExternalLinks";
 import { mediaSummary } from "../components/mediaSummary";
 import { useToast } from "../toast";
 import { Artwork } from "../components/Artwork";
@@ -36,6 +38,8 @@ interface Detail {
   desires: CollectionDesire[];
   /** Every credited artist the collection knows, in credit order. */
   credits?: AlbumCredit[] | null;
+  /** The managers holding this album, as links into each one's UI. */
+  links?: ExternalLink[];
 }
 
 /**
@@ -66,6 +70,12 @@ export default function ReleaseGroup() {
   const { data, err, loading, reload } = useFetch<Detail>(
     () => api.get(`/artists/${mbid}/release-groups/${rgid}${inLibrary}`),
     [mbid, rgid, inLibrary]
+  );
+
+  // Asked separately: a Plex link may need Plex asked, and the page should not wait.
+  const plexLinks = useFetch<ExternalLink[]>(
+    () => api.get(`/artists/${mbid}/release-groups/${rgid}/plex`),
+    [mbid, rgid]
   );
 
   const [busy, setBusy] = useState(false);
@@ -304,6 +314,8 @@ export default function ReleaseGroup() {
             )}
             <span className="sep">·</span>
             <MBLink entity="release-group" mbid={rgid} />
+            <ExternalLinks links={data?.links} />
+            <ExternalLinks links={plexLinks.data} />
           </div>
         </div>
 
