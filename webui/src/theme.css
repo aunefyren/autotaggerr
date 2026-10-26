@@ -253,6 +253,16 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
   border-radius: var(--radius-sm); padding: 0 6px;
 }
 .libtag-n { color: var(--warning-text); font-size: 10px; font-variant-numeric: tabular-nums; }
+/* The library an artist's pages are read in (style guide: Library view). Tabs, with
+   each library's authority after its name in that authority's pill colour — the dot
+   and word only, no fill, so the tab label stays the loudest thing in it. */
+.libview { flex-wrap: wrap; row-gap: 0; }
+.libview .tab { display: inline-flex; align-items: center; gap: var(--space-3); }
+.tab-auth {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 11px; font-weight: 400; background: none; color: var(--text-dim);
+}
+.tab-auth .dot { width: 6px; height: 6px; border-radius: 50%; flex: none; }
 
 /* Card */
 .card {

@@ -1051,6 +1051,10 @@ func applyArtistRedirect(tx *gorm.DB, m models.MusicbrainzMigration) (applyCount
 		// was already being told about. No cutoff on either side wins outright; two
 		// cutoffs merge to the earlier one.
 		target.FollowFromYear = earlierCutoff(target.FollowFromYear, source.FollowFromYear)
+		// Where following wants into: the target's, unless only the source named one.
+		if target.FollowLibraryID == uuid.Nil {
+			target.FollowLibraryID = source.FollowLibraryID
+		}
 		// A manually added artist outranks a library-derived one: it records that
 		// someone wanted this artist before owning any of them, which rebuilding
 		// from disk cannot reconstruct.
@@ -1268,12 +1272,17 @@ func dedupeDesires(tx *gorm.DB) error {
 		return err
 	}
 
-	type key struct{ artist, group, release string }
+	// The library is part of the identity: two libraries wanting the same edition
+	// are two wants, which a remap must not fold into one.
+	type key struct {
+		artist, group, release string
+		library                uuid.UUID
+	}
 	seen := map[key]*models.CollectionDesire{}
 
 	for i := range all {
 		d := all[i]
-		k := key{d.ArtistMBID, d.ReleaseGroupMBID, d.ReleaseMBID}
+		k := key{d.ArtistMBID, d.ReleaseGroupMBID, d.ReleaseMBID, d.LibraryID}
 		keeper, ok := seen[k]
 		if !ok {
 			kept := d

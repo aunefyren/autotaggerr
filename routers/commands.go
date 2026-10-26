@@ -274,6 +274,9 @@ type followUpdate struct {
 	FollowTypes     *string
 	FollowSecondary *bool
 	FollowFromYear  *int
+	// LibraryID is where following wants into when it is switched on (see
+	// collection.WantTarget); nil is wherever an edit from the overview goes.
+	LibraryID *uuid.UUID
 }
 
 // updateFollowSettings saves follow settings and re-syncs, so the missing list matches
@@ -298,6 +301,17 @@ func (a *API) updateFollowSettings(mbid string, in followUpdate) (models.Collect
 	updates := map[string]any{}
 	if in.Monitored != nil {
 		updates["monitored"] = *in.Monitored
+		// Following says where it wants into. Switched on, that is the library it
+		// was switched on in — required when Lidarr governs the artist, since
+		// following Lidarr's own library is not Autotaggerr's to do. Switched off,
+		// the library goes with it, so a later follow asks again.
+		target := uuid.Nil
+		if *in.Monitored {
+			if target, err = a.wantTarget(artist.MBID, in.LibraryID); err != nil {
+				return artist, 0, err
+			}
+		}
+		updates["follow_library_id"] = target
 	}
 	if in.FollowTypes != nil {
 		updates["follow_types"] = strings.TrimSpace(*in.FollowTypes)
@@ -338,27 +352,17 @@ func (a *API) updateFollowSettings(mbid string, in followUpdate) (models.Collect
 	return artist, wanted, nil
 }
 
-// artistIdentityEditable refuses a want when the artist is managed by Lidarr (or
-// mixed): under "Lidarr owns identity" what is wanted and which edition is Lidarr's
-// call, mirrored into the collection by the sync. It fails closed if the artist's
+// addDesire records an explicit want for a library, behind the manager gate: in
+// Lidarr's library what is wanted and which edition is Lidarr's call, mirrored into
+// the collection by the sync, so a want is refused there and written for a native
+// library instead (see collection.WantTarget). It fails closed if the artist's
 // manager cannot be resolved.
-func (a *API) artistIdentityEditable(artistMBID string) error {
-	editable, err := collection.ArtistIdentityEditable(a.DB, artistMBID)
+func (a *API) addDesire(library *uuid.UUID, in collection.DesireInput) (models.CollectionDesire, error) {
+	target, err := a.wantTarget(in.ArtistMBID, library)
 	if err != nil {
-		logger.Log.Warnf("desire gate: failed to resolve identity authority for %s: %s", artistMBID, err.Error())
-		return failWith(http.StatusInternalServerError, "failed to resolve the artist's manager")
-	}
-	if !editable {
-		return failWith(http.StatusConflict, "this artist is managed by Lidarr — set what is wanted in Lidarr, not here")
-	}
-	return nil
-}
-
-// addDesire records an explicit want, behind the manager gate.
-func (a *API) addDesire(in collection.DesireInput) (models.CollectionDesire, error) {
-	if err := a.artistIdentityEditable(in.ArtistMBID); err != nil {
 		return models.CollectionDesire{}, err
 	}
+	in.LibraryID = target
 	desire, err := collection.SetDesire(a.DB, in)
 	if err != nil {
 		return desire, failWith(http.StatusBadRequest, err.Error())

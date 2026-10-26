@@ -19,10 +19,16 @@ import { LibrarySelect, useLibraries } from "../components/Libraries";
 
 function ManagedBy({ managed_by }: { managed_by: string }) {
   if (managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
-  // Mixed is files in a Lidarr library and in a native one. Lidarr still decides what
-  // is wanted, so the pill names the authority; where the files live is the
-  // Libraries column's job. "Lidarr + native" read as two authorities splitting it.
-  if (managed_by === "mixed") return <Pill kind="scan">Lidarr</Pill>;
+  // Mixed is files in a Lidarr library and in a native one — and authority is per
+  // library, so there are two of them: Lidarr in its library, Autotaggerr in the
+  // other. Two pills, each in its own colour; the Libraries column says where.
+  if (managed_by === "mixed")
+    return (
+      <div className="row" style={{ gap: 4 }}>
+        <Pill kind="scan">Lidarr</Pill>
+        <Pill kind="chg">Native</Pill>
+      </div>
+    );
   if (managed_by === "autotaggerr") return <Pill kind="chg">Native</Pill>;
   // Provenance could not be determined — the library's manager row is gone. Shown
   // as its own state so missing information is not read as "natively managed".
@@ -41,8 +47,9 @@ function WantedSummary({ artist }: { artist: CollectionArtist }) {
   const picked = artist.picked_count ?? 0;
   // A manager-owned artist is not "following", whatever the stored flag says — the
   // manager decides. Reporting Following here is what made albums look auto-wanted
-  // by a follow the user never set.
-  if (!artist.follow_governs) {
+  // by a follow the user never set. An artist Lidarr governs in one library and
+  // that is followed in a native one *is* following, so `following` decides.
+  if (!artist.following && (!artist.follow_governs || artist.managed_by === "lidarr" || artist.managed_by === "mixed")) {
     return (
       <div className="row" style={{ gap: 6 }}>
         <Pill kind="off">Managed</Pill>
@@ -50,7 +57,7 @@ function WantedSummary({ artist }: { artist: CollectionArtist }) {
       </div>
     );
   }
-  if (artist.monitored) {
+  if (artist.following) {
     return (
       <div className="row" style={{ gap: 6 }}>
         <Pill kind="ok">Following</Pill>
@@ -272,7 +279,7 @@ export default function Collection() {
   // A missing count only means something when something decides what is wanted:
   // the manager, or a follow that actually governs.
   const hasWanted = (ar: CollectionArtist) =>
-    !ar.follow_governs || ar.monitored || (ar.picked_count ?? 0) > 0;
+    ar.managed_by === "lidarr" || ar.managed_by === "mixed" || ar.following || (ar.picked_count ?? 0) > 0;
 
   const onlyMismatched = browse.flag("mismatch") === "1";
   const mismatchedCount = artists.filter((ar) => (ar.mismatch_count ?? 0) > 0).length;

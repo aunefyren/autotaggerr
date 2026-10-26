@@ -656,15 +656,15 @@ export interface CollectionArtist {
   /** Following is *stored*; see follow_governs for whether it currently decides. */
   monitored: boolean;
   /**
-   * Whether the native follow settings actually govern this artist. False when a
-   * manager (Lidarr) owns it — the flag is kept, but the manager decides what is
-   * wanted, so the follow controls are shown frozen rather than as live toggles.
+   * Whether the native follow settings can decide anything in this view. False in
+   * Lidarr's library, or where Lidarr governs the artist and no single native library
+   * could take a follow — the flag is kept, and the controls are shown frozen.
    */
   follow_governs: boolean;
   /**
-   * Whether the user may set a MusicBrainz identity for this artist by hand —
-   * wanting an album or an edition, attaching a file. False under a manager, where
-   * every write is a 409, so the controls are disabled and the authority is named.
+   * Whether wants and editions may be edited in this view, for edit_library_id.
+   * False in Lidarr's library, where every write is a 409, so the controls are
+   * disabled and edit_blocked says why.
    */
   identity_editable: boolean;
   /**
@@ -693,6 +693,24 @@ export interface CollectionArtist {
    * cutoff is set.
    */
   follow_from_year: number;
+  /**
+   * The native library following wants into; the nil UUID means every library
+   * Autotaggerr decides for. Set when Lidarr governs the artist elsewhere.
+   */
+  follow_library_id: string;
+  /**
+   * Whether following decides what is wanted in this view: stored, governing, and
+   * — in one library's view — pointed at that library. Prefer it to `monitored`.
+   */
+  following: boolean;
+  /** The library this view reads, or null for every library. */
+  view_library_id: string | null;
+  /** The library an edit made in this view is for; null when tied to none. */
+  edit_library_id: string | null;
+  /** Why nothing is editable here, when it is not. */
+  edit_blocked?: "lidarr" | "unknown" | "choose_library" | "no_native_library";
+  /** The libraries the artist's pages can be read in. Only the artist's own pages fill it. */
+  libraries?: ArtistLibrary[];
   last_synced_at: string | null;
   /**
    * How many release-groups of the MusicBrainz discography this artist's follow shape
@@ -715,6 +733,18 @@ export interface CollectionArtist {
  * What one library holds of an edition or an album. For an album, owned_tracks is
  * that library's best edition — the same rule as the album's own summary.
  */
+/** Who decides for an artist's files in one library. */
+export type Authority = "lidarr" | "autotaggerr" | "unknown";
+
+/** One library as an artist's pages see it. */
+export interface ArtistLibrary {
+  library_id: string;
+  name: string;
+  authority: Authority;
+  /** Whether any of the artist's albums has files here. */
+  holds: boolean;
+}
+
 export interface LibraryCopy {
   library_id: string;
   name: string;
@@ -770,8 +800,8 @@ export interface CollectionReleaseGroup {
    */
   owned_editions: number;
   /**
-   * False when a manager (Lidarr) owns this artist's identity: the want and edition
-   * controls on the row are then Lidarr's to decide, so they render as state.
+   * False when this view's authority is Lidarr (or no single native library can take
+   * an edit): the want and edition controls on the row then render as state.
    */
   identity_editable: boolean;
   /** Where the album lives: one entry per library holding files of it. */
@@ -862,6 +892,8 @@ export interface CollectionDesire {
   release_group_mb_id: string;
   release_mb_id: string;
   recording_mb_ids: string[] | null;
+  /** The library this want is for; the nil UUID for a want tied to no library. */
+  library_id: string;
   /**
    * Who authored it, and therefore who may rewrite it: "manual" is the user's and
    * is never recomputed; "auto" was narrowed from an any-edition want to the edition

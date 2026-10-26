@@ -124,29 +124,6 @@ func TestIdentityEditable(t *testing.T) {
 	}
 }
 
-func TestArtistIdentityEditable(t *testing.T) {
-	db := testDB(t)
-	if err := db.Create(&models.CollectionArtist{MBID: "lidarr-art", Name: "L", ManagedBy: models.ManagedByLidarr}).Error; err != nil {
-		t.Fatalf("create lidarr artist: %v", err)
-	}
-	if err := db.Create(&models.CollectionArtist{MBID: "native-art", Name: "N", ManagedBy: models.ManagedByAutotaggerr}).Error; err != nil {
-		t.Fatalf("create native artist: %v", err)
-	}
-
-	// Lidarr-managed: not editable.
-	if editable, err := ArtistIdentityEditable(db, "lidarr-art"); err != nil || editable {
-		t.Errorf("lidarr artist: editable=%v err=%v, want false/nil", editable, err)
-	}
-	// Native: editable.
-	if editable, err := ArtistIdentityEditable(db, "native-art"); err != nil || !editable {
-		t.Errorf("native artist: editable=%v err=%v, want true/nil", editable, err)
-	}
-	// Unknown artist: nothing governs it yet, so editable.
-	if editable, err := ArtistIdentityEditable(db, "ghost"); err != nil || !editable {
-		t.Errorf("unknown artist: editable=%v err=%v, want true/nil", editable, err)
-	}
-}
-
 // TestRebuildPresent seeds a cached release (via the DB) and an owned item, then
 // asserts Rebuild materializes the artist + owned release-group.
 func TestRebuildPresent(t *testing.T) {

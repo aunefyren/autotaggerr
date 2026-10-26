@@ -34,14 +34,32 @@ type artistView struct {
 	// than inferred in the UI from managed_by, so the button and the endpoint agree on
 	// when detaching is a meaningful thing to offer.
 	Detachable bool `json:"detachable"`
+	// Following is whether following decides what is wanted in this view: stored,
+	// governing, and — in one library's view — pointed at that library.
+	Following bool `json:"following"`
+	// ViewLibraryID is the library this view reads, or null for every library.
+	ViewLibraryID *uuid.UUID `json:"view_library_id"`
+	// EditLibraryID is the library an edit made in this view is for, or null when
+	// it is tied to none (or nothing here is editable).
+	EditLibraryID *uuid.UUID `json:"edit_library_id"`
+	// EditBlocked says why nothing is editable here: "lidarr", "unknown",
+	// "choose_library" or "no_native_library". Empty when editable.
+	EditBlocked string `json:"edit_blocked,omitempty"`
+	// Libraries are the libraries this artist can be viewed in (see
+	// collection.ArtistLibraries). Only the artist's own pages fill it.
+	Libraries []collection.ArtistLibrary `json:"libraries,omitempty"`
 }
 
+// newArtistView is the artist-wide reading, with no library named and none read.
+// The handlers use artistViewIn, which knows where an edit can go; this is its
+// starting point and its fallback.
 func newArtistView(artist models.CollectionArtist) artistView {
 	return artistView{
 		CollectionArtist: artist,
 		FollowGoverns:    collection.FollowGoverns(artist),
 		IdentityEditable: collection.IdentityEditable(artist),
 		Detachable:       collection.Detachable(artist),
+		Following:        artist.Monitored && collection.FollowGoverns(artist),
 	}
 }
 
@@ -90,9 +108,9 @@ type releaseGroupView struct {
 	// owned/total counts above describe only the best-owned one, so without this a
 	// row cannot say that two pressings are involved.
 	OwnedEditions int `json:"owned_editions"`
-	// IdentityEditable is false when the page's artist is manager-owned (Lidarr /
-	// mixed): the row's edition and want controls are then Lidarr's to decide, so the
-	// UI renders them as state rather than editable choices.
+	// IdentityEditable is false when this view's authority is a manager (Lidarr's
+	// library, or an overview with no single native library to edit): the row's
+	// edition and want controls are then state rather than editable choices.
 	IdentityEditable bool `json:"identity_editable"`
 	// Libraries says where the album lives: one entry per library holding files of
 	// it. Empty for an album nobody owns.
@@ -121,24 +139,40 @@ type editionView struct {
 // and appends any owned edition the list does not contain — MusicBrainz can be
 // unreachable, or an edition can be merged away upstream, and an edition you own
 // files of must never vanish from the page that edits wants for it.
-func annotateEditions(editions []models.MusicBrainzReleaseSearchResult, owned []models.CollectionRelease, copies map[string][]collection.LibraryCopy) []editionView {
-	byMBID := make(map[string]models.CollectionRelease, len(owned))
+//
+// In one library's view (library set) ownership is that library's copy: an edition
+// held only elsewhere is listed, with its library tags, but not as owned here.
+func annotateEditions(editions []models.MusicBrainzReleaseSearchResult, owned []models.CollectionRelease, copies map[string][]collection.LibraryCopy, library uuid.UUID) []editionView {
+	// What is held of each owned edition in this view: everywhere, or one library's
+	// copy. An edition missing from held is listed but not owned here.
+	held := make(map[string]models.CollectionRelease, len(owned))
 	for _, rel := range owned {
-		byMBID[rel.MBID] = rel
+		if library == uuid.Nil {
+			held[rel.MBID] = rel
+			continue
+		}
+		for _, c := range copies[rel.MBID] {
+			if c.LibraryID == library {
+				rel.OwnedTracks, rel.Files = c.OwnedTracks, c.Files
+				held[rel.MBID] = rel
+			}
+		}
+	}
+	annotate := func(view editionView) editionView {
+		if rel, ok := held[view.ID]; ok {
+			view.Owned = true
+			view.OwnedTracks, view.OwnedTotalTracks = rel.OwnedTracks, rel.TotalTracks
+			view.Complete = rel.Complete()
+			view.Files = rel.Files
+		}
+		return view
 	}
 
 	out := make([]editionView, 0, len(editions))
 	seen := map[string]bool{}
 	for _, edition := range editions {
 		seen[edition.ID] = true
-		view := editionView{MusicBrainzReleaseSearchResult: edition, Libraries: librariesOf(copies, edition.ID)}
-		if rel, ok := byMBID[edition.ID]; ok {
-			view.Owned = true
-			view.OwnedTracks, view.OwnedTotalTracks = rel.OwnedTracks, rel.TotalTracks
-			view.Complete = rel.Complete()
-			view.Files = rel.Files
-		}
-		out = append(out, view)
+		out = append(out, annotate(editionView{MusicBrainzReleaseSearchResult: edition, Libraries: librariesOf(copies, edition.ID)}))
 	}
 
 	for _, rel := range owned {
@@ -155,15 +189,7 @@ func annotateEditions(editions []models.MusicBrainzReleaseSearchResult, owned []
 				TrackCount int    `json:"track-count"`
 			}{Format: rel.Format, TrackCount: rel.TotalTracks})
 		}
-		out = append(out, editionView{
-			MusicBrainzReleaseSearchResult: hit,
-			Owned:                          true,
-			OwnedTracks:                    rel.OwnedTracks,
-			OwnedTotalTracks:               rel.TotalTracks,
-			Complete:                       rel.Complete(),
-			Files:                          rel.Files,
-			Libraries:                      librariesOf(copies, rel.MBID),
-		})
+		out = append(out, annotate(editionView{MusicBrainzReleaseSearchResult: hit, Libraries: librariesOf(copies, rel.MBID)}))
 	}
 	return out
 }
@@ -203,6 +229,41 @@ func newReleaseGroupView(
 	artist models.CollectionArtist,
 	desires []models.CollectionDesire,
 ) releaseGroupView {
+	return newReleaseGroupViewIn(rg, catalogChecked, artist, desires,
+		viewScope{editable: collection.IdentityEditable(artist)})
+}
+
+// newReleaseGroupViewIn is newReleaseGroupView read in one view (see viewScope). In
+// a library's view the wants are those that library shows, the ownership is that
+// library's own, and the follow and the manager count only where they decide.
+func newReleaseGroupViewIn(
+	rg models.CollectionReleaseGroup,
+	catalogChecked bool,
+	artist models.CollectionArtist,
+	desires []models.CollectionDesire,
+	scope viewScope,
+) releaseGroupView {
+	discrepancy := rg.Discrepancy(catalogChecked)
+	if !scope.overview() {
+		mine := make([]models.CollectionDesire, 0, len(desires))
+		for _, d := range desires {
+			if collection.DesireInScope(d, artist, scope.library, scope.authority) {
+				mine = append(mine, d)
+			}
+		}
+		desires = mine
+		h, held := scope.holdings[rg.MBID]
+		rg.Owned, rg.OwnedTracks = held, h.OwnedTracks
+		if held {
+			rg.TotalTracks = h.TotalTracks
+		}
+		// The catalog comparison is Lidarr's; a native library has nothing to
+		// disagree with.
+		if scope.authority != collection.AuthorityLidarr {
+			discrepancy = models.DiscrepancyNone
+		}
+	}
+
 	// Empty slices, not nil: the UI reads .length on both, and a JSON null would
 	// make every row check for it.
 	desiredReleases := []string{}
@@ -245,25 +306,42 @@ func newReleaseGroupView(
 	// is state rather than a toggle.
 	case auto:
 		source = wantedSourceAuto
-	case !collection.FollowGoverns(artist):
-		if rg.InCatalog && rg.CatalogMonitored {
-			source = wantedSourceManager
-		}
-	case artist.Monitored && collection.FollowWantsStored(artist, rg.PrimaryType, rg.SecondaryTypes, rg.FirstReleaseDate):
+	// Lidarr's monitoring counts where Lidarr decides: its own library, or the
+	// overview of an artist it governs.
+	case lidarrDecides(artist, scope) && rg.InCatalog && rg.CatalogMonitored:
+		source = wantedSourceManager
+	case followDecides(artist, scope) && artist.Monitored &&
+		collection.FollowWantsStored(artist, rg.PrimaryType, rg.SecondaryTypes, rg.FirstReleaseDate):
 		source = wantedSourceAuto
 	}
 	return releaseGroupView{
 		CollectionReleaseGroup: rg,
 		Complete:               rg.Complete(),
-		Discrepancy:            rg.Discrepancy(catalogChecked),
+		Discrepancy:            discrepancy,
 		Wanted:                 source != "",
 		WantedSource:           source,
 		WantedAnyEdition:       anyEdition,
 		DesiredReleases:        desiredReleases,
 		DesiredRecordings:      desiredRecordings,
-		IdentityEditable:       collection.IdentityEditable(artist),
+		IdentityEditable:       scope.editable,
 		Libraries:              []collection.LibraryCopy{},
 	}
+}
+
+// lidarrDecides reports whether Lidarr's catalog says what is wanted in this view.
+func lidarrDecides(artist models.CollectionArtist, scope viewScope) bool {
+	if scope.overview() {
+		return collection.GovernedByLidarr(artist)
+	}
+	return scope.authority == collection.AuthorityLidarr
+}
+
+// followDecides reports whether the native follow says what is wanted in this view.
+func followDecides(artist models.CollectionArtist, scope viewScope) bool {
+	if scope.overview() {
+		return collection.FollowGoverns(artist)
+	}
+	return scope.authority == collection.AuthorityNative && collection.FollowAppliesIn(artist, scope.library)
 }
 
 // catalogChecked reports, per artist MBID, whether a manager has been asked what that
@@ -456,14 +534,25 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 		}
 	}
 
+	// The list is the overview of every artist; where an edit from it would go is
+	// answered from one read of the libraries rather than one per artist.
+	idx, err := collection.LoadLibraryIndex(a.DB)
+	if err != nil {
+		logger.Log.Warnf("failed to load the libraries: %s", err.Error())
+	}
 	out := make([]artistSummary, 0, len(artists))
 	for _, ar := range artists {
 		g := byArtist[ar.MBID]
 		if g == nil {
 			g = &agg{}
 		}
+		view := newArtistView(ar)
+		if err == nil {
+			scope, _ := a.resolveScope(idx, ar, nil, nil)
+			view = artistViewIn(ar, scope)
+		}
 		out = append(out, artistSummary{
-			artistView:    newArtistView(ar),
+			artistView:    view,
 			OwnedCount:    g.owned,
 			CompleteCount: g.complete,
 			PartialCount:  g.owned - g.complete,
@@ -491,9 +580,18 @@ var errArtistNotFound = errors.New("artist not found")
 
 // getArtist returns an artist and its release-groups (owned + wanted).
 func (a *API) getArtist(c *gin.Context) {
-	detail, err := a.artistDetail(c.Param("mbid"))
+	library, err := parseLibraryParam(c.Query("library"))
 	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	detail, err := a.artistDetail(c.Param("mbid"), library)
+	if errors.Is(err, errArtistNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
 	body := gin.H{"artist": detail.Artist, "release_groups": detail.ReleaseGroups, "desires": detail.Desires}
@@ -511,10 +609,11 @@ type artistDetailData struct {
 	Repair        *artistRepairView
 }
 
-// artistDetail loads one artist with its release-groups judged by the shared rules.
-// The only error is errArtistNotFound: the parts after the artist degrade to empty
-// with a warning, as the page always has.
-func (a *API) artistDetail(mbid string) (artistDetailData, error) {
+// artistDetail loads one artist with its release-groups judged by the shared rules,
+// read in one library (nil: every library). The errors are errArtistNotFound and an
+// unknown library; the parts after the artist degrade to empty with a warning, as
+// the page always has.
+func (a *API) artistDetail(mbid string, library *uuid.UUID) (artistDetailData, error) {
 	var artist models.CollectionArtist
 	if err := a.DB.Where("mb_id = ?", mbid).First(&artist).Error; err != nil {
 		return artistDetailData{}, errArtistNotFound
@@ -551,15 +650,19 @@ func (a *API) artistDetail(mbid string) (artistDetailData, error) {
 	if err != nil {
 		logger.Log.Warnf("failed to load which libraries hold %s's albums: %s", mbid, err.Error())
 	}
+	artistV, scope, err := a.artistInLibrary(artist, library, rgMBIDs)
+	if err != nil {
+		return artistDetailData{}, err
+	}
 	views := make([]releaseGroupView, 0, len(groups))
 	for _, rg := range groups {
-		view := newReleaseGroupView(rg, catalogued, artist, byGroup[rg.MBID])
-		view.OwnedEditions = editionCounts[rg.MBID]
+		view := newReleaseGroupViewIn(rg, catalogued, artist, byGroup[rg.MBID], scope)
+		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, rg.MBID)
 		view.Libraries = librariesOf(copies, rg.MBID)
 		views = append(views, view)
 	}
 	return artistDetailData{
-		Artist:        newArtistView(artist),
+		Artist:        artistV,
 		ReleaseGroups: views,
 		Desires:       desires,
 		Repair:        a.artistRepair(mbid),
@@ -967,13 +1070,21 @@ func (a *API) setDesire(c *gin.Context) {
 		PrimaryType      string   `json:"primary_type"`
 		SecondaryTypes   string   `json:"secondary_types"`
 		FirstReleaseDate string   `json:"first_release_date"`
+		// LibraryID is the library the want is for. Absent, it goes wherever an
+		// edit from the overview goes (see collection.WantTarget).
+		LibraryID string `json:"library_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	library, err := parseLibraryParam(body.LibraryID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 
-	desire, err := a.addDesire(collection.DesireInput{
+	desire, err := a.addDesire(library, collection.DesireInput{
 		ArtistMBID:       c.Param("mbid"),
 		ReleaseGroupMBID: body.ReleaseGroupMBID,
 		ReleaseMBID:      body.ReleaseMBID,
@@ -1011,7 +1122,7 @@ func (a *API) detachArtist(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
-		"artist":         newArtistView(result.Artist),
+		"artist":         a.artistViewFor(result.Artist),
 		"wants_kept":     result.WantsKept,
 		"follow_cleared": result.FollowCleared,
 	})
@@ -1030,7 +1141,7 @@ func (a *API) reattachArtist(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to reattach the artist"})
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"artist": newArtistView(artist)})
+	c.JSON(http.StatusOK, gin.H{"artist": a.artistViewFor(artist)})
 }
 
 // clearDesire drops a want. Owned files are never touched.
@@ -1039,8 +1150,20 @@ func (a *API) reattachArtist(c *gin.Context) {
 // removal, and a want left over from before an artist became Lidarr-managed needs a way
 // out. Blocking it would strand stale rows with no UI to remove them — the same reason
 // detach stays allowed while attach is gated.
+//
+// With a library named, only the wants that library shows are removed — another
+// library's want for the same edition is a different want.
 func (a *API) clearDesire(c *gin.Context) {
-	if err := collection.ClearDesire(a.DB, c.Query("release_group_mb_id"), c.Query("release_mb_id")); err != nil {
+	library, err := parseLibraryParam(c.Query("library_id"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	target := uuid.Nil
+	if library != nil {
+		target = *library
+	}
+	if err := collection.ClearDesireIn(a.DB, c.Param("mbid"), c.Query("release_group_mb_id"), c.Query("release_mb_id"), target); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear the desire"})
 		return
 	}
@@ -1142,6 +1265,11 @@ func (a *API) writeArtistInfo(c *gin.Context, mbid string) {
 
 func (a *API) discography(c *gin.Context) {
 	mbid := c.Param("mbid")
+	library, err := parseLibraryParam(c.Query("library"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 
 	var artist models.CollectionArtist
 	if err := a.DB.Where("mb_id = ?", mbid).First(&artist).Error; err != nil {
@@ -1185,6 +1313,11 @@ func (a *API) discography(c *gin.Context) {
 	if err != nil {
 		logger.Log.Warnf("failed to load which libraries hold %s's albums: %s", mbid, err.Error())
 	}
+	_, scope, err := a.artistInLibrary(artist, library, storedMBIDs)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 
 	out := make([]releaseGroupView, 0, len(groups))
 	seen := make(map[string]bool, len(groups))
@@ -1200,8 +1333,8 @@ func (a *API) discography(c *gin.Context) {
 				FirstReleaseDate: g.FirstReleaseDate,
 			}
 		}
-		view := newReleaseGroupView(rg, catalogued, artist, byGroup[g.ID])
-		view.OwnedEditions = editionCounts[g.ID]
+		view := newReleaseGroupViewIn(rg, catalogued, artist, byGroup[g.ID], scope)
+		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, g.ID)
 		view.Libraries = librariesOf(copies, g.ID)
 		out = append(out, view)
 	}
@@ -1213,8 +1346,8 @@ func (a *API) discography(c *gin.Context) {
 		if seen[rg.MBID] {
 			continue
 		}
-		view := newReleaseGroupView(rg, catalogued, artist, byGroup[rg.MBID])
-		view.OwnedEditions = editionCounts[rg.MBID]
+		view := newReleaseGroupViewIn(rg, catalogued, artist, byGroup[rg.MBID], scope)
+		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, rg.MBID)
 		view.Libraries = librariesOf(copies, rg.MBID)
 		out = append(out, view)
 	}
@@ -1238,14 +1371,23 @@ func (a *API) updateFollow(c *gin.Context) {
 		FollowTypes     *string `json:"follow_types"`
 		FollowSecondary *bool   `json:"follow_secondary"`
 		FollowFromYear  *int    `json:"follow_from_year"`
+		// LibraryID is the native library following wants into, when following is
+		// switched on. Absent, it is wherever an edit from the overview goes.
+		LibraryID string `json:"library_id"`
 	}
 	if err := c.ShouldBindJSON(&body); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
+	library, err := parseLibraryParam(body.LibraryID)
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
 	artist, wanted, err := a.updateFollowSettings(c.Param("mbid"), followUpdate{
 		Monitored: body.Monitored, FollowTypes: body.FollowTypes,
 		FollowSecondary: body.FollowSecondary, FollowFromYear: body.FollowFromYear,
+		LibraryID: library,
 	})
 	if err != nil {
 		respondErr(c, err)
@@ -1263,8 +1405,8 @@ func validFollowYear(year int) bool {
 // followArtists follows several artists with one set of follow settings — the bulk
 // form of the artist page's Follow. The settings are written here; the discography
 // syncs that list what they want are a queued job, since each is a rate-limited read.
-// An artist a manager governs is skipped and named: following would be stored, not
-// obeyed.
+// An artist Lidarr governs with no single native library to follow them into is
+// skipped and named: following would be stored, not obeyed.
 func (a *API) followArtists(c *gin.Context) {
 	var body struct {
 		ArtistMBIDs     []string `json:"artist_mb_ids"`
@@ -1285,15 +1427,25 @@ func (a *API) followArtists(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load the artists"})
 		return
 	}
+	idx, err := collection.LoadLibraryIndex(a.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load the libraries"})
+		return
+	}
 	followed, skipped := []string{}, []string{}
 	for _, artist := range artists {
-		if !collection.FollowGoverns(artist) {
+		// Followed where an edit from the overview goes: every native library for an
+		// artist no manager governs, the one native library beside Lidarr's for one it
+		// does. An artist with no such library is skipped and named.
+		target, err := idx.WantTarget(artist, nil)
+		if err != nil {
 			skipped = append(skipped, artist.Name)
 			continue
 		}
 		if err := a.DB.Model(&artist).Updates(map[string]any{
 			"monitored": true, "follow_types": strings.TrimSpace(body.FollowTypes),
 			"follow_secondary": body.FollowSecondary, "follow_from_year": body.FollowFromYear,
+			"follow_library_id": target,
 		}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update " + artist.Name})
 			return
@@ -1334,9 +1486,18 @@ func (a *API) updateCollectionPolicy(c *gin.Context) {
 // desires that exist for it. Tracklists stay a separate, lazy call — fetching one
 // per edition up front would cost a rate-limited second each.
 func (a *API) releaseGroupDetail(c *gin.Context) {
-	detail, err := a.releaseGroupDetailData(c.Param("mbid"), c.Param("rgid"))
+	library, err := parseLibraryParam(c.Query("library"))
 	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	detail, err := a.releaseGroupDetailData(c.Param("mbid"), c.Param("rgid"), library)
+	if errors.Is(err, errArtistNotFound) {
 		c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -1358,9 +1519,9 @@ type releaseGroupDetailData struct {
 
 // releaseGroupDetailData loads one release-group under an artist. It may reach
 // MusicBrainz (cache-first) for the edition list and, for a group nobody owns, the
-// discography. The only error is errArtistNotFound; an unreachable MusicBrainz leaves
-// the edition list to what is owned.
-func (a *API) releaseGroupDetailData(artistMBID, rgMBID string) (releaseGroupDetailData, error) {
+// discography. The errors are errArtistNotFound and an unknown library; an
+// unreachable MusicBrainz leaves the edition list to what is owned.
+func (a *API) releaseGroupDetailData(artistMBID, rgMBID string, library *uuid.UUID) (releaseGroupDetailData, error) {
 	var artist models.CollectionArtist
 	if err := a.DB.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
 		return releaseGroupDetailData{}, errArtistNotFound
@@ -1404,7 +1565,20 @@ func (a *API) releaseGroupDetailData(artistMBID, rgMBID string) (releaseGroupDet
 		}
 	}
 
-	view := newReleaseGroupView(rg, catalogued, artist, mine)
+	artistV, scope, err := a.artistInLibrary(artist, library, siblingMBIDs)
+	if err != nil {
+		return releaseGroupDetailData{}, err
+	}
+	if !scope.overview() {
+		filtered := mine[:0]
+		for _, d := range mine {
+			if collection.DesireInScope(d, artist, scope.library, scope.authority) {
+				filtered = append(filtered, d)
+			}
+		}
+		mine = filtered
+	}
+	view := newReleaseGroupViewIn(rg, catalogued, artist, mine, scope)
 
 	editions, err := collection.ReleaseGroupEditions(a.meta(), rgMBID)
 	if err != nil {
@@ -1418,6 +1592,9 @@ func (a *API) releaseGroupDetailData(artistMBID, rgMBID string) (releaseGroupDet
 		logger.Log.Warnf("failed to load owned editions for %s: %s", rgMBID, err.Error())
 	}
 	view.OwnedEditions = len(owned)
+	if !scope.overview() {
+		view.OwnedEditions = scope.holdings[rgMBID].Editions
+	}
 	if groupCopies, err := collection.ReleaseGroupCopies(a.DB, []string{rgMBID}); err != nil {
 		logger.Log.Warnf("failed to load which libraries hold %s: %s", rgMBID, err.Error())
 	} else {
@@ -1433,9 +1610,40 @@ func (a *API) releaseGroupDetailData(artistMBID, rgMBID string) (releaseGroupDet
 	}
 
 	return releaseGroupDetailData{
-		Artist:       newArtistView(artist),
+		Artist:       artistV,
 		ReleaseGroup: view,
-		Editions:     annotateEditions(editions, owned, copies),
+		Editions:     annotateEditions(editions, owned, copies, scope.library),
 		Desires:      mine,
 	}, nil
+}
+
+// artistInLibrary reads an artist in one library (nil: the overview): the artist as
+// that view sees it, with the libraries they can be viewed in, and the scope the
+// rows are judged by.
+func (a *API) artistInLibrary(artist models.CollectionArtist, library *uuid.UUID, rgMBIDs []string) (artistView, viewScope, error) {
+	idx, err := collection.LoadLibraryIndex(a.DB)
+	if err != nil {
+		logger.Log.Warnf("failed to load the libraries: %s", err.Error())
+		if library != nil {
+			return artistView{}, viewScope{}, failWith(http.StatusInternalServerError, "failed to load the libraries")
+		}
+		return newArtistView(artist), viewScope{editable: collection.IdentityEditable(artist)}, nil
+	}
+	scope, err := a.resolveScope(idx, artist, library, rgMBIDs)
+	if err != nil {
+		return artistView{}, viewScope{}, err
+	}
+	view := artistViewIn(artist, scope)
+	if view.Libraries, err = idx.ArtistLibraries(a.DB, artist, rgMBIDs); err != nil {
+		logger.Log.Warnf("failed to list the libraries of %s: %s", artist.MBID, err.Error())
+	}
+	return view, scope, nil
+}
+
+// ownedEditionsIn is how many editions of an album are held in this view.
+func ownedEditionsIn(scope viewScope, counts map[string]int, rgMBID string) int {
+	if scope.overview() {
+		return counts[rgMBID]
+	}
+	return scope.holdings[rgMBID].Editions
 }

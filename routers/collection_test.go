@@ -8,6 +8,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -552,7 +553,7 @@ func TestAnnotateEditionsKeepsOwnedEditionsMusicBrainzOmits(t *testing.T) {
 		{MBID: "release-orphan", Title: "Spiderland (remaster)", OwnedTracks: 3, TotalTracks: 6},
 	}
 
-	out := annotateEditions(listed, owned, nil)
+	out := annotateEditions(listed, owned, nil, uuid.Nil)
 	if len(out) != 2 {
 		t.Fatalf("editions = %d, want 2 (the listed one plus the owned orphan)", len(out))
 	}
@@ -577,7 +578,7 @@ func TestAnnotateEditionsMarksUnownedEditions(t *testing.T) {
 	out := annotateEditions([]models.MusicBrainzReleaseSearchResult{
 		{ID: "release-a", Title: "Original"},
 		{ID: "release-b", Title: "Reissue"},
-	}, nil, nil)
+	}, nil, nil, uuid.Nil)
 	if len(out) != 2 {
 		t.Fatalf("editions = %d, want 2", len(out))
 	}

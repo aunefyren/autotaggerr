@@ -23,7 +23,7 @@ export function FollowArtistsDialog({
 }) {
   const toast = useToast();
   const candidates = useMemo(
-    () => artists.filter((a) => a.follow_governs && !a.monitored).sort((x, y) => x.name.localeCompare(y.name)),
+    () => artists.filter((a) => a.follow_governs && !a.following).sort((x, y) => x.name.localeCompare(y.name)),
     [artists]
   );
   const managed = artists.filter((a) => !a.follow_governs).length;

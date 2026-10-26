@@ -411,6 +411,7 @@ type mcpFollowInput struct {
 	FollowTypes     *string `json:"follow_types,omitempty" jsonschema:"comma-separated primary types following wants, e.g. Album,EP"`
 	FollowSecondary *bool   `json:"follow_secondary,omitempty" jsonschema:"also want secondary types (live, compilation, ...)"`
 	FollowFromYear  *int    `json:"follow_from_year,omitempty" jsonschema:"only want albums first released in or after this year; 0 clears it"`
+	Library         string  `json:"library,omitempty" jsonschema:"native library (name or ID) following wants into; required when Lidarr manages the artist and several native libraries exist"`
 }
 
 type mcpFollowResult struct {
@@ -428,6 +429,7 @@ type mcpWantInput struct {
 	AlbumMBID      string   `json:"album_mbid" jsonschema:"release-group MBID"`
 	ReleaseMBID    string   `json:"release_mbid,omitempty" jsonschema:"want this edition specifically; omit for any edition"`
 	RecordingMBIDs []string `json:"recording_mbids,omitempty" jsonschema:"want only these songs; omit for the whole album"`
+	Library        string   `json:"library,omitempty" jsonschema:"native library (name or ID) the want is for; only its files fulfil it. Required when Lidarr manages the artist and several native libraries exist"`
 }
 
 type mcpWantResult struct {
@@ -561,9 +563,14 @@ func (a *API) mcpAddArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpAddA
 }
 
 func (a *API) mcpFollowArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpFollowInput) (*mcp.CallToolResult, mcpFollowResult, error) {
+	library, err := a.mcpLibrary(in.Library)
+	if err != nil {
+		return nil, mcpFollowResult{}, err
+	}
 	artist, wanted, err := a.updateFollowSettings(in.MBID, followUpdate{
 		Monitored: in.Monitored, FollowTypes: in.FollowTypes,
 		FollowSecondary: in.FollowSecondary, FollowFromYear: in.FollowFromYear,
+		LibraryID: library,
 	})
 	if err != nil {
 		var ae *apiError
@@ -619,7 +626,11 @@ func (a *API) mcpWantAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpWant
 		}
 	}
 
-	saved, err := a.addDesire(desire)
+	library, err := a.mcpLibrary(in.Library)
+	if err != nil {
+		return nil, mcpWantResult{}, err
+	}
+	saved, err := a.addDesire(library, desire)
 	if err != nil {
 		return nil, mcpWantResult{}, mcpToolError(err)
 	}
@@ -725,4 +736,20 @@ func (a *API) mcpDismissMigration(_ context.Context, _ *mcp.CallToolRequest, in 
 		return nil, mcpMigrationDecision{}, mcpToolError(err)
 	}
 	return nil, mcpMigrationDecision{Status: row.Status}, nil
+}
+
+// mcpLibrary resolves an optional library named by an assistant, by name or ID.
+func (a *API) mcpLibrary(raw string) (*uuid.UUID, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	idx, err := collection.LoadLibraryIndex(a.DB)
+	if err != nil {
+		return nil, mcpStoreError(errors.New("failed to load the libraries"))
+	}
+	id, ok := idx.Find(raw)
+	if !ok {
+		return nil, fmt.Errorf("no library named %q — get_configuration lists them", strings.TrimSpace(raw))
+	}
+	return &id, nil
 }

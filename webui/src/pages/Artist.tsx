@@ -25,9 +25,22 @@ import {
   useBrowse,
   usePaging,
 } from "../components/browse";
-import { LibrarySelect, LibraryTags, useLibraries } from "../components/Libraries";
+import {
+  AUTHORITY_LABEL,
+  AUTHORITY_PILL,
+  LibraryTabs,
+  LibraryTags,
+  editBlockedReason,
+  editLibraryName,
+  editLibraryParam,
+  useLibraries,
+} from "../components/Libraries";
 
 function ManagedBy({ artist }: { artist: CollectionArtist }) {
+  // Read in one library, the pill is that library's authority: the page is about
+  // what happens there, and naming the artist-wide summary would contradict it.
+  const viewed = artist.libraries?.find((l) => l.library_id === artist.view_library_id);
+  if (viewed) return <Pill kind={AUTHORITY_PILL[viewed.authority]}>{AUTHORITY_LABEL[viewed.authority]}</Pill>;
   // Detached reads as its own state rather than plain "Native". Both mean Autotaggerr
   // decides, but only one of them is a decision *someone made* — and the artist's
   // files still sit in a managed library, which the plain label would deny.
@@ -40,9 +53,15 @@ function ManagedBy({ artist }: { artist: CollectionArtist }) {
       </Pill>
     );
   if (artist.managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
-  // Files in a Lidarr library and a native one. Lidarr still decides what is wanted,
-  // so the pill names that one authority; the header says where the files live.
-  if (artist.managed_by === "mixed") return <Pill kind="scan">Lidarr</Pill>;
+  // Files in a Lidarr library and a native one: two authorities, one per library,
+  // so two pills. The meta line beside them says which library is whose.
+  if (artist.managed_by === "mixed")
+    return (
+      <>
+        <Pill kind="scan">Lidarr</Pill>
+        <Pill kind="chg">Native</Pill>
+      </>
+    );
   if (artist.managed_by === "autotaggerr") return <Pill kind="chg">Native</Pill>;
   return (
     <Pill kind="off">
@@ -132,11 +151,19 @@ type Filter = "all" | "disk" | "partial" | "wanted" | "missing" | "mismatch";
 export default function Artist() {
   const { mbid = "" } = useParams();
   const toast = useToast();
+  const browse = useBrowse("year", "desc");
+  const libraries = useLibraries();
 
-  const detail = useFetch<ArtistDetail>(() => api.get(`/artists/${mbid}`), [mbid]);
+  // The library the page is read in (see LibraryTabs). Authority is per library, so
+  // this is not a row filter: it decides what is wanted, what is owned and whether
+  // any of it can be edited, and both reads below take it.
+  const viewLibrary = browse.flag("library");
+  const inLibrary = viewLibrary ? `?library=${encodeURIComponent(viewLibrary)}` : "";
+
+  const detail = useFetch<ArtistDetail>(() => api.get(`/artists/${mbid}${inLibrary}`), [mbid, inLibrary]);
   // Live MusicBrainz read: browsing a catalogue is not the same as wanting it, so
   // the discography is never persisted.
-  const disco = useFetch<CollectionReleaseGroup[]>(() => api.get(`/artists/${mbid}/discography`), [mbid]);
+  const disco = useFetch<CollectionReleaseGroup[]>(() => api.get(`/artists/${mbid}/discography${inLibrary}`), [mbid, inLibrary]);
   // Its own request so the page never waits on a rate-limited external call for
   // decoration. Failure is silent: the header simply shows less.
   const info = useFetch<ArtistInfo>(() => api.get(`/artists/${mbid}/info`), [mbid]);
@@ -148,8 +175,6 @@ export default function Artist() {
   // both being open at once is not a state that should be representable.
   const [authorityAsk, setAuthorityAsk] = useState<"detach" | "reattach" | null>(null);
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
-  const browse = useBrowse("year", "desc");
-  const libraries = useLibraries();
 
   const artist = detail.data?.artist;
   const groups = disco.data ?? detail.data?.release_groups ?? [];
@@ -158,8 +183,14 @@ export default function Artist() {
   const partial = onDisk.filter((g) => !g.complete);
   const missing = groups.filter((g) => g.wanted && !g.owned);
 
+  // Lidarr governs some of this artist's files: what the Lidarr sync, re-correlate
+  // and the missing-from-manager note act on, whichever library the page is read in.
   const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
-  const managerLabel = isLidarr ? "Lidarr" : "MusicBrainz";
+  // Lidarr decides what this view shows as wanted: its own library, or the overview
+  // of an artist it governs. A native library's view of the same artist is not.
+  const viewAuthority = artist?.libraries?.find((l) => l.library_id === artist.view_library_id)?.authority;
+  const lidarrView = viewAuthority ? viewAuthority === "lidarr" : isLidarr;
+  const managerLabel = lidarrView ? "Lidarr" : "MusicBrainz";
 
   // Two conditions, both required, and they are not the same fact: this artist has to
   // be Lidarr's to answer for, *and* there has to be an enabled Lidarr to ask. A row
@@ -303,7 +334,8 @@ export default function Artist() {
   const updateFollow = async (body: Record<string, unknown>) => {
     setBusy(true);
     try {
-      await api.post(`/artists/${mbid}/follow`, body);
+      // Following says where it wants into: the library this view edits.
+      await api.post(`/artists/${mbid}/follow`, { ...editLibraryParam(artist), ...body });
       refresh();
     } catch (e) {
       toast("err", errMsg(e));
@@ -315,21 +347,25 @@ export default function Artist() {
   const filter = (browse.flag("show") as Filter) || "all";
   const setFilter = (next: Filter) => browse.setFlag("show", next === "all" ? null : next);
 
-  // Where this artist's albums live, named only once there is more than one library
-  // to tell apart. The filter narrows the chips' counts as well as the rows, so
-  // "Partial 2" under a library means two partial albums in that library.
-  const artistLibraries = new Map<string, { name: string; albums: number }>();
-  for (const g of groups) {
-    for (const c of g.libraries ?? []) {
-      const entry = artistLibraries.get(c.library_id) ?? { name: c.name, albums: 0 };
-      entry.albums++;
-      artistLibraries.set(c.library_id, entry);
-    }
-  }
-  const libraryFilter = libraries.multi ? browse.flag("library") : null;
-  const inLibrary = (g: CollectionReleaseGroup) =>
-    !libraryFilter || (g.libraries ?? []).some((c) => c.library_id === libraryFilter);
-  const scoped = groups.filter(inLibrary);
+  // The rows are already the viewed library's: ownership, wants and the follow are
+  // read there server-side, so "Partial 2" in a library means two partial albums in
+  // that library, and every album of the catalogue stays listed — what a library
+  // lacks is half of what it is for.
+  const scoped = groups;
+  const viewLibraries = libraries.multi ? artist?.libraries ?? [] : [];
+  // Who decides where, for the overview's meta line: "Lidarr in Music 2 · Native in
+  // Music 3". Only libraries holding something — an empty native library is a tab,
+  // not a fact about where the artist lives.
+  const whereLabel = (() => {
+    if (!libraries.multi || artist?.view_library_id) return "";
+    const held = viewLibraries.filter((l) => l.holds);
+    const byAuthority = new Map<string, string[]>();
+    for (const l of held) byAuthority.set(l.authority, [...(byAuthority.get(l.authority) ?? []), l.name]);
+    if (byAuthority.size <= 1) return held.length > 0 ? `In ${held.map((l) => l.name).join(", ")}` : "";
+    return [...byAuthority]
+      .map(([authority, names]) => `${AUTHORITY_LABEL[authority as keyof typeof AUTHORITY_LABEL]} in ${names.join(", ")}`)
+      .join(" · ");
+  })();
   const chipCounts = {
     disk: scoped.filter((g) => g.owned).length,
     partial: scoped.filter((g) => g.owned && !g.complete).length,
@@ -417,12 +453,10 @@ export default function Artist() {
             {artist?.origin === "manual" && (
               <span className="dim" style={{ fontSize: 11 }} title="Added by hand">added</span>
             )}
-            {libraries.multi && artistLibraries.size > 0 && (
+            {whereLabel && (
               <>
                 <span className="sep">·</span>
-                <span className="dim" style={{ fontSize: 11 }}>
-                  In {[...artistLibraries.values()].map((l) => l.name).sort().join(", ")}
-                </span>
+                <span className="dim" style={{ fontSize: 11 }}>{whereLabel}</span>
               </>
             )}
             {(facts?.genres?.length ?? 0) > 1 && (
@@ -447,21 +481,23 @@ export default function Artist() {
                 the page has but does not show — the same failure the "Following"
                 label fixed for the toggle itself. It sits here, not only inside the
                 Settings disclosure, because that disclosure starts closed. */}
-            {!artist.follow_governs && <Pill kind="off">Managed by {managerLabel}</Pill>}
+            {!artist.follow_governs && (
+              <Pill kind="off">{artist.edit_blocked === "choose_library" ? "Choose a library" : `Managed by ${managerLabel}`}</Pill>
+            )}
             <button
-              className={artist.monitored ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
-              aria-pressed={artist.monitored}
+              className={artist.following ? "btn btn-primary btn-sm" : "btn btn-secondary btn-sm"}
+              aria-pressed={artist.following}
               disabled={busy || !artist.follow_governs}
               title={
                 !artist.follow_governs
-                  ? `${managerLabel} decides what is wanted for this artist — following has no effect until it is managed natively.`
-                  : artist.monitored
+                  ? editBlockedReason(artist) ?? `${managerLabel} decides what is wanted for this artist.`
+                  : artist.following
                     ? "Following. Click to stop."
-                    : "Not following. Click to follow."
+                    : `Not following. Click to follow${editLibraryName(artist) ? ` in ${editLibraryName(artist)}` : ""}.`
               }
-              onClick={() => updateFollow({ monitored: !artist.monitored })}
+              onClick={() => updateFollow({ monitored: !artist.following })}
             >
-              {busy ? "Syncing…" : artist.monitored ? "Following" : "Follow"}
+              {busy ? "Syncing…" : artist.following ? "Following" : "Follow"}
             </button>
             <button
               className="btn btn-ghost btn-sm"
@@ -492,6 +528,12 @@ export default function Artist() {
         )}
       </div>
 
+      <LibraryTabs
+        libraries={viewLibraries}
+        active={viewLibrary}
+        onChoose={(id) => browse.setFlag("library", id)}
+      />
+
       {artist?.manager_missing_at && artist.managed_by !== "autotaggerr" && (
         <MissingFromManagerNote artist={artist} manager={managerLabel} />
       )}
@@ -511,7 +553,6 @@ export default function Artist() {
           <ManagerAuthority
             artist={artist}
             busy={busy}
-            manager={managerLabel}
             onDetach={() => setAuthorityAsk("detach")}
             onReattach={() => setAuthorityAsk("reattach")}
           />
@@ -696,13 +737,6 @@ export default function Artist() {
         <FilterChip on={filter === "mismatch"} count={chipCounts.mismatch} label="Mismatch" tone="warn"
           title="Disk and manager disagree about these albums"
           onClick={() => setFilter(filter === "mismatch" ? "all" : "mismatch")} />
-        {libraries.multi && artistLibraries.size > 0 && (
-          <LibrarySelect
-            browse={browse}
-            libraries={libraries.list}
-            counts={new Map([...artistLibraries].map(([id, l]) => [id, l.albums]))}
-          />
-        )}
       </TableToolbar>
 
       {disco.loading && <span className="dim" style={{ fontSize: 11 }}>Loading the catalogue from MusicBrainz…</span>}
@@ -747,8 +781,9 @@ export default function Artist() {
                   onToggle={() => toggleSection(id)}
                   browse={browse}
                   manager={managerLabel}
-                  managerGoverns={isLidarr}
+                  managerGoverns={lidarrView}
                   showLibraries={libraries.multi}
+                  artist={artist}
                   artistMbid={mbid}
                   onChanged={refresh}
                 />
@@ -788,6 +823,7 @@ function CatalogSection({
   manager,
   managerGoverns,
   showLibraries,
+  artist,
   artistMbid,
   onChanged,
 }: {
@@ -802,6 +838,7 @@ function CatalogSection({
   manager: string;
   managerGoverns: boolean;
   showLibraries: boolean;
+  artist?: CollectionArtist;
   artistMbid: string;
   onChanged: () => void;
 }) {
@@ -841,6 +878,7 @@ function CatalogSection({
             manager={manager}
             managerGoverns={managerGoverns}
             showLibraries={showLibraries}
+            artist={artist}
             artistMbid={artistMbid}
             onChanged={onChanged}
           />
@@ -869,6 +907,7 @@ function ReleaseGroupRow({
   manager,
   managerGoverns,
   showLibraries,
+  artist,
   artistMbid,
   onChanged,
 }: {
@@ -878,10 +917,14 @@ function ReleaseGroupRow({
   managerGoverns: boolean;
   /** Name the libraries holding the album — only when there is more than one library. */
   showLibraries: boolean;
+  /** The artist as this view reads it: where an edit goes, and why one cannot. */
+  artist?: CollectionArtist;
   artistMbid: string;
   onChanged: () => void;
 }) {
   const toast = useToast();
+  const target = editLibraryParam(artist);
+  const where = editLibraryName(artist);
   const [busy, setBusy] = useState(false);
 
   const partial = g.owned && !g.complete;
@@ -931,6 +974,7 @@ function ReleaseGroupRow({
         primary_type: g.primary_type,
         secondary_types: g.secondary_types,
         first_release_date: g.first_release_date,
+        ...target,
       });
       onChanged();
     } catch (e) {
@@ -945,7 +989,8 @@ function ReleaseGroupRow({
   // behind by whichever button was pressed.
   const clearWants = async () => {
     for (const rel of ["", ...(g.desired_releases ?? [])]) {
-      const q = new URLSearchParams({ release_group_mb_id: g.mb_id, release_mb_id: rel });
+      // Only this view's wants: another library's want for the album is its own.
+      const q = new URLSearchParams({ release_group_mb_id: g.mb_id, release_mb_id: rel, ...target });
       await api.del(`/artists/${artistMbid}/desires?${q.toString()}`);
     }
   };
@@ -980,6 +1025,7 @@ function ReleaseGroupRow({
           primary_type: g.primary_type,
           secondary_types: g.secondary_types,
           first_release_date: g.first_release_date,
+          ...target,
         });
       }
       onChanged();
@@ -1003,7 +1049,12 @@ function ReleaseGroupRow({
           {/* The album page lists every edition and what is owned of each, so it is
               a browsing destination for anything in the catalogue — not only for
               what is already wanted. */}
-          <Link to={`/collection/${artistMbid}/${g.mb_id}`} style={{ color: "var(--text)" }}>{g.title}</Link>
+          <Link
+            to={`/collection/${artistMbid}/${g.mb_id}${artist?.view_library_id ? `?library=${artist.view_library_id}` : ""}`}
+            style={{ color: "var(--text)" }}
+          >
+            {g.title}
+          </Link>
           <MBLink entity="release-group" mbid={g.mb_id} />
           {showLibraries && <LibraryTags copies={g.libraries ?? []} total={g.total_tracks} />}
           {note && (
@@ -1067,14 +1118,14 @@ function ReleaseGroupRow({
             disabled={busy || derivedWant || locked}
             title={
               locked
-                ? `${manager} decides what is wanted for this artist. Add it in ${manager}; Autotaggerr mirrors what it monitors.`
+                ? editBlockedReason(artist) ?? `${manager} decides what is wanted for this artist. Add it in ${manager}; Autotaggerr mirrors what it monitors.`
                 : explicitlyWanted
                   ? "Wanted. Click to remove."
                   : derivedWant
                     ? g.wanted_source === "manager"
                       ? `Wanted because ${manager} monitors it — not something this page can switch off. Pin it to keep it regardless.`
                       : "Wanted because you follow this artist — not something this row can switch off. Unfollow above, or pin it to keep it."
-                    : "Not wanted. Click to want this album — any edition, whole album."
+                    : `Not wanted. Click to want this album${where ? ` in ${where}` : ""} — any edition, whole album.`
             }
             onClick={toggleWanted}
           >
@@ -1123,13 +1174,11 @@ function ReleaseGroupRow({
 function ManagerAuthority({
   artist,
   busy,
-  manager,
   onDetach,
   onReattach,
 }: {
   artist: CollectionArtist;
   busy: boolean;
-  manager: string;
   onDetach: () => void;
   onReattach: () => void;
 }) {
@@ -1143,7 +1192,9 @@ function ManagerAuthority({
           {artist.manager_detached
             ? "Detached. Autotaggerr decides what is wanted for this artist, even though its files live in a managed library. The wants it kept from the manager are yours now."
             : artist.detachable
-              ? `${manager} decides what is wanted for this artist, and Autotaggerr mirrors it. Detaching takes that over and keeps what ${manager} already decided.`
+              ? artist.managed_by === "mixed"
+                ? "Lidarr decides what is wanted in its own library, and Autotaggerr mirrors it; the other libraries are already yours. Detaching takes Lidarr's library over too, and keeps what Lidarr already decided."
+                : "Lidarr decides what is wanted for this artist, and Autotaggerr mirrors it. Detaching takes that over and keeps what Lidarr already decided."
               : "Autotaggerr already decides what is wanted for this artist — no manager governs it, so there is nothing to detach."}
         </div>
         {artist.manager_detached ? (
@@ -1195,10 +1246,10 @@ function FollowSettings({
       </div>
       <div className="dim" style={{ fontSize: 11, marginBottom: 10 }}>
         {frozen
-          ? `${manager} decides what is wanted for this artist; Autotaggerr mirrors it. These settings are kept but do not apply.`
-          : artist.monitored
-            ? `Following wants ${describeFollow(shape)}, as they are released.`
-            : "Not following. These are what a follow would want."}
+          ? `${editBlockedReason(artist) ?? `${manager} decides what is wanted for this artist; Autotaggerr mirrors it.`} These settings are kept but do not apply.`
+          : artist.following
+            ? `Following wants ${describeFollow(shape)}, as they are released${editLibraryName(artist) ? `, into ${editLibraryName(artist)}` : ""}.`
+            : `Not following${editLibraryName(artist) ? ` in ${editLibraryName(artist)}` : ""}. These are what a follow would want.`}
       </div>
       <FollowFields value={shape} onChange={onChange} disabled={busy || frozen} idPrefix="artist-follow" />
     </div>

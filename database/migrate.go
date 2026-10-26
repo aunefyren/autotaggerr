@@ -25,6 +25,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"scope_lidarr_cache", scopeLidarrCache},
 		{"hash_user_api_keys", hashUserAPIKeys},
 		{"seed_authority_owned", seedAuthorityOwned},
+		{"unscoped_library_columns", unscopedLibraryColumns},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -184,4 +185,18 @@ func hashUserAPIKeys(db *gorm.DB) error {
 		logger.Log.Infof("moved %d API key(s) into api_keys, stored hashed", len(users))
 	}
 	return nil
+}
+
+// unscopedLibraryColumns writes uuid.Nil into the library columns added to wants and
+// follow settings, on the rows that predate them. AutoMigrate adds the columns as
+// NULL, which reads back as uuid.Nil in Go but matches nothing in a `library_id = ?`
+// filter, so a want from before libraries could not be found by the queries that
+// look for "not tied to a library". Nil is what every such row means.
+func unscopedLibraryColumns(db *gorm.DB) error {
+	if err := db.Model(&models.CollectionDesire{}).Where("library_id IS NULL").
+		UpdateColumn("library_id", uuid.Nil).Error; err != nil {
+		return err
+	}
+	return db.Model(&models.CollectionArtist{}).Where("follow_library_id IS NULL").
+		UpdateColumn("follow_library_id", uuid.Nil).Error
 }

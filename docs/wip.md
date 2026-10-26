@@ -157,18 +157,28 @@ still open:
   pruning folders left empty. It must refuse under a Lidarr manager, which tracks its files by
   path. A move also needs a Plex refresh of both the old and new album.
 - **Several libraries — what is left** ([collection.md](collection.md#several-libraries)). Copies
-  counted as tracks, the catalog comparison, the library on every collection surface, the `mixed`
-  label, edition naming tokens, Clean/The tokens and the import's `other_edition` guard have shipped.
+  counted as tracks, the catalog comparison, the library on every collection surface, edition naming
+  tokens, Clean/The tokens, the import's `other_edition` guard and authority per library (wants,
+  editions and following for one library, library tabs on the artist and album pages) have shipped.
   Still open:
   - *Global settings across managers.* With several managers, do the global settings (MusicBrainz
     migrations among them) apply correctly per library? Not yet checked.
   - *The collection list does not recount per library.* Its library filter narrows which artists are
-    listed; the owned/missing/mismatch columns stay all-library. The artist page does narrow its
-    chips. Recounting the list needs per-library release-group summaries, which the copy table can
-    give, but nothing has asked for it yet.
+    listed; the owned/missing/mismatch columns stay all-library. The artist page reads one library
+    on its tabs. Recounting the list needs `LibraryHoldings` per artist, which nothing has asked for.
   - *`other_edition` only sees indexed files.* A folder of files never processed is not caught by
     the import. A directory read of the target album folder would close it, at the cost of not
     knowing what edition those files are.
+  - *Attaching a file ignores detach.* `libraryIdentityEditable` decides by the library's manager
+    alone, so a detached artist's files in a Lidarr library still refuse a hand attach, while their
+    wants are editable there. `LibraryAuthority` already has the rule; the attach gate would need the
+    file's artist to apply it.
+  - *The MCP read tools see every library at once.* `get_artist` / `get_album` do not take a library,
+    so an assistant sees the union of Lidarr's and a native library's wants; `want_album` and
+    `follow_artist` do take one.
+  - *Following is one library at a time.* `FollowLibraryID` names a single native library (or all,
+    for an artist no manager governs). Following the same artist into two native libraries would need
+    the follow settings per library.
 - *I can add artists on a collection where Lidarr is the only manager.* Or, at least, the button is
   there. Does that make sense?
 - **Multi user support?** Any need?

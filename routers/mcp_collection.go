@@ -272,7 +272,7 @@ func mcpArtistFilter(filter string) (func(artistSummary) bool, error) {
 }
 
 func (a *API) mcpGetArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpGetArtistInput) (*mcp.CallToolResult, mcpArtistDetail, error) {
-	detail, err := a.artistDetail(strings.TrimSpace(in.MBID))
+	detail, err := a.artistDetail(strings.TrimSpace(in.MBID), nil)
 	if err != nil {
 		return nil, mcpArtistDetail{}, mcpArtistNotFound(in.MBID)
 	}
@@ -364,7 +364,7 @@ func (a *API) missingAlbums(onlyArtist string, includeIncomplete bool) ([]mcpMis
 }
 
 func (a *API) mcpGetAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpGetAlbumInput) (*mcp.CallToolResult, mcpAlbumDetail, error) {
-	detail, err := a.releaseGroupDetailData(strings.TrimSpace(in.ArtistMBID), strings.TrimSpace(in.AlbumMBID))
+	detail, err := a.releaseGroupDetailData(strings.TrimSpace(in.ArtistMBID), strings.TrimSpace(in.AlbumMBID), nil)
 	if err != nil {
 		return nil, mcpAlbumDetail{}, mcpArtistNotFound(in.ArtistMBID)
 	}

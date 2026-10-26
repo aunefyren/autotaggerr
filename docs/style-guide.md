@@ -229,8 +229,20 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   holds less than the whole, a mono count follows in `--warning-text` (`Music Sandbox 9/15`), so a
   partial copy beside a complete one is not read as two complete ones. **Only shown when more than
   one library is configured** — on a single-library install every row would carry the same word.
-  The same rule governs the library `<select>` in a table toolbar, which follows the toolbar's
-  "a select for a list you pick one from" rule and offers only libraries something on the page is in.
+  The same rule governs the library `<select>` in the collection list's toolbar, which follows the
+  toolbar's "a select for a list you pick one from" rule and offers only libraries some artist is in.
+- **Library view** (`.libview`, `LibraryTabs` in `Libraries.tsx`) — which library an artist or album
+  page is read in, as **Tabs** directly under the entity header: *All libraries*, then each library
+  the artist can be read in. Tabs rather than the toolbar select, because this is not a row filter:
+  authority is per library, so the choice changes what is wanted, what is owned, the header's pill
+  and whether the controls are live — the whole page below the header, which is what tabs mean. Each
+  tab names its library's authority after the name — the managed-by pill's **dot and word only**
+  (`.tab-auth`, `--text-dim`, no fill), so the library name stays the loudest thing in the tab and the
+  colour still matches the pill it stands for — and `empty` for a native library holding nothing of
+  the artist yet. Kept in the URL as `library` and carried between the artist and album pages.
+  Rendered only with more than one library configured and more than one to choose. Where the
+  overview cannot edit (an artist Lidarr governs: its rows mix two authorities), the header's frozen
+  pill says **Choose a library** rather than naming a manager that does not govern every row.
 - **Card / panel** — `--surface-1`, `1px --border`, `--radius-lg`, `--space-6` padding. Optional
   header row with title (`--text-lg`, 600) + actions.
 - **Sidebar nav** — `--bg`, item height 34px, icon + label. Active = `--accent-subtle` fill,

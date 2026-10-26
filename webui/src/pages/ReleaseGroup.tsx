@@ -19,7 +19,14 @@ import { useToast } from "../toast";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
 import { Browse, FilterChip, matches, sortRows, useBrowse } from "../components/browse";
-import { LibraryTags, useLibraries } from "../components/Libraries";
+import {
+  LibraryTabs,
+  LibraryTags,
+  editBlockedReason,
+  editLibraryName,
+  editLibraryParam,
+  useLibraries,
+} from "../components/Libraries";
 
 interface Detail {
   artist: CollectionArtist;
@@ -47,16 +54,20 @@ interface Detail {
 export default function ReleaseGroup() {
   const { mbid = "", rgid = "" } = useParams();
   const toast = useToast();
+  const browse = useBrowse("date", "asc");
+  const libraries = useLibraries();
+  // The library the album is read in — the same choice as on the artist page, and
+  // carried between them, because it decides what is wanted and owned here too.
+  const viewLibrary = browse.flag("library");
+  const inLibrary = viewLibrary ? `?library=${encodeURIComponent(viewLibrary)}` : "";
   const { data, err, loading, reload } = useFetch<Detail>(
-    () => api.get(`/artists/${mbid}/release-groups/${rgid}`),
-    [mbid, rgid]
+    () => api.get(`/artists/${mbid}/release-groups/${rgid}${inLibrary}`),
+    [mbid, rgid, inLibrary]
   );
 
   const [busy, setBusy] = useState(false);
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
   const [sameAsk, setSameAsk] = useState(false);
-  const browse = useBrowse("date", "asc");
-  const libraries = useLibraries();
 
   // Re-correlate queues on the shared job runner, so the global status is what says
   // whether it can be started — the same poll the artist page runs, for the same
@@ -107,8 +118,14 @@ export default function ReleaseGroup() {
   // was the page contradicting itself.
   const anyEditionOn = !!anyDesire || (derivedWant && editionDesires.length === 0);
 
+  // Lidarr governs some of this artist's files (re-correlate and "Same album as…"
+  // act on those); lidarrView is whether it decides what this view shows as wanted.
   const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
+  const viewAuthority = artist?.libraries?.find((l) => l.library_id === artist.view_library_id)?.authority;
+  const lidarrView = viewAuthority ? viewAuthority === "lidarr" : isLidarr;
   const managerLabel = isLidarr ? "Lidarr" : "the manager";
+  const target = editLibraryParam(artist);
+  const where = editLibraryName(artist);
   const derivedReason =
     rg?.wanted_source === "manager"
       ? `${managerLabel} monitors this album${editionDesires.length > 0 ? " on this edition" : ""}.`
@@ -116,7 +133,7 @@ export default function ReleaseGroup() {
   // Why a control is frozen, in one sentence, wherever one is frozen. Locked outranks
   // derived: under a manager the reason is the same for every control on the page.
   const frozenReason = locked
-    ? `${managerLabel} decides what is wanted for this artist and which edition it is. Change it in ${managerLabel}.`
+    ? editBlockedReason(artist) ?? `${managerLabel} decides what is wanted for this artist and which edition it is. Change it in ${managerLabel}.`
     : derivedReason;
 
   // Which edition's tracklist is on screen. Kept in the URL so coming back from
@@ -148,6 +165,7 @@ export default function ReleaseGroup() {
         primary_type: rg.primary_type,
         secondary_types: rg.secondary_types,
         first_release_date: rg.first_release_date,
+        ...target,
       });
       reload();
     } catch (e) {
@@ -176,7 +194,7 @@ export default function ReleaseGroup() {
   const drop = async (releaseMbid: string) => {
     setBusy(true);
     try {
-      const q = new URLSearchParams({ release_group_mb_id: rgid, release_mb_id: releaseMbid });
+      const q = new URLSearchParams({ release_group_mb_id: rgid, release_mb_id: releaseMbid, ...target });
       await api.del(`/artists/${mbid}/desires?${q.toString()}`);
       reload();
     } catch (e) {
@@ -190,7 +208,7 @@ export default function ReleaseGroup() {
     setBusy(true);
     try {
       for (const d of desires) {
-        const q = new URLSearchParams({ release_group_mb_id: rgid, release_mb_id: d.release_mb_id });
+        const q = new URLSearchParams({ release_group_mb_id: rgid, release_mb_id: d.release_mb_id, ...target });
         await api.del(`/artists/${mbid}/desires?${q.toString()}`);
       }
       reload();
@@ -208,7 +226,7 @@ export default function ReleaseGroup() {
   return (
     <div className="stack">
       <div>
-        <Link to={`/collection/${mbid}`} className="dim mono" style={{ fontSize: 11 }}>
+        <Link to={`/collection/${mbid}${inLibrary}`} className="dim mono" style={{ fontSize: 11 }}>
           ← {artist?.name ?? "Artist"}
         </Link>
       </div>
@@ -267,9 +285,11 @@ export default function ReleaseGroup() {
               the artist, otherwise the follow. Both at once would be two labels for
               one fact, and under a manager the follow is not the reason anyway. */}
           {locked ? (
-            <Pill kind="off">Managed by {managerLabel}</Pill>
+            <Pill kind="off">
+              {artist?.edit_blocked === "choose_library" ? "Choose a library" : lidarrView ? "Managed by Lidarr" : `Managed by ${managerLabel}`}
+            </Pill>
           ) : (
-            derivedWant && <Pill kind="off">auto</Pill>
+            derivedWant && <Pill kind="off">{rg?.wanted_source === "manager" ? "Lidarr" : "auto"}</Pill>
           )}
           {/* Frozen for a derived want, exactly as on the artist page: this control
               cannot switch off a want whose reason lives elsewhere. Narrowing it
@@ -286,7 +306,7 @@ export default function ReleaseGroup() {
                   ? `${derivedReason} Pin it, or narrow it below, to make it yours.`
                   : isWanted
                     ? "Wanted. Click to remove."
-                    : "Not wanted. Click to want any edition, whole album."
+                    : `Not wanted. Click to want any edition, whole album${where ? `, in ${where}` : ""}.`
             }
             onClick={() => (desires.length > 0 ? dropAll() : save("", []))}
           >
@@ -338,6 +358,12 @@ export default function ReleaseGroup() {
           </button>
         </div>
       </div>
+
+      <LibraryTabs
+        libraries={libraries.multi ? artist?.libraries ?? [] : []}
+        active={viewLibrary}
+        onChoose={(id) => browse.setFlag("library", id)}
+      />
 
       {sameAsk && rg && (
         <SameAlbumDialog

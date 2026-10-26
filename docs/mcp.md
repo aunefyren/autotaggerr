@@ -94,8 +94,8 @@ pages — and lists each album once, under the first artist that wants it.
 | `tag_files` | queue rewriting tags from stored identities | yes | no |
 | `cancel_job` | ask the running job to stop between files | no | no |
 | `add_artist` | add an artist by MBID (name looked up when omitted); idempotent | no | when unnamed |
-| `follow_artist` | follow on/off, types, secondary types, year cutoff — then re-sync the discography | no | yes |
-| `want_album` / `unwant_album` | an explicit want, of an album, one edition, or some songs; and removing one | no | for an album the collection has not seen |
+| `follow_artist` | follow on/off, types, secondary types, year cutoff — then re-sync the discography; `library` names the native library to follow into | no | yes |
+| `want_album` / `unwant_album` | an explicit want, of an album, one edition, or some songs; and removing one. `library` (name or ID) names the native library the want is for | no | for an album the collection has not seen |
 | `attach_file` | pin a file to a release and track, validated against the release, and write its tags | yes | yes |
 | `release_pin` / `confirm_pin` | hand a pinned file back to automatic identification; keep a held pin for the new audio | confirm writes | no |
 | `approve_migration` / `dismiss_migration` | apply, or deliberately not apply, a detected identity change | no | no |
@@ -115,8 +115,12 @@ discards — anything that writes tags, a pin released, a want removed, a migrat
 for what only adds or re-derives. Clients use these to decide what to confirm with the user; since
 the server is stateless (below) it cannot ask itself, and does not need to.
 
-**Lidarr's decisions stay Lidarr's.** `want_album` and `attach_file` are refused for a Lidarr-managed
-artist or library with the same message the UI gets; `unwant_album` is not gated, like its REST
+**Lidarr's decisions stay Lidarr's.** `want_album` and `attach_file` are refused for a Lidarr
+library with the same message the UI gets. Authority is per library
+([collection.md](collection.md#authority-is-per-library)), so a want for an artist Lidarr governs
+lands in the one native library there is when no `library` is named, and is refused only when there
+is none — or more than one, when the assistant has to name it. The read tools report every library
+at once; they do not take a library; `unwant_album` is not gated, like its REST
 route, because a stale want needs a way out.
 
 ### Shapes
@@ -203,7 +207,7 @@ Instead, each handler a tool needs was split: **handler = parse params → metho
 parse args → the same method → project.** Reads became query methods returning `(T, error)`; actions
 became commands in `routers/commands.go` that return an `*apiError` carrying the HTTP status, so the
 handler answers exactly as before (`respondErr`) and the tool passes the same message on. The guards
-live in the commands — `filesIdentityEditable` and `artistIdentityEditable` (the Lidarr gates), the
+live in the commands — `filesIdentityEditable` and `wantTarget` (the Lidarr gates), the
 nothing-to-tag refusals, the not-found checks — so they cannot be skipped by asking through the other
 door. The existing REST tests passed unchanged across the extraction.
 

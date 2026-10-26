@@ -189,8 +189,6 @@ func TestClosedDatabaseIsAnError(t *testing.T) {
 	record("AllMBIDs", err)
 	_, err = RepairGhostReleaseGroups(db)
 	record("RepairGhostReleaseGroups", err)
-	_, err = ArtistIdentityEditable(db, "a")
-	record("ArtistIdentityEditable", err)
 	_, err = SyncLidarr(db)
 	record("SyncLidarr", err)
 	_, err = SyncArtist(db, fakeMeta{}, "a")

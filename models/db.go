@@ -1271,6 +1271,13 @@ type CollectionArtist struct {
 	// releases from here on" case that following a new artist usually means; setting it
 	// to 2010 is "I have the old stuff already", which the same field expresses for free.
 	FollowFromYear int `json:"follow_from_year"`
+	// FollowLibraryID is the native library following wants into. uuid.Nil means every
+	// library Autotaggerr decides for — what following has always meant for an artist
+	// no manager governs. An artist Lidarr governs in one library can still be followed
+	// natively in another, and then this names that library: following has to say
+	// where, or Lidarr's library would read as missing everything the follow wants.
+	// See collection.FollowAppliesIn.
+	FollowLibraryID uuid.UUID `gorm:"type:uuid" json:"follow_library_id"`
 
 	LastSyncedAt *time.Time `json:"last_synced_at"`
 
@@ -1337,6 +1344,13 @@ type CollectionDesire struct {
 	// RecordingMBIDs is the desired-song set; empty means the whole release-group
 	// or release. Stored as JSON so it needs no join table.
 	RecordingMBIDs []string `gorm:"serializer:json" json:"recording_mb_ids"`
+	// LibraryID is the library this want is for, and only files there fulfil it.
+	// uuid.Nil is a want not tied to one library, which belongs to the artist's
+	// default authority: Lidarr's when Lidarr governs any of the artist's files,
+	// otherwise every library Autotaggerr decides for. Every want predating libraries
+	// is that kind, and a manager-derived want always is — Lidarr's selection is one
+	// answer for all its libraries. See collection.DesireInScope.
+	LibraryID uuid.UUID `gorm:"type:uuid;index" json:"library_id"`
 	// Source is who authored this want, and therefore who may rewrite it. Only
 	// DesireSourceManual is the user's; the other two are maintained by a
 	// reconciliation pass that may re-point or prune its *own* rows and must never

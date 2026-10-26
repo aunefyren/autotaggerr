@@ -628,14 +628,75 @@ Rows written before the columns existed are seeded by the one-time `seed_authori
 with the all-library counts, which is what the comparison read before and is right for every
 install that had one library; the next Rebuild writes them properly.
 
-### One authority per artist, still
+### Authority is per library
 
-`managedByLabel` still calls an artist with files in both kinds of library `mixed`, and `mixed` still
-counts as Lidarr: wants are intent, not location, so a copy in a native library does not split who
-decides what is wanted. Detaching remains the way to take an artist native. What changed is how it
-reads — the pill says **Lidarr**, as for any Lidarr artist, and the libraries are named separately.
-"Lidarr + native" read as two authorities sharing one artist, which is the one thing the model
-rules out.
+Who decides what is wanted is a property of a **library**, not of an artist. An artist with files in
+Lidarr's *Music* and the native *Music Sandbox* has two authorities: Lidarr decides what is wanted and
+which edition in *Music*, and Autotaggerr decides in *Music Sandbox*. An earlier version kept one
+authority per artist and counted `mixed` as Lidarr, which locked the native library's copy behind
+Lidarr — the page said "Managed by Lidarr" about files Lidarr has never seen, and wanting or choosing
+an edition for them meant detaching the whole artist.
+
+The rules live in `collection/authority.go`:
+
+- **`LibraryAuthority(artist, managerType)`** — a Lidarr library is Lidarr's unless the artist is
+  detached (detach still takes *every* library native); a library with no manager is native; a
+  dangling manager is unknown. `GovernedByLidarr(artist)` is "Lidarr decides for any of the artist's
+  files" (`lidarr` or `mixed`), and `managed_by` stays the artist-wide summary the mirror reads.
+- **A want is for a library.** `CollectionDesire.LibraryID` names it, and only that library's files
+  fulfil it: `reconcileAutoDesires` narrows an "any edition" want against that library's copies, so a
+  want in the sandbox is not satisfied by Lidarr already holding the album. `uuid.Nil` is a want tied
+  to no library, and it belongs to the artist's default authority — Lidarr's when Lidarr governs the
+  artist, every native library's otherwise. Every want from before libraries is that kind, which is
+  why no migration rewrites them (`unscoped_library_columns` only turns the NULLs AutoMigrate leaves
+  into `uuid.Nil`), and manager-derived wants always are: Lidarr's selection is one answer for all its
+  libraries. `DesireInScope` is the single definition of which wants a library's view shows.
+- **Two libraries' wants never touch.** `SetDesire` weighs a new want only against the album's wants
+  in the same scope (`sameWantScope`): the any/specific contradiction and the "re-asking updates the
+  tracks" identity are per library, so wanting an album in the sandbox neither clears Lidarr's edition
+  nor is cleared by it. A want tied to no library that someone edits while looking at one native
+  library becomes that library's. `ClearDesireIn` removes only what one library shows;
+  `reconcileManagerDesires` vetoes on hand-authored wants tied to no library only, so a native
+  library's want does not switch Lidarr's selection off.
+- **Following says where.** `CollectionArtist.FollowLibraryID` is the native library following wants
+  into; `uuid.Nil` is every native library, which is what following meant for an artist no manager
+  governs. `FollowGoverns` is true for such an artist, and for one Lidarr governs only once following
+  has been pointed at a native library — so a stale `Monitored` flag on a Lidarr artist still governs
+  nothing. `FollowAppliesIn(artist, library)` is the per-library answer. Switching following on writes
+  the library it was switched on in; switching it off clears it, and detaching clears it too.
+- **Where an unnamed edit goes.** `WantTarget` resolves the library a want or follow is written for:
+  a named library must be native for the artist (else `ErrLibraryManaged`, a 409); unnamed, an artist
+  no manager governs gets `uuid.Nil`, and one Lidarr governs gets the single native library there is,
+  or `ErrChooseLibrary` / `ErrNoNativeLibrary`. That default exists for the API and MCP, which have no
+  page to choose on. `LibraryIndex` reads the libraries once so the collection list answers this for
+  every artist without a query each.
+
+The rebuild's catalog comparison is unchanged by this: it was already [per authority](#the-catalog-is-compared-with-its-own-libraries).
+
+### Reading an artist in one library
+
+`GET /artists/:mbid`, `/artists/:mbid/discography` and `/artists/:mbid/release-groups/:rgid` take
+`?library=`. The view (`viewScope` in `routers/collection_scope.go`) is:
+
+- **One library.** The wants are those `DesireInScope` gives; ownership is that library's
+  (`LibraryHoldings`: its best edition's tracks and total, and how many editions it holds); the
+  follow counts where `FollowAppliesIn`, Lidarr's monitoring only in Lidarr's library; the catalog
+  discrepancy only where Lidarr decides. Every album of the catalogue is still listed — what a
+  library lacks is half of what the view is for — and the edition list marks as owned only what that
+  library holds, while each edition's library tags still say where else it lives.
+- **The overview** (no library) is every library at once, as before. For an artist no manager
+  governs it edits as it always did. For one Lidarr governs it is **read-only** (`edit_blocked:
+  "choose_library"`): its rows mix Lidarr's wants with a native library's, so an edit could not mean
+  what the row shows — untick Lidarr's edition and only the native want would go. Choosing the
+  library is the edit.
+
+The artist view carries what the UI needs to say so: `identity_editable` and `follow_governs` for
+*this view*, `following` (stored, governing, and pointed here), `view_library_id`,
+`edit_library_id` (where an edit goes; null for a want tied to no library), `edit_blocked`, and
+`libraries` — the libraries the artist can be read in (`ArtistLibraries`: those holding their files,
+plus every enabled native library, since a native library can be wanted into before it holds
+anything). `POST /artists/:mbid/desires` and `POST /artists/:mbid/follow` take `library_id`;
+`DELETE /artists/:mbid/desires` takes it as a query parameter.
 
 ### In the UI
 
@@ -644,13 +705,18 @@ every row would carry the same word. Then:
 
 - `/collection` gains a **Libraries** column and a library select in the table toolbar (`library` in
   the URL, options only for libraries some artist is in). The artist counts are not re-derived per
-  library — the filter narrows which artists are listed, not what their columns say.
-- The artist page names the libraries in the header meta line ("In Music, Music Sandbox"), tags each
-  album row with its libraries — with a count when a library holds less than the album's best
-  edition (`Music Sandbox 9/15`) — and takes the same library select, which narrows the rows **and**
-  the chip counts, so "Partial 2" under a library means two partial albums in it.
-- The album page names the libraries in its meta line, and each edition row carries its own library
-  tags and, when there are more files than tracks, the file count.
+  library — the filter narrows which artists are listed, not what their columns say. An artist with
+  files in both kinds of library carries two pills, **Lidarr** and **Native**.
+- The artist page and the album page open on **library tabs** (`LibraryTabs`, the style guide's
+  *Library view*): *All libraries*, then each library the artist can be read in with its authority
+  beside its name. The choice is `library` in the URL and carries from the artist page to the album
+  page and back. In a library the pill names that library's authority, the rows and chips are that
+  library's, and the controls are live or frozen by its authority; in the overview of a split artist
+  the meta line says who decides where ("Lidarr in Music · Native in Music Sandbox") and a **Choose a
+  library** pill says why nothing is editable.
+- Each album row and edition row is tagged with the libraries holding it — with a count when a
+  library holds less than the album's best edition (`Music Sandbox 9/15`) — and an edition row shows
+  the file count when there are more files than tracks.
 
 The tag is the style guide's *Library tag* (`LibraryTags`, `components/Libraries.tsx`).
 
@@ -746,7 +812,7 @@ what is stored rather than re-deriving anything. Three things change, and delibe
 - **The manager's wants become `manual`.** They *must* — those passes prune rows they own, and a
   `manager` row on an artist no manager governs is exactly what the next `reconcileManagerDesires`
   deletes as an orphan. Re-labelling is what keeps the decisions.
-- **Following is switched off.** The non-obvious one. Following is *stored* under a manager but does
+- **Following is switched off**, and the library it was pointed at cleared. The non-obvious one. Following is *stored* under a manager but does
   not govern (see `FollowGoverns`), so a Lidarr artist can be carrying a stale `Monitored` flag set
   before it was ever managed. Detaching makes following govern again, so leaving the flag alone
   would turn a detach into "and also auto-want the entire back catalogue" — from a control the page
@@ -808,7 +874,8 @@ artist's settings changes every view at once. Settings live on `CollectionArtist
 because including live albums, compilations and remixes buries the missing list under reissues.
 
 `collection.FollowGoverns` decides whether the native follow settings apply at all — they do not
-when a manager owns the artist, since Lidarr is the authority there. An explicit desire always
+for an artist Lidarr governs until following is pointed at a native library, and then only there
+(see [authority is per library](#authority-is-per-library)). An explicit desire always
 overrides the type filter: the UI must never refuse to keep a single or live album you just asked
 for.
 
@@ -938,9 +1005,10 @@ artist is natively managed.
 
 When an artist is managed by Lidarr, **Lidarr is the sole authority over *identity*** — which albums
 are wanted, which release/edition is selected, and which track a file maps to. Autotaggerr's job
-shrinks to *tagging* files to match Lidarr's answer and *refreshing Plex*. `mixed` counts as Lidarr:
-if Lidarr governs an artist at all, identity is Lidarr's, so the gate is one bit per artist, not a
-per-release negotiation. *Authoring* a desire is therefore a **native-manager** act — for a Lidarr
+shrinks to *tagging* files to match Lidarr's answer and *refreshing Plex*. That authority is
+Lidarr's **in its own libraries**: the same artist's files in a native library are Autotaggerr's to
+want and choose editions for (see [authority is per library](#authority-is-per-library)), so the gate
+is one bit per artist *and library*, never a per-release negotiation. *Authoring* a desire is therefore a **native-manager** act — for a Lidarr
 artist the same facts arrive via `SyncLidarr` (`catalog_monitored` = the want, the monitored release
 = the chosen edition), and running both authorities at once is what produces contradictions ("20/32
 on an old release" while the album is green in Lidarr).
@@ -952,12 +1020,13 @@ the user, so there is still exactly one authority per artist. The table is the s
 
 The boundary is enforced by a single predicate and four mechanisms:
 
-- **One gate predicate.** `collection.IdentityEditable(artist)` / `ArtistIdentityEditable(db, mbID)`
-  (`managedBy != lidarr && != mixed`; unknown artist = editable) — the identity-side sibling of
-  `FollowGoverns`. Enforced in the API (`requireIdentityEditable` in `routers/attach.go` gates
-  attach/bulk-attach on the file's *library* manager; `requireArtistIdentityEditable` gates
-  `setDesire`), returning **409**, and surfaced as the `identity_editable` field on the artist,
-  release-group and library-item views so the UI hides the control before the reject is ever hit.
+- **One gate per library.** Attach and bulk attach are gated on the file's *library* manager
+  (`requireIdentityEditable` in `routers/attach.go`); a want or a follow on the library it is for
+  (`WantTarget`, called by `addDesire` and `updateFollowSettings`). Both return **409**, and both are
+  surfaced as `identity_editable` on the library-item, artist and release-group views — for the
+  artist and its albums, *in the view being read* — so the UI freezes the control before the reject
+  is ever hit. `IdentityEditable(artist)` remains the artist-wide answer for a want tied to no
+  library.
   `clearDesire` is deliberately left ungated — clearing a stale want is a pure removal, like detach.
 - **No tag fallback under Lidarr.** `ResolveCorrelation` (`modules/files.go`) normally falls back to a
   file's embedded MB tags when Lidarr returns nothing; under a Lidarr manager *with a client* that
@@ -1218,6 +1287,15 @@ that a sandbox-only album is neither on disk for Lidarr nor unmapped, and that d
 library the authority's again; `TestRebuildScopedKeepsOtherCopies` that an artist-scoped pass leaves
 other artists' copies alone. `routers.TestCollectionSaysWhichLibraryHoldsAnAlbum` covers the
 `libraries` and `library_ids` fields through the handlers.
+
+Authority per library: `collection/authority_test.go` pins `WantTarget` (the one native library for a
+Lidarr artist, a refusal for Lidarr's library, `uuid.Nil` for a native artist, a choice demanded with
+two native libraries, detach taking Lidarr's library native), `DesireInScope` case by case, where a
+follow applies, that `SetDesire` and `ClearDesireIn` leave Lidarr's selection alone, that a native
+want narrows only on its own library's files (`TestRebuildNarrowsAWantByItsOwnLibrary`), and that a
+native want does not veto Lidarr's. `routers.TestArtistPageReadsOneLibrary` reads one artist in
+Lidarr's library (frozen, Lidarr's want), the native one (editable, its own ownership) and the
+overview (read-only), then wants and follows through the API.
 
 ## Related
 

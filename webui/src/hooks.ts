@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 /**
  * A value that settles rather than tracking every change.
@@ -25,16 +25,26 @@ export function useFetch<T>(fn: () => Promise<T>, deps: unknown[] = []) {
 
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const loader = useCallback(fn, deps);
+  // Which call is the latest. Only its answer is applied: when the deps change while
+  // a request is in flight (a page switching library), the older response can land
+  // last, and applying it would show the previous view under the new one's controls.
+  const latest = useRef(0);
 
   const reload = useCallback(() => {
+    const call = ++latest.current;
     setLoading(true);
     loader()
       .then((d) => {
+        if (call !== latest.current) return;
         setData(d);
         setErr(null);
       })
-      .catch((e: Error) => setErr(e.message))
-      .finally(() => setLoading(false));
+      .catch((e: Error) => {
+        if (call === latest.current) setErr(e.message);
+      })
+      .finally(() => {
+        if (call === latest.current) setLoading(false);
+      });
   }, [loader]);
 
   useEffect(() => {

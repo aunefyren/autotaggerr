@@ -7,6 +7,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -93,6 +94,10 @@ type DesireInput struct {
 	// survives without a release having been chosen.
 	RecordingMBIDs []string
 
+	// LibraryID is the library the want is for, resolved by WantTarget; uuid.Nil
+	// is a want tied to no library (see models.CollectionDesire.LibraryID).
+	LibraryID uuid.UUID
+
 	Title            string
 	PrimaryType      string
 	SecondaryTypes   string
@@ -124,26 +129,45 @@ func SetDesire(db *gorm.DB, in DesireInput) (models.CollectionDesire, error) {
 		catalog: &catalogState{},
 	})
 
-	// Within one release-group a desire is *either* "any release will do" *or* a set
-	// of specific editions — never both, because holding both is a contradiction the
-	// UI cannot render and the user cannot have meant. Setting one clears the other.
-	if in.ReleaseMBID == "" {
-		if err := db.Where("release_group_mb_id = ? AND release_mb_id <> ''", in.ReleaseGroupMBID).
-			Delete(&models.CollectionDesire{}).Error; err != nil {
-			return desire, err
-		}
-	} else {
-		if err := db.Where("release_group_mb_id = ? AND release_mb_id = ''", in.ReleaseGroupMBID).
-			Delete(&models.CollectionDesire{}).Error; err != nil {
-			return desire, err
+	// The wants this one is weighed against: the album's wants for the same library.
+	// A want for the native library and Lidarr's selection for its own are two
+	// answers, and neither may clear or update the other.
+	var artist models.CollectionArtist
+	if err := db.Where("mb_id = ?", in.ArtistMBID).Limit(1).Find(&artist).Error; err != nil {
+		return desire, err
+	}
+	var rows []models.CollectionDesire
+	if err := db.Where("release_group_mb_id = ?", in.ReleaseGroupMBID).Order("created_at").Find(&rows).Error; err != nil {
+		return desire, err
+	}
+	same := make([]models.CollectionDesire, 0, len(rows))
+	for _, d := range rows {
+		if sameWantScope(d, artist, in.LibraryID) {
+			same = append(same, d)
 		}
 	}
 
-	// (release-group, release) identifies a desire: asking twice for the same thing
-	// is the same want, not two. Re-asking updates the track selection.
-	err := db.Where("release_group_mb_id = ? AND release_mb_id = ?", in.ReleaseGroupMBID, in.ReleaseMBID).
-		First(&desire).Error
-	if err == nil {
+	// Within one release-group a desire is *either* "any release will do" *or* a set
+	// of specific editions — never both, because holding both is a contradiction the
+	// UI cannot render and the user cannot have meant. Setting one clears the other.
+	kept := same[:0]
+	for _, d := range same {
+		if (d.ReleaseMBID == "") != (in.ReleaseMBID == "") {
+			if err := db.Delete(&models.CollectionDesire{}, "id = ?", d.ID).Error; err != nil {
+				return desire, err
+			}
+			continue
+		}
+		kept = append(kept, d)
+	}
+
+	// (release-group, release, library) identifies a desire: asking twice for the
+	// same thing is the same want, not two. Re-asking updates the track selection.
+	for _, d := range kept {
+		if d.ReleaseMBID != in.ReleaseMBID {
+			continue
+		}
+		desire = d
 		// Save, not Update: the recordings column goes through GORM's json
 		// serializer, and a column-level Update writes the raw Go slice instead.
 		desire.RecordingMBIDs = in.RecordingMBIDs
@@ -151,6 +175,9 @@ func SetDesire(db *gorm.DB, in DesireInput) (models.CollectionDesire, error) {
 		// managing it as a derived row (they would otherwise re-point or prune the
 		// edition the user pinned).
 		desire.Source = models.DesireSourceManual
+		// Edited in a library, it is that library's from now on: a want tied to no
+		// library that someone narrows while looking at one library meant that one.
+		desire.LibraryID = in.LibraryID
 		if err := db.Save(&desire).Error; err != nil {
 			return desire, err
 		}
@@ -162,12 +189,24 @@ func SetDesire(db *gorm.DB, in DesireInput) (models.CollectionDesire, error) {
 		ReleaseGroupMBID: in.ReleaseGroupMBID,
 		ReleaseMBID:      in.ReleaseMBID,
 		RecordingMBIDs:   in.RecordingMBIDs,
+		LibraryID:        in.LibraryID,
 		Source:           models.DesireSourceManual,
 	}
 	if err := db.Create(&desire).Error; err != nil {
 		return desire, err
 	}
 	return desire, nil
+}
+
+// sameWantScope reports whether an existing want answers the same question as a new
+// one for the given library. For no library, that is the wants tied to no library.
+// For a native library it is the wants shown there: that library's own, and — on an
+// artist no manager governs — the ones tied to none, which every native library shows.
+func sameWantScope(d models.CollectionDesire, artist models.CollectionArtist, library uuid.UUID) bool {
+	if library == uuid.Nil {
+		return d.LibraryID == uuid.Nil
+	}
+	return DesireInScope(d, artist, library, AuthorityNative)
 }
 
 // BackfillDesireSources gives provenance to rows written before CollectionDesire had
@@ -205,12 +244,40 @@ func BackfillDesireSources(db *gorm.DB) error {
 	return nil
 }
 
-// ClearDesire removes a want. Nothing owned is touched: dropping a desire says "I no
-// longer want the parts I do not have", never "delete what I have".
+// ClearDesire removes a want, in every library. Nothing owned is touched: dropping a
+// desire says "I no longer want the parts I do not have", never "delete what I have".
 func ClearDesire(db *gorm.DB, releaseGroupMBID, releaseMBID string) error {
 	return db.Where("release_group_mb_id = ? AND release_mb_id = ?",
 		strings.TrimSpace(releaseGroupMBID), strings.TrimSpace(releaseMBID)).
 		Delete(&models.CollectionDesire{}).Error
+}
+
+// ClearDesireIn removes the wants one native library shows for an album edition —
+// that library's own, and the ones tied to no library when it shows those (see
+// sameWantScope). Another library's want for the same edition is left alone.
+func ClearDesireIn(db *gorm.DB, artistMBID, releaseGroupMBID, releaseMBID string, library uuid.UUID) error {
+	if library == uuid.Nil {
+		return ClearDesire(db, releaseGroupMBID, releaseMBID)
+	}
+	var artist models.CollectionArtist
+	if err := db.Where("mb_id = ?", strings.TrimSpace(artistMBID)).Limit(1).Find(&artist).Error; err != nil {
+		return err
+	}
+	var rows []models.CollectionDesire
+	if err := db.Where("release_group_mb_id = ? AND release_mb_id = ?",
+		strings.TrimSpace(releaseGroupMBID), strings.TrimSpace(releaseMBID)).Find(&rows).Error; err != nil {
+		return err
+	}
+	var ids []uuid.UUID
+	for _, d := range rows {
+		if sameWantScope(d, artist, library) {
+			ids = append(ids, d.ID)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	return db.Delete(&models.CollectionDesire{}, "id IN ?", ids).Error
 }
 
 // DesiresForArtist lists the explicit wants shown on an artist's page: those recorded
