@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import {
+  AlbumCredit,
   ArtistDetail,
   CollectionArtist,
   CollectionDesire,
@@ -33,6 +34,8 @@ interface Detail {
   release_group: CollectionReleaseGroup;
   editions: Edition[] | null;
   desires: CollectionDesire[];
+  /** Every credited artist the collection knows, in credit order. */
+  credits?: AlbumCredit[] | null;
 }
 
 /**
@@ -91,6 +94,11 @@ export default function ReleaseGroup() {
 
   const artist = data?.artist;
   const rg = data?.release_group;
+  // A collaboration is everyone's album: the page is reached through one artist and
+  // the back link returns there, but the others are named and linked, since Lidarr
+  // may hold the album under any of them.
+  const credits = data?.credits ?? [];
+  const shared = credits.length > 1;
   const editions = data?.editions ?? [];
   const desires = data?.desires ?? [];
 
@@ -242,13 +250,32 @@ export default function ReleaseGroup() {
         />
         <div className="entity-body">
           <div className="eyebrow">
-            {[rg?.primary_type, rg?.secondary_types, (rg?.first_release_date || "").slice(0, 4), artist?.name]
+            {[rg?.primary_type, rg?.secondary_types, (rg?.first_release_date || "").slice(0, 4), shared ? "" : artist?.name]
               .filter(Boolean)
               .join(" · ") || "Album"}
           </div>
           <div className="entity-title">
             <h1>{rg?.title ?? "Release group"}</h1>
           </div>
+          {shared && (
+            <div className="entity-meta">
+              <span>
+                By{" "}
+                {credits.map((c, i) => (
+                  <span key={c.mb_id}>
+                    {i > 0 && (i === credits.length - 1 ? " & " : ", ")}
+                    {c.mb_id === mbid ? (
+                      <span style={{ color: "var(--text)" }}>{c.name}</span>
+                    ) : (
+                      <Link to={`/collection/${c.mb_id}/${rgid}${inLibrary}`} title={`This album as ${c.name}'s`}>
+                        {c.name}
+                      </Link>
+                    )}
+                  </span>
+                ))}
+              </span>
+            </div>
+          )}
 
           {rg && rg.total_tracks > 0 && (
             <div className="entity-coverage">

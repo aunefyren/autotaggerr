@@ -1509,7 +1509,47 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 		"release_group": detail.ReleaseGroup,
 		"editions":      detail.Editions,
 		"desires":       detail.Desires,
+		"credits":       detail.Credits,
 	})
+}
+
+// creditView is one artist credited on an album, in credit order. The page is reached
+// through one artist, but a collaboration belongs to all of them — and the manager
+// may hold it under another, which is what makes the others worth showing.
+type creditView struct {
+	MBID string `json:"mb_id"`
+	Name string `json:"name"`
+}
+
+// albumCredits lists the artists credited on a release-group that the collection
+// knows, in credit order. An artist with no collection row has no page to link to,
+// and is left out rather than shown as a bare ID.
+func (a *API) albumCredits(rg models.CollectionReleaseGroup) []creditView {
+	credits, err := collection.ArtistsByReleaseGroup(a.DB, []string{rg.MBID})
+	if err != nil {
+		logger.Log.Warnf("failed to load the credits of %s: %s", rg.MBID, err.Error())
+		return nil
+	}
+	ids := collection.CreditedArtists(rg, credits)
+	if len(ids) == 0 {
+		return nil
+	}
+	var artists []models.CollectionArtist
+	if err := a.DB.Where("mb_id IN ?", ids).Find(&artists).Error; err != nil {
+		logger.Log.Warnf("failed to load the credited artists of %s: %s", rg.MBID, err.Error())
+		return nil
+	}
+	names := make(map[string]string, len(artists))
+	for _, ar := range artists {
+		names[ar.MBID] = ar.Name
+	}
+	out := make([]creditView, 0, len(ids))
+	for _, id := range ids {
+		if name, ok := names[id]; ok {
+			out = append(out, creditView{MBID: id, Name: name})
+		}
+	}
+	return out
 }
 
 // releaseGroupDetailData is what GET /artists/:mbid/release-groups/:rgid and the MCP
@@ -1519,6 +1559,7 @@ type releaseGroupDetailData struct {
 	ReleaseGroup releaseGroupView
 	Editions     []editionView
 	Desires      []models.CollectionDesire
+	Credits      []creditView
 }
 
 // releaseGroupDetailData loads one release-group under an artist. It may reach
@@ -1618,6 +1659,7 @@ func (a *API) releaseGroupDetailData(artistMBID, rgMBID string, library *uuid.UU
 		ReleaseGroup: view,
 		Editions:     annotateEditions(editions, owned, copies, scope.library),
 		Desires:      mine,
+		Credits:      a.albumCredits(rg),
 	}, nil
 }
 

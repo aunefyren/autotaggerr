@@ -142,3 +142,62 @@ func TestSyncDoesNotClearOnAPartialListing(t *testing.T) {
 		t.Errorf("an album the failed manager may hold was retired: %+v", rg)
 	}
 }
+
+// TestSyncOfOneArtistReachesTheirCollaborators: an album by X & Y that Lidarr holds
+// under X. Syncing Y used to ask Lidarr about Y alone, which does not list the album,
+// so its counts never moved — the same button worked on X's page and silently did
+// nothing on Y's.
+func TestSyncOfOneArtistReachesTheirCollaborators(t *testing.T) {
+	// Albums per Lidarr artist: X holds the collaboration, Y holds nothing.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasPrefix(r.URL.Path, "/api/v1/artist"):
+			_ = json.NewEncoder(w).Encode([]models.LidarrArtist{{ID: 1, ForeignArtistID: "art-x", Name: "X"}, {ID: 2, ForeignArtistID: "art-y", Name: "Y"}})
+		case strings.HasPrefix(r.URL.Path, "/api/v1/album"):
+			if r.URL.Query().Get("artistId") == "1" {
+				_ = json.NewEncoder(w).Encode([]models.LidarrAlbum{{ID: 10, ForeignAlbumID: "rg-shared", Title: "Together", AlbumType: "Album",
+					Statistics: models.LidarrAlbumStatistics{TrackFileCount: 16, TrackCount: 16}}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]models.LidarrAlbum{})
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	db := testDB(t)
+	if err := db.Create(&models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true, LidarrBaseURL: srv.URL, LidarrAPIKey: "k"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range []models.CollectionArtist{
+		{MBID: "art-x", Name: "X", ManagedBy: models.ManagedByLidarr},
+		{MBID: "art-y", Name: "Y", ManagedBy: models.ManagedByLidarr},
+		{MBID: "art-z", Name: "Unrelated", ManagedBy: models.ManagedByLidarr},
+	} {
+		if err := db.Create(&a).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&models.CollectionReleaseGroup{MBID: "rg-shared", ArtistMBID: "art-x", Title: "Together",
+		InCatalog: true, CatalogOwnedTracks: 1, CatalogTotalTracks: 16}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for i, id := range []string{"art-x", "art-y"} {
+		if err := db.Create(&models.CollectionReleaseGroupArtist{ReleaseGroupMBID: "rg-shared", ArtistMBID: id, Position: i}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	stats, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: "art-y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rg := catalogOf(t, db, "rg-shared"); rg.CatalogOwnedTracks != 16 {
+		t.Errorf("the shared album still reads %d/16 after syncing Y", rg.CatalogOwnedTracks)
+	}
+	if len(stats.CoCredited) != 1 || stats.CoCredited[0] != "art-x" {
+		t.Errorf("co-credited = %v, want [art-x] and nobody unrelated", stats.CoCredited)
+	}
+	if !strings.Contains(SyncSummaryLine(stats), "with 1 co-credited artist") {
+		t.Errorf("summary = %q", SyncSummaryLine(stats))
+	}
+}

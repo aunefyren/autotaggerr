@@ -1812,6 +1812,46 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 	return nil
 }
 
+// withCoCredited is a one-artist sync's real scope: the artist, and every artist
+// credited beside them on an album they share.
+//
+// Lidarr files a collaboration under one artist. For an album by X & Y held under X,
+// syncing Y asked Lidarr about Y, which does not list the album, so its counts stayed
+// stale — and dropping the cache dropped Y's track lists, not X's, so the files X holds
+// still could not be matched. The same button on X's page worked, and nothing on Y's
+// said why. Which of the credited artists Lidarr chose is not recorded anywhere, so all
+// of them are asked; the caller still narrows the set to the ones Lidarr governs.
+func withCoCredited(db *gorm.DB, artistMBID string) ([]string, error) {
+	groups, err := ReleaseGroupsForArtist(db, artistMBID)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(groups))
+	for _, g := range groups {
+		ids = append(ids, g.MBID)
+	}
+	credits, err := ArtistsByReleaseGroup(db, ids)
+	if err != nil {
+		return nil, err
+	}
+	scope := []string{artistMBID}
+	seen := map[string]bool{artistMBID: true}
+	for _, g := range groups {
+		for _, id := range CreditedArtists(g, credits) {
+			if !seen[id] {
+				seen[id] = true
+				scope = append(scope, id)
+			}
+		}
+		// The primary column is a claim of its own (see ReleaseGroupsForArtist).
+		if g.ArtistMBID != "" && !seen[g.ArtistMBID] {
+			seen[g.ArtistMBID] = true
+			scope = append(scope, g.ArtistMBID)
+		}
+	}
+	return scope, nil
+}
+
 // SyncOptions narrows and tunes a Lidarr mirror pass.
 type SyncOptions struct {
 	// ArtistMBID limits the pass to one artist. Empty syncs every Lidarr-managed
@@ -1885,6 +1925,12 @@ type SyncStats struct {
 	// going down mid-pass produced an Activity row identical to a healthy one, just
 	// with smaller numbers.
 	Failures []string `json:"failures,omitempty"`
+
+	// CoCredited is the artists a one-artist pass took in beside the one asked for:
+	// those credited with them on a shared album, which Lidarr may hold under either
+	// name (see withCoCredited). Reported so the Activity row explains a count of
+	// artists synced larger than the one button pressed.
+	CoCredited []string `json:"co_credited,omitempty"`
 
 	// FailedArtists is the other kind: one artist's albums could not be read. Those
 	// are about an entity, and the artist MBID is in hand at the point of the error, so
@@ -1982,6 +2028,9 @@ func SyncEventDetails(stats SyncStats) map[string]any {
 	if len(stats.Failures) > 0 {
 		details["failures"] = stats.Failures
 	}
+	if len(stats.CoCredited) > 0 {
+		details["co_credited"] = stats.CoCredited
+	}
 	return details
 }
 
@@ -1990,6 +2039,9 @@ func SyncEventDetails(stats SyncStats) map[string]any {
 // did rather than trailing "· 0 not in Lidarr · 0 failed".
 func SyncSummaryLine(stats SyncStats) string {
 	line := fmt.Sprintf("%d artists synced · %d albums", stats.ArtistsSynced, stats.Groups)
+	if n := len(stats.CoCredited); n > 0 {
+		line += fmt.Sprintf(" · with %d co-credited artist(s)", n)
+	}
 	if n := len(stats.Unknown); n > 0 {
 		line += fmt.Sprintf(" · %d not in Lidarr", n)
 	}
@@ -2059,12 +2111,22 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 
 	q := db.Where("managed_by IN ?", []string{models.ManagedByLidarr, models.ManagedByMixed})
 	if opts.ArtistMBID != "" {
-		q = q.Where("mb_id = ?", opts.ArtistMBID)
+		scope, err := withCoCredited(db, opts.ArtistMBID)
+		if err != nil {
+			return stats, err
+		}
+		q = q.Where("mb_id IN ?", scope)
 	}
 	var artists []models.CollectionArtist
 	if err := q.Find(&artists).Error; err != nil {
 		return stats, err
 	}
+	for _, a := range artists {
+		if opts.ArtistMBID != "" && a.MBID != opts.ArtistMBID {
+			stats.CoCredited = append(stats.CoCredited, a.MBID)
+		}
+	}
+	sort.Strings(stats.CoCredited)
 	want := map[string]bool{}
 	for _, a := range artists {
 		want[a.MBID] = true

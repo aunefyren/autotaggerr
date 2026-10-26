@@ -208,6 +208,27 @@ zero owned editions on the other artist's page) and `DesiresForArtist` (a desire
 was created from, so wanting a collaboration from one artist left the other offering to want it
 again).
 
+### A collaboration is synced through every artist on it
+
+Lidarr files a collaboration under **one** artist. For an album by X & Y held under X, *Sync from
+Lidarr* on Y's page asked Lidarr about Y, which does not list the album, so its counts never moved;
+and *Drop cached Lidarr data* dropped Y's track lists, not X's, so the files X holds still could not
+be matched. The same button worked on X's page, and nothing on Y's said why. Which of the credited
+artists Lidarr chose is not recorded anywhere, so a one-artist pass (`SyncOptions.ArtistMBID`) now
+takes in every artist credited beside them on an album they share (`withCoCredited`, narrowed as
+always to the artists Lidarr governs). They are reported as `SyncStats.CoCredited` — *with 1
+co-credited artist(s)* on the Activity row — so a count of artists synced larger than the one
+button pressed explains itself, and the sync dialog says so before it runs.
+
+### The album page names every artist
+
+The album page is reached through one artist and its back link returns there, but a collaboration
+belongs to all of them, so the header reads *By X & Y*, with each other artist linking to the same
+album under their own page. The list comes from the link table in credit order (`credits` on the
+album detail, and on MCP `get_album`); an artist the collection has no row for has no page to link to
+and is left out rather than shown as a bare ID. A single-artist album shows no line, and keeps the
+artist's name in the eyebrow instead.
+
 ### Removing a credit
 
 Reading the release-group's credit puts a migrated album on the right artist's page. It does not take

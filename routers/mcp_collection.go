@@ -192,6 +192,7 @@ type mcpAlbumDetail struct {
 	Library  string          `json:"library,omitempty" jsonschema:"the library this answer is read in; absent when it covers every library"`
 	Album    mcpAlbumRow     `json:"album"`
 	Editions []mcpEditionRow `json:"editions" jsonschema:"every edition MusicBrainz lists, plus any owned edition it no longer does"`
+	Credits  []mcpArtistRef  `json:"credits,omitempty" jsonschema:"every credited artist in credit order, when the album has more than one; Lidarr may hold it under any of them"`
 }
 
 type mcpGetReleaseTracksInput struct {
@@ -432,6 +433,11 @@ func (a *API) mcpGetAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpGetAl
 		Library:  mcpLibraryName(detail.Artist),
 		Album:    newMCPAlbumRow(detail.ReleaseGroup),
 		Editions: make([]mcpEditionRow, 0, len(detail.Editions)),
+	}
+	if len(detail.Credits) > 1 {
+		for _, cr := range detail.Credits {
+			out.Credits = append(out.Credits, mcpArtistRef{MBID: cr.MBID, Name: cr.Name})
+		}
 	}
 	for _, ed := range detail.Editions {
 		formats := make([]string, 0, len(ed.Media))

@@ -698,6 +698,7 @@ export default function Artist() {
       {syncAsk && (
         <SyncLidarrDialog
           scope={artist ? artist.name : "this artist"}
+          oneArtist
           onConfirm={syncLidarr}
           onCancel={() => setSyncAsk(false)}
         />

@@ -17,12 +17,15 @@ import { Modal } from "./ui";
  */
 export function SyncLidarrDialog({
   scope,
+  oneArtist,
   busy,
   onConfirm,
   onCancel,
 }: {
   /** What the pass covers, named for the dialog body. */
   scope: string;
+  /** A one-artist pass, which also covers the artists they share albums with. */
+  oneArtist?: boolean;
   busy?: boolean;
   onConfirm: (ignoreCache: boolean) => void;
   onCancel: () => void;
@@ -37,6 +40,12 @@ export function SyncLidarrDialog({
           tracks, which it monitors, and how many files it has of each. Reads Lidarr, not
           MusicBrainz. No files are written.
         </p>
+        {oneArtist && (
+          <p style={{ margin: 0 }}>
+            Artists credited beside them on a shared album are synced too: Lidarr files a
+            collaboration under one artist, which may not be this one.
+          </p>
+        )}
 
         <label className="row" style={{ gap: 8, cursor: "pointer", alignItems: "flex-start" }}>
           <input

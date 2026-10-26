@@ -5,6 +5,12 @@ export interface User {
   role: string;
 }
 
+/** One artist credited on an album (GET /artists/:mbid/release-groups/:rgid `credits`). */
+export interface AlbumCredit {
+  mb_id: string;
+  name: string;
+}
+
 export interface DataSource {
   id: string;
   name: string;

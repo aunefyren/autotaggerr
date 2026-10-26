@@ -84,10 +84,6 @@ still open:
   never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
   worth it — FLAC rewrites are more disk-bound.
 
-- Scenario: Album by two artists, X & Y, owned by X in Lidarr. Lidarr has 16/16 tracks on disk, but Autotaggerr thinks 1/16. Fix is to refresh Lidarr sync (no cache), but if you do this on Y this will not work. This needs to be understandable, in the front end, as Autotaggerr makes releases seem independent, or it needs to fix both. 
-
-- Albums which are co-owned, are always show in the context of the navigation path to the item, but while the back arrow should lead you back to where you came from, it should at least show that multiple artists link to the release.
-
 - Files are expected to have a certain path, mostly because we are trying to match with Lidarr path/files. This needs to change. We should attempt to match (if Lidarr managed), but also accept that files might be placed wrong/badly named. The move/rename module can fix this, but we must attempt to match the files meanwhile. Not being able to match is another beast. That should be fixed using an import/fix function.
 
 - We should attempt to link data properly to Lidarr and Plex assets in the backend. Also in the UI with hot links where applicable. Proper linking to Plex for instance will later allow us to better refresh albums, and perhaps to playlists.
