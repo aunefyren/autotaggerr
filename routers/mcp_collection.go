@@ -93,19 +93,57 @@ type mcpArtistRef struct {
 }
 
 type mcpGetArtistInput struct {
-	MBID string `json:"mbid" jsonschema:"artist MBID from list_artists"`
+	MBID    string `json:"mbid" jsonschema:"artist MBID from list_artists"`
+	Library string `json:"library,omitempty" jsonschema:"read the artist in one library (name or ID; the artist's libraries are listed in the answer): its wants, what it holds and who decides there. Omitted, every library at once"`
+}
+
+// mcpArtistLibrary is one library the artist can be read in, and who decides there.
+type mcpArtistLibrary struct {
+	Name      string `json:"name"`
+	ID        string `json:"id"`
+	Authority string `json:"authority" jsonschema:"who decides what is wanted here: lidarr, autotaggerr or unknown"`
+	Holds     bool   `json:"holds" jsonschema:"whether any of the artist's albums has files here"`
+}
+
+func newMCPArtistLibraries(libraries []collection.ArtistLibrary) []mcpArtistLibrary {
+	if len(libraries) == 0 {
+		return nil
+	}
+	out := make([]mcpArtistLibrary, 0, len(libraries))
+	for _, l := range libraries {
+		out = append(out, mcpArtistLibrary{Name: l.Name, ID: l.LibraryID.String(), Authority: l.Authority, Holds: l.Holds})
+	}
+	return out
+}
+
+// mcpLibraryName is the name of the library a view reads, from the artist's own
+// list; empty for the overview.
+func mcpLibraryName(view artistView) string {
+	if view.ViewLibraryID == nil {
+		return ""
+	}
+	for _, l := range view.Libraries {
+		if l.LibraryID == *view.ViewLibraryID {
+			return l.Name
+		}
+	}
+	return view.ViewLibraryID.String()
 }
 
 type mcpArtistDetail struct {
-	MBID            string        `json:"mbid"`
-	Name            string        `json:"name"`
-	Monitored       bool          `json:"monitored"`
-	ManagedBy       string        `json:"managed_by"`
-	FollowGoverns   bool          `json:"follow_governs" jsonschema:"whether monitored decides anything; false when a manager decides what is wanted"`
-	FollowTypes     string        `json:"follow_types,omitempty" jsonschema:"album types following wants"`
-	FollowSecondary bool          `json:"follow_secondary,omitempty"`
-	FollowFromYear  int           `json:"follow_from_year,omitempty"`
-	Albums          []mcpAlbumRow `json:"albums"`
+	MBID            string `json:"mbid"`
+	Name            string `json:"name"`
+	Monitored       bool   `json:"monitored"`
+	ManagedBy       string `json:"managed_by"`
+	FollowGoverns   bool   `json:"follow_governs" jsonschema:"whether monitored decides anything; false when a manager decides what is wanted"`
+	FollowTypes     string `json:"follow_types,omitempty" jsonschema:"album types following wants"`
+	FollowSecondary bool   `json:"follow_secondary,omitempty"`
+	FollowFromYear  int    `json:"follow_from_year,omitempty"`
+	// Library is the library this answer reads; empty is every library at once.
+	Library     string             `json:"library,omitempty" jsonschema:"the library this answer is read in; absent when it covers every library"`
+	Libraries   []mcpArtistLibrary `json:"libraries,omitempty" jsonschema:"the libraries the artist can be read in; pass one as library to see only its wants and holdings"`
+	EditBlocked string             `json:"edit_blocked,omitempty" jsonschema:"why want_album and follow_artist cannot write in this view: lidarr (Lidarr decides here), choose_library (pass library), no_native_library or unknown"`
+	Albums      []mcpAlbumRow      `json:"albums"`
 	// UnresolvableAlbums names albums whose stored ID resolves nowhere upstream — the
 	// artist page's repair prompt.
 	UnresolvableAlbums []string `json:"unresolvable_albums,omitempty" jsonschema:"MBIDs of albums that no longer resolve at MusicBrainz; a manager refresh repairs them"`
@@ -130,6 +168,7 @@ type mcpMissingList struct {
 type mcpGetAlbumInput struct {
 	ArtistMBID string `json:"artist_mbid" jsonschema:"artist MBID the album is listed under"`
 	AlbumMBID  string `json:"album_mbid" jsonschema:"release-group MBID from get_artist or list_missing"`
+	Library    string `json:"library,omitempty" jsonschema:"read the album in one library (name or ID, as get_artist lists them): its wants and the editions held there. Omitted, every library at once"`
 }
 
 type mcpEditionRow struct {
@@ -150,6 +189,7 @@ type mcpEditionRow struct {
 
 type mcpAlbumDetail struct {
 	Artist   mcpArtistRef    `json:"artist"`
+	Library  string          `json:"library,omitempty" jsonschema:"the library this answer is read in; absent when it covers every library"`
 	Album    mcpAlbumRow     `json:"album"`
 	Editions []mcpEditionRow `json:"editions" jsonschema:"every edition MusicBrainz lists, plus any owned edition it no longer does"`
 }
@@ -191,7 +231,8 @@ func (a *API) addMCPCollectionTools(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_artist",
 		Description: "One artist and all their albums (release-groups): owned, complete, wanted and why, and any " +
-			"disagreement with the manager's catalog. Answered from the database.",
+			"disagreement with the manager's catalog. Answered from the database. With several libraries, pass " +
+			"library to read one: each library has its own wants and authority.",
 		Annotations: readOnlyTool("Get artist", false),
 	}, a.mcpGetArtist)
 
@@ -205,7 +246,8 @@ func (a *API) addMCPCollectionTools(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "get_album",
 		Description: "One album (release-group): its state, and every edition (release) with which are owned and " +
-			"how complete. May fetch the edition list from MusicBrainz, which can take a second or more.",
+			"how complete. Pass library to read it in one library. May fetch the edition list from MusicBrainz, " +
+			"which can take a second or more.",
 		Annotations: readOnlyTool("Get album", true),
 	}, a.mcpGetAlbum)
 
@@ -272,7 +314,11 @@ func mcpArtistFilter(filter string) (func(artistSummary) bool, error) {
 }
 
 func (a *API) mcpGetArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpGetArtistInput) (*mcp.CallToolResult, mcpArtistDetail, error) {
-	detail, err := a.artistDetail(strings.TrimSpace(in.MBID), nil)
+	library, err := a.mcpLibrary(in.Library)
+	if err != nil {
+		return nil, mcpArtistDetail{}, err
+	}
+	detail, err := a.artistDetail(strings.TrimSpace(in.MBID), library)
 	if err != nil {
 		return nil, mcpArtistDetail{}, mcpArtistNotFound(in.MBID)
 	}
@@ -281,6 +327,7 @@ func (a *API) mcpGetArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpGetA
 		MBID: ar.MBID, Name: ar.Name, Monitored: ar.Monitored, ManagedBy: ar.ManagedBy,
 		FollowGoverns: ar.FollowGoverns, FollowTypes: ar.FollowTypes,
 		FollowSecondary: ar.FollowSecondary, FollowFromYear: ar.FollowFromYear,
+		Library: mcpLibraryName(ar), Libraries: newMCPArtistLibraries(ar.Libraries), EditBlocked: ar.EditBlocked,
 		Albums: make([]mcpAlbumRow, 0, len(detail.ReleaseGroups)),
 	}
 	for _, view := range detail.ReleaseGroups {
@@ -364,7 +411,11 @@ func (a *API) missingAlbums(onlyArtist string, includeIncomplete bool) ([]mcpMis
 }
 
 func (a *API) mcpGetAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpGetAlbumInput) (*mcp.CallToolResult, mcpAlbumDetail, error) {
-	detail, err := a.releaseGroupDetailData(strings.TrimSpace(in.ArtistMBID), strings.TrimSpace(in.AlbumMBID), nil)
+	library, err := a.mcpLibrary(in.Library)
+	if err != nil {
+		return nil, mcpAlbumDetail{}, err
+	}
+	detail, err := a.releaseGroupDetailData(strings.TrimSpace(in.ArtistMBID), strings.TrimSpace(in.AlbumMBID), library)
 	if err != nil {
 		return nil, mcpAlbumDetail{}, mcpArtistNotFound(in.ArtistMBID)
 	}
@@ -378,6 +429,7 @@ func (a *API) mcpGetAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpGetAl
 	}
 	out := mcpAlbumDetail{
 		Artist:   mcpArtistRef{MBID: detail.Artist.MBID, Name: detail.Artist.Name},
+		Library:  mcpLibraryName(detail.Artist),
 		Album:    newMCPAlbumRow(detail.ReleaseGroup),
 		Editions: make([]mcpEditionRow, 0, len(detail.Editions)),
 	}

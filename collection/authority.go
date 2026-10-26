@@ -107,6 +107,30 @@ func FollowAppliesIn(artist models.CollectionArtist, library uuid.UUID) bool {
 	return !GovernedByLidarr(artist)
 }
 
+// DetachedReleases reports which of these editions belong to a detached artist — the
+// album's artist, by the same primary credit Rebuild files it under. Their files in a
+// Lidarr library are Autotaggerr's to identify: LibraryAuthority takes a detached
+// artist's every library native, and a file's identity follows the same rule as its
+// album's wants. An edition the collection does not know, or one with no artist, is
+// absent: with no artist to have been detached, the library's manager still decides.
+func DetachedReleases(db *gorm.DB, releaseMBIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(releaseMBIDs) == 0 {
+		return out, nil
+	}
+	var ids []string
+	if err := db.Model(&models.CollectionRelease{}).
+		Joins("JOIN collection_artists ON collection_artists.mb_id = collection_releases.artist_mb_id").
+		Where("collection_releases.mb_id IN ? AND collection_artists.manager_detached = ?", releaseMBIDs, true).
+		Pluck("collection_releases.mb_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out, nil
+}
+
 // LibraryIndex is the libraries and who manages each, read once so authority can be
 // answered for a whole collection list without a query per artist.
 type LibraryIndex struct {
@@ -162,6 +186,18 @@ func (x LibraryIndex) native(artist models.CollectionArtist) []uuid.UUID {
 		}
 	}
 	return out
+}
+
+// HasNativeLibrary reports whether any library is one Autotaggerr decides for
+// whatever the artist: a library with no manager, or the native one. A disabled one
+// counts — it is switched off, not gone.
+func (x LibraryIndex) HasNativeLibrary() bool {
+	for _, l := range x.libraries {
+		if x.types[l.ID] == models.ManagerTypeAutotaggerr {
+			return true
+		}
+	}
+	return false
 }
 
 // WantTarget resolves which library a want or a follow is written for. Named, the

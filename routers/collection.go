@@ -1038,6 +1038,10 @@ func (a *API) addArtist(c *gin.Context) {
 	}
 
 	artist, err := collection.AddArtist(a.DB, body.MBID, body.Name)
+	if errors.Is(err, collection.ErrAllLibrariesManaged) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return

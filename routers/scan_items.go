@@ -475,23 +475,17 @@ func (a *API) libraryItems(f itemFilter) (itemPage, error) {
 		return itemPage{}, errors.New("failed to list items")
 	}
 
-	// Annotate each row with whether its file's identity may be set by hand, resolved
-	// once per library (a page is usually one library, often one manager). A resolution
-	// failure fails closed to not-editable: hiding the attach control is the safe
-	// default, and the attach endpoint itself is still gated regardless.
-	editableByLibrary := map[uuid.UUID]bool{}
+	// Annotate each row with whether its file's identity may be set by hand, by the
+	// same resolver the attach gate uses. A resolution failure fails closed to
+	// not-editable: hiding the attach control is the safe default, and the attach
+	// endpoint itself is still gated regardless.
+	editable, err := a.itemsIdentityEditable(items)
+	if err != nil {
+		logger.Log.Warnf("list items: failed to resolve who identifies these files: %s", err.Error())
+	}
 	views := make([]libraryItemView, 0, len(items))
 	for _, item := range items {
-		editable, seen := editableByLibrary[item.LibraryID]
-		if !seen {
-			var err error
-			if editable, err = a.libraryIdentityEditable(item.LibraryID); err != nil {
-				logger.Log.Warnf("list items: failed to resolve manager for library %s: %s", item.LibraryID, err.Error())
-				editable = false
-			}
-			editableByLibrary[item.LibraryID] = editable
-		}
-		views = append(views, libraryItemView{LibraryItem: item, IdentityEditable: editable})
+		views = append(views, libraryItemView{LibraryItem: item, IdentityEditable: editable[item.ID]})
 	}
 	return itemPage{Total: total, Limit: limit, Offset: offset, Items: views}, nil
 }

@@ -1028,11 +1028,16 @@ on a schedule (`autotaggerr_lidarr_follow_cron_schedule`, every ten minutes by d
    see half an album. `trackFileRetagged` is left out on purpose: Lidarr wrote tags, nothing moved,
    and following it would loop with a Lidarr that writes tags.
 3. **Per artist named**, drop their cached Lidarr answers (`LidarrClient.InvalidateArtistCaches`, with the
-   albums the records named) and queue a Process over their folders (`ArtistScope` → `Run`, deduped
-   on the artist like the button). An artist the collection cannot answer for — new to Lidarr, or
-   with nothing indexed yet, which is every artist's first import — is looked for **on disk by
-   folder name**: the last segment of Lidarr's path for them, under each enabled library assigned to
-   this manager. Only the name is comparable, since Lidarr's path sits under its own root — and it
+   albums the records named) and queue a Process over their folders (`followScope` → `Run`, deduped
+   on the artist like the button). The folders are **both** answers, merged (`mergeArtistTargets`
+   drops a folder already covered in the same library): every folder the collection knows the
+   artist's files in, and the artist's folder **on disk by folder name** — the last segment of
+   Lidarr's path for them — under each enabled library assigned to this manager. The second is the
+   only answer for an artist new to Lidarr or with nothing indexed yet, which is every artist's first
+   import; it is also what the first misses with several libraries, since an artist held in a native
+   library whose new album Lidarr imports into its own has no indexed file there yet. Asking the
+   collection first and the disk only when it had nothing walked the native folder and left the
+   import to the next full run. Only the name is comparable, since Lidarr's path sits under its own root — and it
    is split on either separator (`utilities.BaseOfPathAny`), because a Windows-hosted Lidarr reports
    `D:\Music\Artist` to an Autotaggerr on Linux, where `filepath` sees one segment. The
    Process over that folder is what brings them into the collection. An artist found nowhere is

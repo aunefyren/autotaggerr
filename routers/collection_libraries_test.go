@@ -205,3 +205,19 @@ func TestArtistPageReadsOneLibrary(t *testing.T) {
 		t.Errorf("artist after unfollow = %+v, want the library cleared with it", saved)
 	}
 }
+
+// TestAddArtistRefusedWhenLidarrManagesEveryLibrary: the add is a 409 naming where to
+// add the artist instead, not a 400 — the request was fine, the install cannot use it.
+func TestAddArtistRefusedWhenLidarrManagesEveryLibrary(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	mgr := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true}
+	if err := api.DB.Create(&mgr).Error; err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	if err := api.DB.Create(&models.Library{Name: "Music", Path: "/music", ManagerID: &mgr.ID, Enabled: true}).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	w := do(r, "POST", "/api/v1/artists", token, map[string]any{"mb_id": "art-1", "name": "Band"})
+	expectStatus(t, "lidarr only", w.Code, w.Body.String(), http.StatusConflict, "add the artist in Lidarr")
+}

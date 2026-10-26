@@ -84,6 +84,18 @@ still open:
   never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
   worth it — FLAC rewrites are more disk-bound.
 
+- Scenario: Album by two artists, X & Y, owned by X in Lidarr. Lidarr has 16/16 tracks on disk, but Autotaggerr thinks 1/16. Fix is to refresh Lidarr sync (no cache), but if you do this on Y this will not work. This needs to be understandable, in the front end, as Autotaggerr makes releases seem independent, or it needs to fix both. 
+
+- Albums which are co-owned, are always show in the context of the navigation path to the item, but while the back arrow should lead you back to where you came from, it should at least show that multiple artists link to the release.
+
+- Files are expected to have a certain path, mostly because we are trying to match with Lidarr path/files. This needs to change. We should attempt to match (if Lidarr managed), but also accept that files might be placed wrong/badly named. The move/rename module can fix this, but we must attempt to match the files meanwhile. Not being able to match is another beast. That should be fixed using an import/fix function.
+
+- We should attempt to link data properly to Lidarr and Plex assets in the backend. Also in the UI with hot links where applicable. Proper linking to Plex for instance will later allow us to better refresh albums, and perhaps to playlists.
+
+- Plex is tied to the tenant, but should be tied to library (libraries). Now Plex refresh is triggered even when the assets is actually not in Plex, if a similar object is within Plex.
+
+- If Plex is reworked/decoupled, Jellyfin support should be considered.
+
 ## Roadmap / ideas
 
 - **MCP server — what is left** ([mcp.md](mcp.md)). Reading, scoped keys and the core actions have
@@ -158,29 +170,43 @@ still open:
   path. A move also needs a Plex refresh of both the old and new album.
 - **Several libraries — what is left** ([collection.md](collection.md#several-libraries)). Copies
   counted as tracks, the catalog comparison, the library on every collection surface, edition naming
-  tokens, Clean/The tokens, the import's `other_edition` guard and authority per library (wants,
-  editions and following for one library, library tabs on the artist and album pages) have shipped.
-  Still open:
-  - *Global settings across managers.* With several managers, do the global settings (MusicBrainz
-    migrations among them) apply correctly per library? Not yet checked.
+  tokens, Clean/The tokens, the import's `other_edition` guard, authority per library (wants,
+  editions and following for one library, library tabs on the artist and album pages), the attach
+  gate honouring detach, `library` on the MCP read tools and Add artist needing a native library
+  have shipped. Still open:
+  - *Global settings across managers — audited, not fixed.* Process-wide settings that are genuinely
+    process-wide (concurrency, mirror, artwork, MCP, retention, tempo schedule, migration review
+    flags) are fine, as is everything already read from the library row (tagger profile, the scan
+    loop's per-library manager). The Lidarr follower's scope was one such place and is fixed
+    ([scanning.md](scanning.md#following-lidarr)). Three remain:
+    - **Plex refreshes the first music section.** `FindMusicSectionID` (`modules/plex.go`) takes the
+      first `artist` section, and the album-key cache is keyed by title alone, so a second library in
+      another Plex section is refreshed wrongly or not at all, and two same-titled albums share a key.
+      Belongs with the Plex-per-library note above.
+    - **`RefreshTurnedOff` asks every Lidarr manager, not the artist's.** (`collection/repair.go`,
+      used by the migration review and `releaseMigrationFiles`.) With refresh off on the manager
+      that holds the artist and on on another, the review still offers *Ask the manager*, and the
+      repair it queues does nothing — the dead button that check exists to prevent.
+    - **Two library fields are stored and never read.** `Library.DataSourceID` /
+      `Manager.DefaultDataSourceID` (MusicBrainz is process-wide: a hardcoded base URL, the rate from
+      an arbitrary enabled source) and `Library.Cron` (editable on the Libraries page, never
+      scheduled). Honouring them is large; hiding them and saying MusicBrainz is process-wide is small.
+    - Unverified, worth its own check: with two Lidarr managers, `clearCatalogView` clears
+      `in_catalog` per artist regardless of which manager wrote it, so a sync of the manager that does
+      not list the artist may clear what the other mirrored.
   - *The collection list does not recount per library.* Its library filter narrows which artists are
     listed; the owned/missing/mismatch columns stay all-library. The artist page reads one library
     on its tabs. Recounting the list needs `LibraryHoldings` per artist, which nothing has asked for.
   - *`other_edition` only sees indexed files.* A folder of files never processed is not caught by
     the import. A directory read of the target album folder would close it, at the cost of not
     knowing what edition those files are.
-  - *Attaching a file ignores detach.* `libraryIdentityEditable` decides by the library's manager
-    alone, so a detached artist's files in a Lidarr library still refuse a hand attach, while their
-    wants are editable there. `LibraryAuthority` already has the rule; the attach gate would need the
-    file's artist to apply it.
-  - *The MCP read tools see every library at once.* `get_artist` / `get_album` do not take a library,
-    so an assistant sees the union of Lidarr's and a native library's wants; `want_album` and
-    `follow_artist` do take one.
+  - *A detached artist's unidentified files stay Lidarr's.* The attach gate reads the artist from the
+    file's current edition, so a file in a Lidarr library with no identity yet has no artist to have
+    been detached and cannot be attached by hand. Reading the artist from the attach *target* would
+    close it, at the cost of a gate that depends on the request.
   - *Following is one library at a time.* `FollowLibraryID` names a single native library (or all,
     for an artist no manager governs). Following the same artist into two native libraries would need
     the follow settings per library.
-- *I can add artists on a collection where Lidarr is the only manager.* Or, at least, the button is
-  there. Does that make sense?
 - **Multi user support?** Any need?
 - **Password reset over email.** The mailer now exists and is proven by the *Send test message*
   button on Settings → Email (see [settings.md](settings.md#email-and-the-one-action-on-this-page)),

@@ -591,3 +591,54 @@ func TestPrepareForceRecorrelateClearsPinsInScope(t *testing.T) {
 		t.Error("a pin outside the scope was cleared on the second pass")
 	}
 }
+
+// A detached artist's pins outlive a forced re-correlate of their Lidarr library:
+// Lidarr no longer decides for them, so the pin is the only identity there is.
+func TestPrepareForceRecorrelateKeepsDetachedPins(t *testing.T) {
+	db := newTestDB(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(srv.Close)
+
+	manager := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true, LidarrBaseURL: srv.URL, LidarrAPIKey: "k"}
+	if err := db.Create(&manager).Error; err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	root := t.TempDir()
+	lib := models.Library{Name: "L", Path: root, Enabled: true, ManagerID: &manager.ID}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	detached := seedItem(t, db, lib, filepath.Join(root, "Detached", "Album", "01.flac"), true)
+	governed := seedItem(t, db, lib, filepath.Join(root, "Governed", "Album", "01.flac"), true)
+	if err := db.Model(&detached).Update("mb_release_id", "rel-d").Error; err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	for _, row := range []any{
+		&models.CollectionArtist{MBID: "art-d", Name: "D", ManagedBy: models.ManagedByAutotaggerr, ManagerDetached: true},
+		&models.CollectionRelease{MBID: "rel-d", ReleaseGroupMBID: "rg-d", ArtistMBID: "art-d"},
+	} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatalf("seed %T: %v", row, err)
+		}
+	}
+
+	r := NewRunner(db, nil, models.ConfigStruct{})
+	r.prepareForceRecorrelate(Scope{Targets: []Target{{Library: lib}}})
+
+	pinned := func(id uuid.UUID) bool {
+		var item models.LibraryItem
+		if err := db.First(&item, "id = ?", id).Error; err != nil {
+			t.Fatalf("reload item: %v", err)
+		}
+		return item.Pinned
+	}
+	if !pinned(detached.ID) {
+		t.Error("a detached artist's pin was cleared")
+	}
+	if pinned(governed.ID) {
+		t.Error("a pin Lidarr governs survived a forced re-correlate")
+	}
+}

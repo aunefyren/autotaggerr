@@ -27,6 +27,9 @@ func AddArtist(db *gorm.DB, mbID, name string) (models.CollectionArtist, error) 
 	if err := db.Where("mb_id = ?", mbID).First(&existing).Error; err == nil {
 		return existing, nil
 	}
+	if err := requireNativeLibrary(db); err != nil {
+		return models.CollectionArtist{}, err
+	}
 
 	artist := models.CollectionArtist{
 		MBID: mbID,
@@ -45,6 +48,25 @@ func AddArtist(db *gorm.DB, mbID, name string) (models.CollectionArtist, error) 
 	warmArtistArtwork(mbID)
 	readNewArtistCatalogue()
 	return artist, nil
+}
+
+// ErrAllLibrariesManaged: every library is one Lidarr decides for, so an artist added
+// by hand could be wanted but never fulfilled — Import and Downloads cannot write into
+// a Lidarr library, and Lidarr will not act on a want it never saw.
+var ErrAllLibrariesManaged = errors.New("every library is managed by Lidarr — add the artist in Lidarr; their files bring them here")
+
+// requireNativeLibrary refuses a hand-added artist when libraries are configured and
+// none of them is one Autotaggerr decides for. An install with no library yet is
+// still being set up, and is let through.
+func requireNativeLibrary(db *gorm.DB) error {
+	idx, err := LoadLibraryIndex(db)
+	if err != nil {
+		return err
+	}
+	if len(idx.libraries) == 0 || idx.HasNativeLibrary() {
+		return nil
+	}
+	return ErrAllLibrariesManaged
 }
 
 // OwnedReleases lists the editions of a release-group that files are owned of,

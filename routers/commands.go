@@ -370,26 +370,21 @@ func (a *API) addDesire(library *uuid.UUID, in collection.DesireInput) (models.C
 	return desire, nil
 }
 
-// filesIdentityEditable refuses a manual identity when any file in the set lives in a
-// Lidarr-managed library. There the release and track are Lidarr's to decide, so a
-// hand-attach would be reverted by the next scan; the honest answer is to refuse and
-// point at Lidarr. It fails closed if a manager cannot be resolved, and one
-// Lidarr-governed file locks the whole action — a bulk attach is one album, and
-// splitting it would be a worse surprise than rejecting it.
+// filesIdentityEditable refuses a manual identity when any file in the set is
+// Lidarr's to identify: it lives in a Lidarr-managed library and its artist has not
+// been detached (itemsIdentityEditable). There the release and track are Lidarr's to
+// decide, so the honest answer is to refuse and point at Lidarr. It fails closed if a
+// manager cannot be resolved, and one Lidarr-governed file locks the whole action — a
+// bulk attach is one album, and splitting it would be a worse surprise than rejecting
+// it.
 func (a *API) filesIdentityEditable(items []models.LibraryItem) error {
-	editableByLibrary := map[uuid.UUID]bool{}
+	editable, err := a.itemsIdentityEditable(items)
+	if err != nil {
+		logger.Log.Warnf("attach gate: failed to resolve who identifies these files: %s", err.Error())
+		return failWith(http.StatusInternalServerError, "failed to resolve the library manager")
+	}
 	for _, item := range items {
-		editable, seen := editableByLibrary[item.LibraryID]
-		if !seen {
-			var err error
-			editable, err = a.libraryIdentityEditable(item.LibraryID)
-			if err != nil {
-				logger.Log.Warnf("attach gate: failed to resolve manager for library %s: %s", item.LibraryID, err.Error())
-				return failWith(http.StatusInternalServerError, "failed to resolve the library manager")
-			}
-			editableByLibrary[item.LibraryID] = editable
-		}
-		if !editable {
+		if !editable[item.ID] {
 			return failWith(http.StatusConflict, "these files are managed by Lidarr — change the release in Lidarr, not here")
 		}
 	}

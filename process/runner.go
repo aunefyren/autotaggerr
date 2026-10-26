@@ -705,7 +705,8 @@ func (r *Runner) enqueueForceRecorrelate(key string, scope Scope) {
 // prepareForceRecorrelate readies a forced scope so the re-walk resolves identity
 // from the manager rather than from anything stale. It invalidates the Lidarr caches
 // (whole-cache; the next lookup re-fetches the current selection) and clears the
-// Pinned flag on every Lidarr-governed file in scope, because a pin makes the pipeline
+// Pinned flag on every Lidarr-governed file in scope — a detached artist's are not —
+// because a pin makes the pipeline
 // reuse a hand-chosen correlation instead of asking the manager. Native libraries are
 // left untouched: their pins are the only identity they have, and there is no other
 // authority to defer to.
@@ -728,9 +729,20 @@ func (r *Runner) prepareForceRecorrelate(scope Scope) {
 			continue
 		}
 
+		releases := make([]string, 0, len(pinned))
+		for _, item := range pinned {
+			releases = append(releases, item.MBReleaseID)
+		}
+		// A detached artist's pins stay: Lidarr no longer decides for them, so there is
+		// no manager to re-correlate from, and the pin is the identity someone chose.
+		detached, err := collection.DetachedReleases(r.db, releases)
+		if err != nil {
+			logger.Log.Warnf("force re-correlate: failed to read detached artists for %q: %s", target.Library.Name, err.Error())
+			continue
+		}
 		ids := make([]uuid.UUID, 0, len(pinned))
 		for _, item := range pinned {
-			if pathInScope(item.Path, target.Roots) {
+			if pathInScope(item.Path, target.Roots) && !detached[item.MBReleaseID] {
 				ids = append(ids, item.ID)
 			}
 		}

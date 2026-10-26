@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
@@ -178,6 +179,40 @@ func (a *API) libraryIdentityEditable(libraryID uuid.UUID) (bool, error) {
 		return false, err
 	}
 	return manager.Type() != models.ManagerTypeLidarr, nil
+}
+
+// itemsIdentityEditable is libraryIdentityEditable per file, with detach applied: a
+// file in a Lidarr library whose album belongs to a detached artist is Autotaggerr's
+// to identify, because detaching takes every one of the artist's libraries native
+// (collection.LibraryAuthority). The library alone cannot say so — the artist is
+// read from the file's current edition, so a file with no identity yet stays the
+// manager's. Keyed by item ID. Import and downloads keep asking the library: they
+// write into a library, not onto an artist's files.
+func (a *API) itemsIdentityEditable(items []models.LibraryItem) (map[uuid.UUID]bool, error) {
+	byLibrary := map[uuid.UUID]bool{}
+	var releases []string
+	for _, item := range items {
+		editable, seen := byLibrary[item.LibraryID]
+		if !seen {
+			var err error
+			if editable, err = a.libraryIdentityEditable(item.LibraryID); err != nil {
+				return nil, fmt.Errorf("library %s: %w", item.LibraryID, err)
+			}
+			byLibrary[item.LibraryID] = editable
+		}
+		if !editable && item.MBReleaseID != "" {
+			releases = append(releases, item.MBReleaseID)
+		}
+	}
+	detached, err := collection.DetachedReleases(a.DB, releases)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[uuid.UUID]bool, len(items))
+	for _, item := range items {
+		out[item.ID] = byLibrary[item.LibraryID] || detached[item.MBReleaseID]
+	}
+	return out, nil
 }
 
 // requireIdentityEditable rejects a manual attach when any file in the set lives in a

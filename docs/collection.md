@@ -703,6 +703,13 @@ anything). `POST /artists/:mbid/desires` and `POST /artists/:mbid/follow` take `
 Library names appear only when more than one library is configured; on a single-library install
 every row would carry the same word. Then:
 
+- **Add artist needs a native library.** Where Lidarr manages every library, an artist added by
+  hand could be wanted but never fulfilled — Import and Downloads cannot write into a Lidarr library,
+  and Lidarr never sees the want — so `AddArtist` refuses it (`ErrAllLibrariesManaged`, a 409; the
+  MCP `add_artist` shares it) and the button is disabled with the reason. Disabled rather than
+  absent, because adding a native library turns it on; a disabled native library counts, and an
+  install with no library yet is let through. Adding the artist to *Lidarr* is the
+  [separate question](wip.md) of whether the mirror may introduce one.
 - `/collection` gains a **Libraries** column and a library select in the table toolbar (`library` in
   the URL, options only for libraries some artist is in). The artist counts are not re-derived per
   library — the filter narrows which artists are listed, not what their columns say. An artist with
@@ -817,6 +824,15 @@ what is stored rather than re-deriving anything. Three things change, and delibe
   before it was ever managed. Detaching makes following govern again, so leaving the flag alone
   would turn a detach into "and also auto-want the entire back catalogue" — from a control the page
   does not show. Following is offered right there afterwards.
+
+Two things follow from detach without being written by it. A detached artist's files in a Lidarr
+library can be **attached by hand** (see [the gate](#manager-authority--lidarr-owns-identity)), and
+the attach is a pin, which the pipeline honours over what Lidarr resolves. And a **force
+re-correlate** leaves those pins alone (`prepareForceRecorrelate`): it exists to defer to the
+manager, and for a detached artist there is no manager to defer to — a library-wide re-correlate
+would otherwise discard every hand choice made since the detach. Process still asks Lidarr for the
+files' identity when nothing is pinned; detach moves authority over *wants*, and a file Lidarr names
+correctly needs no hand.
 
 It deliberately does **not** invent follow settings from what the manager wanted. Lidarr monitors
 per album, not by rule, so there is no rule to recover; any follow-types guess would be fabricating
@@ -1020,8 +1036,13 @@ the user, so there is still exactly one authority per artist. The table is the s
 
 The boundary is enforced by a single predicate and four mechanisms:
 
-- **One gate per library.** Attach and bulk attach are gated on the file's *library* manager
-  (`requireIdentityEditable` in `routers/attach.go`); a want or a follow on the library it is for
+- **One gate per library.** Attach and bulk attach are gated on the file's *library* manager,
+  with detach applied (`itemsIdentityEditable` in `routers/attach.go`): a file in a Lidarr library
+  whose album's artist is detached is Autotaggerr's to identify, the same rule `LibraryAuthority`
+  gives its wants. The artist is read from the file's *current* edition
+  (`collection.DetachedReleases`), so a file with no identity yet stays the manager's — there is no
+  artist to have been detached. Import and Downloads still ask the library alone, since they write
+  into a library rather than onto an artist's files. A want or a follow on the library it is for
   (`WantTarget`, called by `addDesire` and `updateFollowSettings`). Both return **409**, and both are
   surfaced as `identity_editable` on the library-item, artist and release-group views — for the
   artist and its albums, *in the view being read* — so the UI freezes the control before the reject

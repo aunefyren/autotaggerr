@@ -67,9 +67,9 @@ minutes per key, off the request path: authentication must not wait on a write l
 | `get_overview` | version and sizes, files needing attention (errors / retrying / pins held / unmatched-waiting), the migration queue's length, the job queue and the three refresh passes | no |
 | `get_configuration` | libraries with their manager, data source and tagger profile; managers; data sources; tagger profiles. Never credentials | no |
 | `list_artists` | the collection with owned / complete / partial / missing / mismatch / picked counts; filter by name or `partial`, `mismatch`, `picked`, `monitored`, `unmonitored` | no |
-| `get_artist` | one artist and every album: owned, complete, discrepancy, wanted and `wanted_source`, which libraries hold it, plus albums whose MBID no longer resolves | no |
+| `get_artist` | one artist and every album: owned, complete, discrepancy, wanted and `wanted_source`, which libraries hold it, plus albums whose MBID no longer resolves. `library` (name or ID) reads one library; the answer lists the artist's libraries with who decides in each, and `edit_blocked` says why a want could not be written in this view | no |
 | `list_missing` | wanted albums not owned, across the collection or one artist; `include_incomplete` adds owned albums with tracks missing | no |
-| `get_album` | one album's state and every edition, which are owned, how complete, in which libraries, and how many files (more than tracks means copies) | cache-first |
+| `get_album` | one album's state and every edition, which are owned, how complete, in which libraries, and how many files (more than tracks means copies). `library` reads it in one library | cache-first |
 | `get_release_tracks` | one edition's tracklist, with the file identified as each track | cache-first |
 | `list_files` | indexed files: filter by library, status, `transient`, path, an MBID (any kind), held pins | no |
 | `get_file` | one file in full; `include_tag_diff` adds what a write would change, `include_tempo` its BPM | only with `include_tag_diff` |
@@ -93,7 +93,7 @@ pages — and lists each album once, under the first artist that wants it.
 | `refresh_metadata` | queue a MusicBrainz refresh; `force` at artist scope only | no | yes |
 | `tag_files` | queue rewriting tags from stored identities | yes | no |
 | `cancel_job` | ask the running job to stop between files | no | no |
-| `add_artist` | add an artist by MBID (name looked up when omitted); idempotent | no | when unnamed |
+| `add_artist` | add an artist by MBID (name looked up when omitted); idempotent. Refused when Lidarr manages every library ([collection.md](collection.md#in-the-ui)) | no | when unnamed |
 | `follow_artist` | follow on/off, types, secondary types, year cutoff — then re-sync the discography; `library` names the native library to follow into | no | yes |
 | `want_album` / `unwant_album` | an explicit want, of an album, one edition, or some songs; and removing one. `library` (name or ID) names the native library the want is for | no | for an album the collection has not seen |
 | `attach_file` | pin a file to a release and track, validated against the release, and write its tags | yes | yes |
@@ -119,9 +119,12 @@ the server is stateless (below) it cannot ask itself, and does not need to.
 library with the same message the UI gets. Authority is per library
 ([collection.md](collection.md#authority-is-per-library)), so a want for an artist Lidarr governs
 lands in the one native library there is when no `library` is named, and is refused only when there
-is none — or more than one, when the assistant has to name it. The read tools report every library
-at once; they do not take a library; `unwant_album` is not gated, like its REST
-route, because a stale want needs a way out.
+is none — or more than one, when the assistant has to name it. `get_artist` and `get_album` read
+every library at once unless given a `library`, and then read exactly as the artist page's tab for
+it does (`viewScope`): that library's wants, its holdings, its authority. Without one, an artist
+Lidarr governs in one library and Autotaggerr in another shows the union of both libraries' wants,
+which is why the answer lists the libraries to choose from. `unwant_album` is not gated, like its
+REST route, because a stale want needs a way out.
 
 ### Shapes
 

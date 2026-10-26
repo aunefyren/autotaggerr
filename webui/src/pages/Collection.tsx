@@ -153,6 +153,15 @@ export default function Collection() {
   const browse = useBrowse("name");
   const libraries = useLibraries();
   const libraryName = new Map(libraries.list.map((l) => [l.id, l.name]));
+  // Where Lidarr manages every library, an artist added here could be wanted but never
+  // fulfilled — Import and Downloads cannot write into a Lidarr library — so Add
+  // artist waits for a library Autotaggerr decides for (the server refuses it too).
+  // Disabled rather than absent: adding such a library is what turns it on.
+  const managerType = new Map((managers.data ?? []).map((m) => [m.id, m.type]));
+  const lidarrOnly =
+    !!managers.data &&
+    libraries.list.length > 0 &&
+    !libraries.list.some((l) => !l.manager_id || managerType.get(l.manager_id) === "autotaggerr");
 
   // The queued verbs share one job runner, so the status says whether any of them
   // can be started — and keeps the three buttons honest about it.
@@ -316,7 +325,18 @@ export default function Collection() {
       <div className="page-head">
         <h1>Collection</h1>
         <div className="row">
-          <button className="btn btn-secondary btn-sm" onClick={() => setAdding(true)}>Add artist</button>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={() => setAdding(true)}
+            disabled={lidarrOnly}
+            title={
+              lidarrOnly
+                ? "Lidarr manages every library, so an artist added here could never be fulfilled — add them in Lidarr, or add a library Autotaggerr manages"
+                : undefined
+            }
+          >
+            Add artist
+          </button>
           <button
             className="btn btn-secondary btn-sm"
             onClick={() => setFollowing(true)}

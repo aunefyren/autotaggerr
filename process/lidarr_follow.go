@@ -1,7 +1,6 @@
 package process
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +14,6 @@ import (
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/utilities"
 	"github.com/google/uuid"
-	"gorm.io/gorm"
 )
 
 // Following Lidarr.
@@ -171,35 +169,73 @@ func (r *Runner) followManager(m models.Manager, upTo time.Time) {
 
 // queueFollowedArtist queues a Process over the artist's folders and returns "" — or,
 // when there is nothing to scope a run to, the reason why.
-//
-// The collection is asked first, because it knows every folder the artist's files sit
-// in. An artist it cannot answer for — new to Lidarr, so not in the collection, or in
-// it with nothing indexed yet — is looked for on disk instead, by the folder name
-// Lidarr files them under, in each library this manager governs. That is the case the
-// collection can never cover by itself: an artist's first import is precisely the
-// one with nothing indexed. The Process that runs over the folder is what then brings
-// them into the collection.
 func (r *Runner) queueFollowedArtist(m models.Manager, a followedArtist) string {
-	if a.mbid == "" {
-		return followSkipNoArtist
+	scope, reason := r.followScope(m, a)
+	if reason != "" {
+		return reason
 	}
-	scope, err := r.ArtistScope(a.mbid)
-	switch {
-	case err == nil:
-		r.Run(scope)
-		return ""
-	case errors.Is(err, gorm.ErrRecordNotFound), errors.Is(err, ErrNothingToProcess):
-	default:
-		return err.Error()
-	}
-
-	found := r.lidarrArtistFolders(m, a.folder)
-	if len(found) == 0 {
-		return followSkipNoFolder
-	}
-	r.Run(buildScope("Processing "+a.name,
-		map[string]any{"artist": a.name, "artist_mb_id": a.mbid}, found))
+	r.Run(scope)
 	return ""
+}
+
+// followScope is what a followed artist's Process walks: every folder the collection
+// knows their files in, plus the folder Lidarr files them under in each library this
+// manager governs.
+//
+// Both, always. The collection knows every library the artist already has files in,
+// but not the one Lidarr just imported into when that is a first: an artist held in a
+// native library whose new album lands in Lidarr's would have had only the native
+// folder walked, and the import waited for the next full run. The folder lookup is
+// what covers it — and, for an artist new to Lidarr or with nothing indexed yet, it is
+// the only answer there is, since an artist's first import is precisely the one with
+// nothing indexed. The Process that runs over the folder is what then brings them into
+// the collection.
+func (r *Runner) followScope(m models.Manager, a followedArtist) (Scope, string) {
+	if a.mbid == "" {
+		return Scope{}, followSkipNoArtist
+	}
+	known, err := collection.ArtistTargets(r.db, a.mbid)
+	if err != nil {
+		return Scope{}, err.Error()
+	}
+	found := mergeArtistTargets(known, r.lidarrArtistFolders(m, a.folder))
+	if len(found) == 0 {
+		return Scope{}, followSkipNoFolder
+	}
+	// The collection's name when it has one, as a Process started from the artist's
+	// page would title it; Lidarr's for an artist it has not seen.
+	name := a.name
+	var artist models.CollectionArtist
+	if err := r.db.Select("name").Where("mb_id = ?", a.mbid).Limit(1).Find(&artist).Error; err == nil && artist.Name != "" {
+		name = artist.Name
+	}
+	return buildScope("Processing "+name,
+		map[string]any{"artist": name, "artist_mb_id": a.mbid}, found), ""
+}
+
+// mergeArtistTargets joins two folder lists, dropping a folder that is, or sits
+// inside, one already kept in the same library — so the collection's folder and
+// Lidarr's for the same artist are walked once, not twice.
+func mergeArtistTargets(lists ...[]collection.ArtistTarget) []collection.ArtistTarget {
+	var all []collection.ArtistTarget
+	for _, l := range lists {
+		all = append(all, l...)
+	}
+	sort.SliceStable(all, func(i, j int) bool { return all[i].Path < all[j].Path })
+	kept := make([]collection.ArtistTarget, 0, len(all))
+	for _, t := range all {
+		covered := false
+		for _, k := range kept {
+			if k.Library.ID == t.Library.ID && pathInScope(t.Path, []string{k.Path}) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			kept = append(kept, t)
+		}
+	}
+	return kept
 }
 
 // lidarrArtistFolders finds an artist folder by name under every enabled library

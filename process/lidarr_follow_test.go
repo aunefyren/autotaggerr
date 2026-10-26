@@ -10,7 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -298,5 +300,68 @@ func TestFollowLidarrFindsANewArtistByFolder(t *testing.T) {
 	r.queueMu.Unlock()
 	if title != "Processing Newcomer" {
 		t.Errorf("job title = %q", title)
+	}
+}
+
+// An artist the collection holds in a native library, whose new album Lidarr imports
+// into its own: the follow walks both the folder the collection knows and the one
+// Lidarr filed the import under. With the collection's answer alone, the import
+// waited for the next full run.
+func TestFollowLidarrWalksTheManagersFolderForAKnownArtist(t *testing.T) {
+	db := newTestDB(t)
+	native, _ := seedArtistWithFile(t, db, t.TempDir())
+	m := seedFollowedManager(t, db, "http://lidarr.invalid", nil)
+
+	lidarrRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(lidarrRoot, "Artist", "New (2026)"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	governed := models.Library{Name: "Lidarr music", Path: lidarrRoot, Enabled: true, ManagerID: &m.ID}
+	if err := db.Create(&governed).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	r := newFollowRunner(db)
+
+	scope, reason := r.followScope(m, followedArtist{mbid: "artist-1", name: "Artist", folder: "Artist"})
+	if reason != "" {
+		t.Fatalf("skipped: %s", reason)
+	}
+	roots := map[string][]string{}
+	for _, target := range scope.Targets {
+		roots[target.Library.Name] = target.Roots
+	}
+	want := map[string]string{native.Name: filepath.Join(native.Path, "Artist"), governed.Name: filepath.Join(lidarrRoot, "Artist")}
+	if len(roots) != len(want) {
+		t.Fatalf("targets = %+v, want both libraries", roots)
+	}
+	for name, root := range want {
+		if got := roots[name]; len(got) != 1 || got[0] != root {
+			t.Errorf("%s roots = %v, want [%s]", name, got, root)
+		}
+	}
+	if scope.Title != "Processing Artist" {
+		t.Errorf("title = %q", scope.Title)
+	}
+}
+
+// The collection's folder and Lidarr's are the same folder for an artist already in
+// Lidarr's library; it is walked once.
+func TestMergeArtistTargetsDropsCoveredFolders(t *testing.T) {
+	a := models.Library{Name: "A"}
+	a.ID = uuid.New()
+	b := models.Library{Name: "B"}
+	b.ID = uuid.New()
+	got := mergeArtistTargets(
+		[]collection.ArtistTarget{{Library: a, Path: "/m/Artist"}, {Library: a, Path: "/m/Artist/Album"}, {Library: b, Path: "/m/Artist"}},
+		[]collection.ArtistTarget{{Library: a, Path: "/m/Artist"}, {Library: a, Path: "/m/Artist B"}},
+	)
+	want := []string{"A:/m/Artist", "B:/m/Artist", "A:/m/Artist B"}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %v", got, want)
+	}
+	for i, tgt := range got {
+		if tgt.Library.Name+":"+tgt.Path != want[i] {
+			t.Errorf("[%d] = %s:%s, want %s", i, tgt.Library.Name, tgt.Path, want[i])
+		}
 	}
 }

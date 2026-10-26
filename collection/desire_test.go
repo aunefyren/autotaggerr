@@ -2,6 +2,7 @@ package collection
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -305,5 +306,37 @@ func TestRebuildMarksLibraryOrigin(t *testing.T) {
 	}
 	if manual.Origin != models.CollectionOriginManual {
 		t.Errorf("Rebuild overwrote a manual origin: %q", manual.Origin)
+	}
+}
+
+// TestAddArtistNeedsANativeLibrary: where Lidarr manages every library, an artist
+// added by hand could be wanted but never fulfilled, so adding one is refused. One
+// native library, even switched off, is somewhere a want can land; no library at all
+// is an install still being set up. An artist already present is returned as before.
+func TestAddArtistNeedsANativeLibrary(t *testing.T) {
+	db := testDB(t)
+	if _, err := AddArtist(db, "art-0", "Before Libraries"); err != nil {
+		t.Fatalf("no libraries yet: %v", err)
+	}
+
+	mgr := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true}
+	if err := db.Create(&mgr).Error; err != nil {
+		t.Fatalf("manager: %v", err)
+	}
+	if err := db.Create(&models.Library{Name: "Music", Path: "/music", ManagerID: &mgr.ID, Enabled: true}).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	if _, err := AddArtist(db, "art-1", "Band"); !errors.Is(err, ErrAllLibrariesManaged) {
+		t.Fatalf("Lidarr only: err = %v, want ErrAllLibrariesManaged", err)
+	}
+	if _, err := AddArtist(db, "art-0", "Before Libraries"); err != nil {
+		t.Errorf("an artist already present: %v", err)
+	}
+
+	if err := db.Create(&models.Library{Name: "Sandbox", Path: "/sandbox"}).Error; err != nil {
+		t.Fatalf("native library: %v", err)
+	}
+	if _, err := AddArtist(db, "art-1", "Band"); err != nil {
+		t.Errorf("with a native library: %v", err)
 	}
 }
