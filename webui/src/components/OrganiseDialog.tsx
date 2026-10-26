@@ -74,7 +74,7 @@ export function OrganiseDialog({
   const commit = async () => {
     setBusy(true);
     try {
-      await api.post("/organise", { ...scope, rows });
+      await api.post("/organise", { ...scope, rows, move_extras: true });
       toast("info", `Organising ${moving.length} file${moving.length === 1 ? "" : "s"} — see Activity`);
       onClose();
     } catch (e) {

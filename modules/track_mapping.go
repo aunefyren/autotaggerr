@@ -213,6 +213,10 @@ func discFromFolder(path string) int {
 // ("CD2", "CD 02", "Disc-3"), or 0 when the name does not carry one. Comparing by
 // this number rather than by the literal name is what lets Lidarr's stored path and
 // the disk agree when only the padding or the separator differs.
+// IsDiscFolderName reports whether a folder name reads as a disc of an album (CD1,
+// Disc 2, …), by the rule the disc guard and folder attach use.
+func IsDiscFolderName(name string) bool { return discNumberFromFolderName(name) > 0 }
+
 func discNumberFromFolderName(name string) int {
 	if match := discFolderPattern.FindStringSubmatch(name); match != nil {
 		disc, _ := strconv.Atoi(match[1])

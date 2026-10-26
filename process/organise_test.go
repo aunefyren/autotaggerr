@@ -52,7 +52,7 @@ func TestOrganiseMovesWhatWasReviewed(t *testing.T) {
 	}
 	// The second move is skipped in review and stays where it is.
 	plan.Moves[1].Skip = true
-	if err := w.runner.Organise(scope, plan.Moves); err != nil {
+	if err := w.runner.Organise(scope, plan.Moves, true); err != nil {
 		t.Fatal(err)
 	}
 	w.runner.waitIdle(t)
@@ -77,7 +77,7 @@ func TestOrganiseMovesWhatWasReviewed(t *testing.T) {
 	if len(again.Moves) != 1 || again.InPlace != 1 {
 		t.Fatalf("second plan = %+v", again)
 	}
-	if err := w.runner.Organise(scope, again.Moves); err != nil {
+	if err := w.runner.Organise(scope, again.Moves, true); err != nil {
 		t.Fatal(err)
 	}
 	w.runner.waitIdle(t)

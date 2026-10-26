@@ -83,20 +83,32 @@ type OrganiseRow struct {
 	Skip bool `json:"skip,omitempty"`
 }
 
-// OrganisePlan is a dry run: the moves, the files that cannot be moved, and how many
-// are already where they belong.
+// OrganiseExtra is a file that is not a track — a cover, a cue sheet, a rip log — moved
+// with its album when the whole album moves to one place.
+type OrganiseExtra struct {
+	From    string `json:"from"`
+	To      string `json:"to"`
+	FromRel string `json:"from_rel"`
+	ToRel   string `json:"to_rel"`
+	// Exists is a file already at the target; the extra is left where it is.
+	Exists bool `json:"exists,omitempty"`
+}
+
+// OrganisePlan is a dry run: the moves, the files that cannot be moved, how many are
+// already where they belong, and the album files that would move with them.
 type OrganisePlan struct {
-	Moves     []OrganiseRow `json:"moves"`
-	Skipped   []OrganiseRow `json:"skipped"`
-	InPlace   int           `json:"in_place"`
-	Libraries []string      `json:"libraries"`
+	Moves     []OrganiseRow   `json:"moves"`
+	Skipped   []OrganiseRow   `json:"skipped"`
+	InPlace   int             `json:"in_place"`
+	Libraries []string        `json:"libraries"`
+	Extras    []OrganiseExtra `json:"extras"`
 }
 
 // PlanOrganise renders every identified file of the scope and lists those whose path
 // would change. It reads releases cache-first, so a library processed recently costs no
 // request; it moves nothing.
 func (r *Runner) PlanOrganise(scope OrganiseScope) (OrganisePlan, error) {
-	plan := OrganisePlan{Moves: []OrganiseRow{}, Skipped: []OrganiseRow{}, Libraries: []string{}}
+	plan := OrganisePlan{Moves: []OrganiseRow{}, Skipped: []OrganiseRow{}, Libraries: []string{}, Extras: []OrganiseExtra{}}
 	if !scope.valid() {
 		return plan, errors.New("organise one library, one artist or one album")
 	}
@@ -150,6 +162,13 @@ func (r *Runner) PlanOrganise(scope OrganiseScope) (OrganisePlan, error) {
 	}
 	markOrganiseConflicts(plan.Moves)
 	sort.Slice(plan.Moves, func(i, j int) bool { return plan.Moves[i].From < plan.Moves[j].From })
+	var clear []OrganiseRow
+	for _, m := range plan.Moves {
+		if m.Conflict == "" {
+			clear = append(clear, m)
+		}
+	}
+	plan.Extras = organiseExtras(clear, libraryRoots(libraries))
 	sort.Slice(plan.Skipped, func(i, j int) bool { return plan.Skipped[i].From < plan.Skipped[j].From })
 	return plan, nil
 }
@@ -190,6 +209,99 @@ func markOrganiseConflicts(moves []OrganiseRow) {
 	}
 }
 
+// libraryRoots maps each library to its root, for showing extras below it.
+func libraryRoots(libraries map[uuid.UUID]organiseLibrary) map[uuid.UUID]string {
+	out := make(map[uuid.UUID]string, len(libraries))
+	for id, l := range libraries {
+		out[id] = l.library.Path
+	}
+	return out
+}
+
+// albumDirOf is the album folder a file sits in: its folder, or the one above when its
+// folder is a disc of the album (CD1, Disc 2). Read the same way on both sides of a
+// move, so an album's old and new folders are compared like for like.
+func albumDirOf(path string) string {
+	dir := filepath.Dir(path)
+	if modules.IsDiscFolderName(filepath.Base(dir)) {
+		return filepath.Dir(dir)
+	}
+	return dir
+}
+
+// organiseExtras lists the files that are not tracks — covers, cue sheets, rip logs —
+// to move with their album. Only when the whole album moves to one place: every audio
+// file under its old folder is among the moves, and all of them land in one new album
+// folder. Anything less leaves it unclear which folder the cover belongs to, so it
+// stays. Only the album folder's own files are taken, not those inside a disc folder,
+// and never hidden ones. A target already taken is reported and left alone: Organise
+// never overwrites.
+func organiseExtras(moves []OrganiseRow, roots map[uuid.UUID]string) []OrganiseExtra {
+	type album struct {
+		library uuid.UUID
+		targets map[string]bool
+	}
+	albums := map[string]*album{}
+	moving := map[string]bool{}
+	for _, m := range moves {
+		if m.Skip {
+			continue
+		}
+		moving[m.From] = true
+		src := albumDirOf(m.From)
+		a := albums[src]
+		if a == nil {
+			a = &album{library: m.LibraryID, targets: map[string]bool{}}
+			albums[src] = a
+		}
+		a.targets[albumDirOf(m.To)] = true
+	}
+	extras := []OrganiseExtra{}
+	sources := make([]string, 0, len(albums))
+	for src := range albums {
+		sources = append(sources, src)
+	}
+	sort.Strings(sources)
+	for _, src := range sources {
+		a := albums[src]
+		if len(a.targets) != 1 {
+			continue
+		}
+		var target string
+		for t := range a.targets {
+			target = t
+		}
+		root := roots[a.library]
+		if target == src || src == filepath.Clean(root) {
+			continue
+		}
+		whole := true
+		_ = filepath.WalkDir(src, func(p string, d os.DirEntry, err error) error {
+			if err == nil && !d.IsDir() && modules.IsSupportedAudioFile(p) && !moving[p] {
+				whole = false
+				return filepath.SkipAll
+			}
+			return nil
+		})
+		if !whole {
+			continue
+		}
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasPrefix(e.Name(), ".") || modules.IsSupportedAudioFile(e.Name()) {
+				continue
+			}
+			from, to := filepath.Join(src, e.Name()), filepath.Join(target, e.Name())
+			_, statErr := os.Lstat(to)
+			extras = append(extras, OrganiseExtra{From: from, To: to, FromRel: relSlash(root, from), ToRel: relSlash(root, to), Exists: statErr == nil})
+		}
+	}
+	return extras
+}
+
 // CheckOrganisePlan reports the first reviewed move that blocks the commit.
 func CheckOrganisePlan(rows []OrganiseRow) error {
 	marked := append([]OrganiseRow(nil), rows...)
@@ -215,7 +327,7 @@ func CheckOrganisePlan(rows []OrganiseRow) error {
 
 // Organise queues the reviewed moves. The job plans again when it runs and makes only
 // the moves that are still exactly what was reviewed.
-func (r *Runner) Organise(scope OrganiseScope, reviewed []OrganiseRow) error {
+func (r *Runner) Organise(scope OrganiseScope, reviewed []OrganiseRow, moveExtras bool) error {
 	if !scope.valid() {
 		return errors.New("organise one library, one artist or one album")
 	}
@@ -223,11 +335,11 @@ func (r *Runner) Organise(scope OrganiseScope, reviewed []OrganiseRow) error {
 		return err
 	}
 	title := "Organise files"
-	r.enqueue(job{jobOrganise, "organise:" + uuid.NewString(), title, func() { r.organiseNow(scope, reviewed) }})
+	r.enqueue(job{jobOrganise, "organise:" + uuid.NewString(), title, func() { r.organiseNow(scope, reviewed, moveExtras) }})
 	return nil
 }
 
-func (r *Runner) organiseNow(scope OrganiseScope, reviewed []OrganiseRow) {
+func (r *Runner) organiseNow(scope OrganiseScope, reviewed []OrganiseRow, moveExtras bool) {
 	event := events.Begin(r.db, models.EventTypeOrganise, "Organise files")
 	approved := map[uuid.UUID]OrganiseRow{}
 	for _, row := range reviewed {
@@ -276,9 +388,37 @@ func (r *Runner) organiseNow(scope OrganiseScope, reviewed []OrganiseRow) {
 	moved, moveItems, oldDirs := r.organiseMoves(moves)
 	stopProgress()
 	items = append(items, moveItems...)
+	failedFrom := map[string]bool{}
 	for _, item := range moveItems {
 		if item.Status == models.EventItemStatusError {
 			failed++
+			failedFrom[item.From] = true
+		}
+	}
+
+	// The album's other files follow, worked out again from the moves that were made:
+	// an album with a file left behind keeps its cover with that file.
+	extrasMoved := 0
+	if moveExtras {
+		var made []OrganiseRow
+		for _, m := range moves {
+			if !failedFrom[m.From] {
+				made = append(made, m)
+			}
+		}
+		for _, extra := range organiseExtras(made, libraryRoots(r.organiseLibrariesOf(made))) {
+			if extra.Exists {
+				items = append(items, models.EventItem{Path: extra.From, From: extra.From, Status: models.EventItemStatusSkipped,
+					Error: extra.To + " already exists, so this was left where it is"})
+				continue
+			}
+			if err := modules.TransferFile(extra.From, extra.To, modules.TransferMove); err != nil {
+				failed++
+				items = append(items, models.EventItem{Path: extra.From, From: extra.From, Status: models.EventItemStatusError, Error: "could not move it with its album: " + err.Error()})
+				continue
+			}
+			extrasMoved++
+			items = append(items, models.EventItem{Path: extra.To, From: extra.From, Status: models.EventItemStatusChanged})
 		}
 	}
 
@@ -317,8 +457,12 @@ func (r *Runner) organiseNow(scope OrganiseScope, reviewed []OrganiseRow) {
 		{Label: "Moved", Value: moved, Filter: models.EventItemStatusChanged},
 		{Label: "Failed", Value: failed, Kind: models.EventStatBad, Filter: models.EventItemStatusError},
 	}
-	events.Finish(r.db, event, status, fmt.Sprintf("%d file(s) moved · %d failed", moved, failed),
-		map[string]any{"moved": moved, "failed": failed, "libraries": plan.Libraries})
+	summary := fmt.Sprintf("%d file(s) moved · %d failed", moved, failed)
+	if extrasMoved > 0 {
+		summary += fmt.Sprintf(" · %d album file(s) moved with them", extrasMoved)
+	}
+	events.Finish(r.db, event, status, summary,
+		map[string]any{"moved": moved, "failed": failed, "album_files_moved": extrasMoved, "libraries": plan.Libraries})
 	events.AddItems(r.db, event, items)
 }
 
@@ -407,6 +551,21 @@ func (r *Runner) repointPath(from, to string) error {
 		}
 		return nil
 	})
+}
+
+// organiseLibrariesOf loads the libraries of a set of moves, for their roots.
+func (r *Runner) organiseLibrariesOf(moves []OrganiseRow) map[uuid.UUID]organiseLibrary {
+	out := map[uuid.UUID]organiseLibrary{}
+	for _, m := range moves {
+		if _, ok := out[m.LibraryID]; ok {
+			continue
+		}
+		var lib models.Library
+		if r.db.First(&lib, "id = ?", m.LibraryID).Error == nil {
+			out[m.LibraryID] = organiseLibrary{library: lib}
+		}
+	}
+	return out
 }
 
 // organiseItems lists the identified files a scope covers.

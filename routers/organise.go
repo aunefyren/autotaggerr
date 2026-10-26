@@ -15,6 +15,8 @@ type organiseRequest struct {
 	process.OrganiseScope
 	// Rows is the reviewed plan, Skip set on the moves left out. Only the commit reads it.
 	Rows []process.OrganiseRow `json:"rows"`
+	// MoveExtras moves each whole album's covers, cue sheets and logs with it.
+	MoveExtras bool `json:"move_extras"`
 }
 
 // organiseFailure turns the runner's refusals into statuses: a Lidarr library and a
@@ -61,7 +63,7 @@ func (a *API) organise(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
 		return
 	}
-	if err := a.Scan.Organise(in.OrganiseScope, in.Rows); err != nil {
+	if err := a.Scan.Organise(in.OrganiseScope, in.Rows, in.MoveExtras); err != nil {
 		organiseFailure(c, err)
 		return
 	}

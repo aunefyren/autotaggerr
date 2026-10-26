@@ -1169,4 +1169,6 @@ export interface OrganisePlan {
   skipped: OrganiseRow[];
   in_place: number;
   libraries: string[];
+  /** Covers, cue sheets and logs that move with a whole album. */
+  extras: { from: string; to: string; from_rel: string; to_rel: string; exists?: boolean }[];
 }
