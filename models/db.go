@@ -302,7 +302,9 @@ type Manager struct {
 	// so that what Lidarr upgraded while Autotaggerr was down is still caught up on.
 	LidarrHistoryCursor *time.Time `json:"lidarr_history_cursor,omitempty"`
 
-	// Autotaggerr-specific: which data source this manager resolves against.
+	// DefaultDataSourceID is stored and never read: MusicBrainz is one process-wide
+	// client (a fixed base URL, the rate from the enabled source). Kept so existing rows
+	// load; nothing offers it for editing. See docs/media-manager.md.
 	DefaultDataSourceID *uuid.UUID `gorm:"type:uuid" json:"default_data_source_id,omitempty"`
 
 	Health      string     `json:"health"`
@@ -403,9 +405,13 @@ func (t TaggerProfile) Settings() TaggerSettings {
 // Library is a configured folder plus the components that govern it.
 type Library struct {
 	Base
-	Name            string     `gorm:"not null" json:"name"`
-	Path            string     `gorm:"uniqueIndex;not null" json:"path"`
-	ManagerID       *uuid.UUID `gorm:"type:uuid" json:"manager_id"`
+	Name      string     `gorm:"not null" json:"name"`
+	Path      string     `gorm:"uniqueIndex;not null" json:"path"`
+	ManagerID *uuid.UUID `gorm:"type:uuid" json:"manager_id"`
+	// DataSourceID and Cron are stored and never read — MusicBrainz is process-wide and
+	// every library runs on the one processing schedule. The API still accepts them so
+	// older clients do not fail, but the UI no longer offers them: a field that changes
+	// nothing reads as a setting that does not work. See docs/media-manager.md.
 	DataSourceID    *uuid.UUID `gorm:"type:uuid" json:"data_source_id"`
 	TaggerProfileID *uuid.UUID `gorm:"type:uuid" json:"tagger_profile_id"`
 	Enabled         bool       `json:"enabled"`

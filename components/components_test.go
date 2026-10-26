@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -448,36 +450,75 @@ func TestScanLibraryKeepsPinnedOnVersionChange(t *testing.T) {
 	}
 }
 
-// TestApplyDataSourceRateLimits exercises the wiring that reads the MusicBrainz
-// row's rate_limit into the client limiter. The limiter's interval is unexported in
-// modules/, so what is checked here is the row selection and the guards: a nil DB, no
-// MusicBrainz row, a disabled row and a zero rate must all be no-ops rather than
-// panics or an accidentally removed throttle.
-func TestApplyDataSourceRateLimits(t *testing.T) {
-	ApplyDataSourceRateLimits(nil) // must not panic
+// TestApplyMusicBrainzSource: the source in use decides where MusicBrainz is asked
+// and who asks. Its base URL and contact were stored and never read, so a source
+// pointed at a local mirror kept asking musicbrainz.org.
+func TestApplyMusicBrainzSource(t *testing.T) {
+	ApplyMusicBrainzSource(nil) // must not panic
+
+	var mu sync.Mutex
+	var gotPath, gotAgent string
+	mirror := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gotPath, gotAgent = r.URL.Path, r.Header.Get("User-Agent")
+		mu.Unlock()
+		_, _ = w.Write([]byte(`{"id":"rel-1","title":"Mirrored"}`))
+	}))
+	t.Cleanup(mirror.Close)
+	modules.ResetMusicBrainzCachesForTest(t)
+	t.Cleanup(func() {
+		modules.SetMusicBrainzEndpoint("", "")
+		modules.SetMusicBrainzRateLimit(1)
+	})
 
 	db := testDB(t)
-	ApplyDataSourceRateLimits(db) // no data sources at all
-
-	disabled := models.DataSource{Name: "MB disabled", Type: models.DataSourceTypeMusicBrainz, RateLimit: 5, Enabled: false}
-	if err := db.Create(&disabled).Error; err != nil {
-		t.Fatalf("create disabled source: %v", err)
+	public := models.DataSource{Name: "MusicBrainz", Type: models.DataSourceTypeMusicBrainz,
+		BaseURL: modules.DefaultMusicBrainzBaseURL, RateLimit: 1, Enabled: false}
+	if err := db.Create(&public).Error; err != nil {
+		t.Fatal(err)
 	}
-	ApplyDataSourceRateLimits(db)
-
-	zeroRate := models.DataSource{Name: "MB zero", Type: models.DataSourceTypeMusicBrainz, RateLimit: 0, Enabled: true}
-	if err := db.Create(&zeroRate).Error; err != nil {
-		t.Fatalf("create zero-rate source: %v", err)
+	local := models.DataSource{Name: "Mirror", Type: models.DataSourceTypeMusicBrainz,
+		BaseURL: mirror.URL + "/ws/2/", Contact: "me@example.com", RateLimit: 100, Enabled: true}
+	if err := db.Create(&local).Error; err != nil {
+		t.Fatal(err)
 	}
-	ApplyDataSourceRateLimits(db)
 
-	// And the path that does apply. Restored afterwards so later tests in this
-	// package are not left running against a modified limiter.
-	t.Cleanup(func() { modules.SetMusicBrainzRateLimit(1) })
-	if err := db.Model(&models.DataSource{}).Where("id = ?", zeroRate.ID).Update("rate_limit", 2).Error; err != nil {
-		t.Fatalf("set rate: %v", err)
+	if row, ok, err := MusicBrainzSourceInUse(db); err != nil || !ok || row.ID != local.ID {
+		t.Fatalf("in use = %q, %v, %v; want the mirror", row.Name, ok, err)
 	}
-	ApplyDataSourceRateLimits(db)
+	ApplyMusicBrainzSource(db)
+	release, err := modules.QueryMusicBrainzReleaseData("rel-1", "test")
+	if err != nil {
+		t.Fatalf("fetch from the mirror: %v", err)
+	}
+	mu.Lock()
+	path, agent := gotPath, gotAgent
+	mu.Unlock()
+	if release.Title != "Mirrored" || path != "/ws/2/release/rel-1" {
+		t.Errorf("fetched %q from %q, want the mirror's release (trailing slash trimmed)", release.Title, path)
+	}
+	if agent != "Autotaggerr/test ( me@example.com )" {
+		t.Errorf("User-Agent = %q, want the source's contact", agent)
+	}
+
+	// Two enabled: the older one is read, on every start.
+	if err := db.Model(&public).Update("enabled", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if row, _, _ := MusicBrainzSourceInUse(db); row.ID != public.ID {
+		t.Errorf("in use = %q, want the oldest enabled source", row.Name)
+	}
+
+	// None enabled: back to the public service, not stuck on the mirror.
+	if err := db.Model(&models.DataSource{}).Where("1 = 1").Update("enabled", false).Error; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, _ := MusicBrainzSourceInUse(db); ok {
+		t.Error("a disabled source was reported in use")
+	}
+	// Applying it puts the client back on the public service — checked in modules,
+	// where the URL is visible; asserted here would mean asking musicbrainz.org.
+	ApplyMusicBrainzSource(db)
 }
 
 func TestBuildForFile(t *testing.T) {

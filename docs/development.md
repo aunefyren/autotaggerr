@@ -137,8 +137,9 @@ drops below it. Two things about it are easy to get wrong:
   test a package from inside that package, and do not expect an integration test to raise the
   number somewhere else.
 - **Anything talking to MusicBrainz needs its stub.** Two seams, depending on where the test lives:
-  - *Inside `modules/`*: `musicbrainzBaseURL` is a package var; `withMockMB`
-    (`modules/musicbrainz_http_test.go`) points it at an `httptest` server and resets the caches and
+  - *Inside `modules/`*: the endpoint is an unexported atomic pointer (`musicbrainzEndpoint`, read
+    through `musicbrainzBaseURL()`); `withMockMB` (`modules/musicbrainz_http_test.go`) swaps it for
+    an `httptest` server with `useMusicBrainzBaseURL` and resets the caches and
     rate limiter. Unexported, so it only works in `modules/`. Use it for the real adapter's
     HTTP/parse/cache/rate-limit behaviour.
   - *Everywhere else* (`routers`, `collection`, `components`, `mirror`): inject a fake

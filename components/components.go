@@ -10,11 +10,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -77,29 +79,60 @@ func NewDataSource(row models.DataSource) (DataSource, error) {
 	}
 }
 
-// ApplyDataSourceRateLimits pushes the configured MusicBrainz request rate into the
-// client's limiter. Until this ran, `rate_limit` was editable through the API and
-// seeded in the DB but never read — the limiter was a hardcoded 1 req/s. It is
-// called at startup and again whenever a data source is edited, so raising the rate
-// (only sensible against a local MusicBrainz mirror) takes effect without a restart.
+// MusicBrainzSourceInUse is the MusicBrainz data source every request goes through:
+// the oldest enabled one. There is one MusicBrainz client for the whole process, so
+// with a local mirror beside the public service exactly one of them is read, and
+// "oldest" makes that the same row on every start rather than whichever the database
+// returns first. ok is false when no MusicBrainz source is enabled.
+func MusicBrainzSourceInUse(db *gorm.DB) (row models.DataSource, ok bool, err error) {
+	err = db.Where("type = ? AND enabled = ?", models.DataSourceTypeMusicBrainz, true).
+		Order("created_at, id").Limit(1).Find(&row).Error
+	return row, err == nil && row.ID != uuid.Nil, err
+}
+
+// ApplyMusicBrainzSource pushes the MusicBrainz source in use into the client: its
+// base URL, its contact (for the User-Agent) and its request rate. Each of them was
+// once editable and stored without being read — the rate until the limiter learned
+// it, the base URL and contact until this — so pointing a source at a local mirror
+// did nothing. It runs at startup and whenever a data source is created, edited or
+// deleted, so a change applies without a restart.
 //
-// An enabled MusicBrainz row with a non-positive rate is left at the current
-// interval by the setter rather than being treated as "unlimited".
-func ApplyDataSourceRateLimits(db *gorm.DB) {
+// With no source enabled, or a blank URL or a non-positive rate, the client falls
+// back to the public service at 1 req/s. Leaving the previous values in place
+// instead would keep asking a mirror that was just disabled until the next restart.
+func ApplyMusicBrainzSource(db *gorm.DB) {
 	if db == nil {
 		return
 	}
-
-	var row models.DataSource
-	err := db.Where("type = ? AND enabled = ?", models.DataSourceTypeMusicBrainz, true).First(&row).Error
+	row, ok, err := MusicBrainzSourceInUse(db)
 	if err != nil {
-		return // no enabled MusicBrainz source: keep the safe default
-	}
-	if row.RateLimit <= 0 {
+		logger.Log.Warnf("failed to read the MusicBrainz data source: %s", err.Error())
 		return
 	}
-	modules.SetMusicBrainzRateLimit(row.RateLimit)
-	logger.Log.Infof("MusicBrainz rate limit set to %.3g req/s from data source %q", row.RateLimit, row.Name)
+	if !ok {
+		modules.SetMusicBrainzEndpoint("", "")
+		modules.SetMusicBrainzRateLimit(defaultMusicBrainzRate)
+		logger.Log.Infof("no MusicBrainz data source is enabled; using %s at %g req/s", modules.DefaultMusicBrainzBaseURL, defaultMusicBrainzRate)
+		return
+	}
+	rate := row.RateLimit
+	if rate <= 0 {
+		rate = defaultMusicBrainzRate
+	}
+	modules.SetMusicBrainzEndpoint(row.BaseURL, row.Contact)
+	modules.SetMusicBrainzRateLimit(rate)
+	logger.Log.Infof("MusicBrainz requests go to %s at %.3g req/s, from data source %q",
+		nameOr(row.BaseURL, modules.DefaultMusicBrainzBaseURL), rate, row.Name)
+}
+
+// defaultMusicBrainzRate is what the public service permits.
+const defaultMusicBrainzRate = 1.0
+
+func nameOr(s, fallback string) string {
+	if s = strings.TrimSpace(s); s != "" {
+		return s
+	}
+	return fallback
 }
 
 // --- Managers ---------------------------------------------------------------

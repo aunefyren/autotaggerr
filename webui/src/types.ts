@@ -10,9 +10,12 @@ export interface DataSource {
   name: string;
   type: string;
   base_url: string;
+  contact: string;
   rate_limit: number;
   enabled: boolean;
   health: string;
+  /** The one MusicBrainz source the client reads — the oldest enabled. Set by the server. */
+  in_use?: boolean;
 }
 
 /**

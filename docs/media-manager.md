@@ -20,7 +20,7 @@ All four are user-configured DB rows, edited through the API/UI.
   never silently re-derived.
 - **Data source** — an external provider. `musicbrainz` is used by *both* managers for the tag
   payload, since even Lidarr mode fetches MB directly.
-- **Library** — a folder plus which manager, data source and tagger profile govern it.
+- **Library** — a folder plus which manager and tagger profile govern it.
 - **Tagger profile** — the tag-writing settings. One built-in engine consumes it, kept first-class
   so Plex/Jellyfin dialects and an NFO-sidecar writer can be added as siblings.
 
@@ -32,15 +32,40 @@ be used, so `models.DataSourceCategory` maps type → role:
 
 | Category | Types | Used for |
 |----------|-------|----------|
-| `metadata` | `musicbrainz` | the tag payload; the only kind a library may point at |
+| `metadata` | `musicbrainz` | the tag payload, for every library at once |
 | `fingerprint` | `acoustid` | suggesting an identity for an unmatched file ([fingerprinting.md](fingerprinting.md)) |
 | `artwork` | `coverartarchive`, `fanart` | covers and artist images on the browsing pages |
 
 Treating all four as one interchangeable list is what made the model confusing: a library's data
 source select offered AcoustID and fanart.tv, which were then accepted and silently ignored, because
-nothing but release metadata is ever read from that field. `checkLibraryDataSource` now rejects a
-non-metadata source with a 400 on both create and update, and the SPA filters the select to match
-(`dataSourceCategory` in `webui/src/types.ts` mirrors the Go map — keep the two in step).
+nothing but release metadata is ever read from that field. `checkLibraryDataSource` still rejects a
+non-metadata source with a 400 on both create and update (`dataSourceCategory` in
+`webui/src/types.ts` mirrors the Go map — keep the two in step).
+
+### MusicBrainz is one client
+
+There is one MusicBrainz client for the whole process, and one `musicbrainz` row drives it: the
+**oldest enabled** one (`components.MusicBrainzSourceInUse`). Its base URL, contact and request rate
+are pushed into `modules` by `components.ApplyMusicBrainzSource` — at startup, and whenever a
+MusicBrainz source is created, edited or deleted, so a change applies without a restart. A blank URL
+is the public service, a blank contact sends the project URL in the User-Agent, and a non-positive
+rate is 1 req/s. With no source enabled the client goes back to all three defaults rather than
+keeping the last values, so disabling a mirror stops it being asked. The endpoint sits behind an
+atomic pointer, since an edit swaps it while workers are mid-scan; nothing cached is dropped, as a
+mirror serves the same IDs with the same data.
+
+"Oldest" is the rule because with a local mirror beside the public service exactly one is read, and
+it has to be the same one on every start. The Data sources page marks it *In use* (the list carries
+`in_use`, so the SPA never re-derives the rule) and any other enabled row *Not used*. The URL and
+contact were editable and stored for a long time without being read — the page invited pointing a
+source at a mirror that was never asked — and the form offered no rate or contact field at all.
+
+Three fields
+once suggested otherwise — `Library.DataSourceID`, `Manager.DefaultDataSourceID` and `Library.Cron`
+(every library runs on the one processing schedule) — and were stored without ever being read. The UI
+no longer offers them and the MCP library list no longer reports one; the API still accepts them so
+an older client does not fail. Honouring them would mean a MusicBrainz client and cache per source
+and a scheduler per library — worth it only if a second metadata source is ever wanted for real.
 
 **Singletons.** There is exactly one AcoustID service, one Cover Art Archive and one fanart.tv, and
 only the first row of a type is ever looked up, so a second is dead config: `POST /data-sources`

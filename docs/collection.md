@@ -335,6 +335,17 @@ The per-artist endpoint refuses an artist the mirror does not govern (`managed_b
 nor `mixed`) rather than syncing nothing. A pass that reported *0 artists synced* would read as
 Lidarr having failed, when the truth is that this artist is not Lidarr's to answer for.
 
+**Every manager is read before anything is written.** An artist two Lidarr managers both list has
+one catalog view, so the pass gathers each manager's albums first and writes the artist once:
+snapshot, clear, upsert, re-key detection against the union. Clearing per manager let the second
+wipe what the first had just mirrored — an album only the first held dropped out on every pass — and
+the first manager's albums, having "left" from the second's point of view, paired with any
+same-titled album of the second's as a re-key between two albums that both exist. The same album in
+both managers is one row, so one listing wins: the one with more files, then the monitored one, so
+read order never decides what the page says. And nothing is retired from a partial listing — when
+any manager's artist list or this artist's albums could not be read, what was listed is written and
+nothing cleared, the same rule as the *unknown* report below.
+
 Three shared emitters keep the three call sites — the collection verb, the artist verb and the run's
 own stage — reporting identically: `SyncEventStats`, `SyncEventItems`, `SyncEventDetails` and
 `SyncSummaryLine`. They existed as three copies of the same four lines, which is how one verb ends

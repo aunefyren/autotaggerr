@@ -23,9 +23,11 @@ var (
 	lastQueryTime time.Time
 	queryMutex    sync.Mutex
 	rateLimit     = time.Second
-	// musicbrainzBaseURL is the API root; a package var so tests can point it at a
-	// local httptest server instead of the live service.
-	musicbrainzBaseURL              = "https://musicbrainz.org/ws/2"
+	// musicbrainzEndpoint is where MusicBrainz is asked and who is asking — the base
+	// URL and contact of the MusicBrainz data source in use (SetMusicBrainzEndpoint).
+	// Behind an atomic pointer because an edit on the Data sources page swaps it while
+	// workers are mid-scan; nil means the public service.
+	musicbrainzEndpoint             atomic.Pointer[mbEndpoint]
 	musicbrainzReleaseCachePath     = "config/mb_releases.json"
 	musicbrainzReleaseCacheDuration = 7 * 24 * time.Hour // 1 week (base TTL)
 	musicbrainzReleaseCacheJitter   = 7 * 24 * time.Hour // up to +1 week of jitter (7-14 days total)
@@ -82,6 +84,46 @@ func MusicbrainzResetStats() {
 	statCacheHits.Store(0)
 	statCoalesced.Store(0)
 	statFetches.Store(0)
+}
+
+// DefaultMusicBrainzBaseURL is the public MusicBrainz web service, used when no
+// MusicBrainz data source names another.
+const DefaultMusicBrainzBaseURL = "https://musicbrainz.org/ws/2"
+
+// mbEndpoint is one MusicBrainz service and the contact sent to it.
+type mbEndpoint struct {
+	baseURL, contact string
+}
+
+// SetMusicBrainzEndpoint points every MusicBrainz request at baseURL — a local
+// mirror, typically — and names contact in the User-Agent, as MusicBrainz asks of
+// every client. An empty baseURL is the public service, and an empty contact the
+// project URL. Takes effect on the next request; nothing cached is dropped, since a
+// mirror serves the same IDs with the same data.
+func SetMusicBrainzEndpoint(baseURL, contact string) {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	if baseURL == "" {
+		baseURL = DefaultMusicBrainzBaseURL
+	}
+	musicbrainzEndpoint.Store(&mbEndpoint{baseURL: baseURL, contact: strings.TrimSpace(contact)})
+}
+
+// musicbrainzBaseURL is the API root every request is built on.
+func musicbrainzBaseURL() string {
+	if e := musicbrainzEndpoint.Load(); e != nil {
+		return e.baseURL
+	}
+	return DefaultMusicBrainzBaseURL
+}
+
+// musicbrainzUserAgent is the User-Agent MusicBrainz's guidelines ask for:
+// application, version and a way to reach whoever runs it.
+func musicbrainzUserAgent(version string) string {
+	contact := "https://github.com/aunefyren/autotaggerr"
+	if e := musicbrainzEndpoint.Load(); e != nil && e.contact != "" {
+		contact = e.contact
+	}
+	return "Autotaggerr/" + version + " ( " + contact + " )"
 }
 
 // SetMusicBrainzRateLimit sets the minimum interval between MusicBrainz requests
@@ -311,7 +353,7 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	}
 
 	// do API request
-	url := fmt.Sprintf("%s/release/%s?inc=recordings+labels+artists+genres+tags+release-groups+isrcs&fmt=json", musicbrainzBaseURL, mbID)
+	url := fmt.Sprintf("%s/release/%s?inc=recordings+labels+artists+genres+tags+release-groups+isrcs&fmt=json", musicbrainzBaseURL(), mbID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		logger.Log.Error("failed to create new request. error: " + err.Error())
@@ -319,7 +361,7 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	}
 
 	// set User-Agent to comply with MB guidelines
-	req.Header.Set("User-Agent", "Autotaggerr/"+autotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
+	req.Header.Set("User-Agent", musicbrainzUserAgent(autotaggerrVersion))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

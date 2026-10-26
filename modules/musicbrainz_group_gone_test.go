@@ -137,7 +137,7 @@ func TestHTTPStatusReadsThroughRetry(t *testing.T) {
 	})
 
 	var out map[string]any
-	err := musicbrainzGetJSON(musicbrainzBaseURL+"/release-group/x", &out)
+	err := musicbrainzGetJSON(musicbrainzBaseURL()+"/release-group/x", &out)
 	if got := HTTPStatus(err); got != http.StatusNotFound {
 		t.Fatalf("HTTPStatus = %d, want 404 (err %v)", got, err)
 	}

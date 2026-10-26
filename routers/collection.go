@@ -775,7 +775,7 @@ func (a *API) artistRepair(artistMBID string) *artistRepairView {
 		return nil
 	}
 	view := &artistRepairView{Albums: albums}
-	if view.HeldBy, err = collection.RefreshTurnedOff(a.DB); err != nil {
+	if view.HeldBy, err = collection.RefreshTurnedOff(a.DB, artistMBID); err != nil {
 		logger.Log.Warnf("failed to read manager refresh settings: %s", err.Error())
 	}
 	var queued int64
@@ -804,7 +804,7 @@ func (a *API) repairArtistAlbums(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": "nothing to repair — every album of this artist resolves"})
 		return
 	}
-	if off, err := collection.RefreshTurnedOff(a.DB); err == nil && len(off) > 0 {
+	if off, err := collection.RefreshTurnedOff(a.DB, artist.MBID); err == nil && len(off) > 0 {
 		c.JSON(http.StatusConflict, gin.H{"error": "artist refresh is turned off for " + strings.Join(off, ", ") +
 			" — turn it on under Managers, or refresh the artist in Lidarr yourself"})
 		return

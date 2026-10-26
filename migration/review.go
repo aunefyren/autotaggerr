@@ -249,12 +249,12 @@ func (r *Review) fillReleaseGroup(db *gorm.DB) {
 }
 
 // holdForRefreshSetting turns a repairable row into a stuck one when nobody can be
-// asked: every Lidarr manager has artist refresh turned off, so the repair pass would
-// skip them all and the press would do nothing. The row then names the setting as its
+// asked: every Lidarr manager governing the artist has artist refresh turned off, so
+// the repair pass would skip them all and the press would do nothing. The row then names the setting as its
 // blocker, the way every other blocker names its cause. The hold itself is right — the
 // manager is the authority, and it still lists the album.
 func (r *Review) holdForRefreshSetting(db *gorm.DB) {
-	off, err := collection.RefreshTurnedOff(db)
+	off, err := collection.RefreshTurnedOff(db, r.ArtistMBID)
 	if err != nil || len(off) == 0 {
 		return
 	}

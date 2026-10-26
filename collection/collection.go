@@ -2106,6 +2106,13 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 		return stats, nil
 	}
 
+	// Every manager is read before anything is written. An artist two managers list
+	// has one catalog view, and writing it once per manager let the second wipe what
+	// the first had just mirrored: an album only the first held dropped out on every
+	// pass, and — from the second's point of view it had "left" — paired with any
+	// same-titled album of its own as a re-key.
+	listings := map[string]*artistListing{}
+	var listed []string
 	for _, m := range managers {
 		if strings.TrimSpace(m.LidarrBaseURL) == "" || strings.TrimSpace(m.LidarrAPIKey) == "" {
 			continue
@@ -2130,6 +2137,12 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			// rather than removed from it: an artist both managers hold must still be
 			// offered to the second one, exactly as before.
 			seen[la.ForeignArtistID] = true
+			l := listings[la.ForeignArtistID]
+			if l == nil {
+				l = &artistListing{name: la.Name}
+				listings[la.ForeignArtistID] = l
+				listed = append(listed, la.ForeignArtistID)
+			}
 			albums, err := client.GetArtistAlbums(la.ID)
 			if err != nil {
 				logger.Log.Warnf("failed to list Lidarr albums for %s: %s", la.Name, err.Error())
@@ -2137,6 +2150,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 					ArtistMBID: la.ForeignArtistID,
 					Error:      fmt.Sprintf("%s could not list their albums: %s", m.Name, err.Error()),
 				})
+				l.partial = true
 				continue
 			}
 
@@ -2151,44 +2165,63 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 				}
 				client.InvalidateArtistCaches(la.ID, albumIDs)
 			}
-			// Drop the previous catalog view for this artist so albums removed from
-			// Lidarr stop being listed. Done only after the fetch succeeded, and it
-			// leaves the disk columns intact.
-			before := catalogSnapshot(db, la.ForeignArtistID)
-			clearCatalogView(db, la.ForeignArtistID, la.Name)
+			l.fetched++
+			l.albums = append(l.albums, albums...)
+		}
+	}
 
-			for _, al := range albums {
-				if al.ForeignAlbumID == "" {
-					continue
-				}
-				// Lidarr's album type / release date; no MB secondary types here.
-				_ = upsertReleaseGroup(db, rgWrite{
-					mbID: al.ForeignAlbumID, artistMBID: la.ForeignArtistID, title: al.Title,
-					primary: al.AlbumType, date: al.ReleaseDate,
-					catalog: &catalogState{
-						ownedTracks: al.Statistics.TrackFileCount,
-						totalTracks: al.Statistics.TrackCount,
-						monitored:   al.Monitored,
-						releaseMBID: monitoredRelease(al),
-					},
-				})
-				stats.Groups++
-			}
+	// Retiring needs the whole listing. A manager that could not be read may hold any
+	// album the others do not list, so when one failed — its artist list, or this
+	// artist's albums — what was listed is written and nothing is cleared. The same
+	// rule as the Unknown report below: missing from a listing that was never fetched
+	// is not missing.
+	complete := len(stats.Failures) == 0
+	for _, artistMBID := range listed {
+		l := listings[artistMBID]
+		if l.fetched == 0 {
+			continue
+		}
+		albums := mergeListings(l.albums)
+		retire := complete && !l.partial
+
+		// Drop the previous catalog view for this artist so albums removed from
+		// Lidarr stop being listed. It leaves the disk columns intact.
+		var before []catalogEntry
+		if retire {
+			before = catalogSnapshot(db, artistMBID)
+			clearCatalogView(db, artistMBID, l.name)
+		}
+
+		for _, al := range albums {
+			// Lidarr's album type / release date; no MB secondary types here.
+			_ = upsertReleaseGroup(db, rgWrite{
+				mbID: al.ForeignAlbumID, artistMBID: artistMBID, title: al.Title,
+				primary: al.AlbumType, date: al.ReleaseDate,
+				catalog: &catalogState{
+					ownedTracks: al.Statistics.TrackFileCount,
+					totalTracks: al.Statistics.TrackCount,
+					monitored:   al.Monitored,
+					releaseMBID: monitoredRelease(al),
+				},
+			})
+			stats.Groups++
+		}
+		if retire {
 			for _, rk := range detectRekeys(before, albums) {
 				if recordRekey(db, rk) {
 					stats.Rekeyed = append(stats.Rekeyed, rk.oldMBID)
 				}
 			}
-			// Records that this artist has actually been put to a manager. It is what
-			// CatalogChecked reads, so an album with no catalog row can be reported as
-			// "the manager does not have this" rather than "we never asked".
-			now := time.Now()
-			if err := db.Model(&models.CollectionArtist{}).Where("mb_id = ?", la.ForeignArtistID).
-				Updates(map[string]any{"last_synced_at": now, "manager_missing_at": nil}).Error; err != nil {
-				logger.Log.Warnf("failed to set last_synced_at for artist %s: %s", la.ForeignArtistID, err.Error())
-			}
-			stats.ArtistsSynced++
 		}
+		// Records that this artist has actually been put to a manager. It is what
+		// CatalogChecked reads, so an album with no catalog row can be reported as
+		// "the manager does not have this" rather than "we never asked".
+		now := time.Now()
+		if err := db.Model(&models.CollectionArtist{}).Where("mb_id = ?", artistMBID).
+			Updates(map[string]any{"last_synced_at": now, "manager_missing_at": nil}).Error; err != nil {
+			logger.Log.Warnf("failed to set last_synced_at for artist %s: %s", artistMBID, err.Error())
+		}
+		stats.ArtistsSynced++
 	}
 
 	// Artists the collection files under Lidarr that no Lidarr listed.
@@ -2631,6 +2664,45 @@ func clearCatalogView(db *gorm.DB, artistMBID, label string) {
 		}).Error; err != nil {
 		logger.Log.Warnf("failed to reset catalog state for %s: %s", label, err.Error())
 	}
+}
+
+// artistListing is what every manager listed for one artist in a mirror pass.
+type artistListing struct {
+	name string
+	// albums is every manager's albums, concatenated; mergeListings folds the
+	// duplicates.
+	albums []models.LidarrAlbum
+	// fetched counts the managers whose album listing arrived, and partial records
+	// that at least one failed — which is what keeps the pass from retiring anything.
+	fetched int
+	partial bool
+}
+
+// mergeListings folds the albums several managers listed into one per release-group,
+// in first-listed order. The same album in two managers is one row, so one listing
+// has to win: the one holding more files, then the monitored one. Read order must not
+// decide what the page says, and the listing with the files is the one the album's
+// owned count describes.
+func mergeListings(albums []models.LidarrAlbum) []models.LidarrAlbum {
+	at := map[string]int{}
+	out := make([]models.LidarrAlbum, 0, len(albums))
+	for _, al := range albums {
+		if al.ForeignAlbumID == "" {
+			continue
+		}
+		i, ok := at[al.ForeignAlbumID]
+		if !ok {
+			at[al.ForeignAlbumID] = len(out)
+			out = append(out, al)
+			continue
+		}
+		cur := out[i]
+		if al.Statistics.TrackFileCount > cur.Statistics.TrackFileCount ||
+			(al.Statistics.TrackFileCount == cur.Statistics.TrackFileCount && al.Monitored && !cur.Monitored) {
+			out[i] = al
+		}
+	}
+	return out
 }
 
 // syncEmptyReason works out why a mirror pass found no artist to ask Lidarr about.

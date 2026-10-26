@@ -10,7 +10,7 @@ import (
 // Test seams. These are exported production symbols that exist only for tests in
 // *other* packages, which is a trade worth naming.
 //
-// `musicbrainzBaseURL` and the cache maps are unexported, so until now only tests
+// The MusicBrainz endpoint and the cache maps are unexported, so until now only tests
 // inside `modules` could stand MusicBrainz up against an httptest server. Anything
 // outside it — the scan runner, the refresh verb, the API handlers — could only be
 // covered on paths that return before the external call, which is documented in
@@ -27,11 +27,22 @@ import (
 func SetMusicBrainzBaseURLForTest(t *testing.T, baseURL string) {
 	t.Helper()
 
-	original := musicbrainzBaseURL
-	musicbrainzBaseURL = baseURL
-	t.Cleanup(func() { musicbrainzBaseURL = original })
-
+	useMusicBrainzBaseURL(t, baseURL)
 	ResetMusicBrainzCachesForTest(t)
+}
+
+// useMusicBrainzBaseURL swaps the endpoint for the test's duration, keeping its
+// contact, and puts the previous one back — nil included — on cleanup. The URL is
+// stored as given, so a test can hand it one SetMusicBrainzEndpoint would tidy.
+func useMusicBrainzBaseURL(t *testing.T, baseURL string) {
+	t.Helper()
+	previous := musicbrainzEndpoint.Load()
+	next := mbEndpoint{baseURL: baseURL}
+	if previous != nil {
+		next.contact = previous.contact
+	}
+	musicbrainzEndpoint.Store(&next)
+	t.Cleanup(func() { musicbrainzEndpoint.Store(previous) })
 }
 
 // ResetMusicBrainzCachesForTest empties the release and entity caches and clears

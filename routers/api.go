@@ -7,6 +7,7 @@ import (
 	"github.com/aunefyren/autotaggerr/artwork"
 	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/collection"
+	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/mirror"
@@ -496,13 +497,30 @@ func (a *API) listManagers(c *gin.Context) {
 	c.JSON(http.StatusOK, rows)
 }
 
+// dataSourceView is a data source as the Data sources page lists it. InUse marks the
+// one MusicBrainz source the client reads; the rule that picks it lives in
+// components.MusicBrainzSourceInUse and is not repeated in the SPA.
+type dataSourceView struct {
+	models.DataSource
+	InUse bool `json:"in_use,omitempty"`
+}
+
 func (a *API) listDataSources(c *gin.Context) {
 	var rows []models.DataSource
 	if err := a.DB.Order("name").Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list data sources"})
 		return
 	}
-	c.JSON(http.StatusOK, rows)
+	inUse, ok, err := components.MusicBrainzSourceInUse(a.DB)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list data sources"})
+		return
+	}
+	out := make([]dataSourceView, len(rows))
+	for i, r := range rows {
+		out[i] = dataSourceView{DataSource: r, InUse: ok && r.ID == inUse.ID}
+	}
+	c.JSON(http.StatusOK, out)
 }
 
 func (a *API) listTaggerProfiles(c *gin.Context) {

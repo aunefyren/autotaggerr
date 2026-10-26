@@ -300,7 +300,7 @@ func TestOIDCFullLoginCreatesAndAuthenticatesAUser(t *testing.T) {
 func TestOIDCLoginLinksAnExistingUser(t *testing.T) {
 	r, api, idp, provider := oidcSetup(t, false)
 
-	hash, _ := auth.HashPassword("pw")
+	hash := testPasswordHash()
 	existing := models.User{Username: "existing", Email: idp.email, PasswordHash: hash, Role: models.UserRoleAdmin}
 	if err := api.DB.Create(&existing).Error; err != nil {
 		t.Fatalf("create user: %v", err)
@@ -344,7 +344,7 @@ func TestOIDCLoginRejectsUnverifiedEmail(t *testing.T) {
 	r, api, idp, provider := oidcSetup(t, false)
 	idp.emailVerified = false
 
-	hash, _ := auth.HashPassword("pw")
+	hash := testPasswordHash()
 	if err := api.DB.Create(&models.User{
 		Username: "victim", Email: idp.email, PasswordHash: hash, Role: models.UserRoleAdmin,
 	}).Error; err != nil {

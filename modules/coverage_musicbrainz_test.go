@@ -117,7 +117,7 @@ func TestGetMusicBrainzArtistOnceServesStale(t *testing.T) {
 
 func TestGetMusicBrainzArtistOnceBadBaseURL(t *testing.T) {
 	withMockMB(t, statusHandler(http.StatusOK, "{}"))
-	musicbrainzBaseURL = "http://bad host"
+	useMusicBrainzBaseURL(t, "http://bad host")
 	if _, err := getMusicBrainzArtistOnce(coverageArtistID); err == nil {
 		t.Error("an unparseable base URL fetched an artist")
 	}

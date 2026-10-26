@@ -192,8 +192,8 @@ func main() {
 	// the log at startup, once, rather than first appearing as the first FLAC failing.
 	modules.MetaflacAvailable()
 
-	// Apply the configured MusicBrainz request rate to the limiter.
-	components.ApplyDataSourceRateLimits(db)
+	// Point the MusicBrainz client at the data source in use: URL, contact, rate.
+	components.ApplyMusicBrainzSource(db)
 
 	// Close out any event left "running" by a previous process. Must run before the
 	// schedules and startup jobs below create new running events, so it only touches

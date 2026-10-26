@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/settings"
@@ -40,7 +39,7 @@ func settingsFixture(t *testing.T) {
 // sides with the same routes.
 func userToken(t *testing.T, r *gin.Engine, db *gorm.DB) string {
 	t.Helper()
-	hash, _ := auth.HashPassword("pw")
+	hash := testPasswordHash()
 	if err := db.Create(&models.User{Username: "viewer", PasswordHash: hash, Role: "user"}).Error; err != nil {
 		t.Fatalf("create user: %v", err)
 	}

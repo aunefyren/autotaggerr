@@ -55,7 +55,8 @@ export default function DataSources() {
       </div>
       <p className="muted" style={{ margin: 0, maxWidth: "68ch" }}>
         Where release metadata comes from. Every manager reads MusicBrainz to fetch the full release
-        for tagging, and a library can be pointed at a specific one. Fingerprinting and artwork are
+        for tagging, through one client shared by every library: with a local mirror beside the
+        public service, the oldest enabled source is the one asked. Fingerprinting and artwork are
         separate services with their own panels below — they never supply tags.
       </p>
 
@@ -90,7 +91,17 @@ export default function DataSources() {
                     <td className="mono" style={{ fontSize: 12 }}>{d.type}</td>
                     <td><span className="path">{d.base_url || "—"}</span></td>
                     <td className="num">{d.rate_limit}/s</td>
-                    <td>{d.enabled ? <Pill kind="ok">Enabled</Pill> : <Pill kind="off">Disabled</Pill>}</td>
+                    <td>
+                      {!d.enabled ? (
+                        <Pill kind="off">Disabled</Pill>
+                      ) : d.in_use ? (
+                        <Pill kind="ok">In use</Pill>
+                      ) : (
+                        <span title="Only one MusicBrainz source is read: the oldest enabled. Disable that one to use this.">
+                          <Pill kind="warn">Not used</Pill>
+                        </span>
+                      )}
+                    </td>
                     <td>
                       <div className="row" style={{ justifyContent: "flex-end" }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => setEditing(d)}>Edit</button>
@@ -103,8 +114,8 @@ export default function DataSources() {
           </div>
         )}
         <span className="dim" style={{ fontSize: 11 }}>
-          The request rate applies to MusicBrainz calls across the whole app. Raising it above 1/s is
-          only appropriate against a local mirror.
+          The source in use sets the base URL, contact and request rate for MusicBrainz calls across the
+          whole app. Raising the rate above 1/s is only appropriate against a local mirror.
         </span>
       </section>
 
@@ -259,6 +270,9 @@ function DataSourceForm({
   const type = initial?.type ?? fixedType ?? "musicbrainz";
   const [name, setName] = useState(initial?.name ?? DATA_SOURCE_LABEL[type] ?? "");
   const [baseUrl, setBaseUrl] = useState(initial?.base_url ?? "");
+  const [contact, setContact] = useState(initial?.contact ?? "");
+  const [rate, setRate] = useState(initial?.rate_limit ?? 1);
+  const musicbrainz = type === "musicbrainz";
   const [apiKey, setApiKey] = useState("");
   const [enabled, setEnabled] = useState(initial?.enabled ?? true);
   const [busy, setBusy] = useState(false);
@@ -271,6 +285,10 @@ function DataSourceForm({
       // Only send the key when one was typed: the field is write-only, so an empty
       // box means "leave it as it is", never "clear it".
       if (apiKey.trim()) body.api_key = apiKey.trim();
+      if (musicbrainz) {
+        body.contact = contact.trim();
+        body.rate_limit = rate;
+      }
 
       if (editing) await api.put(`/data-sources/${initial!.id}`, body);
       else await api.post("/data-sources", body);
@@ -325,7 +343,47 @@ function DataSourceForm({
             onChange={(e) => setBaseUrl(e.target.value)}
             placeholder="Leave empty for the default"
           />
+          {musicbrainz && (
+            <span className="dim" style={{ fontSize: 11 }}>
+              The web service root, e.g. <span className="mono">http://mirror:5000/ws/2</span> for a local mirror.
+              Empty means <span className="mono">https://musicbrainz.org/ws/2</span>.
+            </span>
+          )}
         </div>
+
+        {/* The two settings MusicBrainz itself asks about. Only on its rows: no other
+            provider is throttled or identified this way. */}
+        {musicbrainz && (
+          <div className="row" style={{ gap: 12, alignItems: "flex-start" }}>
+            <div className="field" style={{ flex: 2 }}>
+              <label className="flabel">Contact</label>
+              <input
+                className="input"
+                value={contact}
+                onChange={(e) => setContact(e.target.value)}
+                placeholder="you@example.com"
+              />
+              <span className="dim" style={{ fontSize: 11 }}>
+                Sent in the User-Agent, as MusicBrainz asks. Empty sends the project URL.
+              </span>
+            </div>
+            <div className="field" style={{ flex: 1 }}>
+              <label className="flabel">Requests per second</label>
+              <input
+                className="input"
+                type="number"
+                min={0.1}
+                step={0.1}
+                value={rate > 0 ? rate : ""}
+                onChange={(e) => setRate(e.target.value === "" ? 0 : Number(e.target.value))}
+                placeholder="1"
+              />
+              <span className="dim" style={{ fontSize: 11 }}>
+                1 for the public service. Higher only against a mirror.
+              </span>
+            </div>
+          </div>
+        )}
 
         <label className="row" style={{ gap: 8, cursor: "pointer" }}>
           <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} />

@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { BPMWrite, DataSource, Library, Manager, TaggerProfile, TempoStatus, dataSourceCategory } from "../types";
+import { BPMWrite, Library, Manager, TaggerProfile, TempoStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { TempoAnalysis } from "../components/TempoAnalysis";
@@ -11,7 +11,6 @@ import { useSetup } from "../setup";
 
 interface Options {
   managers: Manager[];
-  dataSources: DataSource[];
   profiles: TaggerProfile[];
 }
 
@@ -19,7 +18,6 @@ export default function Libraries() {
   const toast = useToast();
   const libs = useFetch<Library[]>(() => api.get("/libraries"));
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
-  const dataSources = useFetch<DataSource[]>(() => api.get("/data-sources"));
   const profiles = useFetch<TaggerProfile[]>(() => api.get("/tagger-profiles"));
 
   const setup = useSetup();
@@ -34,7 +32,6 @@ export default function Libraries() {
 
   const options: Options = {
     managers: managers.data ?? [],
-    dataSources: dataSources.data ?? [],
     profiles: profiles.data ?? [],
   };
   const managerName = (id: string | null) => (id ? options.managers.find((m) => m.id === id)?.name : undefined);
@@ -265,9 +262,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const editing = !!initial;
   const [name, setName] = useState(initial?.name ?? "");
   const [path, setPath] = useState(initial?.path ?? "");
-  const [cron, setCron] = useState(initial?.cron ?? "");
   const [managerId, setManagerId] = useState(initial?.manager_id ?? "");
-  const [dataSourceId, setDataSourceId] = useState(initial?.data_source_id ?? "");
   const [taggerProfileId, setTaggerProfileId] = useState(initial?.tagger_profile_id ?? "");
   const [useAcoustID, setUseAcoustID] = useState(initial?.use_acoustid ?? false);
   const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
@@ -286,11 +281,9 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
         name, path, use_acoustid: useAcoustID, analyse_tempo: analyseTempo,
         bpm_write: bpmWrite, bpm_min_confidence: bpmFloor,
       };
-      if (editing) body.cron = cron;
       // Null, not absent: "No manager" and "Default" are choices, and absent would keep
       // the old one — an edit back to Default used to be silently ignored.
       body.manager_id = managerId || null;
-      body.data_source_id = dataSourceId || null;
       body.tagger_profile_id = taggerProfileId || null;
 
       if (editing) await api.put(`/libraries/${initial!.id}`, body);
@@ -337,22 +330,10 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
           </Note>
         )}
 
-        {/* Metadata providers only. Fingerprinting and artwork sources live in the same
-            table but cannot supply tags, and offering them here was the reason this
-            field read as nonsense. The API rejects them too. */}
-        <div className="field">
-          <label className="flabel">Metadata source</label>
-          <select className="select" value={dataSourceId} onChange={(e) => setDataSourceId(e.target.value)}>
-            <option value="">Default (first configured)</option>
-            {options.dataSources
-              .filter((d) => dataSourceCategory(d.type) === "metadata")
-              .map((d) => (
-                <option key={d.id} value={d.id}>{d.name}</option>
-              ))}
-          </select>
-          <span className="dim" style={{ fontSize: 11 }}>Where this library's release metadata is fetched from.</span>
-        </div>
-
+        {/* No metadata source or schedule here. Both were once fields on the library and
+            were stored without ever being read: MusicBrainz is one process-wide client
+            (Data sources), and libraries are processed on the one schedule under Settings.
+            A control that changes nothing reads as a setting that does not work. */}
         <div className="field">
           <label className="flabel">Tagger profile</label>
           <select className="select" value={taggerProfileId} onChange={(e) => setTaggerProfileId(e.target.value)}>
@@ -427,13 +408,6 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
           beat grid was: steady dance and pop measures 0.85 and up, clearly wrong readings near 0.1. It
           cannot tell half or double time from the real tempo. A BPM another tool wrote is never cleared.
         </span>
-
-        {editing && (
-          <div className="field">
-            <label className="flabel">Processing schedule (cron)</label>
-            <input className="input mono" value={cron} onChange={(e) => setCron(e.target.value)} placeholder="0 0 18 * * 7" />
-          </div>
-        )}
 
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost btn-sm" onClick={onClose}>Cancel</button>

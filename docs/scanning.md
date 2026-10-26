@@ -958,10 +958,11 @@ imply one.
   fetches while the rest wait on its result. A failed fetch is not cached, so the next call retries.
 - All MusicBrainz calls go through `RateLimit()` (default 1 req/s, global). Respect it when adding
   new ones. AcoustID has its own, separate limiter.
-- The rate is **read from the MusicBrainz data source row's `rate_limit`** by
-  `components.ApplyDataSourceRateLimits`, applied at startup and again when the source is edited
-  (no restart needed). A non-positive value is ignored rather than treated as "unlimited", so a
-  blank config cannot remove the throttle. Raising it above ~1 req/s is only appropriate against a
+- The rate is **read from the MusicBrainz data source in use** (its `rate_limit`) by
+  `components.ApplyMusicBrainzSource`, applied at startup and again when a MusicBrainz source is
+  created, edited or deleted (no restart needed), together with its base URL and contact — see
+  [media-manager.md](media-manager.md#musicbrainz-is-one-client). A non-positive value means the
+  default 1 req/s rather than "unlimited", so a blank config cannot remove the throttle. Raising it above ~1 req/s is only appropriate against a
   local MusicBrainz mirror — the public service will start returning 503s.
 - Every run reports what its lookups cost upstream, as `mb_lookups` on the `process` event and in the
   log: served from cache, coalesced onto another goroutine's fetch, or actually fetched. Only the

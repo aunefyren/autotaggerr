@@ -6,10 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/artwork"
-	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/database"
 	"github.com/aunefyren/autotaggerr/mirror"
@@ -18,6 +18,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/sirupsen/logrus"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/gorm"
 
 	"github.com/aunefyren/autotaggerr/logger"
@@ -38,7 +39,7 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	hash, _ := auth.HashPassword("pw")
+	hash := testPasswordHash()
 	admin := models.User{Username: "admin", PasswordHash: hash, Role: "admin"}
 	if err := db.Create(&admin).Error; err != nil {
 		t.Fatalf("create user: %v", err)
@@ -65,6 +66,19 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 	api.Register(r.Group("/api/v1"))
 	return r, api
 }
+
+// testPasswordHash is "pw" hashed once, at bcrypt's minimum cost. Every test signs a
+// user in, and at the default cost one hash plus one check takes well over a second
+// under -race — across three hundred tests that alone ran the package past go test's
+// ten-minute timeout. CheckPassword reads the cost from the hash, so logins against it
+// are as cheap as the hash; auth's own tests still cover the real cost.
+var testPasswordHash = sync.OnceValue(func() string {
+	h, err := bcrypt.GenerateFromPassword([]byte("pw"), bcrypt.MinCost)
+	if err != nil {
+		panic(err)
+	}
+	return string(h)
+})
 
 // storeAPIKey stores a known key the way auth.CreateAPIKey would, so a test can
 // present it.

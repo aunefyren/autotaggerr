@@ -148,6 +148,7 @@ func (a *API) releaseMigrationFiles(c *gin.Context) {
 
 	var native []uuid.UUID
 	managed := 0
+	var managedLibraries []uuid.UUID
 	editable := map[uuid.UUID]bool{}
 	for _, item := range items {
 		ok, seen := editable[item.LibraryID]
@@ -163,6 +164,7 @@ func (a *API) releaseMigrationFiles(c *gin.Context) {
 			native = append(native, item.ID)
 		} else {
 			managed++
+			managedLibraries = append(managedLibraries, item.LibraryID)
 		}
 	}
 
@@ -171,7 +173,7 @@ func (a *API) releaseMigrationFiles(c *gin.Context) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 			return
 		}
-		if off, err := collection.RefreshTurnedOff(a.DB); err == nil && len(off) > 0 {
+		if off, err := collection.RefreshTurnedOffIn(a.DB, managedLibraries); err == nil && len(off) > 0 {
 			c.JSON(http.StatusConflict, gin.H{"error": "these files are the manager's, and artist refresh is turned off for " +
 				strings.Join(off, ", ") + " — turn it on under Managers, or refresh the artist in Lidarr and re-correlate it"})
 			return

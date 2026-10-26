@@ -9,6 +9,7 @@ import (
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -200,22 +201,62 @@ func lidarrConfigured(m models.Manager) bool {
 	return strings.TrimSpace(m.LidarrBaseURL) != "" && strings.TrimSpace(m.LidarrAPIKey) != ""
 }
 
-// RefreshTurnedOff names the managers holding a repair back by their own setting: when
-// every enabled, configured Lidarr manager has artist refresh turned off, the repair
-// pass has nobody to ask, and these are the names a blocker should give. It returns
-// nil when at least one manager can be asked — the pass asks that one — and when
-// there is no Lidarr manager at all, where the setting is not what is in the way.
+// RefreshTurnedOff names the managers holding one artist's repair back by their own
+// setting: when every enabled, configured Lidarr manager governing the artist has
+// artist refresh turned off, the repair pass has nobody to ask, and these are the
+// names a blocker should give. It returns nil when at least one of them can be asked —
+// the pass asks that one — and when no Lidarr manager is involved, where the setting
+// is not what is in the way.
 //
 // It exists so that "Ask the manager" is never offered for a question nobody will
 // put: the pass skips those managers with a debug line, and the button used to
 // queue a repair that silently did nothing.
-func RefreshTurnedOff(db *gorm.DB) ([]string, error) {
+//
+// The managers governing an artist are those of the libraries holding its files. The
+// question used to go to every Lidarr manager, so with refresh off on the one holding
+// the artist and on on another, the button was offered and did nothing — the very
+// case this check is for. An artist with no files in any Lidarr library falls back to
+// every manager: its ghost albums are catalog rows, and any manager may be the one
+// listing them.
+func RefreshTurnedOff(db *gorm.DB, artistMBID string) ([]string, error) {
 	if db == nil {
 		return nil, nil
 	}
+	var libraries []uuid.UUID
+	if artistMBID != "" {
+		if err := db.Model(&models.CollectionReleaseCopy{}).Where("artist_mb_id = ?", artistMBID).
+			Distinct().Pluck("library_id", &libraries).Error; err != nil {
+			return nil, err
+		}
+	}
+	return RefreshTurnedOffIn(db, libraries)
+}
+
+// RefreshTurnedOffIn is RefreshTurnedOff for the managers of these libraries, for a
+// caller that already holds the files in question. Libraries no Lidarr manager
+// governs are ignored; when none is left, every Lidarr manager is asked about.
+func RefreshTurnedOffIn(db *gorm.DB, libraries []uuid.UUID) ([]string, error) {
+	if db == nil {
+		return nil, nil
+	}
+	q := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).Order("name")
+	if len(libraries) > 0 {
+		var governing []uuid.UUID
+		if err := db.Model(&models.Library{}).Where("id IN ? AND manager_id IS NOT NULL", libraries).
+			Distinct().Pluck("manager_id", &governing).Error; err != nil {
+			return nil, err
+		}
+		var lidarr int64
+		if err := db.Model(&models.Manager{}).Where("id IN ? AND type = ?", governing, models.ManagerTypeLidarr).
+			Count(&lidarr).Error; err != nil {
+			return nil, err
+		}
+		if lidarr > 0 {
+			q = q.Where("id IN ?", governing)
+		}
+	}
 	var managers []models.Manager
-	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).
-		Order("name").Find(&managers).Error; err != nil {
+	if err := q.Find(&managers).Error; err != nil {
 		return nil, err
 	}
 	var off []string

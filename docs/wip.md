@@ -172,28 +172,18 @@ still open:
   counted as tracks, the catalog comparison, the library on every collection surface, edition naming
   tokens, Clean/The tokens, the import's `other_edition` guard, authority per library (wants,
   editions and following for one library, library tabs on the artist and album pages), the attach
-  gate honouring detach, `library` on the MCP read tools and Add artist needing a native library
-  have shipped. Still open:
-  - *Global settings across managers — audited, not fixed.* Process-wide settings that are genuinely
+  gate honouring detach, `library` on the MCP read tools, Add artist needing a native library, the
+  repair hold asking the artist's own managers and the catalog mirror merging several managers have
+  shipped. Still open:
+  - *Global settings across managers — one left.* Process-wide settings that are genuinely
     process-wide (concurrency, mirror, artwork, MCP, retention, tempo schedule, migration review
-    flags) are fine, as is everything already read from the library row (tagger profile, the scan
-    loop's per-library manager). The Lidarr follower's scope was one such place and is fixed
-    ([scanning.md](scanning.md#following-lidarr)). Three remain:
+    flags, MusicBrainz itself) are fine, as is everything read from the library row. The Lidarr
+    follower's scope, the repair hold, the catalog mirror across two managers, the dead
+    data-source/cron fields and the MusicBrainz source's URL and contact are fixed. What remains:
     - **Plex refreshes the first music section.** `FindMusicSectionID` (`modules/plex.go`) takes the
       first `artist` section, and the album-key cache is keyed by title alone, so a second library in
       another Plex section is refreshed wrongly or not at all, and two same-titled albums share a key.
       Belongs with the Plex-per-library note above.
-    - **`RefreshTurnedOff` asks every Lidarr manager, not the artist's.** (`collection/repair.go`,
-      used by the migration review and `releaseMigrationFiles`.) With refresh off on the manager
-      that holds the artist and on on another, the review still offers *Ask the manager*, and the
-      repair it queues does nothing — the dead button that check exists to prevent.
-    - **Two library fields are stored and never read.** `Library.DataSourceID` /
-      `Manager.DefaultDataSourceID` (MusicBrainz is process-wide: a hardcoded base URL, the rate from
-      an arbitrary enabled source) and `Library.Cron` (editable on the Libraries page, never
-      scheduled). Honouring them is large; hiding them and saying MusicBrainz is process-wide is small.
-    - Unverified, worth its own check: with two Lidarr managers, `clearCatalogView` clears
-      `in_catalog` per artist regardless of which manager wrote it, so a sync of the manager that does
-      not list the artist may clear what the other mirrored.
   - *The collection list does not recount per library.* Its library filter narrows which artists are
     listed; the owned/missing/mismatch columns stay all-library. The artist page reads one library
     on its tabs. Recounting the list needs `LibraryHoldings` per artist, which nothing has asked for.

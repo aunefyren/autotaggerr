@@ -151,7 +151,6 @@ type mcpLibraryRow struct {
 	Path          string     `json:"path"`
 	Enabled       bool       `json:"enabled"`
 	Manager       string     `json:"manager,omitempty" jsonschema:"the correlation authority; empty means the native manager"`
-	DataSource    string     `json:"data_source,omitempty"`
 	TaggerProfile string     `json:"tagger_profile,omitempty"`
 	UseAcoustID   bool       `json:"use_acoustid"`
 	AnalyseTempo  bool       `json:"analyse_tempo"`
@@ -299,7 +298,7 @@ func (a *API) mcpGetConfiguration(_ context.Context, _ *mcp.CallToolRequest, _ m
 	for _, l := range libraries {
 		out.Libraries = append(out.Libraries, mcpLibraryRow{
 			ID: l.ID.String(), Name: l.Name, Path: l.Path, Enabled: l.Enabled,
-			Manager: nameOf(l.ManagerID), DataSource: nameOf(l.DataSourceID), TaggerProfile: nameOf(l.TaggerProfileID),
+			Manager: nameOf(l.ManagerID), TaggerProfile: nameOf(l.TaggerProfileID),
 			UseAcoustID: l.UseAcoustID, AnalyseTempo: l.AnalyseTempo, LastScan: l.LastScan,
 		})
 	}

@@ -111,8 +111,16 @@ func (in dataSourceInput) apply(ds *models.DataSource) {
 	}
 }
 
-func (a *API) getDataSource(c *gin.Context)    { getEntity[models.DataSource](a, c) }
-func (a *API) deleteDataSource(c *gin.Context) { deleteEntity[models.DataSource](a, c) }
+func (a *API) getDataSource(c *gin.Context) { getEntity[models.DataSource](a, c) }
+
+// deleteDataSource re-applies the MusicBrainz source afterwards: deleting the mirror
+// in use has to send the next request somewhere that still exists.
+func (a *API) deleteDataSource(c *gin.Context) {
+	deleteEntity[models.DataSource](a, c)
+	if c.Writer.Status() == http.StatusNoContent {
+		components.ApplyMusicBrainzSource(a.DB)
+	}
+}
 
 func (a *API) createDataSource(c *gin.Context) {
 	var in dataSourceInput
@@ -149,6 +157,9 @@ func (a *API) createDataSource(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "create failed"})
 		return
 	}
+	if ds.Type == models.DataSourceTypeMusicBrainz {
+		components.ApplyMusicBrainzSource(a.DB)
+	}
 	c.JSON(http.StatusCreated, ds)
 }
 
@@ -183,9 +194,11 @@ func (a *API) updateDataSource(c *gin.Context) {
 	if ds.Type == models.DataSourceTypeFanart || ds.Type == models.DataSourceTypeCoverArtArchive {
 		modules.ResetArtworkNegativeCache()
 	}
-	// A changed request rate has to reach the limiter, which holds it in memory.
+	// The client holds the URL, contact and rate in memory. Applied for any
+	// MusicBrainz row, not only the one in use: enabling or disabling one can change
+	// which row that is.
 	if ds.Type == models.DataSourceTypeMusicBrainz {
-		components.ApplyDataSourceRateLimits(a.DB)
+		components.ApplyMusicBrainzSource(a.DB)
 	}
 	c.JSON(http.StatusOK, ds)
 }

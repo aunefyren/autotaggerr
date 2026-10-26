@@ -23,9 +23,7 @@ func withMockMB(t *testing.T, handler http.HandlerFunc) *httptest.Server {
 	srv := httptest.NewServer(handler)
 	t.Cleanup(srv.Close)
 
-	orig := musicbrainzBaseURL
-	musicbrainzBaseURL = srv.URL
-	t.Cleanup(func() { musicbrainzBaseURL = orig })
+	useMusicBrainzBaseURL(t, srv.URL)
 
 	musicbrainzReleaseCacheMu.Lock()
 	musicbrainzReleaseCache = map[string]models.CachedMusicBrainzRelease{}

@@ -85,13 +85,13 @@ func fetchArtistReleaseGroupPage(artistID string, offset int) (models.MusicBrain
 	}
 
 	url := fmt.Sprintf("%s/release-group?artist=%s&limit=%d&offset=%d&fmt=json",
-		musicbrainzBaseURL, artistID, artistReleaseGroupPageSize, offset)
+		musicbrainzBaseURL(), artistID, artistReleaseGroupPageSize, offset)
 
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return parsed, err
 	}
-	req.Header.Set("User-Agent", "Autotaggerr/"+files.ConfigFile.AutotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
+	req.Header.Set("User-Agent", musicbrainzUserAgent(files.ConfigFile.AutotaggerrVersion))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -156,12 +156,12 @@ func getMusicBrainzArtistOnce(artistID string) (models.MusicBrainzArtistLookup, 
 		return models.MusicBrainzArtistLookup{}, err
 	}
 
-	url := fmt.Sprintf("%s/artist/%s?inc=genres+tags&fmt=json", musicbrainzBaseURL, artistID)
+	url := fmt.Sprintf("%s/artist/%s?inc=genres+tags&fmt=json", musicbrainzBaseURL(), artistID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return models.MusicBrainzArtistLookup{}, err
 	}
-	req.Header.Set("User-Agent", "Autotaggerr/"+files.ConfigFile.AutotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
+	req.Header.Set("User-Agent", musicbrainzUserAgent(files.ConfigFile.AutotaggerrVersion))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

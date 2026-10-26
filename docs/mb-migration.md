@@ -453,9 +453,9 @@ Constraints, all of which are the point rather than caution for its own sake:
   [Approving a blocked album](#approving-a-blocked-album).
 - **Opt-out per manager** (`Manager.LidarrSkipArtistRefresh`), for a deliberately read-only API key
   or where something else owns refresh scheduling. Phrased negatively so the zero value is "allowed"
-  — see the field comment for why a `default:true` tag would not have worked. When **every** enabled
-  Lidarr manager has opted out, there is nobody to ask, so the review stops offering *Ask the
-  manager*: `collection.RefreshTurnedOff` names those managers, and the row becomes stuck with a
+  — see the field comment for why a `default:true` tag would not have worked. When every enabled
+  Lidarr manager *governing the artist* has opted out, there is nobody to ask, so the review stops
+  offering *Ask the manager*: `collection.RefreshTurnedOff` names those managers, and the row becomes stuck with a
   blocker naming the setting — *artist refresh is turned off for "Main Lidarr"* — the way every
   other blocker names its cause. It used to queue a repair that skipped every manager and did
   nothing. The hold itself is right: the manager is the authority and still lists the album.
@@ -614,7 +614,7 @@ whose action depends on who decides those files' identity:
   queue once more against the rebuilt collection (a run drains before it rebuilds, so the first
   drain still saw the album as owned). One job rather than two, because the queue would reorder
   them: a re-correlate writes files and jumps ahead. With artist refresh turned off on every
-  manager the press is refused, saying so.
+  manager governing those files the press is refused, saying so.
 
 ### When nobody can be asked
 
@@ -622,6 +622,14 @@ Every enabled Lidarr manager having artist refresh turned off used to leave *Ask
 row, queueing a repair that skipped every manager and did nothing. `collection.RefreshTurnedOff`
 names those managers, and the review turns the row into a stuck one whose blocker says so; the
 artist page and the re-identify action refuse with the same sentence.
+
+The managers asked about are the artist's, not every one configured: those of the libraries holding
+the artist's files (`collection_release_copies`), or — for the re-identify action, which holds the
+files already — of those files' libraries (`RefreshTurnedOffIn`). Asking every manager meant that
+with refresh off on the one holding the artist and on on another, the button was offered and did
+nothing, which is the very case the check exists for. An artist with no files in a Lidarr library
+falls back to every manager: its ghost albums are catalog rows, and any of them may be the one
+listing them.
 
 ### Repairing from the artist page
 

@@ -64,13 +64,13 @@ func searchMusicBrainzReleasesOnce(query metadata.ReleaseSearchQuery) (metadata.
 	}
 
 	endpoint := fmt.Sprintf("%s/release?query=%s&limit=%d&offset=%d&fmt=json",
-		musicbrainzBaseURL, url.QueryEscape(lucene), limit, offset)
+		musicbrainzBaseURL(), url.QueryEscape(lucene), limit, offset)
 
 	req, err := http.NewRequest("GET", endpoint, nil)
 	if err != nil {
 		return metadata.ReleaseSearchPage{}, err
 	}
-	req.Header.Set("User-Agent", "Autotaggerr/"+files.ConfigFile.AutotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
+	req.Header.Set("User-Agent", musicbrainzUserAgent(files.ConfigFile.AutotaggerrVersion))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -236,7 +236,7 @@ func SearchMusicBrainzArtists(query string) ([]models.MusicBrainzArtistSearchRes
 	}
 
 	endpoint := fmt.Sprintf("%s/artist?query=%s&limit=%d&fmt=json",
-		musicbrainzBaseURL, url.QueryEscape(query), artistSearchLimit)
+		musicbrainzBaseURL(), url.QueryEscape(query), artistSearchLimit)
 
 	var parsed models.MusicBrainzArtistSearchResponse
 	if err := musicbrainzGetJSON(endpoint, &parsed); err != nil {
@@ -272,7 +272,7 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 	// inc=media is required: browse (unlike search) omits format and track counts
 	// without it, and those are exactly what distinguishes one edition from another.
 	endpoint := fmt.Sprintf("%s/release?release-group=%s&inc=media&limit=%d&fmt=json",
-		musicbrainzBaseURL, url.QueryEscape(releaseGroupID), releaseBrowseLimit)
+		musicbrainzBaseURL(), url.QueryEscape(releaseGroupID), releaseBrowseLimit)
 
 	var parsed models.MusicBrainzReleaseBrowseResponse
 	if err := musicbrainzGetJSON(endpoint, &parsed); err != nil {
@@ -312,7 +312,7 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 // answers 200 with the survivor, so the old ID keeps working and there is no redirect
 // to observe. Deletion is the only release-group migration this can detect.
 func confirmReleaseGroupGone(releaseGroupID string, browseErr error) error {
-	endpoint := fmt.Sprintf("%s/release-group/%s?fmt=json", musicbrainzBaseURL, url.PathEscape(releaseGroupID))
+	endpoint := fmt.Sprintf("%s/release-group/%s?fmt=json", musicbrainzBaseURL(), url.PathEscape(releaseGroupID))
 
 	// Decoded into the discography shape rather than a bespoke one: the probe reads
 	// nothing out of the payload, only whether there was a payload to read.
@@ -357,7 +357,7 @@ func musicbrainzGetJSONOnce(endpoint string, out any) error {
 	if err != nil {
 		return err
 	}
-	req.Header.Set("User-Agent", "Autotaggerr/"+files.ConfigFile.AutotaggerrVersion+" (https://github.com/aunefyren/autotaggerr)")
+	req.Header.Set("User-Agent", musicbrainzUserAgent(files.ConfigFile.AutotaggerrVersion))
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
