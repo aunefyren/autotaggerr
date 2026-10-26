@@ -1290,13 +1290,14 @@ type CollectionArtist struct {
 	// releases from here on" case that following a new artist usually means; setting it
 	// to 2010 is "I have the old stuff already", which the same field expresses for free.
 	FollowFromYear int `json:"follow_from_year"`
-	// FollowLibraryID is the native library following wants into. uuid.Nil means every
-	// library Autotaggerr decides for — what following has always meant for an artist
-	// no manager governs. An artist Lidarr governs in one library can still be followed
-	// natively in another, and then this names that library: following has to say
-	// where, or Lidarr's library would read as missing everything the follow wants.
-	// See collection.FollowAppliesIn.
-	FollowLibraryID uuid.UUID `gorm:"type:uuid" json:"follow_library_id"`
+	// FollowLibraryIDs are the native libraries following wants into, all with the one
+	// set of follow settings above. Empty means every library Autotaggerr decides for —
+	// what following has always meant for an artist no manager governs. An artist
+	// Lidarr governs in one library can still be followed natively in others, and then
+	// this names them: following has to say where, or Lidarr's library would read as
+	// missing everything the follow wants. See collection.FollowAppliesIn. It replaced
+	// a single FollowLibraryID; data migration follow_library_sets carried it across.
+	FollowLibraryIDs UUIDSet `gorm:"type:text" json:"follow_library_ids"`
 
 	LastSyncedAt *time.Time `json:"last_synced_at"`
 

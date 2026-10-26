@@ -59,6 +59,12 @@ const (
 	// still leave the old edition's other tracks behind. The fix is an album folder
 	// template that tells editions apart, or removing the other edition first.
 	ImportConflictOtherEdition = "other_edition"
+	// ImportConflictUnidentified: the album folder holds audio files Autotaggerr has
+	// not identified — never processed, or unmatched — so their edition is unknown.
+	// Blocking for the reason other_edition blocks, since they may well be another
+	// edition; the fix is to process the library so they are known (then the check is
+	// other_edition or nothing), or to remove them.
+	ImportConflictUnidentified = "unidentified"
 )
 
 // ImportRow is one file of an import: where it is, which track it is, and where it
@@ -77,7 +83,8 @@ type ImportRow struct {
 	TargetRel string `json:"target_rel,omitempty"`
 	Conflict  string `json:"conflict,omitempty"`
 	// ConflictDetail names what is in the way when the conflict itself does not say:
-	// for other_edition, which edition the folder already holds.
+	// for other_edition, which edition the folder already holds; for unidentified, how
+	// many files.
 	ConflictDetail string `json:"conflict_detail,omitempty"`
 	// Replaces is every file importing this row removes: the one at Target, and any
 	// indexed copy of the same track elsewhere in the library.
@@ -128,6 +135,9 @@ func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzRe
 	// One answer per album folder: an import is one release, so this is almost always
 	// a single query.
 	folderEdition := map[string]string{}
+	// The album folder of each row the index found no other edition in, for the
+	// unidentified-files check, which needs every target first.
+	albumDirs := make([]string, len(rows))
 
 	for i, in := range rows {
 		row := ImportRow{Source: in.Source, MBReleaseTrackID: strings.TrimSpace(in.MBReleaseTrackID), How: in.How, Replace: in.Replace}
@@ -182,8 +192,35 @@ func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzRe
 			// of the other edition's files and leave the rest mixed in with these.
 			row.Conflict = ImportConflictOtherEdition
 			row.ConflictDetail = other
+		} else {
+			albumDirs[i] = albumDir
 		}
 		planned[i] = row
+	}
+
+	// Unidentified files only matter where they would stay: one at a target of this
+	// import is that row's exists conflict, which Replace settles without leaving
+	// anything mixed in.
+	folderUnknown := map[string]int{}
+	for i := range planned {
+		dir := albumDirs[i]
+		if dir == "" || planned[i].Target == "" {
+			continue
+		}
+		unknown, seen := folderUnknown[dir]
+		if !seen {
+			unknown = 0
+			for _, p := range r.unidentifiedIn(dir) {
+				if byTarget[strings.ToLower(p)] == 0 {
+					unknown++
+				}
+			}
+			folderUnknown[dir] = unknown
+		}
+		if unknown > 0 {
+			planned[i].Conflict = ImportConflictUnidentified
+			planned[i].ConflictDetail = fmt.Sprintf("%d %s", unknown, pluralFiles(unknown))
+		}
 	}
 
 	for i := range planned {
@@ -224,6 +261,56 @@ func (r *Runner) otherEditionIn(library models.Library, albumDir, releaseID stri
 	return cached.Title + " (" + strings.Join(parts, ", ") + ")"
 }
 
+// unidentifiedIn lists the audio files in an album folder, disc folders included,
+// that the index does not identify: never processed, or processed and unmatched. The
+// index alone (otherEditionIn) cannot see a folder Autotaggerr has never processed, so
+// this reads the disk — which says the files are there but not which edition they are.
+// A folder that does not exist yet holds nothing.
+func (r *Runner) unidentifiedIn(albumDir string) []string {
+	var paths []string
+	_ = filepath.WalkDir(albumDir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if !d.IsDir() && modules.IsSupportedAudioFile(p) {
+			paths = append(paths, p)
+		}
+		return nil
+	})
+	if len(paths) == 0 {
+		return nil
+	}
+	identified := map[string]bool{}
+	for start := 0; start < len(paths); start += 500 {
+		end := min(start+500, len(paths))
+		var chunk []string
+		r.db.Model(&models.LibraryItem{}).Where("path IN ? AND mb_release_id <> ''", paths[start:end]).
+			Pluck("path", &chunk)
+		for _, p := range chunk {
+			identified[p] = true
+		}
+	}
+	var out []string
+	for _, p := range paths {
+		if !identified[p] {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func pluralFiles(n int) string {
+	if n == 1 {
+		return "file"
+	}
+	return "files"
+}
+
+func unidentifiedMessage(row ImportRow) string {
+	return fmt.Sprintf("%s goes into a folder that already holds %s Autotaggerr has not identified, so their edition is unknown — process the library so they are identified, or remove them first",
+		filepath.Base(row.Source), row.ConflictDetail)
+}
+
 func otherEditionMessage(row ImportRow) string {
 	return fmt.Sprintf("%s goes into a folder that already holds %s — add an edition token such as {Edition Year} or {Edition Disambiguation} to the album folder template, or remove that edition first",
 		filepath.Base(row.Source), row.ConflictDetail)
@@ -249,6 +336,8 @@ func CheckImportPlan(rows []ImportRow) error {
 			return fmt.Errorf("%w: %s goes to the same place as another file — fix the mapping or skip one", ErrImportNotReady, name)
 		case row.Conflict == ImportConflictOtherEdition:
 			return fmt.Errorf("%w: %s", ErrImportNotReady, otherEditionMessage(row))
+		case row.Conflict == ImportConflictUnidentified:
+			return fmt.Errorf("%w: %s", ErrImportNotReady, unidentifiedMessage(row))
 		case row.Conflict != "" && !row.Replace:
 			return fmt.Errorf("%w: %s would replace %s — choose Replace or skip it", ErrImportNotReady, name, strings.Join(row.Replaces, ", "))
 		}
@@ -470,6 +559,9 @@ func importRowReady(row ImportRow, approved map[string]bool) error {
 	}
 	if row.Conflict == ImportConflictOtherEdition {
 		return errors.New(otherEditionMessage(row))
+	}
+	if row.Conflict == ImportConflictUnidentified {
+		return errors.New(unidentifiedMessage(row))
 	}
 	for _, path := range row.Replaces {
 		if !approved[path] {

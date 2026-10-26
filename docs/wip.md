@@ -179,21 +179,14 @@ still open:
   gate honouring detach, `library` on the MCP read tools, Add artist needing a native library, the
   repair hold asking the artist's own managers, the catalog mirror merging several managers, the
   MusicBrainz source honoured in full and Plex per library (a section or none, albums matched by
-  file) have shipped — every process-wide setting is now either genuinely process-wide or read from
-  the library row. Still open:
-  - *The collection list does not recount per library.* Its library filter narrows which artists are
-    listed; the owned/missing/mismatch columns stay all-library. The artist page reads one library
-    on its tabs. Recounting the list needs `LibraryHoldings` per artist, which nothing has asked for.
-  - *`other_edition` only sees indexed files.* A folder of files never processed is not caught by
-    the import. A directory read of the target album folder would close it, at the cost of not
-    knowing what edition those files are.
-  - *A detached artist's unidentified files stay Lidarr's.* The attach gate reads the artist from the
-    file's current edition, so a file in a Lidarr library with no identity yet has no artist to have
-    been detached and cannot be attached by hand. Reading the artist from the attach *target* would
-    close it, at the cost of a gate that depends on the request.
-  - *Following is one library at a time.* `FollowLibraryID` names a single native library (or all,
-    for an artist no manager governs). Following the same artist into two native libraries would need
-    the follow settings per library.
+  file), the collection list counted per library, unidentified files caught by the import and
+  attachable to a detached artist, and following into several native libraries have shipped — every process-wide setting is now either genuinely
+  process-wide or read from the library row. Still open:
+  - *Follow settings are one shape for every library.* Following wants into any set of native
+    libraries, but with one set of types, secondary types and cutoff
+    ([collection.md](collection.md#authority-is-per-library)). Different settings per library would
+    need a follow row per library, reaching every follow reader, the new-artist policy and merges —
+    only worth it if someone asks for it.
 - **Multi user support?** Any need?
 - **Password reset over email.** The mailer now exists and is proven by the *Send test message*
   button on Settings → Email (see [settings.md](settings.md#email-and-the-one-action-on-this-page)),

@@ -300,18 +300,23 @@ func (a *API) updateFollowSettings(mbid string, in followUpdate) (models.Collect
 
 	updates := map[string]any{}
 	if in.Monitored != nil {
-		updates["monitored"] = *in.Monitored
-		// Following says where it wants into. Switched on, that is the library it
-		// was switched on in — required when Lidarr governs the artist, since
-		// following Lidarr's own library is not Autotaggerr's to do. Switched off,
-		// the library goes with it, so a later follow asks again.
-		target := uuid.Nil
-		if *in.Monitored {
-			if target, err = a.wantTarget(artist.MBID, in.LibraryID); err != nil {
-				return artist, 0, err
-			}
+		// Following says where it wants into, and may want into several native
+		// libraries with the one set of settings. Switched on or off in a library, that
+		// library joins or leaves the set — required when Lidarr governs the artist,
+		// since following Lidarr's own library is not Autotaggerr's to do. Switched on
+		// or off in the overview of an artist no manager governs, it is every native
+		// library, as it always was.
+		target, err := a.wantTarget(artist.MBID, in.LibraryID)
+		if err != nil && (*in.Monitored || in.LibraryID != nil) {
+			return artist, 0, err
 		}
-		updates["follow_library_id"] = target
+		idx, err := collection.LoadLibraryIndex(a.DB)
+		if err != nil {
+			return artist, 0, failWith(http.StatusInternalServerError, "failed to load the libraries")
+		}
+		on, libraries := idx.FollowLibrariesAfter(artist, target, *in.Monitored)
+		updates["monitored"] = on
+		updates["follow_library_ids"] = libraries
 	}
 	if in.FollowTypes != nil {
 		updates["follow_types"] = strings.TrimSpace(*in.FollowTypes)
@@ -377,18 +382,74 @@ func (a *API) addDesire(library *uuid.UUID, in collection.DesireInput) (models.C
 // manager cannot be resolved, and one Lidarr-governed file locks the whole action — a
 // bulk attach is one album, and splitting it would be a worse surprise than rejecting
 // it.
-func (a *API) filesIdentityEditable(items []models.LibraryItem) error {
+//
+// target is the release the files are being attached to. A file with no identity yet
+// has no edition to read its artist from, so for those files the artist is read from
+// the target instead: attaching an unidentified file in a Lidarr library to a detached
+// artist's release is allowed, since detaching took every one of that artist's
+// libraries native. A file that already has an identity is judged by it — re-pointing
+// a file Lidarr identified as someone else's is still Lidarr's call.
+//
+// The target is fetched only when an unidentified file needs it, so every other
+// refusal stays as cheap as it was.
+func (a *API) filesIdentityEditable(items []models.LibraryItem, target *releaseLoader) error {
 	editable, err := a.itemsIdentityEditable(items)
 	if err != nil {
 		logger.Log.Warnf("attach gate: failed to resolve who identifies these files: %s", err.Error())
 		return failWith(http.StatusInternalServerError, "failed to resolve the library manager")
 	}
+	targetDetached := false
+	// With no artist detached no target can pass, so the refusal costs no fetch.
+	anyDetached, err := collection.AnyArtistDetached(a.DB)
+	if err != nil {
+		return failWith(http.StatusInternalServerError, "failed to resolve the library manager")
+	}
 	for _, item := range items {
-		if !editable[item.ID] {
-			return failWith(http.StatusConflict, "these files are managed by Lidarr — change the release in Lidarr, not here")
+		if editable[item.ID] {
+			continue
 		}
+		if item.MBReleaseID == "" && anyDetached {
+			if !targetDetached {
+				release, err := target.load()
+				if err != nil {
+					return err
+				}
+				if targetDetached, err = collection.ReleaseOfDetachedArtist(a.DB, release); err != nil {
+					return failWith(http.StatusInternalServerError, "failed to resolve the release's artist")
+				}
+			}
+			if targetDetached {
+				continue
+			}
+			return failWith(http.StatusConflict, "these files are managed by Lidarr — set them in Lidarr, or attach them to a release of an artist detached from Lidarr")
+		}
+		return failWith(http.StatusConflict, "these files are managed by Lidarr — change the release in Lidarr, not here")
 	}
 	return nil
+}
+
+// releaseLoader fetches an attach target once, on first use — the gate may need it,
+// and the attach always does after.
+type releaseLoader struct {
+	a       *API
+	id      string
+	release models.MusicBrainzReleaseResponse
+	err     error
+	done    bool
+}
+
+func (a *API) releaseLoader(id string) *releaseLoader { return &releaseLoader{a: a, id: id} }
+
+func (l *releaseLoader) load() (models.MusicBrainzReleaseResponse, error) {
+	if !l.done {
+		l.done = true
+		l.release, l.err = l.a.meta().GetRelease(l.id)
+		if l.err != nil {
+			logger.Log.Errorf("attach: failed to load release %s: %s", l.id, l.err.Error())
+			l.err = failWith(http.StatusBadGateway, "could not load that release from MusicBrainz")
+		}
+	}
+	return l.release, l.err
 }
 
 // tagOutcome is what an identity change that writes tags straight away reports. The
@@ -419,14 +480,13 @@ func (a *API) attachFile(itemID uuid.UUID, releaseID, trackID string) (tagOutcom
 	if err != nil {
 		return tagOutcome{}, err
 	}
-	if err := a.filesIdentityEditable([]models.LibraryItem{item}); err != nil {
+	target := a.releaseLoader(releaseID)
+	if err := a.filesIdentityEditable([]models.LibraryItem{item}, target); err != nil {
 		return tagOutcome{}, err
 	}
-
-	release, err := a.meta().GetRelease(releaseID)
+	release, err := target.load()
 	if err != nil {
-		logger.Log.Errorf("attach: failed to load release %s: %s", releaseID, err.Error())
-		return tagOutcome{}, failWith(http.StatusBadGateway, "could not load that release from MusicBrainz")
+		return tagOutcome{}, err
 	}
 	track, found := modules.FindReleaseTrack(release, trackID)
 	if !found {

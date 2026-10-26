@@ -1051,9 +1051,14 @@ func applyArtistRedirect(tx *gorm.DB, m models.MusicbrainzMigration) (applyCount
 		// was already being told about. No cutoff on either side wins outright; two
 		// cutoffs merge to the earlier one.
 		target.FollowFromYear = earlierCutoff(target.FollowFromYear, source.FollowFromYear)
-		// Where following wants into: the target's, unless only the source named one.
-		if target.FollowLibraryID == uuid.Nil {
-			target.FollowLibraryID = source.FollowLibraryID
+		// Where following wants into: the target's, unless only the source named any;
+		// both naming some merge toward wanting more, like every setting above.
+		if len(target.FollowLibraryIDs) == 0 {
+			target.FollowLibraryIDs = source.FollowLibraryIDs
+		} else {
+			for _, id := range source.FollowLibraryIDs {
+				target.FollowLibraryIDs = target.FollowLibraryIDs.With(id)
+			}
 		}
 		// A manually added artist outranks a library-derived one: it records that
 		// someone wanted this artist before owning any of them, which rebuilding

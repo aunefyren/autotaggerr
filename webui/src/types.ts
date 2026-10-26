@@ -183,6 +183,11 @@ export interface LibraryItem {
    * API (409) and the controls are shown disabled rather than offered.
    */
   identity_editable: boolean;
+  /**
+   * Not editable as it stands, but the file has no identity yet: it may be attached to
+   * a release of an artist detached from Lidarr. Set only while some artist is detached.
+   */
+  attach_if_detached?: boolean;
 }
 
 /** One hit from the MusicBrainz release search used by manual attach. */
@@ -356,7 +361,7 @@ export interface DownloadScan extends ImportScan {
   seeding: boolean;
 }
 
-export type ImportConflict = "" | "exists" | "duplicate" | "clash" | "other_edition";
+export type ImportConflict = "" | "exists" | "duplicate" | "clash" | "other_edition" | "unidentified";
 
 /** One file of an import, as planned by the server. An empty track ID is a skip. */
 export interface ImportRow {
@@ -369,7 +374,7 @@ export interface ImportRow {
   target?: string;
   target_rel?: string;
   conflict?: ImportConflict;
-  /** For other_edition: which edition the album folder already holds. */
+  /** For other_edition: which edition the album folder already holds; for unidentified, how many files. */
   conflict_detail?: string;
   /** Every file importing this row would remove. */
   replaces?: string[];
@@ -716,10 +721,13 @@ export interface CollectionArtist {
    */
   follow_from_year: number;
   /**
-   * The native library following wants into; the nil UUID means every library
-   * Autotaggerr decides for. Set when Lidarr governs the artist elsewhere.
+   * The native libraries following wants into, with the one set of settings; empty
+   * means every library Autotaggerr decides for. Prefer `following_in`, which applies
+   * that rule.
    */
-  follow_library_id: string;
+  follow_library_ids: string[];
+  /** The native libraries following actually wants into, as the server reads the rule. */
+  following_in?: string[];
   /**
    * Whether following decides what is wanted in this view: stored, governing, and
    * — in one library's view — pointed at that library. Prefer it to `monitored`.

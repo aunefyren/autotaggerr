@@ -109,9 +109,9 @@ func DetachArtist(db *gorm.DB, artistMBID string) (DetachResult, error) {
 				"manager_detached": true,
 				"managed_by":       models.ManagedByAutotaggerr,
 				"monitored":        false,
-				// Every library is native once detached, so a follow pointed at one of
-				// them would narrow it to that one for no reason left standing.
-				"follow_library_id": uuid.Nil,
+				// Every library is native once detached, so a follow pointed at some of
+				// them would narrow it to those for no reason left standing.
+				"follow_library_ids": models.UUIDSet{},
 				// The manager's opinion of them stops mattering, so "it no longer
 				// lists them" stops being something to say.
 				"manager_missing_at": nil,

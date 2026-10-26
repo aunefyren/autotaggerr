@@ -222,8 +222,8 @@ func (a *API) itemsIdentityEditable(items []models.LibraryItem) (map[uuid.UUID]b
 // Lidarr-governed file locks the whole action — a bulk attach is one album, and
 // splitting it would be a worse surprise than rejecting it. Returns false (response
 // already written) when the request must not proceed.
-func (a *API) requireIdentityEditable(c *gin.Context, items []models.LibraryItem) bool {
-	if err := a.filesIdentityEditable(items); err != nil {
+func (a *API) requireIdentityEditable(c *gin.Context, items []models.LibraryItem, target *releaseLoader) bool {
+	if err := a.filesIdentityEditable(items, target); err != nil {
 		respondErr(c, err)
 		return false
 	}
@@ -355,14 +355,13 @@ func (a *API) previewBulkAttach(c *gin.Context) {
 		return
 	}
 
-	if !a.requireIdentityEditable(c, items) {
+	target := a.releaseLoader(body.MBReleaseID)
+	if !a.requireIdentityEditable(c, items, target) {
 		return
 	}
-
-	release, err := a.meta().GetRelease(body.MBReleaseID)
+	release, err := target.load()
 	if err != nil {
-		logger.Log.Errorf("bulk preview: failed to load release %s: %s", body.MBReleaseID, err.Error())
-		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release from MusicBrainz"})
+		respondErr(c, err)
 		return
 	}
 	tracks := modules.ReleaseTracks(release)
@@ -446,14 +445,13 @@ func (a *API) attachBulk(c *gin.Context) {
 		return
 	}
 
-	if !a.requireIdentityEditable(c, items) {
+	target := a.releaseLoader(body.MBReleaseID)
+	if !a.requireIdentityEditable(c, items, target) {
 		return
 	}
-
-	release, err := a.meta().GetRelease(body.MBReleaseID)
+	release, err := target.load()
 	if err != nil {
-		logger.Log.Errorf("bulk attach: failed to load release %s: %s", body.MBReleaseID, err.Error())
-		c.JSON(http.StatusBadGateway, gin.H{"error": "could not load that release from MusicBrainz"})
+		respondErr(c, err)
 		return
 	}
 

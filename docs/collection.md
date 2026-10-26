@@ -704,12 +704,25 @@ The rules live in `collection/authority.go`:
   library becomes that library's. `ClearDesireIn` removes only what one library shows;
   `reconcileManagerDesires` vetoes on hand-authored wants tied to no library only, so a native
   library's want does not switch Lidarr's selection off.
-- **Following says where.** `CollectionArtist.FollowLibraryID` is the native library following wants
-  into; `uuid.Nil` is every native library, which is what following meant for an artist no manager
-  governs. `FollowGoverns` is true for such an artist, and for one Lidarr governs only once following
-  has been pointed at a native library — so a stale `Monitored` flag on a Lidarr artist still governs
-  nothing. `FollowAppliesIn(artist, library)` is the per-library answer. Switching following on writes
-  the library it was switched on in; switching it off clears it, and detaching clears it too.
+- **Following says where — and can say several.** `CollectionArtist.FollowLibraryIDs` is the set of
+  native libraries following wants into, all with the artist's **one** set of follow settings (a
+  `models.UUIDSet`, a JSON array in one column, so every follow check stays in memory). Empty is
+  every native library, which is what following meant for an artist no manager governs.
+  `FollowGoverns` is true for such an artist, and for one Lidarr governs only once following names a
+  native library — so a stale `Monitored` flag on a Lidarr artist still governs nothing.
+  `FollowAppliesIn(artist, library)` is the per-library answer, and `LibraryIndex.FollowingIn` the
+  list it adds up to, returned as `following_in` on the artist view. Switching following on in a
+  library adds it; off removes only it (`LibraryIndex.FollowLibrariesAfter`). Two cases need the care
+  that function gives them: switching one library off while following covers *every* library turns
+  the empty set into every *other* native library, and a set emptied by removal switches following
+  off rather than widening back to everything. From the overview of an artist no manager governs,
+  on and off mean every native library, as before; detaching clears the set. The artist page shows
+  the set as **Into** checkboxes under the follow settings when the artist has more than one native
+  library — live even while the settings are frozen, since ticking a native library is how an artist
+  Lidarr governs elsewhere starts being followed there. Settings *per* library (albums-only into one,
+  everything into another) were weighed and left out: one shape covers the case asked for, and per
+  library would have reached every follow reader, the policy for new artists and artist merges. The
+  single `follow_library_id` it replaced was carried across by the `follow_library_sets` migration.
 - **Where an unnamed edit goes.** `WantTarget` resolves the library a want or follow is written for:
   a named library must be native for the artist (else `ErrLibraryManaged`, a 409); unnamed, an artist
   no manager governs gets `uuid.Nil`, and one Lidarr governs gets the single native library there is,
@@ -757,9 +770,12 @@ every row would carry the same word. Then:
   install with no library yet is let through. Adding the artist to *Lidarr* is the
   [separate question](wip.md) of whether the mirror may introduce one.
 - `/collection` gains a **Libraries** column and a library select in the table toolbar (`library` in
-  the URL, options only for libraries some artist is in). The artist counts are not re-derived per
-  library — the filter narrows which artists are listed, not what their columns say. An artist with
-  files in both kinds of library carries two pills, **Lidarr** and **Native**.
+  the URL, options only for libraries some artist is in). Filtering also **counts in that library**:
+  the page asks `GET /artists?library=<id>`, and owned, complete, partial, missing, mismatch and
+  picked are that library's — each album judged by `newReleaseGroupViewIn` in the library's scope,
+  the same call the artist page's library tab makes, so the two cannot disagree. The library's
+  holdings are read once for the whole list (`collection.AllLibraryHoldings`), not per artist. An
+  artist with files in both kinds of library carries two pills, **Lidarr** and **Native**.
 - The artist page and the album page open on **library tabs** (`LibraryTabs`, the style guide's
   *Library view*): *All libraries*, then each library the artist can be read in with its authority
   beside its name. The choice is `library` in the URL and carries from the artist page to the album
@@ -1086,8 +1102,15 @@ The boundary is enforced by a single predicate and four mechanisms:
   with detach applied (`itemsIdentityEditable` in `routers/attach.go`): a file in a Lidarr library
   whose album's artist is detached is Autotaggerr's to identify, the same rule `LibraryAuthority`
   gives its wants. The artist is read from the file's *current* edition
-  (`collection.DetachedReleases`), so a file with no identity yet stays the manager's — there is no
-  artist to have been detached. Import and Downloads still ask the library alone, since they write
+  (`collection.DetachedReleases`). A file with **no identity yet** has no edition to read it from, so
+  for those the artist is read from the attach *target* instead (`filesIdentityEditable`,
+  `collection.ReleaseOfDetachedArtist`): attaching one to a detached artist's release goes through,
+  to anyone else's is refused. The target is fetched only when such a file needs it, and not at all
+  while no artist is detached, so every other refusal stays free. A file that already has an
+  identity is still judged by it — re-pointing a file Lidarr identified as someone else's is
+  Lidarr's call. The item listing marks those files `attach_if_detached` (only while some artist is
+  detached), and the Items page offers their Attach with that condition in its title rather than
+  dimming it. Import and Downloads still ask the library alone, since they write
   into a library rather than onto an artist's files. A want or a follow on the library it is for
   (`WantTarget`, called by `addDesire` and `updateFollowSettings`). Both return **409**, and both are
   surfaced as `identity_editable` on the library-item, artist and release-group views — for the
@@ -1188,7 +1211,7 @@ repeated here because they are about *this* data model.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts — [kept between writes](#the-collection-list-is-kept-between-writes) |
+| `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts — [kept between writes](#the-collection-list-is-kept-between-writes); `?library=<id>` counts them in one library |
 | `GET /artists/:mbid` | artist detail: release-groups (with derived `complete`, `discrepancy`, `wanted*`) + desires |
 | `GET /artists/:mbid/info` | who the artist is (kind, origin, active years, top genres) — a live MusicBrainz entity read for the page header, cached 24h. Its own endpoint so the page never waits on it; a failure means the header shows less, never an error. |
 | `GET /artists/:mbid/discography` | live MusicBrainz read of *all* release-group types, **not stored** — browsing a catalogue must never require committing to it, or inflate the missing count. Cached 6h; a stale copy beats an empty page when MB is down. |
@@ -1212,7 +1235,9 @@ the complete/discrepancy rules have one definition shared with the artist page �
 the size of the collection on every request. Its answer only changes when one of those four tables
 does, so the computed list is kept on the API and served again until `collectionFingerprint` says
 otherwise: each table's row count and newest `updated_at`, four aggregate queries instead of four
-full loads. An insert or update moves the newest stamp and a delete moves the count, so no write the
+full loads. One list is kept per view — the overview and each library read so far — under the one
+fingerprint, since every view is computed from the same tables. An insert or update moves the
+newest stamp and a delete moves the count, so no write the
 list could show slips past — given that every write goes through GORM, which stamps `updated_at` on
 `Create`, `Save` and `Updates` alike. A raw `Exec` or `UpdateColumn` on these tables would; there are
 none, and one added later would show as a list that lags until the next unrelated write.

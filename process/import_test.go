@@ -260,6 +260,56 @@ func TestImportRefusesToMixEditions(t *testing.T) {
 	}
 }
 
+// A folder of files Autotaggerr never processed: the index knows no edition there, so
+// the folder is read instead. Unidentified files the import would not replace block it
+// — they may be another edition — and say how to make them known; one sitting at a
+// target is that row's ordinary exists conflict, which Replace settles.
+func TestImportRefusesAFolderOfUnidentifiedFiles(t *testing.T) {
+	w := newImportWorld(t)
+	folder := filepath.Join(w.library.Path, "Band", "Album (2001)")
+	stranger := filepath.Join(folder, "CD2", "07 Bonus.flac")
+	if err := os.MkdirAll(filepath.Dir(stranger), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(stranger, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	for _, row := range rows {
+		if row.Conflict != ImportConflictUnidentified || row.ConflictDetail != "1 file" {
+			t.Errorf("row = %+v, want unidentified naming one file", row)
+		}
+	}
+	if err := CheckImportPlan(rows); err == nil || !strings.Contains(err.Error(), "process the library") {
+		t.Errorf("CheckImportPlan = %v, want a refusal saying how to identify them", err)
+	}
+
+	// Identified as this very edition, it is no reason to stop.
+	if err := w.db.Create(&models.LibraryItem{LibraryID: w.library.ID, Path: stranger, MBReleaseID: w.release.ID, Status: models.LibraryItemStatusOK}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range w.runner.ProposeImport(w.library, w.release, w.sources()) {
+		if row.Conflict != "" {
+			t.Errorf("with the file identified as this edition, row = %+v", row)
+		}
+	}
+
+	// An unidentified file exactly where this import writes is that row's exists.
+	w2 := newImportWorld(t)
+	at := filepath.Join(w2.library.Path, "Band", "Album (2001)", "01 Song One.flac")
+	if err := os.MkdirAll(filepath.Dir(at), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(at, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rows = w2.runner.ProposeImport(w2.library, w2.release, w2.sources())
+	if rows[0].Conflict != ImportConflictExists || rows[1].Conflict != "" {
+		t.Errorf("rows = %+v, want exists on the first and nothing on the second", rows)
+	}
+}
+
 // Something that appeared at a target after the review is not replaced.
 func TestImportRowReadyRefusesUnreviewedReplacement(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "a.flac")

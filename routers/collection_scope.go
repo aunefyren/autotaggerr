@@ -36,6 +36,8 @@ type viewScope struct {
 	blocked string
 	// holdings is what the library holds of each album; nil for the overview.
 	holdings map[string]collection.Holding
+	// followingIn is the native libraries following wants into, whatever the view.
+	followingIn []uuid.UUID
 }
 
 func (s viewScope) overview() bool { return s.library == uuid.Nil }
@@ -60,7 +62,7 @@ func parseLibraryParam(raw string) (*uuid.UUID, error) {
 // The holdings are loaded only for a library view, and only for the albums named.
 func (a *API) resolveScope(idx collection.LibraryIndex, artist models.CollectionArtist, library *uuid.UUID, rgMBIDs []string) (viewScope, error) {
 	if library == nil || *library == uuid.Nil {
-		scope := viewScope{}
+		scope := viewScope{followingIn: idx.FollowingIn(artist)}
 		target, err := idx.WantTarget(artist, nil)
 		if err == nil && collection.GovernedByLidarr(artist) {
 			err = collection.ErrChooseLibrary
@@ -71,7 +73,7 @@ func (a *API) resolveScope(idx collection.LibraryIndex, artist models.Collection
 	if !idx.Exists(*library) {
 		return viewScope{}, failWith(http.StatusNotFound, "library not found")
 	}
-	scope := viewScope{library: *library, authority: idx.Authority(artist, *library)}
+	scope := viewScope{library: *library, authority: idx.Authority(artist, *library), followingIn: idx.FollowingIn(artist)}
 	switch scope.authority {
 	case collection.AuthorityNative:
 		scope.editable, scope.target = true, *library
@@ -149,6 +151,9 @@ func artistViewIn(artist models.CollectionArtist, scope viewScope) artistView {
 	view := newArtistView(artist)
 	view.IdentityEditable = scope.editable
 	view.EditBlocked = scope.blocked
+	if scope.followingIn != nil {
+		view.FollowingIn = scope.followingIn
+	}
 	if scope.editable && scope.target != uuid.Nil {
 		target := scope.target
 		view.EditLibraryID = &target

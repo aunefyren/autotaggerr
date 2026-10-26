@@ -81,6 +81,7 @@ the reason, rather than leaving them out.
 | `duplicate` | the library already indexes this track *of this edition* at another path — an MP3 being upgraded to FLAC | Replace, or skip |
 | `clash` | two files of this import render one target | fix the mapping or skip one; Replace cannot fix it |
 | `other_edition` | the album folder the file renders into already holds indexed files of a *different* edition | an album folder template that tells editions apart, or remove that edition first; Replace cannot fix it |
+| `unidentified` | the album folder holds audio files Autotaggerr has not identified (never processed, or unmatched), other than this import's own targets | process the library so they are identified — then the check is `other_edition` or nothing — or remove them; Replace cannot fix it |
 
 Clash detection ignores case, so two targets that differ only in case on a case-insensitive
 filesystem are caught; over-reporting costs a skip, under-reporting costs a file. A duplicate is
@@ -93,8 +94,13 @@ same-numbered tracks showed as `exists`, and consenting to Replace deleted the f
 while its other tracks stayed behind, mixed in with the new ones — and the layout reads one folder
 as one edition everywhere (Lidarr's lookups, folder attach, the disc guard). It outranks `exists` and
 `duplicate` for that reason, and `ConflictDetail` names the edition already there. Only indexed files
-are known (`Runner.otherEditionIn`, a prefix match on the library's index): a folder of files never
-processed is not caught. Auto-import goes through the same check, so it never mixes editions either.
+are known to the index (`Runner.otherEditionIn`, a prefix match on the library's index), so where it
+finds none the folder is read too (`Runner.unidentifiedIn`, disc folders included): audio files the
+index does not identify are of unknown edition, and may be another, so they block as `unidentified`
+with how many there are. One sitting exactly at a target of this import is not counted — that is the
+row's ordinary `exists`, which Replace settles without leaving anything mixed in — which is why the
+check runs after every target is known. Auto-import goes through the same check, so it never mixes
+editions either.
 See [naming.md](naming.md#two-editions-of-one-album) for the tokens that keep them apart.
 
 **Replace is per row consent**, a checkbox in `--danger-text` whose `title` lists every file it

@@ -411,7 +411,7 @@ type mcpFollowInput struct {
 	FollowTypes     *string `json:"follow_types,omitempty" jsonschema:"comma-separated primary types following wants, e.g. Album,EP"`
 	FollowSecondary *bool   `json:"follow_secondary,omitempty" jsonschema:"also want secondary types (live, compilation, ...)"`
 	FollowFromYear  *int    `json:"follow_from_year,omitempty" jsonschema:"only want albums first released in or after this year; 0 clears it"`
-	Library         string  `json:"library,omitempty" jsonschema:"native library (name or ID) following wants into; required when Lidarr manages the artist and several native libraries exist"`
+	Library         string  `json:"library,omitempty" jsonschema:"native library (name or ID) to follow into or stop following in; following can want into several, with one set of settings, and monitored adds or removes just this one. Omitted: every native library for an artist no manager governs. Required when Lidarr manages the artist and several native libraries exist"`
 }
 
 type mcpFollowResult struct {

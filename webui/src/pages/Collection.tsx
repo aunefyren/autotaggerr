@@ -137,7 +137,15 @@ const SORT: Record<string, (ar: CollectionArtist) => string | number> = {
 
 export default function Collection() {
   const toast = useToast();
-  const { data, err, loading, reload } = useFetch<CollectionArtist[]>(() => api.get("/artists"));
+  const browse = useBrowse("name");
+  const libraries = useLibraries();
+  // Filtered to a library, the list is also counted in it — owned, missing and
+  // mismatched as that library holds them, the way the artist page's library tab reads.
+  const listLibrary = browse.flag("library") ?? "";
+  const { data, err, loading, reload } = useFetch<CollectionArtist[]>(
+    () => api.get(listLibrary ? `/artists?library=${encodeURIComponent(listLibrary)}` : "/artists"),
+    [listLibrary]
+  );
   const [scanning, setScanning] = useState(false);
   // Sync from Lidarr is only offered when there is a Lidarr to sync from. The
   // endpoint already rejects the call with 400, but a button whose only outcome is
@@ -150,8 +158,6 @@ export default function Collection() {
   const [syncAsk, setSyncAsk] = useState(false);
   const [scanAsk, setScanAsk] = useState(false);
   const [choosingRefresh, setChoosingRefresh] = useState(false);
-  const browse = useBrowse("name");
-  const libraries = useLibraries();
   const libraryName = new Map(libraries.list.map((l) => [l.id, l.name]));
   // Where Lidarr manages every library, an artist added here could be wanted but never
   // fulfilled — Import and Downloads cannot write into a Lidarr library — so Add

@@ -88,7 +88,8 @@ export default function Items() {
   // Bulk attach writes an identity, so it can only ever include files whose identity
   // is the user's to set. Select-all therefore means "every file here that can be
   // attached", not "every row" — otherwise the count promises work the API rejects.
-  const attachable = items.filter((it) => it.identity_editable);
+  const canAttach = (it: LibraryItem) => it.identity_editable || !!it.attach_if_detached;
+  const attachable = items.filter(canAttach);
   const allPicked = attachable.length > 0 && picked.length === attachable.length;
   const pickedItems = items.filter((it) => picked.includes(it.id));
 
@@ -214,8 +215,8 @@ export default function Items() {
                       <input
                         type="checkbox"
                         checked={picked.includes(it.id)}
-                        disabled={!it.identity_editable}
-                        title={it.identity_editable ? undefined : "Lidarr owns this file's identity"}
+                        disabled={!canAttach(it)}
+                        title={canAttach(it) ? undefined : "Lidarr owns this file's identity"}
                         onChange={() => toggle(it.id)}
                       />
                     </td>
@@ -290,11 +291,13 @@ export default function Items() {
                             is harder to account for than a dimmed one. */}
                         <button
                           className="btn btn-secondary btn-sm"
-                          disabled={!it.identity_editable}
+                          disabled={!canAttach(it)}
                           title={
                             it.identity_editable
                               ? undefined
-                              : "Lidarr owns this file's identity — set the release in Lidarr, then re-correlate."
+                              : it.attach_if_detached
+                                ? "In a Lidarr library: this can only be attached to a release by an artist you have detached from Lidarr."
+                                : "Lidarr owns this file's identity — set the release in Lidarr, then re-correlate."
                           }
                           onClick={() => setAttaching(it)}
                         >

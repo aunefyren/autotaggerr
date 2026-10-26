@@ -94,15 +94,15 @@ func DesireInScope(d models.CollectionDesire, artist models.CollectionArtist, li
 // library named stays recorded and governs nothing until the artist is natively
 // managed again, or followed in a native library.
 func FollowGoverns(artist models.CollectionArtist) bool {
-	return !GovernedByLidarr(artist) || artist.FollowLibraryID != uuid.Nil
+	return !GovernedByLidarr(artist) || len(artist.FollowLibraryIDs) > 0
 }
 
 // FollowAppliesIn reports whether following decides what is wanted in one native
-// library: the library it was pointed at, or — for an artist no manager governs,
+// library: one of the libraries it was pointed at, or — for an artist no manager governs,
 // followed without naming one — every native library.
 func FollowAppliesIn(artist models.CollectionArtist, library uuid.UUID) bool {
-	if artist.FollowLibraryID != uuid.Nil {
-		return artist.FollowLibraryID == library
+	if len(artist.FollowLibraryIDs) > 0 {
+		return artist.FollowLibraryIDs.Contains(library)
 	}
 	return !GovernedByLidarr(artist)
 }
@@ -129,6 +129,30 @@ func DetachedReleases(db *gorm.DB, releaseMBIDs []string) (map[string]bool, erro
 		out[id] = true
 	}
 	return out, nil
+}
+
+// ReleaseOfDetachedArtist reports whether a release belongs to a detached artist, read
+// from the release itself — its album artist, the primary credit Rebuild would file it
+// under. It is DetachedReleases for an edition the collection may not hold yet: the
+// attach target of a file that has no identity, where the file has no edition to read
+// the artist from.
+func ReleaseOfDetachedArtist(db *gorm.DB, release models.MusicBrainzReleaseResponse) (bool, error) {
+	credit := albumArtistCredit(release)
+	if len(credit) == 0 || credit[0].Artist.ID == "" {
+		return false, nil
+	}
+	var n int64
+	err := db.Model(&models.CollectionArtist{}).
+		Where("mb_id = ? AND manager_detached = ?", credit[0].Artist.ID, true).Count(&n).Error
+	return n > 0, err
+}
+
+// AnyArtistDetached reports whether any artist is detached — the only state in which
+// an unidentified file in a Lidarr library can be attached at all.
+func AnyArtistDetached(db *gorm.DB) (bool, error) {
+	var n int64
+	err := db.Model(&models.CollectionArtist{}).Where("manager_detached = ?", true).Limit(1).Count(&n).Error
+	return n > 0, err
 }
 
 // LibraryIndex is the libraries and who manages each, read once so authority can be
@@ -186,6 +210,67 @@ func (x LibraryIndex) native(artist models.CollectionArtist) []uuid.UUID {
 		}
 	}
 	return out
+}
+
+// NativeLibraries is native, exported: the enabled libraries Autotaggerr decides for,
+// for this artist, in name order.
+func (x LibraryIndex) NativeLibraries(artist models.CollectionArtist) []uuid.UUID {
+	return x.native(artist)
+}
+
+// FollowingIn lists the native libraries following wants into for this artist, as
+// stored and as it governs: every native library for a follow that names none, the
+// named ones that are still native otherwise, nothing when it is not followed.
+func (x LibraryIndex) FollowingIn(artist models.CollectionArtist) []uuid.UUID {
+	out := []uuid.UUID{}
+	if !artist.Monitored {
+		return out
+	}
+	for _, id := range x.native(artist) {
+		if FollowAppliesIn(artist, id) {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// FollowLibrariesAfter is where following wants into once it is switched on or off in
+// one library (uuid.Nil: wherever an edit from the overview goes, which for an artist
+// no manager governs is every native library). It returns whether following stays on,
+// and the libraries to store — empty meaning every native library.
+//
+// The one case needing care is switching off in one library while following covers
+// every native library: the empty set has to become every *other* one, or removing a
+// library would leave "every library" standing. And a set emptied by removal switches
+// following off rather than widening to everything.
+func (x LibraryIndex) FollowLibrariesAfter(artist models.CollectionArtist, library uuid.UUID, on bool) (bool, models.UUIDSet) {
+	if library == uuid.Nil {
+		if !on {
+			return false, models.UUIDSet{}
+		}
+		return true, models.UUIDSet{}
+	}
+	current := artist.FollowLibraryIDs
+	if on {
+		if artist.Monitored && FollowAppliesIn(artist, library) {
+			return true, current // already wants into it, whether by name or as "every"
+		}
+		if !artist.Monitored {
+			current = models.UUIDSet{}
+		}
+		return true, current.With(library)
+	}
+	if !artist.Monitored {
+		return false, models.UUIDSet{}
+	}
+	if len(current) == 0 && !GovernedByLidarr(artist) {
+		current = models.UUIDSet(x.native(artist))
+	}
+	rest := current.Without(library)
+	if len(rest) == 0 {
+		return false, models.UUIDSet{}
+	}
+	return true, rest
 }
 
 // HasNativeLibrary reports whether any library is one Autotaggerr decides for
@@ -290,15 +375,31 @@ type Holding struct {
 // LibraryHoldings reports, per album, what one library holds of it. An album the
 // library holds nothing of is absent.
 func LibraryHoldings(db *gorm.DB, library uuid.UUID, releaseGroupMBIDs []string) (map[string]Holding, error) {
-	out := map[string]Holding{}
 	if len(releaseGroupMBIDs) == 0 {
-		return out, nil
+		return map[string]Holding{}, nil
 	}
 	var copies []models.CollectionReleaseCopy
 	if err := db.Where("library_id = ? AND release_group_mb_id IN ?", library, releaseGroupMBIDs).
 		Find(&copies).Error; err != nil {
 		return nil, err
 	}
+	return holdingsOf(db, copies)
+}
+
+// AllLibraryHoldings is LibraryHoldings for every album the library holds, for the
+// collection list read in one library: one read of the library's copies rather than
+// an IN list of the whole collection.
+func AllLibraryHoldings(db *gorm.DB, library uuid.UUID) (map[string]Holding, error) {
+	var copies []models.CollectionReleaseCopy
+	if err := db.Where("library_id = ?", library).Find(&copies).Error; err != nil {
+		return nil, err
+	}
+	return holdingsOf(db, copies)
+}
+
+// holdingsOf folds one library's edition copies into its holding per album.
+func holdingsOf(db *gorm.DB, copies []models.CollectionReleaseCopy) (map[string]Holding, error) {
+	out := map[string]Holding{}
 	if len(copies) == 0 {
 		return out, nil
 	}
@@ -306,13 +407,17 @@ func LibraryHoldings(db *gorm.DB, library uuid.UUID, releaseGroupMBIDs []string)
 	for _, c := range copies {
 		releaseIDs = append(releaseIDs, c.ReleaseMBID)
 	}
-	var releases []models.CollectionRelease
-	if err := db.Select("mb_id", "total_tracks").Where("mb_id IN ?", releaseIDs).Find(&releases).Error; err != nil {
-		return nil, err
-	}
-	totals := make(map[string]int, len(releases))
-	for _, r := range releases {
-		totals[r.MBID] = r.TotalTracks
+	totals := make(map[string]int, len(releaseIDs))
+	// Chunked: a whole library's editions can outrun a database's parameter limit.
+	for start := 0; start < len(releaseIDs); start += 500 {
+		var releases []models.CollectionRelease
+		if err := db.Select("mb_id", "total_tracks").Where("mb_id IN ?", releaseIDs[start:min(start+500, len(releaseIDs))]).
+			Find(&releases).Error; err != nil {
+			return nil, err
+		}
+		for _, r := range releases {
+			totals[r.MBID] = r.TotalTracks
+		}
 	}
 	for _, c := range copies {
 		h := out[c.ReleaseGroupMBID]

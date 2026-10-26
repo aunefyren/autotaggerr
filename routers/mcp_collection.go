@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -33,6 +35,7 @@ type mcpArtistRow struct {
 type mcpListArtistsInput struct {
 	NameContains string `json:"name_contains,omitempty" jsonschema:"case-insensitive substring of the artist name"`
 	Filter       string `json:"filter,omitempty" jsonschema:"only artists with: partial (owned albums missing tracks), mismatch, picked, monitored or unmonitored"`
+	Library      string `json:"library,omitempty" jsonschema:"only artists with files in one library (name or ID), counted in that library: its holdings, its wants and who decides there. Omitted, every library at once"`
 	mcpPaging
 }
 
@@ -131,14 +134,15 @@ func mcpLibraryName(view artistView) string {
 }
 
 type mcpArtistDetail struct {
-	MBID            string `json:"mbid"`
-	Name            string `json:"name"`
-	Monitored       bool   `json:"monitored"`
-	ManagedBy       string `json:"managed_by"`
-	FollowGoverns   bool   `json:"follow_governs" jsonschema:"whether monitored decides anything; false when a manager decides what is wanted"`
-	FollowTypes     string `json:"follow_types,omitempty" jsonschema:"album types following wants"`
-	FollowSecondary bool   `json:"follow_secondary,omitempty"`
-	FollowFromYear  int    `json:"follow_from_year,omitempty"`
+	MBID            string   `json:"mbid"`
+	Name            string   `json:"name"`
+	Monitored       bool     `json:"monitored"`
+	ManagedBy       string   `json:"managed_by"`
+	FollowGoverns   bool     `json:"follow_governs" jsonschema:"whether monitored decides anything; false when a manager decides what is wanted"`
+	FollowTypes     string   `json:"follow_types,omitempty" jsonschema:"album types following wants"`
+	FollowSecondary bool     `json:"follow_secondary,omitempty"`
+	FollowFromYear  int      `json:"follow_from_year,omitempty"`
+	FollowingIn     []string `json:"following_in,omitempty" jsonschema:"the native libraries following wants into, by name"`
 	// Library is the library this answer reads; empty is every library at once.
 	Library     string             `json:"library,omitempty" jsonschema:"the library this answer is read in; absent when it covers every library"`
 	Libraries   []mcpArtistLibrary `json:"libraries,omitempty" jsonschema:"the libraries the artist can be read in; pass one as library to see only its wants and holdings"`
@@ -279,7 +283,11 @@ func (a *API) addMCPCollectionTools(server *mcp.Server) {
 }
 
 func (a *API) mcpListArtists(_ context.Context, _ *mcp.CallToolRequest, in mcpListArtistsInput) (*mcp.CallToolResult, mcpArtistList, error) {
-	all, err := a.artistList()
+	library, err := a.mcpLibrary(in.Library)
+	if err != nil {
+		return nil, mcpArtistList{}, err
+	}
+	all, err := a.artistList(library)
 	if err != nil {
 		return nil, mcpArtistList{}, mcpStoreError(err)
 	}
@@ -292,6 +300,9 @@ func (a *API) mcpListArtists(_ context.Context, _ *mcp.CallToolRequest, in mcpLi
 	matched := make([]artistSummary, 0, len(all))
 	for _, ar := range all {
 		if needle != "" && !strings.Contains(strings.ToLower(ar.Name), needle) {
+			continue
+		}
+		if library != nil && !slices.Contains(ar.LibraryIDs, *library) {
 			continue
 		}
 		if keep(ar) {
@@ -349,6 +360,15 @@ func (a *API) mcpGetArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpGetA
 		Library: mcpLibraryName(ar), Libraries: newMCPArtistLibraries(ar.Libraries), EditBlocked: ar.EditBlocked,
 		Albums: make([]mcpAlbumRow, 0, len(detail.ReleaseGroups)),
 		Links:  newMCPLinks(a.managerLinks(models.ManagerLinkArtist, ar.MBID)),
+	}
+	names := map[uuid.UUID]string{}
+	for _, l := range ar.Libraries {
+		names[l.LibraryID] = l.Name
+	}
+	for _, id := range ar.FollowingIn {
+		if name, ok := names[id]; ok {
+			out.FollowingIn = append(out.FollowingIn, name)
+		}
 	}
 	for _, view := range detail.ReleaseGroups {
 		out.Albums = append(out.Albums, newMCPAlbumRow(view))

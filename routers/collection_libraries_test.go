@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
-	"github.com/google/uuid"
 )
 
 // TestCollectionSaysWhichLibraryHoldsAnAlbum: the artist page and the collection list
@@ -194,14 +193,14 @@ func TestArtistPageReadsOneLibrary(t *testing.T) {
 	}
 	var saved models.CollectionArtist
 	api.DB.Where("mb_id = ?", "artist-1").First(&saved)
-	if !saved.Monitored || saved.FollowLibraryID != music3.ID {
-		t.Errorf("artist after follow = monitored %v into %s, want Music 3", saved.Monitored, saved.FollowLibraryID)
+	if !saved.Monitored || len(saved.FollowLibraryIDs) != 1 || saved.FollowLibraryIDs[0] != music3.ID {
+		t.Errorf("artist after follow = monitored %v into %v, want Music 3", saved.Monitored, saved.FollowLibraryIDs)
 	}
 	if w := do(r, "POST", "/api/v1/artists/artist-1/follow", token, map[string]any{"monitored": false}); w.Code != http.StatusOK {
 		t.Fatalf("unfollow = %d: %s", w.Code, w.Body.String())
 	}
 	api.DB.Where("mb_id = ?", "artist-1").First(&saved)
-	if saved.Monitored || saved.FollowLibraryID != uuid.Nil {
+	if saved.Monitored || len(saved.FollowLibraryIDs) != 0 {
 		t.Errorf("artist after unfollow = %+v, want the library cleared with it", saved)
 	}
 }

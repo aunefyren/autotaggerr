@@ -103,7 +103,7 @@ func TestFollowAppliesWhereItWasPointed(t *testing.T) {
 	if FollowGoverns(mixed) {
 		t.Error("a Lidarr artist's stored follow with no library governed")
 	}
-	mixed.FollowLibraryID = lib
+	mixed.FollowLibraryIDs = models.UUIDSet{lib}
 	if !FollowGoverns(mixed) || !FollowAppliesIn(mixed, lib) || FollowAppliesIn(mixed, other) {
 		t.Error("a follow pointed at one native library should apply there and nowhere else")
 	}
@@ -239,5 +239,64 @@ func TestManagerWantsIgnoreAnotherLibrarysWant(t *testing.T) {
 	db.Model(&models.CollectionDesire{}).Where("source = ? AND release_mb_id = ?", models.DesireSourceManager, "rel-1").Count(&n)
 	if n != 1 {
 		t.Errorf("manager wants = %d, want Lidarr's selection recorded beside the native want", n)
+	}
+}
+
+// TestFollowLibrariesAfter: following wants into a set of native libraries with one
+// set of settings. Switching it on or off in one library adds or removes that library;
+// switching off one library of a follow that covered "every" keeps every other one;
+// and a set emptied by removal switches following off rather than widening it to all.
+func TestFollowLibrariesAfter(t *testing.T) {
+	db := testDB(t)
+	a := models.Library{Name: "A", Path: "/a", Enabled: true}
+	b := models.Library{Name: "B", Path: "/b", Enabled: true}
+	c := models.Library{Name: "C", Path: "/c", Enabled: true}
+	for _, l := range []*models.Library{&a, &b, &c} {
+		if err := db.Create(l).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	idx, err := LoadLibraryIndex(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := models.CollectionArtist{MBID: "n", ManagedBy: models.ManagedByAutotaggerr}
+
+	on, set := idx.FollowLibrariesAfter(native, a.ID, true)
+	if !on || len(set) != 1 || !set.Contains(a.ID) {
+		t.Fatalf("follow in A = %v %v", on, set)
+	}
+	native.Monitored, native.FollowLibraryIDs = on, set
+	on, set = idx.FollowLibrariesAfter(native, b.ID, true)
+	if !on || len(set) != 2 || !set.Contains(b.ID) {
+		t.Fatalf("then in B = %v %v", on, set)
+	}
+	native.FollowLibraryIDs = set
+	if got := idx.FollowingIn(native); len(got) != 2 {
+		t.Errorf("following in = %v, want A and B", got)
+	}
+	on, set = idx.FollowLibrariesAfter(native, a.ID, false)
+	if !on || len(set) != 1 || !set.Contains(b.ID) {
+		t.Fatalf("unfollow A = %v %v, want B left", on, set)
+	}
+	native.FollowLibraryIDs = set
+	if on, _ = idx.FollowLibrariesAfter(native, b.ID, false); on {
+		t.Error("removing the last library left following on — an empty set would mean every library")
+	}
+
+	// Followed everywhere (no library named): unfollowing one keeps the other two.
+	everywhere := models.CollectionArtist{MBID: "e", ManagedBy: models.ManagedByAutotaggerr, Monitored: true}
+	if got := idx.FollowingIn(everywhere); len(got) != 3 {
+		t.Errorf("following in = %v, want all three", got)
+	}
+	if on, set := idx.FollowLibrariesAfter(everywhere, c.ID, true); !on || len(set) != 0 {
+		t.Errorf("following again in C = %v %v, want every library left as it is", on, set)
+	}
+	on, set = idx.FollowLibrariesAfter(everywhere, c.ID, false)
+	if !on || len(set) != 2 || set.Contains(c.ID) {
+		t.Errorf("unfollow C from every library = %v %v, want A and B", on, set)
+	}
+	if on, set := idx.FollowLibrariesAfter(everywhere, uuid.Nil, false); on || len(set) != 0 {
+		t.Errorf("unfollow in the overview = %v %v", on, set)
 	}
 }

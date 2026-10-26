@@ -218,3 +218,33 @@ func TestHashUserAPIKeysOnAFreshDatabase(t *testing.T) {
 		t.Fatalf("hashUserAPIKeys: %v", err)
 	}
 }
+
+// TestFollowLibrarySets: the single follow library is carried into the set that
+// replaced it; a Nil one ("every library") is left as the empty set, which means the same.
+func TestFollowLibrarySets(t *testing.T) {
+	db := testDB(t)
+	if err := db.Exec("ALTER TABLE collection_artists ADD COLUMN follow_library_id text").Error; err != nil {
+		t.Fatal(err)
+	}
+	lib := uuid.New()
+	for _, a := range []models.CollectionArtist{{MBID: "named", Name: "Named"}, {MBID: "every", Name: "Every"}} {
+		if err := db.Create(&a).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Exec("UPDATE collection_artists SET follow_library_id = ? WHERE mb_id = 'named'", lib.String())
+	db.Exec("UPDATE collection_artists SET follow_library_id = ? WHERE mb_id = 'every'", uuid.Nil.String())
+
+	if err := followLibrarySets(db); err != nil {
+		t.Fatal(err)
+	}
+	var named, every models.CollectionArtist
+	db.Where("mb_id = ?", "named").First(&named)
+	db.Where("mb_id = ?", "every").First(&every)
+	if len(named.FollowLibraryIDs) != 1 || named.FollowLibraryIDs[0] != lib {
+		t.Errorf("named = %v, want the library carried across", named.FollowLibraryIDs)
+	}
+	if len(every.FollowLibraryIDs) != 0 {
+		t.Errorf("every = %v, want empty", every.FollowLibraryIDs)
+	}
+}

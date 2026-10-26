@@ -37,6 +37,10 @@ type artistView struct {
 	// Following is whether following decides what is wanted in this view: stored,
 	// governing, and — in one library's view — pointed at that library.
 	Following bool `json:"following"`
+	// FollowingIn is the native libraries following wants into — every native library
+	// for a follow that names none — so the page can show and toggle them without
+	// re-deriving the rule.
+	FollowingIn []uuid.UUID `json:"following_in"`
 	// ViewLibraryID is the library this view reads, or null for every library.
 	ViewLibraryID *uuid.UUID `json:"view_library_id"`
 	// EditLibraryID is the library an edit made in this view is for, or null when
@@ -60,6 +64,7 @@ func newArtistView(artist models.CollectionArtist) artistView {
 		IdentityEditable: collection.IdentityEditable(artist),
 		Detachable:       collection.Detachable(artist),
 		Following:        artist.Monitored && collection.FollowGoverns(artist),
+		FollowingIn:      []uuid.UUID{},
 	}
 }
 
@@ -377,7 +382,10 @@ func creditedArtists(rg models.CollectionReleaseGroup, credits map[string][]stri
 type artistListCache struct {
 	mu          sync.Mutex
 	fingerprint string
-	list        []artistSummary
+	// lists is one list per view: uuid.Nil is every library, any other key the list
+	// read in that library. One fingerprint covers them all, since every view is
+	// computed from the same tables.
+	lists map[uuid.UUID][]artistSummary
 }
 
 // collectionFingerprint names the state of the five tables the collection list is
@@ -413,10 +421,18 @@ func collectionFingerprint(db *gorm.DB) (string, error) {
 // it runs in Go — so its cost is the size of the collection. The answer only changes
 // when one of those tables does, which is rarely between two page loads, so it is kept
 // and served again until collectionFingerprint says otherwise.
+//
+// ?library=<id> reads the list in one library, the way the artist page's library tab
+// reads one artist: that library's holdings, its authority, the wants it shows.
 func (a *API) listArtists(c *gin.Context) {
-	out, err := a.artistList()
+	library, err := parseLibraryParam(c.Query("library"))
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		respondErr(c, err)
+		return
+	}
+	out, err := a.artistList(library)
+	if err != nil {
+		respondErr(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, out)
@@ -425,12 +441,15 @@ func (a *API) listArtists(c *gin.Context) {
 // artistList is the collection list behind GET /artists and the MCP list_artists
 // tool: served from the memo while collectionFingerprint says nothing changed,
 // computed afresh otherwise. Its errors are safe to show a client.
-func (a *API) artistList() ([]artistSummary, error) {
+func (a *API) artistList(library *uuid.UUID) ([]artistSummary, error) {
+	view := uuid.Nil
+	if library != nil {
+		view = *library
+	}
 	fingerprint, err := collectionFingerprint(a.DB)
 	if err == nil {
 		a.artists.mu.Lock()
-		if a.artists.fingerprint == fingerprint && a.artists.list != nil {
-			list := a.artists.list
+		if list, ok := a.artists.lists[view]; ok && a.artists.fingerprint == fingerprint {
 			a.artists.mu.Unlock()
 			return list, nil
 		}
@@ -439,13 +458,16 @@ func (a *API) artistList() ([]artistSummary, error) {
 		logger.Log.Warnf("failed to fingerprint the collection, computing the list afresh: %s", err.Error())
 	}
 
-	out, err := a.computeArtistList()
+	out, err := a.computeArtistList(view)
 	if err != nil {
 		return nil, err
 	}
 	if fingerprint != "" {
 		a.artists.mu.Lock()
-		a.artists.fingerprint, a.artists.list = fingerprint, out
+		if a.artists.fingerprint != fingerprint || a.artists.lists == nil {
+			a.artists.fingerprint, a.artists.lists = fingerprint, map[uuid.UUID][]artistSummary{}
+		}
+		a.artists.lists[view] = out
 		a.artists.mu.Unlock()
 	}
 	return out, nil
@@ -454,11 +476,37 @@ func (a *API) artistList() ([]artistSummary, error) {
 // computeArtistList is the uncached body of artistList. The store's own error is
 // logged here and replaced by one naming what could not be read, which is what the
 // caller shows.
-func (a *API) computeArtistList() ([]artistSummary, error) {
+func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 	var artists []models.CollectionArtist
 	if err := a.DB.Order("name").Find(&artists).Error; err != nil {
 		logger.Log.Errorf("failed to list artists: %s", err.Error())
-		return nil, errors.New("failed to list artists")
+		return nil, failWith(http.StatusInternalServerError, "failed to list artists")
+	}
+	artistByID := make(map[string]models.CollectionArtist, len(artists))
+	for _, ar := range artists {
+		artistByID[ar.MBID] = ar
+	}
+
+	// Where an edit from the list would go, and — read in one library — who decides
+	// there, from one read of the libraries rather than one per artist.
+	idx, idxErr := collection.LoadLibraryIndex(a.DB)
+	if idxErr != nil {
+		logger.Log.Warnf("failed to load the libraries: %s", idxErr.Error())
+	}
+	inLibrary := library != uuid.Nil
+	var holdings map[string]collection.Holding
+	if inLibrary {
+		if idxErr != nil {
+			return nil, failWith(http.StatusInternalServerError, "failed to load the libraries")
+		}
+		if !idx.Exists(library) {
+			return nil, failWith(http.StatusNotFound, "library not found")
+		}
+		var err error
+		if holdings, err = collection.AllLibraryHoldings(a.DB, library); err != nil {
+			logger.Log.Errorf("failed to read what library %s holds: %s", library, err.Error())
+			return nil, failWith(http.StatusInternalServerError, "failed to read what the library holds")
+		}
 	}
 
 	// Aggregated in Go rather than SQL so the complete/discrepancy rules have exactly
@@ -469,7 +517,7 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 	var groups []models.CollectionReleaseGroup
 	if err := a.DB.Find(&groups).Error; err != nil {
 		logger.Log.Errorf("failed to list release groups: %s", err.Error())
-		return nil, errors.New("failed to list release groups")
+		return nil, failWith(http.StatusInternalServerError, "failed to list release groups")
 	}
 	picked := map[string]map[string]bool{}
 	var desires []models.CollectionDesire
@@ -480,6 +528,12 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 			// a "picked" number on a Lidarr artist nobody has picked anything for.
 			if d.Derived() {
 				continue
+			}
+			if inLibrary {
+				ar := artistByID[d.ArtistMBID]
+				if !collection.DesireInScope(d, ar, library, idx.Authority(ar, library)) {
+					continue
+				}
 			}
 			if picked[d.ArtistMBID] == nil {
 				picked[d.ArtistMBID] = map[string]bool{}
@@ -506,6 +560,11 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 		logger.Log.Warnf("failed to load which libraries hold each album: %s", err.Error())
 	}
 	artistLibraries := map[string]map[uuid.UUID]bool{}
+	// Read in one library, each album is judged the way the artist page's library tab
+	// judges it — newReleaseGroupViewIn in that library's scope — so the two cannot
+	// count differently. The overview keeps the plain rules, which are the same ones.
+	groupDesires := desiresByGroup(desires)
+	scopes := map[string]viewScope{}
 
 	catalogued := catalogChecked(artists)
 	for _, rg := range groups {
@@ -522,6 +581,28 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 				artistLibraries[artistMBID][lib] = true
 			}
 			g.total++
+			if inLibrary {
+				ar, known := artistByID[artistMBID]
+				if !known {
+					continue
+				}
+				scope, ok := scopes[artistMBID]
+				if !ok {
+					scope = viewScope{library: library, authority: idx.Authority(ar, library), holdings: holdings}
+					scopes[artistMBID] = scope
+				}
+				view := newReleaseGroupViewIn(rg, catalogued[artistMBID], ar, groupDesires[rg.MBID], scope)
+				if view.Owned {
+					g.owned++
+				}
+				if view.Complete {
+					g.complete++
+				}
+				if view.Discrepancy != models.DiscrepancyNone {
+					g.mismatch++
+				}
+				continue
+			}
 			if rg.Owned {
 				g.owned++
 			}
@@ -534,11 +615,9 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 		}
 	}
 
-	// The list is the overview of every artist; where an edit from it would go is
-	// answered from one read of the libraries rather than one per artist.
-	idx, err := collection.LoadLibraryIndex(a.DB)
-	if err != nil {
-		logger.Log.Warnf("failed to load the libraries: %s", err.Error())
+	var scopeLibrary *uuid.UUID
+	if inLibrary {
+		scopeLibrary = &library
 	}
 	out := make([]artistSummary, 0, len(artists))
 	for _, ar := range artists {
@@ -547,8 +626,8 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 			g = &agg{}
 		}
 		view := newArtistView(ar)
-		if err == nil {
-			scope, _ := a.resolveScope(idx, ar, nil, nil)
+		if idxErr == nil {
+			scope, _ := a.resolveScope(idx, ar, scopeLibrary, nil)
 			view = artistViewIn(ar, scope)
 		}
 		out = append(out, artistSummary{
@@ -1450,7 +1529,7 @@ func (a *API) followArtists(c *gin.Context) {
 		if err := a.DB.Model(&artist).Updates(map[string]any{
 			"monitored": true, "follow_types": strings.TrimSpace(body.FollowTypes),
 			"follow_secondary": body.FollowSecondary, "follow_from_year": body.FollowFromYear,
-			"follow_library_id": target,
+			"follow_library_ids": models.UUIDSet{target},
 		}).Error; err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update " + artist.Name})
 			return

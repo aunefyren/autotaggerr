@@ -1238,6 +1238,8 @@ function FollowSettings({
   // just do not govern until the artist is natively managed.
   const frozen = !artist.follow_governs;
   const shape = { follow_types: artist.follow_types ?? "", follow_secondary: artist.follow_secondary, follow_from_year: artist.follow_from_year || 0 };
+  const nativeLibraries = (artist.libraries ?? []).filter((l) => l.authority === "autotaggerr");
+  const followingIn = new Set(artist.following_in ?? []);
 
   return (
     <div className="card" style={frozen ? { opacity: 0.75 } : undefined}>
@@ -1251,12 +1253,42 @@ function FollowSettings({
         {frozen
           ? `${editBlockedReason(artist) ?? `${manager} decides what is wanted for this artist; Autotaggerr mirrors it.`} These settings are kept but do not apply.`
           : artist.following
-            ? `Following wants ${describeFollow(shape)}, as they are released${editLibraryName(artist) ? `, into ${editLibraryName(artist)}` : ""}.`
+            ? `Following wants ${describeFollow(shape)}, as they are released${followingInNames(artist, nativeLibraries)}.`
             : `Not following${editLibraryName(artist) ? ` in ${editLibraryName(artist)}` : ""}. These are what a follow would want.`}
       </div>
       <FollowFields value={shape} onChange={onChange} disabled={busy || frozen} idPrefix="artist-follow" />
+      {/* One set of settings, wanted into any of the artist's native libraries. Only
+          where there is a choice: with one native library "into" says nothing. Each
+          box is the same switch the Follow button is, aimed at that library, so the
+          server decides what unticking the last one, or one of "every", means. Live
+          even while the settings above are frozen: ticking a native library is how an
+          artist Lidarr governs elsewhere starts being followed here. */}
+      {nativeLibraries.length > 1 && (
+        <div className="row" style={{ gap: 12, marginTop: 10, flexWrap: "wrap" }}>
+          <span className="flabel" style={{ margin: 0 }}>Into</span>
+          {nativeLibraries.map((l) => (
+            <label key={l.library_id} className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12 }}>
+              <input
+                type="checkbox"
+                checked={followingIn.has(l.library_id)}
+                disabled={busy}
+                onChange={(e) => onChange({ monitored: e.target.checked, library_id: l.library_id })}
+              />
+              {l.name}
+            </label>
+          ))}
+        </div>
+      )}
     </div>
   );
+}
+
+/** ", into A and B" when following names libraries among several; "" otherwise. */
+function followingInNames(artist: CollectionArtist, nativeLibraries: { library_id: string; name: string }[]): string {
+  if (nativeLibraries.length < 2) return "";
+  const names = nativeLibraries.filter((l) => (artist.following_in ?? []).includes(l.library_id)).map((l) => l.name);
+  if (names.length === 0 || names.length === nativeLibraries.length) return names.length ? ", into every library" : "";
+  return `, into ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`}`;
 }
 
 /**

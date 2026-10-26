@@ -26,6 +26,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"hash_user_api_keys", hashUserAPIKeys},
 		{"seed_authority_owned", seedAuthorityOwned},
 		{"unscoped_library_columns", unscopedLibraryColumns},
+		{"follow_library_sets", followLibrarySets},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -197,6 +198,46 @@ func unscopedLibraryColumns(db *gorm.DB) error {
 		UpdateColumn("library_id", uuid.Nil).Error; err != nil {
 		return err
 	}
-	return db.Model(&models.CollectionArtist{}).Where("follow_library_id IS NULL").
-		UpdateColumn("follow_library_id", uuid.Nil).Error
+	// The follow column has since been retired for follow_library_ids (see
+	// followLibrarySets); a database created after that has nothing here to fill.
+	if !db.Migrator().HasColumn("collection_artists", "follow_library_id") {
+		return nil
+	}
+	return db.Table("collection_artists").Where("follow_library_id IS NULL").
+		Update("follow_library_id", uuid.Nil).Error
+}
+
+// followLibrarySets carries the single library following wanted into
+// (follow_library_id) into the set that replaced it (follow_library_ids), when following
+// became able to want into several native libraries with one set of settings. A Nil
+// library meant "every native library", which an empty set still means, so only named
+// ones are copied. The old column is left in place, unread; AutoMigrate never drops
+// one, and a database created since never had it.
+func followLibrarySets(db *gorm.DB) error {
+	if !db.Migrator().HasColumn("collection_artists", "follow_library_id") {
+		return nil
+	}
+	var rows []struct {
+		MBID            string `gorm:"column:mb_id"`
+		FollowLibraryID string `gorm:"column:follow_library_id"`
+	}
+	if err := db.Table("collection_artists").Select("mb_id", "follow_library_id").
+		Where("follow_library_id IS NOT NULL AND follow_library_id <> ?", uuid.Nil.String()).
+		Scan(&rows).Error; err != nil {
+		return err
+	}
+	for _, r := range rows {
+		id, err := uuid.Parse(r.FollowLibraryID)
+		if err != nil || id == uuid.Nil {
+			continue
+		}
+		if err := db.Model(&models.CollectionArtist{}).Where("mb_id = ?", r.MBID).
+			Update("follow_library_ids", models.UUIDSet{id}).Error; err != nil {
+			return err
+		}
+	}
+	if len(rows) > 0 {
+		logger.Log.Infof("carried %d artist follow(s) into the follow library set", len(rows))
+	}
+	return nil
 }

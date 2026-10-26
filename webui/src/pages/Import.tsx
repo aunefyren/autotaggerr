@@ -636,6 +636,9 @@ const CONFLICT_LABELS: Record<string, { label: string; kind: string; replaceable
   // Not replaceable: replacing the same-named tracks would still leave the other
   // edition's remaining tracks in the folder, mixed in with these.
   other_edition: { label: "Folder holds another edition", kind: "err", replaceable: false },
+  // Files nobody has identified may be another edition, so the same reasoning holds;
+  // processing the library turns this into other_edition or into nothing.
+  unidentified: { label: "Folder holds unidentified files", kind: "err", replaceable: false },
 };
 
 type Step = "identify" | "review";
@@ -1170,6 +1173,12 @@ function Review({
                               <span className="help-err" style={{ fontSize: 11 }}>
                                 {r.conflict_detail} is already there. Add an edition token such as{" "}
                                 <span className="mono">{"{Edition Year}"}</span> to the album folder template, or remove that edition first.
+                              </span>
+                            )}
+                            {r.conflict === "unidentified" && (
+                              <span className="help-err" style={{ fontSize: 11 }}>
+                                The album folder already holds {r.conflict_detail} Autotaggerr has not identified, so their
+                                edition is unknown. Process the library to identify them, or remove them first.
                               </span>
                             )}
                             {conflict.replaceable && (

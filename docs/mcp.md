@@ -67,7 +67,7 @@ minutes per key, off the request path: authentication must not wait on a write l
 | `get_overview` | version and sizes, files needing attention (errors / retrying / pins held / unmatched-waiting), the migration queue's length, the job queue and the three refresh passes | no |
 | `get_configuration` | libraries with their manager, data source and tagger profile; managers; data sources; tagger profiles. Never credentials | no |
 | `list_artists` | the collection with owned / complete / partial / missing / mismatch / picked counts; filter by name or `partial`, `mismatch`, `picked`, `monitored`, `unmonitored` | no |
-| `get_artist` | one artist and every album: owned, complete, discrepancy, wanted and `wanted_source`, which libraries hold it, plus albums whose MBID no longer resolves. `library` (name or ID) reads one library; the answer lists the artist's libraries with who decides in each, and `edit_blocked` says why a want could not be written in this view. `links` is the artist's page in each Lidarr that holds them | no |
+| `get_artist` | one artist and every album, and `following_in` — the native libraries following wants into: owned, complete, discrepancy, wanted and `wanted_source`, which libraries hold it, plus albums whose MBID no longer resolves. `library` (name or ID) reads one library; the answer lists the artist's libraries with who decides in each, and `edit_blocked` says why a want could not be written in this view. `links` is the artist's page in each Lidarr that holds them | no |
 | `list_missing` | wanted albums not owned, across the collection or one artist; `include_incomplete` adds owned albums with tracks missing | no |
 | `get_album` | one album's state and every edition, which are owned, how complete, in which libraries, and how many files (more than tracks means copies). `credits` lists every credited artist of a collaboration. `links` is the album in each Lidarr that holds it and, per library, in Plex (through app.plex.tv) — links for the person, not for the assistant to follow. `library` reads it in one library | cache-first; a cold Plex link asks Plex |
 | `get_release_tracks` | one edition's tracklist, with the file identified as each track | cache-first |
@@ -94,7 +94,7 @@ pages — and lists each album once, under the first artist that wants it.
 | `tag_files` | queue rewriting tags from stored identities | yes | no |
 | `cancel_job` | ask the running job to stop between files | no | no |
 | `add_artist` | add an artist by MBID (name looked up when omitted); idempotent. Refused when Lidarr manages every library ([collection.md](collection.md#in-the-ui)) | no | when unnamed |
-| `follow_artist` | follow on/off, types, secondary types, year cutoff — then re-sync the discography; `library` names the native library to follow into | no | yes |
+| `follow_artist` | follow on/off, types, secondary types, year cutoff — then re-sync the discography; `library` names the native library to follow into or stop following in — following can want into several with one set of settings | no | yes |
 | `want_album` / `unwant_album` | an explicit want, of an album, one edition, or some songs; and removing one. `library` (name or ID) names the native library the want is for | no | for an album the collection has not seen |
 | `attach_file` | pin a file to a release and track, validated against the release, and write its tags | yes | yes |
 | `release_pin` / `confirm_pin` | hand a pinned file back to automatic identification; keep a held pin for the new audio | confirm writes | no |

@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
@@ -483,9 +484,18 @@ func (a *API) libraryItems(f itemFilter) (itemPage, error) {
 	if err != nil {
 		logger.Log.Warnf("list items: failed to resolve who identifies these files: %s", err.Error())
 	}
+	// An unidentified file in a Lidarr library can still be attached to a detached
+	// artist's release (filesIdentityEditable reads the artist from the target), so it
+	// is offered — but only once some artist is detached, or the offer is one every
+	// attempt would be refused.
+	anyDetached, err := collection.AnyArtistDetached(a.DB)
+	if err != nil {
+		logger.Log.Warnf("list items: failed to read whether any artist is detached: %s", err.Error())
+	}
 	views := make([]libraryItemView, 0, len(items))
 	for _, item := range items {
-		views = append(views, libraryItemView{LibraryItem: item, IdentityEditable: editable[item.ID]})
+		views = append(views, libraryItemView{LibraryItem: item, IdentityEditable: editable[item.ID],
+			AttachIfDetached: anyDetached && !editable[item.ID] && item.MBReleaseID == ""})
 	}
 	return itemPage{Total: total, Limit: limit, Offset: offset, Items: views}, nil
 }
@@ -496,6 +506,10 @@ func (a *API) libraryItems(f itemFilter) (itemPage, error) {
 type libraryItemView struct {
 	models.LibraryItem
 	IdentityEditable bool `json:"identity_editable"`
+	// AttachIfDetached marks a file that is not editable as it stands — it is in a
+	// Lidarr library — but has no identity yet, so it may be attached to a release of
+	// an artist detached from Lidarr. The UI offers the attach and says so.
+	AttachIfDetached bool `json:"attach_if_detached,omitempty"`
 }
 
 // itemTags returns the current-vs-desired tag diff for one indexed file.
