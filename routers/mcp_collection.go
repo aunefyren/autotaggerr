@@ -42,21 +42,34 @@ type mcpArtistList struct {
 }
 
 type mcpAlbumRow struct {
-	MBID             string `json:"mbid" jsonschema:"release-group MBID; pass to get_album"`
-	Title            string `json:"title"`
-	PrimaryType      string `json:"primary_type,omitempty"`
-	SecondaryTypes   string `json:"secondary_types,omitempty"`
-	FirstReleaseDate string `json:"first_release_date,omitempty"`
-	Owned            bool   `json:"owned"`
-	OwnedTracks      int    `json:"owned_tracks,omitempty"`
-	TotalTracks      int    `json:"total_tracks,omitempty" jsonschema:"track count of the best-owned edition"`
-	Complete         bool   `json:"complete"`
-	OwnedEditions    int    `json:"owned_editions,omitempty"`
-	Discrepancy      string `json:"discrepancy,omitempty" jsonschema:"how disk and the manager's catalog disagree; empty when they agree"`
-	Wanted           bool   `json:"wanted"`
-	WantedSource     string `json:"wanted_source,omitempty" jsonschema:"explicit, auto or manager"`
-	WantedEditions   int    `json:"wanted_editions,omitempty" jsonschema:"specific editions asked for; 0 with wanted means any edition"`
-	WantedTracks     int    `json:"wanted_tracks,omitempty" jsonschema:"specific songs asked for; 0 means the whole album"`
+	MBID             string   `json:"mbid" jsonschema:"release-group MBID; pass to get_album"`
+	Title            string   `json:"title"`
+	PrimaryType      string   `json:"primary_type,omitempty"`
+	SecondaryTypes   string   `json:"secondary_types,omitempty"`
+	FirstReleaseDate string   `json:"first_release_date,omitempty"`
+	Owned            bool     `json:"owned"`
+	OwnedTracks      int      `json:"owned_tracks,omitempty"`
+	TotalTracks      int      `json:"total_tracks,omitempty" jsonschema:"track count of the best-owned edition"`
+	Complete         bool     `json:"complete"`
+	OwnedEditions    int      `json:"owned_editions,omitempty"`
+	Discrepancy      string   `json:"discrepancy,omitempty" jsonschema:"how disk and the manager's catalog disagree; empty when they agree"`
+	Wanted           bool     `json:"wanted"`
+	WantedSource     string   `json:"wanted_source,omitempty" jsonschema:"explicit, auto or manager"`
+	WantedEditions   int      `json:"wanted_editions,omitempty" jsonschema:"specific editions asked for; 0 with wanted means any edition"`
+	WantedTracks     int      `json:"wanted_tracks,omitempty" jsonschema:"specific songs asked for; 0 means the whole album"`
+	Libraries        []string `json:"libraries,omitempty" jsonschema:"names of the libraries holding files of this album"`
+}
+
+// libraryNamesOf is the names of the libraries in a copy list, in its order.
+func libraryNamesOf(copies []collection.LibraryCopy) []string {
+	if len(copies) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(copies))
+	for _, c := range copies {
+		out = append(out, c.Name)
+	}
+	return out
 }
 
 func newMCPAlbumRow(v releaseGroupView) mcpAlbumRow {
@@ -70,6 +83,7 @@ func newMCPAlbumRow(v releaseGroupView) mcpAlbumRow {
 		Complete: v.Complete, OwnedEditions: v.OwnedEditions, Discrepancy: discrepancy,
 		Wanted: v.Wanted, WantedSource: v.WantedSource,
 		WantedEditions: len(v.DesiredReleases), WantedTracks: len(v.DesiredRecordings),
+		Libraries: libraryNamesOf(v.Libraries),
 	}
 }
 
@@ -119,17 +133,19 @@ type mcpGetAlbumInput struct {
 }
 
 type mcpEditionRow struct {
-	MBID           string `json:"mbid" jsonschema:"release MBID; pass to get_release_tracks"`
-	Title          string `json:"title"`
-	Date           string `json:"date,omitempty"`
-	Country        string `json:"country,omitempty"`
-	Disambiguation string `json:"disambiguation,omitempty"`
-	Formats        string `json:"formats,omitempty" jsonschema:"media, e.g. CD + CD"`
-	Tracks         int    `json:"tracks"`
-	Owned          bool   `json:"owned"`
-	OwnedTracks    int    `json:"owned_tracks,omitempty"`
-	Complete       bool   `json:"complete,omitempty"`
-	Wanted         bool   `json:"wanted,omitempty" jsonschema:"this specific edition was asked for"`
+	MBID           string   `json:"mbid" jsonschema:"release MBID; pass to get_release_tracks"`
+	Title          string   `json:"title"`
+	Date           string   `json:"date,omitempty"`
+	Country        string   `json:"country,omitempty"`
+	Disambiguation string   `json:"disambiguation,omitempty"`
+	Formats        string   `json:"formats,omitempty" jsonschema:"media, e.g. CD + CD"`
+	Tracks         int      `json:"tracks"`
+	Owned          bool     `json:"owned"`
+	OwnedTracks    int      `json:"owned_tracks,omitempty"`
+	Complete       bool     `json:"complete,omitempty"`
+	Wanted         bool     `json:"wanted,omitempty" jsonschema:"this specific edition was asked for"`
+	Files          int      `json:"files,omitempty" jsonschema:"files resolving to this edition; more than owned_tracks means duplicate copies"`
+	Libraries      []string `json:"libraries,omitempty" jsonschema:"names of the libraries holding files of this edition"`
 }
 
 type mcpAlbumDetail struct {
@@ -378,6 +394,7 @@ func (a *API) mcpGetAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpGetAl
 			MBID: ed.ID, Title: ed.Title, Date: ed.Date, Country: ed.Country, Disambiguation: ed.Disambiguation,
 			Formats: strings.Join(formats, " + "), Tracks: tracks,
 			Owned: ed.Owned, OwnedTracks: ed.OwnedTracks, Complete: ed.Complete, Wanted: wanted[ed.ID],
+			Files: ed.Files, Libraries: libraryNamesOf(ed.Libraries),
 		})
 	}
 	return nil, out, nil

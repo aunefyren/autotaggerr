@@ -24,6 +24,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"move_bpm_to_library", moveBPMToLibrary},
 		{"scope_lidarr_cache", scopeLidarrCache},
 		{"hash_user_api_keys", hashUserAPIKeys},
+		{"seed_authority_owned", seedAuthorityOwned},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -128,6 +129,19 @@ func scopeLidarrCache(db *gorm.DB) error {
 		logger.Log.Infof("dropped %d Lidarr cache row(s) that did not say which Lidarr they came from", res.RowsAffected)
 	}
 	return nil
+}
+
+// seedAuthorityOwned fills the disk counts the catalog comparison now reads
+// (models.CollectionReleaseGroup.AuthorityOwned) from the ones it used to read. Until
+// the next Rebuild writes them properly, an album would otherwise compare as owning
+// nothing and every discrepancy would vanish; copying keeps exactly the answer the
+// page gave before, which was right for the single-library installs that predate it.
+func seedAuthorityOwned(db *gorm.DB) error {
+	return db.Model(&models.CollectionReleaseGroup{}).Where("owned = ?", true).
+		UpdateColumns(map[string]any{
+			"authority_owned":        gorm.Expr("owned"),
+			"authority_owned_tracks": gorm.Expr("owned_tracks"),
+		}).Error
 }
 
 // hashUserAPIKeys moves each user's single plaintext key (the old users.api_key

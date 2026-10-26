@@ -243,6 +243,17 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 }
 .idchip:hover { color: var(--text); border-color: var(--border-strong); }
 
+/* Library tag — where an album or edition lives. The ID chip's shape in the UI face:
+   a library name is a label the user chose, not an identifier. Static, not a control. */
+.libtags { display: inline-flex; flex-wrap: wrap; gap: 4px; }
+.libtag {
+  display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  font-size: 11px; line-height: 16px; color: var(--text-muted);
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 0 6px;
+}
+.libtag-n { color: var(--warning-text); font-size: 10px; font-variant-numeric: tabular-nums; }
+
 /* Card */
 .card {
   background: var(--surface-1); border: 1px solid var(--border);

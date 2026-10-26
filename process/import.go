@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
@@ -51,6 +52,13 @@ const (
 	// the other two it cannot be resolved by replacing: one of the two mappings is
 	// wrong, and the review has to fix it.
 	ImportConflictClash = "clash"
+	// ImportConflictOtherEdition: the album folder this file renders into already
+	// holds files of a different edition. The layout reads one folder as one edition —
+	// Lidarr's lookups, folder attach and the disc guard all do — so mixing two in it
+	// is never right, and Replace cannot fix it: replacing the same-named tracks would
+	// still leave the old edition's other tracks behind. The fix is an album folder
+	// template that tells editions apart, or removing the other edition first.
+	ImportConflictOtherEdition = "other_edition"
 )
 
 // ImportRow is one file of an import: where it is, which track it is, and where it
@@ -68,6 +76,9 @@ type ImportRow struct {
 	Target    string `json:"target,omitempty"`
 	TargetRel string `json:"target_rel,omitempty"`
 	Conflict  string `json:"conflict,omitempty"`
+	// ConflictDetail names what is in the way when the conflict itself does not say:
+	// for other_edition, which edition the folder already holds.
+	ConflictDetail string `json:"conflict_detail,omitempty"`
 	// Replaces is every file importing this row removes: the one at Target, and any
 	// indexed copy of the same track elsewhere in the library.
 	Replaces []string `json:"replaces,omitempty"`
@@ -114,6 +125,9 @@ func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzRe
 	naming := components.TaggerForLibrary(r.db, library).Naming()
 	planned := make([]ImportRow, len(rows))
 	byTarget := map[string]int{}
+	// One answer per album folder: an import is one release, so this is almost always
+	// a single query.
+	folderEdition := map[string]string{}
 
 	for i, in := range rows {
 		row := ImportRow{Source: in.Source, MBReleaseTrackID: strings.TrimSpace(in.MBReleaseTrackID), How: in.How, Replace: in.Replace}
@@ -156,6 +170,19 @@ func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzRe
 			}
 			row.Replaces = append(row.Replaces, others...)
 		}
+
+		albumDir := filepath.Join(library.Path, path.Artist, path.Album)
+		other, seen := folderEdition[albumDir]
+		if !seen {
+			other = r.otherEditionIn(library, albumDir, release.ID)
+			folderEdition[albumDir] = other
+		}
+		if other != "" {
+			// Outranks exists and duplicate: consenting to either would replace some
+			// of the other edition's files and leave the rest mixed in with these.
+			row.Conflict = ImportConflictOtherEdition
+			row.ConflictDetail = other
+		}
 		planned[i] = row
 	}
 
@@ -165,6 +192,41 @@ func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzRe
 		}
 	}
 	return planned
+}
+
+// otherEditionIn describes a different edition the library already indexes inside an
+// album folder, or returns "" when there is none. Only indexed files are known; a
+// folder holding files Autotaggerr has never processed is not caught here.
+func (r *Runner) otherEditionIn(library models.Library, albumDir, releaseID string) string {
+	prefix := albumDir + string(filepath.Separator)
+	var others []string
+	// A prefix compare rather than LIKE, so a % or _ in a folder name is not a wildcard.
+	r.db.Model(&models.LibraryItem{}).
+		Where("library_id = ? AND mb_release_id <> '' AND mb_release_id <> ?", library.ID, releaseID).
+		Where("SUBSTR(path, 1, ?) = ?", utf8.RuneCountInString(prefix), prefix).
+		Distinct().Limit(1).Pluck("mb_release_id", &others)
+	if len(others) == 0 {
+		return ""
+	}
+	cached, ok := modules.CachedRelease(others[0])
+	if !ok {
+		return "another edition (" + others[0] + ")"
+	}
+	parts := []string{}
+	for _, p := range []string{modules.YearOf(cached.Date), cached.Country, cached.Disambiguation} {
+		if p != "" {
+			parts = append(parts, p)
+		}
+	}
+	if len(parts) == 0 {
+		return cached.Title
+	}
+	return cached.Title + " (" + strings.Join(parts, ", ") + ")"
+}
+
+func otherEditionMessage(row ImportRow) string {
+	return fmt.Sprintf("%s goes into a folder that already holds %s — add an edition token such as {Edition Year} or {Edition Disambiguation} to the album folder template, or remove that edition first",
+		filepath.Base(row.Source), row.ConflictDetail)
 }
 
 // ErrImportNotReady is a plan with a row that cannot be imported as it stands.
@@ -185,6 +247,8 @@ func CheckImportPlan(rows []ImportRow) error {
 			return fmt.Errorf("%w: %s — %s", ErrImportNotReady, name, row.Error)
 		case row.Conflict == ImportConflictClash:
 			return fmt.Errorf("%w: %s goes to the same place as another file — fix the mapping or skip one", ErrImportNotReady, name)
+		case row.Conflict == ImportConflictOtherEdition:
+			return fmt.Errorf("%w: %s", ErrImportNotReady, otherEditionMessage(row))
 		case row.Conflict != "" && !row.Replace:
 			return fmt.Errorf("%w: %s would replace %s — choose Replace or skip it", ErrImportNotReady, name, strings.Join(row.Replaces, ", "))
 		}
@@ -403,6 +467,9 @@ func importRowReady(row ImportRow, approved map[string]bool) error {
 	}
 	if row.Conflict == ImportConflictClash {
 		return errors.New("goes to the same place as another file of this import")
+	}
+	if row.Conflict == ImportConflictOtherEdition {
+		return errors.New(otherEditionMessage(row))
 	}
 	for _, path := range row.Replaces {
 		if !approved[path] {

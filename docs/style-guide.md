@@ -223,6 +223,14 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   status on the row and starts reading as a banner across it (`.stack > .pill` pins `align-self`).
 - **ID chip** — `--font-mono`, `--text-xs`, `--surface-2` bg, `--border`, `--radius-sm`; click-to-copy
   MB IDs / ISRCs. Truncate with middle-ellipsis for UUIDs; full value on hover/copy.
+- **Library tag** (`.libtag`, `LibraryTags` in `Libraries.tsx`) — where an album or edition lives:
+  the ID chip's shape in the **UI face**, because a library name is a label the user chose rather than
+  an identifier, and static rather than a control. `--text-muted` on `--surface-2`. When a library
+  holds less than the whole, a mono count follows in `--warning-text` (`Music Sandbox 9/15`), so a
+  partial copy beside a complete one is not read as two complete ones. **Only shown when more than
+  one library is configured** — on a single-library install every row would carry the same word.
+  The same rule governs the library `<select>` in a table toolbar, which follows the toolbar's
+  "a select for a list you pick one from" rule and offers only libraries something on the page is in.
 - **Card / panel** — `--surface-1`, `1px --border`, `--radius-lg`, `--space-6` padding. Optional
   header row with title (`--text-lg`, 600) + actions.
 - **Sidebar nav** — `--bg`, item height 34px, icon + label. Active = `--accent-subtle` fill,

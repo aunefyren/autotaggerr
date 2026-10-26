@@ -19,6 +19,7 @@ import { useToast } from "../toast";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
 import { Browse, FilterChip, matches, sortRows, useBrowse } from "../components/browse";
+import { LibraryTags, useLibraries } from "../components/Libraries";
 
 interface Detail {
   artist: CollectionArtist;
@@ -55,6 +56,7 @@ export default function ReleaseGroup() {
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
   const [sameAsk, setSameAsk] = useState(false);
   const browse = useBrowse("date", "asc");
+  const libraries = useLibraries();
 
   // Re-correlate queues on the shared job runner, so the global status is what says
   // whether it can be started — the same poll the artist page runs, for the same
@@ -249,6 +251,12 @@ export default function ReleaseGroup() {
             {/* What is stored, in one sentence. This replaces the scope buttons:
                 the checkboxes below are the control, and this is the readout. */}
             <span style={{ color: isWanted ? "var(--accent-text)" : "var(--text-dim)" }}>{summary}</span>
+            {libraries.multi && (rg?.libraries?.length ?? 0) > 0 && (
+              <>
+                <span className="sep">·</span>
+                <span className="dim">In {rg!.libraries.map((l) => l.name).join(", ")}</span>
+              </>
+            )}
             <span className="sep">·</span>
             <MBLink entity="release-group" mbid={rgid} />
           </div>
@@ -373,6 +381,7 @@ export default function ReleaseGroup() {
             selected={detailRelease}
             busy={busy}
             browse={browse}
+            showLibraries={libraries.multi}
             onSelect={(id) => browse.setFlag("edition", id)}
             onChooseAny={() => save("", [])}
             onWantEdition={(id) => save(id, [])}
@@ -470,6 +479,7 @@ function EditionList({
   selected,
   busy,
   browse,
+  showLibraries,
   onSelect,
   onChooseAny,
   onWantEdition,
@@ -485,6 +495,8 @@ function EditionList({
   selected: string | null;
   busy: boolean;
   browse: Browse;
+  /** Name the libraries holding each edition — only when there is more than one library. */
+  showLibraries: boolean;
   onSelect: (id: string) => void;
   onChooseAny: () => void;
   onWantEdition: (id: string) => void;
@@ -615,10 +627,19 @@ function EditionList({
                     r.status,
                     mediaSummary(r.media),
                     r.owned ? `${r.owned_tracks}/${r.owned_total_tracks} on disk` : "",
+                    // Copies are not completeness: two libraries holding the same
+                    // twelve tracks is 12/12, not 24/12, but the extra files are worth
+                    // knowing about, so they are counted here rather than lost.
+                    r.owned && r.files > r.owned_tracks ? `${r.files} files` : "",
                   ]
                     .filter(Boolean)
                     .join(" · ")}
                 </div>
+                {showLibraries && (r.libraries?.length ?? 0) > 0 && (
+                  <div style={{ marginTop: 3 }}>
+                    <LibraryTags copies={r.libraries} total={r.owned_total_tracks} />
+                  </div>
+                )}
                 {desire && (
                   <div className="mono" style={{ fontSize: 11, marginTop: 2, color: "var(--accent-text)" }}>
                     {tracks > 0 ? `${tracks} tracks wanted` : "whole edition wanted"}

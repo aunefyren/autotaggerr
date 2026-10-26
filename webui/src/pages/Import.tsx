@@ -633,6 +633,9 @@ const CONFLICT_LABELS: Record<string, { label: string; kind: string; replaceable
   exists: { label: "File exists", kind: "warn", replaceable: true },
   duplicate: { label: "Already in library", kind: "warn", replaceable: true },
   clash: { label: "Same target", kind: "err", replaceable: false },
+  // Not replaceable: replacing the same-named tracks would still leave the other
+  // edition's remaining tracks in the folder, mixed in with these.
+  other_edition: { label: "Folder holds another edition", kind: "err", replaceable: false },
 };
 
 type Step = "identify" | "review";
@@ -1163,6 +1166,12 @@ function Review({
                         {conflict && (
                           <div className="row" style={{ gap: 8, flexWrap: "wrap" }}>
                             <Pill kind={conflict.kind}>{conflict.label}</Pill>
+                            {r.conflict === "other_edition" && (
+                              <span className="help-err" style={{ fontSize: 11 }}>
+                                {r.conflict_detail} is already there. Add an edition token such as{" "}
+                                <span className="mono">{"{Edition Year}"}</span> to the album folder template, or remove that edition first.
+                              </span>
+                            )}
                             {conflict.replaceable && (
                               <label className="row replace-consent" title={`Deletes ${(r.replaces ?? []).join(", ")}`}>
                                 <input type="checkbox" checked={!!r.replace} disabled={busy} onChange={(e) => onEdit(r.source, { replace: e.target.checked })} />

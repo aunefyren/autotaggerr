@@ -15,6 +15,7 @@ import (
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
 
@@ -56,6 +57,9 @@ type artistSummary struct {
 	// PickedCount is how many albums were explicitly asked for, as opposed to
 	// wanted automatically by following the artist.
 	PickedCount int `json:"picked_count"`
+	// LibraryIDs are the libraries holding any of the artist's albums, so the list
+	// can be filtered by library and say where an artist lives.
+	LibraryIDs []uuid.UUID `json:"library_ids"`
 }
 
 // releaseGroupView is a release-group plus the comparisons the UI renders, so the
@@ -90,6 +94,9 @@ type releaseGroupView struct {
 	// mixed): the row's edition and want controls are then Lidarr's to decide, so the
 	// UI renders them as state rather than editable choices.
 	IdentityEditable bool `json:"identity_editable"`
+	// Libraries says where the album lives: one entry per library holding files of
+	// it. Empty for an album nobody owns.
+	Libraries []collection.LibraryCopy `json:"libraries"`
 }
 
 // editionView is one MusicBrainz edition of a release-group plus what is owned of
@@ -103,13 +110,18 @@ type editionView struct {
 	// from what the browse response reports if MusicBrainz has since been edited.
 	OwnedTotalTracks int  `json:"owned_total_tracks"`
 	Complete         bool `json:"complete"`
+	// Files is how many files resolve to this edition across every library; more
+	// than OwnedTracks means duplicate copies.
+	Files int `json:"files"`
+	// Libraries says which libraries hold this edition, and how much of it.
+	Libraries []collection.LibraryCopy `json:"libraries"`
 }
 
 // annotateEditions merges owned-edition state into the MusicBrainz edition list,
 // and appends any owned edition the list does not contain — MusicBrainz can be
 // unreachable, or an edition can be merged away upstream, and an edition you own
 // files of must never vanish from the page that edits wants for it.
-func annotateEditions(editions []models.MusicBrainzReleaseSearchResult, owned []models.CollectionRelease) []editionView {
+func annotateEditions(editions []models.MusicBrainzReleaseSearchResult, owned []models.CollectionRelease, copies map[string][]collection.LibraryCopy) []editionView {
 	byMBID := make(map[string]models.CollectionRelease, len(owned))
 	for _, rel := range owned {
 		byMBID[rel.MBID] = rel
@@ -119,11 +131,12 @@ func annotateEditions(editions []models.MusicBrainzReleaseSearchResult, owned []
 	seen := map[string]bool{}
 	for _, edition := range editions {
 		seen[edition.ID] = true
-		view := editionView{MusicBrainzReleaseSearchResult: edition}
+		view := editionView{MusicBrainzReleaseSearchResult: edition, Libraries: librariesOf(copies, edition.ID)}
 		if rel, ok := byMBID[edition.ID]; ok {
 			view.Owned = true
 			view.OwnedTracks, view.OwnedTotalTracks = rel.OwnedTracks, rel.TotalTracks
 			view.Complete = rel.Complete()
+			view.Files = rel.Files
 		}
 		out = append(out, view)
 	}
@@ -148,9 +161,19 @@ func annotateEditions(editions []models.MusicBrainzReleaseSearchResult, owned []
 			OwnedTracks:                    rel.OwnedTracks,
 			OwnedTotalTracks:               rel.TotalTracks,
 			Complete:                       rel.Complete(),
+			Files:                          rel.Files,
+			Libraries:                      librariesOf(copies, rel.MBID),
 		})
 	}
 	return out
+}
+
+// librariesOf is one key's copies, never nil: the UI reads .length on it.
+func librariesOf(copies map[string][]collection.LibraryCopy, key string) []collection.LibraryCopy {
+	if c := copies[key]; c != nil {
+		return c
+	}
+	return []collection.LibraryCopy{}
 }
 
 // Wanted sources, in precedence order: an explicit pick outranks anything derived.
@@ -239,6 +262,7 @@ func newReleaseGroupView(
 		DesiredReleases:        desiredReleases,
 		DesiredRecordings:      desiredRecordings,
 		IdentityEditable:       collection.IdentityEditable(artist),
+		Libraries:              []collection.LibraryCopy{},
 	}
 }
 
@@ -278,7 +302,7 @@ type artistListCache struct {
 	list        []artistSummary
 }
 
-// collectionFingerprint names the state of the four tables the collection list is
+// collectionFingerprint names the state of the five tables the collection list is
 // computed from: each one's row count and newest updated_at. An insert or an update
 // moves the newest stamp, a delete moves the count, so any write the list could show
 // changes it — four aggregate queries instead of loading every row of all four.
@@ -290,7 +314,7 @@ type artistListCache struct {
 func collectionFingerprint(db *gorm.DB) (string, error) {
 	var parts []string
 	for _, model := range []any{&models.CollectionArtist{}, &models.CollectionReleaseGroup{},
-		&models.CollectionDesire{}, &models.CollectionReleaseGroupArtist{}} {
+		&models.CollectionDesire{}, &models.CollectionReleaseGroupArtist{}, &models.CollectionReleaseCopy{}} {
 		// Newest as `any`: an aggregate over a time column comes back as text from
 		// SQLite and as a timestamp elsewhere, and all the fingerprint needs is that the
 		// same state prints the same way twice.
@@ -399,6 +423,12 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 		logger.Log.Warnf("failed to load release-group artist links: %s", err.Error())
 	}
 
+	groupLibraries, err := collection.LibrariesByReleaseGroup(a.DB)
+	if err != nil {
+		logger.Log.Warnf("failed to load which libraries hold each album: %s", err.Error())
+	}
+	artistLibraries := map[string]map[uuid.UUID]bool{}
+
 	catalogued := catalogChecked(artists)
 	for _, rg := range groups {
 		for _, artistMBID := range creditedArtists(rg, credits) {
@@ -406,6 +436,12 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 			if g == nil {
 				g = &agg{}
 				byArtist[artistMBID] = g
+			}
+			for _, lib := range groupLibraries[rg.MBID] {
+				if artistLibraries[artistMBID] == nil {
+					artistLibraries[artistMBID] = map[uuid.UUID]bool{}
+				}
+				artistLibraries[artistMBID][lib] = true
 			}
 			g.total++
 			if rg.Owned {
@@ -434,9 +470,20 @@ func (a *API) computeArtistList() ([]artistSummary, error) {
 			MissingCount:  g.total - g.owned,
 			MismatchCount: g.mismatch,
 			PickedCount:   len(picked[ar.MBID]),
+			LibraryIDs:    sortedLibraryIDs(artistLibraries[ar.MBID]),
 		})
 	}
 	return out, nil
+}
+
+// sortedLibraryIDs is a set of library IDs as a stable, never-nil list.
+func sortedLibraryIDs(set map[uuid.UUID]bool) []uuid.UUID {
+	out := make([]uuid.UUID, 0, len(set))
+	for id := range set {
+		out = append(out, id)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out
 }
 
 // errArtistNotFound is the query methods' "no such artist in the collection".
@@ -500,10 +547,15 @@ func (a *API) artistDetail(mbid string) (artistDetailData, error) {
 	if err != nil {
 		logger.Log.Warnf("failed to count owned editions for %s: %s", mbid, err.Error())
 	}
+	copies, err := collection.ReleaseGroupCopies(a.DB, rgMBIDs)
+	if err != nil {
+		logger.Log.Warnf("failed to load which libraries hold %s's albums: %s", mbid, err.Error())
+	}
 	views := make([]releaseGroupView, 0, len(groups))
 	for _, rg := range groups {
 		view := newReleaseGroupView(rg, catalogued, artist, byGroup[rg.MBID])
 		view.OwnedEditions = editionCounts[rg.MBID]
+		view.Libraries = librariesOf(copies, rg.MBID)
 		views = append(views, view)
 	}
 	return artistDetailData{
@@ -1129,6 +1181,10 @@ func (a *API) discography(c *gin.Context) {
 	if err != nil {
 		logger.Log.Warnf("failed to count owned editions for %s: %s", mbid, err.Error())
 	}
+	copies, err := collection.ReleaseGroupCopies(a.DB, storedMBIDs)
+	if err != nil {
+		logger.Log.Warnf("failed to load which libraries hold %s's albums: %s", mbid, err.Error())
+	}
 
 	out := make([]releaseGroupView, 0, len(groups))
 	seen := make(map[string]bool, len(groups))
@@ -1146,6 +1202,7 @@ func (a *API) discography(c *gin.Context) {
 		}
 		view := newReleaseGroupView(rg, catalogued, artist, byGroup[g.ID])
 		view.OwnedEditions = editionCounts[g.ID]
+		view.Libraries = librariesOf(copies, g.ID)
 		out = append(out, view)
 	}
 
@@ -1158,6 +1215,7 @@ func (a *API) discography(c *gin.Context) {
 		}
 		view := newReleaseGroupView(rg, catalogued, artist, byGroup[rg.MBID])
 		view.OwnedEditions = editionCounts[rg.MBID]
+		view.Libraries = librariesOf(copies, rg.MBID)
 		out = append(out, view)
 	}
 
@@ -1360,11 +1418,24 @@ func (a *API) releaseGroupDetailData(artistMBID, rgMBID string) (releaseGroupDet
 		logger.Log.Warnf("failed to load owned editions for %s: %s", rgMBID, err.Error())
 	}
 	view.OwnedEditions = len(owned)
+	if groupCopies, err := collection.ReleaseGroupCopies(a.DB, []string{rgMBID}); err != nil {
+		logger.Log.Warnf("failed to load which libraries hold %s: %s", rgMBID, err.Error())
+	} else {
+		view.Libraries = librariesOf(groupCopies, rgMBID)
+	}
+	ownedIDs := make([]string, 0, len(owned))
+	for _, rel := range owned {
+		ownedIDs = append(ownedIDs, rel.MBID)
+	}
+	copies, err := collection.ReleaseCopies(a.DB, ownedIDs)
+	if err != nil {
+		logger.Log.Warnf("failed to load which libraries hold the editions of %s: %s", rgMBID, err.Error())
+	}
 
 	return releaseGroupDetailData{
 		Artist:       newArtistView(artist),
 		ReleaseGroup: view,
-		Editions:     annotateEditions(editions, owned),
+		Editions:     annotateEditions(editions, owned, copies),
 		Desires:      mine,
 	}, nil
 }

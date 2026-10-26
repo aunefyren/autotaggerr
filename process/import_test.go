@@ -209,6 +209,57 @@ func TestImportClashBlocks(t *testing.T) {
 	}
 }
 
+// A second edition of an album rendering into the first one's folder: the default
+// album folder names the album, not the edition, so without this the reviewer's only
+// way through was Replace — deleting the first edition's same-numbered tracks and
+// mixing its others in with the new ones.
+func TestImportRefusesToMixEditions(t *testing.T) {
+	w := newImportWorld(t)
+	other := w.release
+	other.ID, other.Date, other.Country, other.Disambiguation = "rel-2", "2011-01-01", "GB", "remaster"
+	// Track IDs are release-scoped: another edition's tracks are other tracks.
+	other.Media = []models.MusicBrainzMedia{{Position: 1, Format: "CD", Tracks: []models.Track{
+		{ID: "trk-2-1", Title: "Song One", Position: 1, Number: "1"},
+		{ID: "trk-2-2", Title: "Song Two", Position: 2, Number: "2"},
+	}}}
+	seedReleaseCache(t, w.db, other)
+	existing := filepath.Join(w.library.Path, "Band", "Album (2001)", "02 Song Two.flac")
+	if err := w.db.Create(&models.LibraryItem{LibraryID: w.library.ID, Path: existing, MBReleaseID: "rel-2", MBReleaseTrackID: "trk-2-2", Status: models.LibraryItemStatusOK}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	for _, row := range rows {
+		if row.Conflict != ImportConflictOtherEdition || row.ConflictDetail != "Album (2011, GB, remaster)" {
+			t.Errorf("row = %+v, want other_edition naming the 2011 remaster", row)
+		}
+		row.Replace = true
+	}
+	err := CheckImportPlan(rows)
+	if err == nil || !strings.Contains(err.Error(), "{Edition") {
+		t.Errorf("CheckImportPlan = %v, want a refusal naming the edition tokens", err)
+	}
+	if importRowReady(rows[0], nil) == nil {
+		t.Error("the job must refuse it too")
+	}
+
+	// An album folder template that tells the two apart takes the conflict away.
+	w.library.TaggerProfileID = nil
+	profile := models.TaggerProfile{Name: "Editions", WriteTags: true, NamingAlbumFolder: "{Album Title} ({Release Year}) [{Edition Year}]"}
+	if err := w.db.Create(&profile).Error; err != nil {
+		t.Fatal(err)
+	}
+	w.library.TaggerProfileID = &profile.ID
+	if err := w.db.Save(&w.library).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range w.runner.ProposeImport(w.library, w.release, w.sources()) {
+		if row.Conflict != "" {
+			t.Errorf("with an edition token, row = %+v, want no conflict", row)
+		}
+	}
+}
+
 // Something that appeared at a target after the review is not replaced.
 func TestImportRowReadyRefusesUnreviewedReplacement(t *testing.T) {
 	src := filepath.Join(t.TempDir(), "a.flac")

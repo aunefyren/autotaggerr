@@ -156,9 +156,19 @@ still open:
   then the move itself, keeping `library_items` rows, pins and tempo keyed to the new path, and
   pruning folders left empty. It must refuse under a Lidarr manager, which tracks its files by
   path. A move also needs a Plex refresh of both the old and new album.
-- *Does the collection page work with several libraries?* The page seems very one-dimensional, with
-  dynamic buttons. What happens with multiple libraries, some Lidarr- and some Autotaggerr-managed?
-  With multiple metadata managers — do the global settings like migrations apply correctly?
+- **Several libraries — what is left** ([collection.md](collection.md#several-libraries)). Copies
+  counted as tracks, the catalog comparison, the library on every collection surface, the `mixed`
+  label, edition naming tokens, Clean/The tokens and the import's `other_edition` guard have shipped.
+  Still open:
+  - *Global settings across managers.* With several managers, do the global settings (MusicBrainz
+    migrations among them) apply correctly per library? Not yet checked.
+  - *The collection list does not recount per library.* Its library filter narrows which artists are
+    listed; the owned/missing/mismatch columns stay all-library. The artist page does narrow its
+    chips. Recounting the list needs per-library release-group summaries, which the copy table can
+    give, but nothing has asked for it yet.
+  - *`other_edition` only sees indexed files.* A folder of files never processed is not caught by
+    the import. A directory read of the target album folder would close it, at the cost of not
+    knowing what edition those files are.
 - *I can add artists on a collection where Lidarr is the only manager.* Or, at least, the button is
   there. Does that make sense?
 - **Multi user support?** Any need?

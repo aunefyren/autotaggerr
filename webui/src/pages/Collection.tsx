@@ -15,10 +15,14 @@ import { SyncLidarrDialog } from "../components/SyncLidarrDialog";
 import { ScanDialog } from "../components/ScanDialog";
 import { RefreshMetadataDialog } from "../components/RefreshMetadataDialog";
 import { FilterChip, Pager, SortHeader, TableToolbar, matches, useBrowse, usePaging, useSorted } from "../components/browse";
+import { LibrarySelect, useLibraries } from "../components/Libraries";
 
 function ManagedBy({ managed_by }: { managed_by: string }) {
   if (managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
-  if (managed_by === "mixed") return <Pill kind="scan">Lidarr + native</Pill>;
+  // Mixed is files in a Lidarr library and in a native one. Lidarr still decides what
+  // is wanted, so the pill names the authority; where the files live is the
+  // Libraries column's job. "Lidarr + native" read as two authorities splitting it.
+  if (managed_by === "mixed") return <Pill kind="scan">Lidarr</Pill>;
   if (managed_by === "autotaggerr") return <Pill kind="chg">Native</Pill>;
   // Provenance could not be determined — the library's manager row is gone. Shown
   // as its own state so missing information is not read as "natively managed".
@@ -83,7 +87,7 @@ const NAME_WIDTHS = [132, 84, 156, 104, 72, 144, 96, 118];
  * of the page says what is coming, and a shape that is already correct is the part that
  * makes the arrival feel instant.
  */
-function LoadingRows() {
+function LoadingRows({ libraries }: { libraries: boolean }) {
   return (
     <tbody aria-hidden="true">
       {Array.from({ length: PLACEHOLDER_ROWS }, (_, i) => (
@@ -93,6 +97,7 @@ function LoadingRows() {
           {/* 21px is a `.pill`'s own height (11px line + 3px padding + hairline), so a
               placeholder pill and the pill that replaces it are the same object. */}
           <td><Skeleton w={62} h={21} pill /></td>
+          {libraries && <td><Skeleton w={64} h={18} /></td>}
           <td>
             <div className="row" style={{ gap: 8 }}>
               {/* The row's one moving part, and it is not a new idea: the indeterminate
@@ -139,6 +144,8 @@ export default function Collection() {
   const [scanAsk, setScanAsk] = useState(false);
   const [choosingRefresh, setChoosingRefresh] = useState(false);
   const browse = useBrowse("name");
+  const libraries = useLibraries();
+  const libraryName = new Map(libraries.list.map((l) => [l.id, l.name]));
 
   // The queued verbs share one job runner, so the status says whether any of them
   // can be started — and keeps the three buttons honest about it.
@@ -270,8 +277,18 @@ export default function Collection() {
   const onlyMismatched = browse.flag("mismatch") === "1";
   const mismatchedCount = artists.filter((ar) => (ar.mismatch_count ?? 0) > 0).length;
 
+  // Which library an artist lives in is a filter only once there is a choice to make.
+  const libraryFilter = libraries.multi ? browse.flag("library") : null;
+  const libraryCounts = new Map<string, number>();
+  for (const ar of artists) {
+    for (const id of ar.library_ids ?? []) libraryCounts.set(id, (libraryCounts.get(id) ?? 0) + 1);
+  }
+
   const filtered = artists.filter(
-    (ar) => matches(browse.query, ar.name) && (!onlyMismatched || (ar.mismatch_count ?? 0) > 0)
+    (ar) =>
+      matches(browse.query, ar.name) &&
+      (!onlyMismatched || (ar.mismatch_count ?? 0) > 0) &&
+      (!libraryFilter || (ar.library_ids ?? []).includes(libraryFilter))
   );
   const shown = useSorted(filtered, SORT[browse.sort] ?? SORT.name, browse.dir);
 
@@ -440,6 +457,9 @@ export default function Collection() {
                 onClick={() => browse.setFlag("mismatch", onlyMismatched ? null : "1")}
               />
             )}
+            {!first && libraries.multi && (
+              <LibrarySelect browse={browse} libraries={libraries.list} counts={libraryCounts} />
+            )}
           </TableToolbar>
 
           {!first && shown.length === 0 ? (
@@ -460,6 +480,7 @@ export default function Collection() {
                     <th style={{ width: 28 }}></th>
                     <SortHeader browse={browse} sortKey="name">Artist</SortHeader>
                     <th>Managed by</th>
+                    {libraries.multi && <th>Libraries</th>}
                     {/* One bar replaces the four bare count columns: "9 of 12 on disk"
                         is the question those numbers were being read to answer. */}
                     <th style={{ width: 190 }}>On disk</th>
@@ -468,7 +489,7 @@ export default function Collection() {
                     <th>Wanted</th>
                   </tr>
                 </thead>
-                {first && <LoadingRows />}
+                {first && <LoadingRows libraries={libraries.multi} />}
                 <tbody>
                   {page.map((ar) => {
                     const owned = ar.owned_count ?? 0;
@@ -494,6 +515,15 @@ export default function Collection() {
                           </div>
                         </td>
                         <td><ManagedBy managed_by={ar.managed_by} /></td>
+                        {libraries.multi && (
+                          <td style={{ fontSize: 12, color: "var(--text-muted)" }}>
+                            {(ar.library_ids ?? []).length === 0 ? (
+                              <span className="dim">—</span>
+                            ) : (
+                              (ar.library_ids ?? []).map((id) => libraryName.get(id) ?? "Unknown library").sort().join(", ")
+                            )}
+                          </td>
+                        )}
                         <td>
                           <div className="row" style={{ gap: 8 }}>
                             {/* Proportional down the whole column, whatever the count:

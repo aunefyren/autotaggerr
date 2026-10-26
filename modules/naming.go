@@ -92,6 +92,14 @@ func (c namingContext) albumArtist() models.Artist {
 	return models.Artist{}
 }
 
+// albumTitle is the release-group's title, falling back to the release's.
+func (c namingContext) albumTitle() string {
+	if c.release.ReleaseGroup.Title != "" {
+		return c.release.ReleaseGroup.Title
+	}
+	return c.release.Title
+}
+
 func creditArtist(credit models.ArtistCredit) models.Artist {
 	artist := credit.Artist
 	if artist.Name == "" {
@@ -126,6 +134,9 @@ func (t NamingToken) render(c namingContext, format string) string {
 	return t.text(c)
 }
 
+// YearOf is the year of a MusicBrainz date ("1977", "1977-02", "1977-02-04"), or "".
+func YearOf(date string) string { return yearOf(date) }
+
 func yearOf(date string) string {
 	if len(date) >= 4 {
 		if _, err := strconv.Atoi(date[:4]); err == nil {
@@ -144,24 +155,116 @@ func creditString(credits []models.ArtistCredit) string {
 	return b.String()
 }
 
+// cleanTitle is Lidarr's *Clean* form of a name (CleanName, CleanTitle): "&" spelled
+// "and", slashes as spaces, brackets and apostrophes gone, and the punctuation that
+// separates words — a colon or comma before a space, a dash standing alone — dropped.
+// Letters, including accented ones, are kept. Taken from the Sonarr-family
+// FileNameBuilder rather than from a Lidarr library side by side, like the cleaning
+// rules below; if a Lidarr-named library previews moves for Clean tokens, this is the
+// function to correct.
+func cleanTitle(title string) string {
+	title = strings.ReplaceAll(title, "&", "and")
+	title = strings.NewReplacer("/", " ", `\`, " ").Replace(title)
+	title = strings.Map(func(r rune) rune {
+		switch r {
+		case '(', ')', '[', ']', '{', '}', '\'', '`', '’', '"':
+			return -1
+		}
+		return r
+	}, title)
+
+	words := strings.Fields(title)
+	out := words[:0]
+	for _, w := range words {
+		// A word that is only punctuation is a separator: "A - B" is "A B".
+		if strings.TrimFunc(w, isCleanPunct) == "" {
+			continue
+		}
+		// Punctuation ending a word ends a clause: "Title: Subtitle", "Yes, No", "Why?".
+		out = append(out, strings.TrimRightFunc(w, isCleanPunct))
+	}
+	return strings.Join(out, " ")
+}
+
+func isCleanPunct(r rune) bool {
+	return strings.ContainsRune(`,<>;:|~!?@$%^*-_=.`, r)
+}
+
+// titleThe is Lidarr's *The* form: a leading article moved to the end, ahead of any
+// trailing parenthetical — "The Beatles" is "Beatles, The", "A Tribe Called Quest
+// (live)" is "Tribe Called Quest, A (live)".
+func titleThe(title string) string {
+	m := leadingArticle.FindStringSubmatch(title)
+	if m == nil {
+		return title
+	}
+	return m[2] + ", " + m[1] + m[3]
+}
+
+var leadingArticle = regexp.MustCompile(`(?i)^(the|a|an)\s+(.*?)((?: *\([^)]+\))*)$`)
+
+// editionFormat summarises a release's media: consecutive identical formats collapse
+// to a count, a mixed set is listed. ASCII "x", not "×", because this is a path, and
+// a path gets typed into a shell.
+func editionFormat(release models.MusicBrainzReleaseResponse) string {
+	var parts []string
+	count, current := 0, ""
+	flush := func() {
+		if count == 0 {
+			return
+		}
+		name := current
+		if name == "" {
+			name = "Unknown"
+		}
+		if count > 1 {
+			name = fmt.Sprintf("%dx%s", count, name)
+		}
+		parts = append(parts, name)
+	}
+	for _, m := range release.Media {
+		if m.Format != current || count == 0 {
+			flush()
+			current, count = m.Format, 0
+		}
+		count++
+	}
+	flush()
+	return strings.Join(parts, " + ")
+}
+
+// editionCatalogNumber is the first catalogue number the release's labels carry.
+// MusicBrainz writes "[none]" for a release that has none, which is not a name.
+func editionCatalogNumber(release models.MusicBrainzReleaseResponse) string {
+	for _, li := range release.LabelInfo {
+		if n := strings.TrimSpace(li.CatalogNumber); n != "" && !strings.EqualFold(n, "[none]") {
+			return n
+		}
+	}
+	return ""
+}
+
 // namingTokens is every token, in the order the profile editor lists them.
 var namingTokens = []NamingToken{
 	{Name: "Artist Name", Field: NamingArtistFolder, Description: "The album's first credited artist, by their current MusicBrainz name",
 		text: func(c namingContext) string { return c.albumArtist().Name }},
 	{Name: "Artist SortName", Field: NamingArtistFolder, Description: "The same artist's sort name (\"Beatles, The\")",
 		text: func(c namingContext) string { return c.albumArtist().SortName }},
+	{Name: "Artist CleanName", Field: NamingArtistFolder, Description: "The artist's name without punctuation (\"Guns N Roses\")",
+		text: func(c namingContext) string { return cleanTitle(c.albumArtist().Name) }},
+	{Name: "Artist NameThe", Field: NamingArtistFolder, Description: "The artist's name with a leading The, A or An moved to the end (\"Beatles, The\")",
+		text: func(c namingContext) string { return titleThe(c.albumArtist().Name) }},
 	{Name: "Artist Disambiguation", Field: NamingArtistFolder, Description: "MusicBrainz's comment telling same-named artists apart",
 		text: func(c namingContext) string { return c.albumArtist().Disambiguation }},
 	{Name: "Artist MbId", Field: NamingArtistFolder, Description: "The artist's MusicBrainz ID",
 		text: func(c namingContext) string { return c.albumArtist().ID }},
 
 	{Name: "Album Title", Field: NamingAlbumFolder, Description: "The album's title (the release-group's)",
-		text: func(c namingContext) string {
-			if c.release.ReleaseGroup.Title != "" {
-				return c.release.ReleaseGroup.Title
-			}
-			return c.release.Title
-		}},
+		text: func(c namingContext) string { return c.albumTitle() }},
+	{Name: "Album CleanTitle", Field: NamingAlbumFolder, Description: "The album's title without punctuation",
+		text: func(c namingContext) string { return cleanTitle(c.albumTitle()) }},
+	{Name: "Album TitleThe", Field: NamingAlbumFolder, Description: "The album's title with a leading The, A or An moved to the end",
+		text: func(c namingContext) string { return titleThe(c.albumTitle()) }},
 	{Name: "Album Type", Field: NamingAlbumFolder, Description: "Album, Single, EP, Broadcast or Other",
 		text: func(c namingContext) string { return c.release.ReleaseGroup.PrimaryType }},
 	{Name: "Album Disambiguation", Field: NamingAlbumFolder, Description: "MusicBrainz's comment on the album",
@@ -181,6 +284,14 @@ var namingTokens = []NamingToken{
 		text: func(c namingContext) string { return yearOf(c.release.Date) }},
 	{Name: "Edition Disambiguation", Field: NamingAlbumFolder, Description: "MusicBrainz's comment on this edition (\"deluxe\", \"remaster\")",
 		text: func(c namingContext) string { return c.release.Disambiguation }},
+	{Name: "Edition CleanTitle", Field: NamingAlbumFolder, Description: "This edition's title without punctuation",
+		text: func(c namingContext) string { return cleanTitle(c.release.Title) }},
+	{Name: "Edition Country", Field: NamingAlbumFolder, Description: "Where this edition was released, as MusicBrainz's country code (\"US\", \"XE\")",
+		text: func(c namingContext) string { return c.release.Country }},
+	{Name: "Edition Format", Field: NamingAlbumFolder, Description: "This edition's media (\"CD\", \"2xCD\", \"CD + DVD\", \"Digital Media\")",
+		text: func(c namingContext) string { return editionFormat(c.release) }},
+	{Name: "Edition CatalogNumber", Field: NamingAlbumFolder, Description: "This edition's catalogue number, from its first label",
+		text: func(c namingContext) string { return editionCatalogNumber(c.release) }},
 	{Name: "Edition MbId", Field: NamingAlbumFolder, Description: "The release's MusicBrainz ID",
 		text: func(c namingContext) string { return c.release.ID }},
 
@@ -193,6 +304,8 @@ var namingTokens = []NamingToken{
 		number: func(c namingContext) int { return c.track.Position }},
 	{Name: "Track Title", Field: NamingTrackFile, Description: "The track's title",
 		text: func(c namingContext) string { return c.track.Title }},
+	{Name: "Track CleanTitle", Field: NamingTrackFile, Description: "The track's title without punctuation",
+		text: func(c namingContext) string { return cleanTitle(c.track.Title) }},
 	{Name: "Track ArtistName", Field: NamingTrackFile, Description: "The track's own credit, featured artists included",
 		text: func(c namingContext) string { return creditString(c.track.ArtistCredit) }},
 }

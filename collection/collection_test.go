@@ -465,6 +465,8 @@ func TestDiscrepancy(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
+		// One library, governed by the manager: what it owns is what the authority owns.
+		c.rg.AuthorityOwned, c.rg.AuthorityOwnedTracks = c.rg.Owned, c.rg.OwnedTracks
 		if got := c.rg.Discrepancy(c.hasCatalog); got != c.want {
 			t.Errorf("%s: Discrepancy() = %q, want %q", c.name, got, c.want)
 		}
@@ -493,7 +495,7 @@ func TestSyncLidarrDropsRemovedAlbums(t *testing.T) {
 	}
 	if err := db.Create(&models.CollectionReleaseGroup{
 		MBID: "rg-1", ArtistMBID: "art-1", Title: "Dropped",
-		Owned: true, OwnedTracks: 9, TotalTracks: 9,
+		Owned: true, OwnedTracks: 9, TotalTracks: 9, AuthorityOwned: true, AuthorityOwnedTracks: 9,
 		InCatalog: true, CatalogOwnedTracks: 9, CatalogTotalTracks: 9,
 	}).Error; err != nil {
 		t.Fatalf("seed: %v", err)

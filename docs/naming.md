@@ -52,6 +52,31 @@ The spelling rules are Lidarr's too: `{artist name}` renders lower case and `{AR
 format of zeros (`{track:00}`). The full list is `modules.NamingTokens()`, served by `GET /naming`.
 It is not every Lidarr token — an unknown one is a save error naming it, never a silent blank.
 
+### Clean and The forms
+
+Lidarr's `{Artist CleanName}`, `{Album CleanTitle}`, `{Edition CleanTitle}` and `{Track CleanTitle}`
+are the name without punctuation (`cleanTitle`): `&` spelled "and", slashes as spaces, brackets,
+apostrophes and quotes removed, a dash standing alone dropped, and a colon, comma, `?` or `!`
+ending a word dropped — *Guns N' Roses* is `Guns N Roses`, *Title: Sub* is `Title Sub`. Accented
+letters are kept. `{Artist NameThe}` and `{Album TitleThe}` move a leading *The*, *A* or *An* to the
+end, ahead of any trailing parenthetical (`Tribe Called Quest, A (live)`). Both follow the
+Sonarr-family `FileNameBuilder`, like the cleaning rules below, and the same caveat applies.
+
+## Two editions of one album
+
+`{Album Title}` and `{Release Year}` are the album's, so the default album folder renders the same
+for every edition: a library holding two pressings has to name the edition to keep them apart.
+`{ (Edition Disambiguation)}` does when MusicBrainz has a comment, which a plain reissue often lacks,
+so the album level also has `{Edition Year}`, `{Edition Country}` (MusicBrainz's code: `US`, `XE`),
+`{Edition Format}` (`CD`, `2xCD`, `CD + DVD` — ASCII `x`, since a path gets typed into a shell) and
+`{Edition CatalogNumber}` (the first label's, skipping MusicBrainz's `[none]`). For example
+`{Album Title} ({Release Year}){ [Edition Year]}{ [Edition Country]}`.
+
+Nothing is added to the default: it is Lidarr's, a Lidarr-named library has to preview as unchanged,
+and one edition per album is what most libraries hold. Instead the import refuses to put a second
+edition in a folder that already holds one (`other_edition`, see
+[import.md](import.md#conflicts-and-what-replace-means)), naming the tokens above as the fix.
+
 ## A token may only be used at its own level or below
 
 `{Album Title}` in the artist folder would give one artist a folder per album, and `{track}` in
@@ -126,7 +151,8 @@ previews moves for these characters, this list is what to correct.
 ## Tests
 
 `modules/naming_test.go` (defaults, Lidarr's defaults accepted, the video rule, token spellings,
-the release-group authority, cleaning, truncation, every rejection, the widened recogniser),
+the release-group authority, cleaning, truncation, every rejection, the widened recogniser, the
+Clean and The forms, the edition tokens), `TestImportRefusesToMixEditions` in `process/import_test.go`,
 `components/naming_test.go` (`ComputeItemPath`, the Lidarr note, the fingerprint),
 `TestTaggerProfileNaming` in `routers/coverage_crud_test.go` (storage, 400s, info and preview).
 

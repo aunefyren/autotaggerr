@@ -57,6 +57,8 @@ func releaseGroupFixture(t *testing.T, db *gorm.DB, artistMBID string, f rgFixtu
 		MBID: f.mbid, ArtistMBID: artistMBID, Title: f.title,
 		PrimaryType: f.primary, SecondaryTypes: f.secondary, FirstReleaseDate: f.date,
 		Owned: f.owned, OwnedTracks: f.ownedTracks, TotalTracks: f.totalTracks,
+		// One library, governed by the artist's manager, unless a test says otherwise.
+		AuthorityOwned: f.owned, AuthorityOwnedTracks: f.ownedTracks,
 		InCatalog: f.inCatalog, CatalogOwnedTracks: f.catalogOwned,
 		CatalogTotalTracks: f.catalogTotal, CatalogMonitored: f.catalogMonitored,
 		CatalogReleaseMBID: f.catalogRelease,
@@ -550,7 +552,7 @@ func TestAnnotateEditionsKeepsOwnedEditionsMusicBrainzOmits(t *testing.T) {
 		{MBID: "release-orphan", Title: "Spiderland (remaster)", OwnedTracks: 3, TotalTracks: 6},
 	}
 
-	out := annotateEditions(listed, owned)
+	out := annotateEditions(listed, owned, nil)
 	if len(out) != 2 {
 		t.Fatalf("editions = %d, want 2 (the listed one plus the owned orphan)", len(out))
 	}
@@ -575,7 +577,7 @@ func TestAnnotateEditionsMarksUnownedEditions(t *testing.T) {
 	out := annotateEditions([]models.MusicBrainzReleaseSearchResult{
 		{ID: "release-a", Title: "Original"},
 		{ID: "release-b", Title: "Reissue"},
-	}, nil)
+	}, nil, nil)
 	if len(out) != 2 {
 		t.Fatalf("editions = %d, want 2", len(out))
 	}

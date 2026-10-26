@@ -334,7 +334,7 @@ export interface DownloadScan extends ImportScan {
   seeding: boolean;
 }
 
-export type ImportConflict = "" | "exists" | "duplicate" | "clash";
+export type ImportConflict = "" | "exists" | "duplicate" | "clash" | "other_edition";
 
 /** One file of an import, as planned by the server. An empty track ID is a skip. */
 export interface ImportRow {
@@ -347,6 +347,8 @@ export interface ImportRow {
   target?: string;
   target_rel?: string;
   conflict?: ImportConflict;
+  /** For other_edition: which edition the album folder already holds. */
+  conflict_detail?: string;
   /** Every file importing this row would remove. */
   replaces?: string[];
   replace?: boolean;
@@ -705,6 +707,19 @@ export interface CollectionArtist {
   missing_count?: number;
   mismatch_count?: number;
   picked_count?: number;
+  /** Libraries holding any of this artist's albums (list view only). */
+  library_ids?: string[];
+}
+
+/**
+ * What one library holds of an edition or an album. For an album, owned_tracks is
+ * that library's best edition — the same rule as the album's own summary.
+ */
+export interface LibraryCopy {
+  library_id: string;
+  name: string;
+  owned_tracks: number;
+  files: number;
 }
 
 /** How the disk view and the manager's catalog view disagree, if at all. */
@@ -759,6 +774,8 @@ export interface CollectionReleaseGroup {
    * controls on the row are then Lidarr's to decide, so they render as state.
    */
   identity_editable: boolean;
+  /** Where the album lives: one entry per library holding files of it. */
+  libraries: LibraryCopy[];
 }
 
 /** One MusicBrainz edition of a release-group, plus what is owned of *that* edition. */
@@ -767,6 +784,10 @@ export interface Edition extends ReleaseSearchResult {
   owned_tracks: number;
   owned_total_tracks: number;
   complete: boolean;
+  /** Files resolving to this edition, across every library. More than owned_tracks = copies. */
+  files: number;
+  /** Which libraries hold this edition, and how much of it. */
+  libraries: LibraryCopy[];
 }
 
 /**

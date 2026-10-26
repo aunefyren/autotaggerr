@@ -1432,11 +1432,20 @@ type CollectionReleaseGroup struct {
 	FirstReleaseDate string `json:"first_release_date"`
 
 	// Disk state — written only by collection.Rebuild. Owned = at least one file
-	// present. OwnedTracks files present out of TotalTracks on the best-owned
-	// edition; complete when OwnedTracks >= TotalTracks > 0.
+	// present, in any library. OwnedTracks distinct tracks present out of TotalTracks
+	// on the best-owned edition; complete when OwnedTracks >= TotalTracks > 0. A second
+	// copy of a track, in another library or the same one, is not a second track.
 	Owned       bool `json:"owned"`
 	OwnedTracks int  `json:"owned_tracks"`
 	TotalTracks int  `json:"total_tracks"`
+	// AuthorityOwned / AuthorityOwnedTracks are the same summary counted only over the
+	// libraries whose manager governs this album's artist: the Lidarr libraries for a
+	// Lidarr artist, every library for a native one. They are what Discrepancy compares
+	// with the catalog, because the catalog is one manager's account of its own
+	// libraries — comparing it with every disk made a copy in a second library read as
+	// "Lidarr needs a rescan", and an album only that library holds as unmapped.
+	AuthorityOwned       bool `json:"authority_owned"`
+	AuthorityOwnedTracks int  `json:"authority_owned_tracks"`
 
 	// Catalog state — written only by the manager mirror. InCatalog = the manager
 	// knows this release-group exists. Catalog track counts are the manager's own
@@ -1546,8 +1555,30 @@ type CollectionRelease struct {
 	// edition from another in a list.
 	Format string `json:"format"`
 
+	// OwnedTracks is distinct tracks on disk, across every library. Files counts the
+	// files behind them, so Files > OwnedTracks means duplicate copies — reported as
+	// such, never as completeness.
 	OwnedTracks int `json:"owned_tracks"`
 	TotalTracks int `json:"total_tracks"`
+	Files       int `json:"files"`
+}
+
+// CollectionReleaseCopy is one library's copy of an owned edition: which library
+// holds files of this release, and how many of its tracks. A CollectionRelease is the
+// edition, deduplicated across libraries; these rows say where it lives.
+//
+// Pure disk state like the edition it belongs to — written only by collection.Rebuild,
+// one row per (release, library) with at least one file, pruned with the rest of the
+// disk view. Stored rather than read through from library_items so the collection
+// list can filter by library without aggregating the whole index per request.
+type CollectionReleaseCopy struct {
+	Base
+	ReleaseMBID      string    `gorm:"uniqueIndex:idx_release_copy;not null" json:"release_mb_id"`
+	LibraryID        uuid.UUID `gorm:"type:uuid;uniqueIndex:idx_release_copy;not null" json:"library_id"`
+	ReleaseGroupMBID string    `gorm:"index;not null" json:"release_group_mb_id"`
+	ArtistMBID       string    `gorm:"index" json:"artist_mb_id"`
+	OwnedTracks      int       `json:"owned_tracks"`
+	Files            int       `json:"files"`
 }
 
 // Complete reports whether every track of this edition is on disk.
@@ -1589,13 +1620,14 @@ func (rg CollectionReleaseGroup) Discrepancy(catalogChecked bool) string {
 	if !catalogChecked {
 		return DiscrepancyNone
 	}
-	if rg.Owned && !rg.InCatalog {
+	// The authority's own libraries only: the catalog cannot know about the rest.
+	if rg.AuthorityOwned && !rg.InCatalog {
 		return DiscrepancyUnmapped
 	}
 	if !rg.InCatalog || rg.CatalogTotalTracks == 0 {
 		return DiscrepancyNone
 	}
-	if rg.OwnedTracks == rg.CatalogOwnedTracks {
+	if rg.AuthorityOwnedTracks == rg.CatalogOwnedTracks {
 		return DiscrepancyNone
 	}
 	// The counts disagree. If the manager named no edition, that is the explanation:
@@ -1612,7 +1644,7 @@ func (rg CollectionReleaseGroup) Discrepancy(catalogChecked bool) string {
 	if rg.CatalogReleaseMBID == "" {
 		return DiscrepancyNoEdition
 	}
-	if rg.OwnedTracks > rg.CatalogOwnedTracks {
+	if rg.AuthorityOwnedTracks > rg.CatalogOwnedTracks {
 		return DiscrepancyStaleCatalog
 	}
 	return DiscrepancyNotIndexed
@@ -1640,6 +1672,7 @@ func AllDBModels() []any {
 		&CollectionReleaseGroup{},
 		&CollectionReleaseGroupArtist{},
 		&CollectionRelease{},
+		&CollectionReleaseCopy{},
 		&CollectionDesire{},
 		&AcoustIDLookup{},
 		&TrackTempo{},

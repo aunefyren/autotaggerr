@@ -80,11 +80,22 @@ the reason, rather than leaving them out.
 | `exists` | a file is already at the target path | Replace, or skip |
 | `duplicate` | the library already indexes this track *of this edition* at another path — an MP3 being upgraded to FLAC | Replace, or skip |
 | `clash` | two files of this import render one target | fix the mapping or skip one; Replace cannot fix it |
+| `other_edition` | the album folder the file renders into already holds indexed files of a *different* edition | an album folder template that tells editions apart, or remove that edition first; Replace cannot fix it |
 
 Clash detection ignores case, so two targets that differ only in case on a case-insensitive
 filesystem are caught; over-reporting costs a skip, under-reporting costs a file. A duplicate is
 the same *release* track only: a different edition of the same recording is a legitimate second
 copy, not a conflict.
+
+`other_edition` exists because the default album folder, `{Album Title} ({Release Year})`, names
+the album rather than the edition, so a second pressing renders the first one's folder. Before it,
+same-numbered tracks showed as `exists`, and consenting to Replace deleted the first edition's files
+while its other tracks stayed behind, mixed in with the new ones — and the layout reads one folder
+as one edition everywhere (Lidarr's lookups, folder attach, the disc guard). It outranks `exists` and
+`duplicate` for that reason, and `ConflictDetail` names the edition already there. Only indexed files
+are known (`Runner.otherEditionIn`, a prefix match on the library's index): a folder of files never
+processed is not caught. Auto-import goes through the same check, so it never mixes editions either.
+See [naming.md](naming.md#two-editions-of-one-album) for the tokens that keep them apart.
 
 **Replace is per row consent**, a checkbox in `--danger-text` whose `title` lists every file it
 deletes, and `CheckImportPlan` refuses any conflict without it. The review table is the

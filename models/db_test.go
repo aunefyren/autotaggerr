@@ -106,13 +106,13 @@ func TestReleaseGroupDiscrepancy(t *testing.T) {
 			// flagged — otherwise every album of an unmonitored native artist would
 			// look unmapped.
 			name:       "no catalog flags nothing",
-			rg:         CollectionReleaseGroup{Owned: true, OwnedTracks: 5, TotalTracks: 5},
+			rg:         CollectionReleaseGroup{AuthorityOwned: true, AuthorityOwnedTracks: 5, TotalTracks: 5},
 			hasCatalog: false,
 			want:       DiscrepancyNone,
 		},
 		{
 			name:       "owned but absent from the catalog is unmapped",
-			rg:         CollectionReleaseGroup{Owned: true, InCatalog: false},
+			rg:         CollectionReleaseGroup{AuthorityOwned: true, InCatalog: false},
 			hasCatalog: true,
 			want:       DiscrepancyUnmapped,
 		},
@@ -120,20 +120,20 @@ func TestReleaseGroupDiscrepancy(t *testing.T) {
 			// An unknown catalog total (native discovery does not count tracks) cannot
 			// be compared, so it is not a discrepancy.
 			name:       "unknown catalog total is not a discrepancy",
-			rg:         CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 5, CatalogTotalTracks: 0},
+			rg:         CollectionReleaseGroup{AuthorityOwned: true, InCatalog: true, AuthorityOwnedTracks: 5, CatalogTotalTracks: 0},
 			hasCatalog: true,
 			want:       DiscrepancyNone,
 		},
 		{
 			name: "more on disk than the manager knows is a stale catalog",
-			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 12, CatalogOwnedTracks: 3,
+			rg: CollectionReleaseGroup{AuthorityOwned: true, InCatalog: true, AuthorityOwnedTracks: 12, CatalogOwnedTracks: 3,
 				CatalogTotalTracks: 12, CatalogReleaseMBID: "rel-1"},
 			hasCatalog: true,
 			want:       DiscrepancyStaleCatalog,
 		},
 		{
 			name: "more in the manager than indexed is not indexed",
-			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 3, CatalogOwnedTracks: 12,
+			rg: CollectionReleaseGroup{AuthorityOwned: true, InCatalog: true, AuthorityOwnedTracks: 3, CatalogOwnedTracks: 12,
 				CatalogTotalTracks: 12, CatalogReleaseMBID: "rel-1"},
 			hasCatalog: true,
 			want:       DiscrepancyNotIndexed,
@@ -143,14 +143,14 @@ func TestReleaseGroupDiscrepancy(t *testing.T) {
 			// describe an edition nobody chose (7 tracks) while 44 files sit on disk.
 			// Reported as its own state, because "rescan Lidarr" cannot fix it.
 			name: "counts disagreeing with no edition selected names the edition",
-			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 44, CatalogOwnedTracks: 7,
+			rg: CollectionReleaseGroup{AuthorityOwned: true, InCatalog: true, AuthorityOwnedTracks: 44, CatalogOwnedTracks: 7,
 				CatalogTotalTracks: 7, CatalogReleaseMBID: ""},
 			hasCatalog: true,
 			want:       DiscrepancyNoEdition,
 		},
 		{
 			name: "the manager knowing more, with no edition selected, is also the edition",
-			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 3, CatalogOwnedTracks: 12,
+			rg: CollectionReleaseGroup{AuthorityOwned: true, InCatalog: true, AuthorityOwnedTracks: 3, CatalogOwnedTracks: 12,
 				CatalogTotalTracks: 12, CatalogReleaseMBID: ""},
 			hasCatalog: true,
 			want:       DiscrepancyNoEdition,
@@ -160,20 +160,38 @@ func TestReleaseGroupDiscrepancy(t *testing.T) {
 			// existed looks like. While its counts agree it says nothing, so an
 			// upgrade does not light up every album until the next sync.
 			name: "agreeing counts with no edition stay silent",
-			rg: CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 12, CatalogOwnedTracks: 12,
+			rg: CollectionReleaseGroup{AuthorityOwned: true, InCatalog: true, AuthorityOwnedTracks: 12, CatalogOwnedTracks: 12,
 				CatalogTotalTracks: 12, CatalogReleaseMBID: ""},
 			hasCatalog: true,
 			want:       DiscrepancyNone,
 		},
 		{
 			name:       "agreement is no discrepancy",
-			rg:         CollectionReleaseGroup{Owned: true, InCatalog: true, OwnedTracks: 12, CatalogOwnedTracks: 12, CatalogTotalTracks: 12},
+			rg:         CollectionReleaseGroup{AuthorityOwned: true, InCatalog: true, AuthorityOwnedTracks: 12, CatalogOwnedTracks: 12, CatalogTotalTracks: 12},
+			hasCatalog: true,
+			want:       DiscrepancyNone,
+		},
+		{
+			// The multi-library case: the album is on disk, but only in a library the
+			// manager does not govern. Its catalog cannot know about that copy, so not
+			// being in it is not a discrepancy.
+			name:       "owned only outside the manager's libraries is not unmapped",
+			rg:         CollectionReleaseGroup{Owned: true, OwnedTracks: 12, InCatalog: false},
+			hasCatalog: true,
+			want:       DiscrepancyNone,
+		},
+		{
+			// And a second copy beside the manager's own reads as the manager's count,
+			// not as a stale catalog.
+			name: "the manager's libraries agreeing is no discrepancy whatever else is on disk",
+			rg: CollectionReleaseGroup{Owned: true, OwnedTracks: 12, AuthorityOwned: true, AuthorityOwnedTracks: 10,
+				InCatalog: true, CatalogOwnedTracks: 10, CatalogTotalTracks: 12, CatalogReleaseMBID: "rel-1"},
 			hasCatalog: true,
 			want:       DiscrepancyNone,
 		},
 		{
 			name:       "not owned and not in catalog is no discrepancy",
-			rg:         CollectionReleaseGroup{Owned: false, InCatalog: false},
+			rg:         CollectionReleaseGroup{AuthorityOwned: false, InCatalog: false},
 			hasCatalog: true,
 			want:       DiscrepancyNone,
 		},

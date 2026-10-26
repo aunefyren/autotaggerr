@@ -67,9 +67,9 @@ minutes per key, off the request path: authentication must not wait on a write l
 | `get_overview` | version and sizes, files needing attention (errors / retrying / pins held / unmatched-waiting), the migration queue's length, the job queue and the three refresh passes | no |
 | `get_configuration` | libraries with their manager, data source and tagger profile; managers; data sources; tagger profiles. Never credentials | no |
 | `list_artists` | the collection with owned / complete / partial / missing / mismatch / picked counts; filter by name or `partial`, `mismatch`, `picked`, `monitored`, `unmonitored` | no |
-| `get_artist` | one artist and every album: owned, complete, discrepancy, wanted and `wanted_source`, plus albums whose MBID no longer resolves | no |
+| `get_artist` | one artist and every album: owned, complete, discrepancy, wanted and `wanted_source`, which libraries hold it, plus albums whose MBID no longer resolves | no |
 | `list_missing` | wanted albums not owned, across the collection or one artist; `include_incomplete` adds owned albums with tracks missing | no |
-| `get_album` | one album's state and every edition, which are owned and how complete | cache-first |
+| `get_album` | one album's state and every edition, which are owned, how complete, in which libraries, and how many files (more than tracks means copies) | cache-first |
 | `get_release_tracks` | one edition's tracklist, with the file identified as each track | cache-first |
 | `list_files` | indexed files: filter by library, status, `transient`, path, an MBID (any kind), held pins | no |
 | `get_file` | one file in full; `include_tag_diff` adds what a write would change, `include_tempo` its BPM | only with `include_tag_diff` |

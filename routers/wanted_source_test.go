@@ -213,6 +213,7 @@ func TestFollowGovernsIsReportedToTheUI(t *testing.T) {
 func TestDiscrepancyNeedsAnAnsweredQuestion(t *testing.T) {
 	owned := album("rg1")
 	owned.Owned, owned.OwnedTracks, owned.TotalTracks = true, 12, 12
+	owned.AuthorityOwned, owned.AuthorityOwnedTracks = true, 12
 	artist := models.CollectionArtist{MBID: "a1", ManagedBy: models.ManagedByLidarr}
 
 	// Never synced: nothing to compare against, so no claim is made.

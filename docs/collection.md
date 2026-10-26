@@ -130,7 +130,8 @@ the collection-wide pass with extra steps.
 | `CollectionArtist` | `Rebuild` (library) / `AddArtist` (manual) | name, `ManagedBy`, `Origin`, follow settings |
 | `CollectionReleaseGroup` | `Rebuild` (disk block) + `SyncLidarr`/`SyncArtist` (catalog block) | album-level ownership and catalog state |
 | `CollectionReleaseGroupArtist` | every writer, additively | which artists a release-group is credited to |
-| `CollectionRelease` | `Rebuild` only | one row per **owned edition**: per-edition track counts |
+| `CollectionRelease` | `Rebuild` only | one row per **owned edition**: per-edition track counts, and the files behind them |
+| `CollectionReleaseCopy` | `Rebuild` only | one row per (owned edition, library): [where an edition lives](#several-libraries) |
 | `CollectionDesire` | the user via the API (`manual`), or a reconciliation pass (`auto`, `manager`) | what is wanted, and by whose authority — a `manual` row is never recomputed |
 
 Named `Collection*` to avoid clashing with the MusicBrainz response types.
@@ -300,8 +301,10 @@ how many.
 
 `CollectionReleaseGroup` carries two independently written blocks:
 
-- **disk** — `owned`, `owned_tracks`, `total_tracks`. Written *only* by `collection.Rebuild`, which
-  aggregates `library_items` against *cached* releases and never fetches.
+- **disk** — `owned`, `owned_tracks`, `total_tracks`, plus `authority_owned` /
+  `authority_owned_tracks` (the same counted over the artist's manager's libraries only — see
+  [several libraries](#the-catalog-is-compared-with-its-own-libraries)). Written *only* by
+  `collection.Rebuild`, which aggregates `library_items` against *cached* releases and never fetches.
 - **catalog** — `in_catalog`, `catalog_owned_tracks`, `catalog_total_tracks`, `catalog_monitored`.
   Written *only* by `SyncLidarr` and native discography discovery.
 
@@ -571,6 +574,85 @@ deletes nothing, so the empty case is handled explicitly.
 
 Desires reference releases by MBID, never by a `CollectionRelease` row, so rebuilding the disk view
 can never disturb authored intent.
+
+## Several libraries
+
+A library is a folder plus the manager that governs it, so one install can hold a Lidarr library and
+a native one side by side — and has to, for a Lidarr user who imports or downloads anything, because
+neither may target a Lidarr library ([import.md](import.md#which-libraries-can-take-one)). The
+production case that shaped this section: *Music to Driveby* downloaded into a native *Music
+Sandbox* while the Lidarr *Music* library already held it. The collection is still **one** view —
+what you own, wherever it is — with the library carried as an attribute of ownership rather than as
+a second collection.
+
+### Copies are not tracks
+
+`rebuildTx` counts **distinct tracks** per edition (`trackTally`: track IDs, plus one per file that
+has none), never files. It used to count files, so the same edition in two libraries read 24/12 on
+the edition and the album headline, and every rule downstream — complete, the best-edition pick,
+the catalog comparison — inherited the doubling. `CollectionRelease.Files` keeps the file count
+beside the tracks, so duplicates are still reported (the album page shows "30 files" next to
+"15/15 on disk") rather than lost; they are just never completeness.
+
+### Where an edition lives
+
+`CollectionReleaseCopy` is one row per (edition, library) with files, holding that library's own
+distinct-track and file counts. Pure disk state like the edition it belongs to: `syncReleaseCopies`
+clears the pass's scope and writes the copies afresh in the same transaction, since nothing
+references the rows. It is stored rather than aggregated from `library_items` on each read because
+the collection list filters on it, and that list is [kept between writes](#the-collection-list-is-kept-between-writes)
+by a fingerprint the copy table is now part of.
+
+Read through `collection.ReleaseCopies` (per edition), `ReleaseGroupCopies` (per album: files summed,
+tracks the library's best edition — the same rule as the album's own summary) and
+`LibrariesByReleaseGroup` (membership only, for the list). They surface as `libraries` on the
+release-group and edition views, `library_ids` on the collection list, and library names on the
+MCP album and edition rows.
+
+### The catalog is compared with its own libraries
+
+Lidarr's counts describe Lidarr's libraries. Comparing them with every disk made a copy in a second
+library read as `stale_catalog` ("Lidarr needs a rescan"), and an album only the sandbox holds as
+`unmapped` ("Lidarr has no album for these files") — both claims about Lidarr that were false.
+
+So `Rebuild` writes the disk summary twice: `owned`/`owned_tracks` over every library (what the page
+shows), and `authority_owned`/`authority_owned_tracks` over the libraries the artist's authority
+governs. For an artist Lidarr governs (`lidarr` or `mixed`, not detached) that is the Lidarr
+libraries; for a native or detached one it is every library, which is the same number. Detached is
+read from the stored flag before the artist rows are upserted, so the pass agrees with what
+`upsertArtist` is about to store. `Discrepancy` reads only the authority pair. Several Lidarr
+managers count together — the libraries are told apart by manager *type*, which is what the mirror
+asks too.
+
+Rows written before the columns existed are seeded by the one-time `seed_authority_owned` migration
+with the all-library counts, which is what the comparison read before and is right for every
+install that had one library; the next Rebuild writes them properly.
+
+### One authority per artist, still
+
+`managedByLabel` still calls an artist with files in both kinds of library `mixed`, and `mixed` still
+counts as Lidarr: wants are intent, not location, so a copy in a native library does not split who
+decides what is wanted. Detaching remains the way to take an artist native. What changed is how it
+reads — the pill says **Lidarr**, as for any Lidarr artist, and the libraries are named separately.
+"Lidarr + native" read as two authorities sharing one artist, which is the one thing the model
+rules out.
+
+### In the UI
+
+Library names appear only when more than one library is configured; on a single-library install
+every row would carry the same word. Then:
+
+- `/collection` gains a **Libraries** column and a library select in the table toolbar (`library` in
+  the URL, options only for libraries some artist is in). The artist counts are not re-derived per
+  library — the filter narrows which artists are listed, not what their columns say.
+- The artist page names the libraries in the header meta line ("In Music, Music Sandbox"), tags each
+  album row with its libraries — with a count when a library holds less than the album's best
+  edition (`Music Sandbox 9/15`) — and takes the same library select, which narrows the rows **and**
+  the chip counts, so "Partial 2" under a library means two partial albums in it.
+- The album page names the libraries in its meta line, and each edition row carries its own library
+  tags and, when there are more files than tracks, the file count.
+
+The tag is the style guide's *Library tag* (`LibraryTags`, `components/Libraries.tsx`).
 
 ## The desire model
 
@@ -1128,6 +1210,14 @@ added after a field reached the model, the service and the UI but was silently d
 handler in between. **A field is not wired until the handler is tested.**
 `TestSyncLidarrArtistGating` covers the per-artist sync's three refusals (unknown artist, natively
 managed artist, no Lidarr manager) and that the `ignore_cache` body is genuinely optional.
+
+Several libraries: `collection/libraries_test.go` builds a Lidarr library and a native one.
+`TestRebuildCountsCopiesAsOneEdition` pins 12/12 from 24 files, one copy row per library, and no
+discrepancy from the second copy; `TestRebuildComparesTheCatalogWithTheManagersLibrariesOnly` pins
+that a sandbox-only album is neither on disk for Lidarr nor unmapped, and that detaching makes every
+library the authority's again; `TestRebuildScopedKeepsOtherCopies` that an artist-scoped pass leaves
+other artists' copies alone. `routers.TestCollectionSaysWhichLibraryHoldsAnAlbum` covers the
+`libraries` and `library_ids` fields through the handlers.
 
 ## Related
 

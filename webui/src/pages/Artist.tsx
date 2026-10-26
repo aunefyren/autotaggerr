@@ -25,6 +25,7 @@ import {
   useBrowse,
   usePaging,
 } from "../components/browse";
+import { LibrarySelect, LibraryTags, useLibraries } from "../components/Libraries";
 
 function ManagedBy({ artist }: { artist: CollectionArtist }) {
   // Detached reads as its own state rather than plain "Native". Both mean Autotaggerr
@@ -39,7 +40,9 @@ function ManagedBy({ artist }: { artist: CollectionArtist }) {
       </Pill>
     );
   if (artist.managed_by === "lidarr") return <Pill kind="scan">Lidarr</Pill>;
-  if (artist.managed_by === "mixed") return <Pill kind="scan">Lidarr + native</Pill>;
+  // Files in a Lidarr library and a native one. Lidarr still decides what is wanted,
+  // so the pill names that one authority; the header says where the files live.
+  if (artist.managed_by === "mixed") return <Pill kind="scan">Lidarr</Pill>;
   if (artist.managed_by === "autotaggerr") return <Pill kind="chg">Native</Pill>;
   return (
     <Pill kind="off">
@@ -146,15 +149,14 @@ export default function Artist() {
   const [authorityAsk, setAuthorityAsk] = useState<"detach" | "reattach" | null>(null);
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
   const browse = useBrowse("year", "desc");
+  const libraries = useLibraries();
 
   const artist = detail.data?.artist;
   const groups = disco.data ?? detail.data?.release_groups ?? [];
 
   const onDisk = groups.filter((g) => g.owned);
   const partial = onDisk.filter((g) => !g.complete);
-  const wanted = groups.filter((g) => g.wanted);
   const missing = groups.filter((g) => g.wanted && !g.owned);
-  const mismatched = groups.filter((g) => g.discrepancy !== "");
 
   const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
   const managerLabel = isLidarr ? "Lidarr" : "MusicBrainz";
@@ -313,7 +315,30 @@ export default function Artist() {
   const filter = (browse.flag("show") as Filter) || "all";
   const setFilter = (next: Filter) => browse.setFlag("show", next === "all" ? null : next);
 
-  const shown = groups.filter((g) => {
+  // Where this artist's albums live, named only once there is more than one library
+  // to tell apart. The filter narrows the chips' counts as well as the rows, so
+  // "Partial 2" under a library means two partial albums in that library.
+  const artistLibraries = new Map<string, { name: string; albums: number }>();
+  for (const g of groups) {
+    for (const c of g.libraries ?? []) {
+      const entry = artistLibraries.get(c.library_id) ?? { name: c.name, albums: 0 };
+      entry.albums++;
+      artistLibraries.set(c.library_id, entry);
+    }
+  }
+  const libraryFilter = libraries.multi ? browse.flag("library") : null;
+  const inLibrary = (g: CollectionReleaseGroup) =>
+    !libraryFilter || (g.libraries ?? []).some((c) => c.library_id === libraryFilter);
+  const scoped = groups.filter(inLibrary);
+  const chipCounts = {
+    disk: scoped.filter((g) => g.owned).length,
+    partial: scoped.filter((g) => g.owned && !g.complete).length,
+    wanted: scoped.filter((g) => g.wanted).length,
+    missing: scoped.filter((g) => g.wanted && !g.owned).length,
+    mismatch: scoped.filter((g) => g.discrepancy !== "").length,
+  };
+
+  const shown = scoped.filter((g) => {
     if (!matches(browse.query, g.title, g.primary_type, g.secondary_types, year(g))) return false;
     switch (filter) {
       case "disk": return g.owned;
@@ -391,6 +416,14 @@ export default function Artist() {
             {artist && <ManagedBy artist={artist} />}
             {artist?.origin === "manual" && (
               <span className="dim" style={{ fontSize: 11 }} title="Added by hand">added</span>
+            )}
+            {libraries.multi && artistLibraries.size > 0 && (
+              <>
+                <span className="sep">·</span>
+                <span className="dim" style={{ fontSize: 11 }}>
+                  In {[...artistLibraries.values()].map((l) => l.name).sort().join(", ")}
+                </span>
+              </>
             )}
             {(facts?.genres?.length ?? 0) > 1 && (
               <>
@@ -648,21 +681,28 @@ export default function Artist() {
         placeholder="Filter releases"
         showing={`${shown.length} of ${groups.length}`}
       >
-        <FilterChip on={filter === "disk"} count={onDisk.length} label="On disk"
+        <FilterChip on={filter === "disk"} count={chipCounts.disk} label="On disk"
           title="Albums with at least one file on disk"
           onClick={() => setFilter(filter === "disk" ? "all" : "disk")} />
-        <FilterChip on={filter === "partial"} count={partial.length} label="Partial" tone="warn"
+        <FilterChip on={filter === "partial"} count={chipCounts.partial} label="Partial" tone="warn"
           title="Albums where some tracks are missing from disk"
           onClick={() => setFilter(filter === "partial" ? "all" : "partial")} />
-        <FilterChip on={filter === "wanted"} count={wanted.length} label="Wanted"
+        <FilterChip on={filter === "wanted"} count={chipCounts.wanted} label="Wanted"
           title="Albums you asked for, whether or not you have them"
           onClick={() => setFilter(filter === "wanted" ? "all" : "wanted")} />
-        <FilterChip on={filter === "missing"} count={missing.length} label="Missing"
+        <FilterChip on={filter === "missing"} count={chipCounts.missing} label="Missing"
           title="Wanted, and nothing on disk yet"
           onClick={() => setFilter(filter === "missing" ? "all" : "missing")} />
-        <FilterChip on={filter === "mismatch"} count={mismatched.length} label="Mismatch" tone="warn"
+        <FilterChip on={filter === "mismatch"} count={chipCounts.mismatch} label="Mismatch" tone="warn"
           title="Disk and manager disagree about these albums"
           onClick={() => setFilter(filter === "mismatch" ? "all" : "mismatch")} />
+        {libraries.multi && artistLibraries.size > 0 && (
+          <LibrarySelect
+            browse={browse}
+            libraries={libraries.list}
+            counts={new Map([...artistLibraries].map(([id, l]) => [id, l.albums]))}
+          />
+        )}
       </TableToolbar>
 
       {disco.loading && <span className="dim" style={{ fontSize: 11 }}>Loading the catalogue from MusicBrainz…</span>}
@@ -708,6 +748,7 @@ export default function Artist() {
                   browse={browse}
                   manager={managerLabel}
                   managerGoverns={isLidarr}
+                  showLibraries={libraries.multi}
                   artistMbid={mbid}
                   onChanged={refresh}
                 />
@@ -746,6 +787,7 @@ function CatalogSection({
   browse,
   manager,
   managerGoverns,
+  showLibraries,
   artistMbid,
   onChanged,
 }: {
@@ -759,6 +801,7 @@ function CatalogSection({
   browse: Browse;
   manager: string;
   managerGoverns: boolean;
+  showLibraries: boolean;
   artistMbid: string;
   onChanged: () => void;
 }) {
@@ -797,6 +840,7 @@ function CatalogSection({
             g={g}
             manager={manager}
             managerGoverns={managerGoverns}
+            showLibraries={showLibraries}
             artistMbid={artistMbid}
             onChanged={onChanged}
           />
@@ -824,6 +868,7 @@ function ReleaseGroupRow({
   g,
   manager,
   managerGoverns,
+  showLibraries,
   artistMbid,
   onChanged,
 }: {
@@ -831,6 +876,8 @@ function ReleaseGroupRow({
   manager: string;
   /** Whether a manager still decides for this artist — see `stale` below. */
   managerGoverns: boolean;
+  /** Name the libraries holding the album — only when there is more than one library. */
+  showLibraries: boolean;
   artistMbid: string;
   onChanged: () => void;
 }) {
@@ -958,6 +1005,7 @@ function ReleaseGroupRow({
               what is already wanted. */}
           <Link to={`/collection/${artistMbid}/${g.mb_id}`} style={{ color: "var(--text)" }}>{g.title}</Link>
           <MBLink entity="release-group" mbid={g.mb_id} />
+          {showLibraries && <LibraryTags copies={g.libraries ?? []} total={g.total_tracks} />}
           {note && (
             <span className="mono" style={{ fontSize: 11, color: "var(--warning-text)" }} title={note.title}>
               ⚠ {note.label}

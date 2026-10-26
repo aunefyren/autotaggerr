@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -273,5 +274,60 @@ func TestDiscFolderNamesFromMediumFormats(t *testing.T) {
 		if got := discNumberFromFolderName(name); got != want {
 			t.Errorf("discNumberFromFolderName(%q) = %d, want %d", name, got, want)
 		}
+	}
+}
+
+// The Clean and The forms, Lidarr's spellings.
+func TestCleanAndTheForms(t *testing.T) {
+	for in, want := range map[string]string{
+		"Guns N' Roses":                  "Guns N Roses",
+		"AC/DC":                          "AC DC",
+		"Simon & Garfunkel":              "Simon and Garfunkel",
+		"Straight Checkn 'Em":            "Straight Checkn Em",
+		"Title: The Subtitle":            "Title The Subtitle",
+		"Live - In Concert (Remastered)": "Live In Concert Remastered",
+		"Why?":                           "Why",
+		"Björk":                          "Björk",
+		"...And Justice for All":         "...And Justice for All",
+		"Compton's Most Wanted":          "Comptons Most Wanted",
+	} {
+		if got := cleanTitle(in); got != want {
+			t.Errorf("cleanTitle(%q) = %q, want %q", in, got, want)
+		}
+	}
+	for in, want := range map[string]string{
+		"The Beatles":                 "Beatles, The",
+		"A Tribe Called Quest (live)": "Tribe Called Quest, A (live)",
+		"An Pierlé":                   "Pierlé, An",
+		"Theatre of Tragedy":          "Theatre of Tragedy",
+		"Fleetwood Mac":               "Fleetwood Mac",
+	} {
+		if got := titleThe(in); got != want {
+			t.Errorf("titleThe(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// Two pressings of one album need something that tells them apart in the album
+// folder; country, format and catalogue number do when MusicBrainz has no comment.
+func TestNamingEditionTokens(t *testing.T) {
+	release := sampleRumours
+	release.Country = "XE"
+	release.Media = []models.MusicBrainzMedia{
+		{Position: 1, Format: "CD", Tracks: release.Media[0].Tracks},
+		{Position: 2, Format: "CD"},
+		{Position: 3, Format: "DVD-Video"},
+	}
+	// "[none]" is MusicBrainz saying there is no number, so the next label's is used.
+	if err := json.Unmarshal([]byte(`[{"catalog-number":"[none]"},{"catalog-number":"WB 3010"}]`), &release.LabelInfo); err != nil {
+		t.Fatal(err)
+	}
+	templates := models.NamingTemplates{AlbumFolder: "{Album Title} ({Release Year}) [{Edition Country} {Edition Format} {Edition CatalogNumber}]"}
+	path, err := RenderLibraryPath(templates, release, sampleID("32"), ".flac")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if path.Album != "Rumours (1977) [XE 2xCD + DVD-Video WB 3010]" {
+		t.Errorf("album: got %q", path.Album)
 	}
 }

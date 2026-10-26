@@ -683,7 +683,10 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 	if !scope.all {
 		clear = clear.Where("mb_id IN ?", keys(scope.groups))
 	}
-	if err := clear.Updates(map[string]any{"owned": false, "owned_tracks": 0, "total_tracks": 0}).Error; err != nil {
+	if err := clear.Updates(map[string]any{
+		"owned": false, "owned_tracks": 0, "total_tracks": 0,
+		"authority_owned": false, "authority_owned_tracks": 0,
+	}).Error; err != nil {
 		return RebuildStats{}, err
 	}
 
@@ -716,24 +719,30 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		all = kept
 	}
 
-	// Pass 1: count owned files per release, and gather artist + manager provenance.
-	releaseOwned := map[string]int{}
-	// Which tracks are owned, as opposed to how many files are. Read only by the
-	// video rule in releaseTrackTotal — a video track counts toward the total when a
-	// file actually resolves to it, and otherwise does not exist as far as ownership
-	// is concerned. Kept apart from releaseOwned because the two answer different
-	// questions: two files claiming one track are two files but one track.
-	releaseOwnedTracks := map[string]map[string]bool{}
+	// Pass 1: tally owned tracks per release — across every library, across the Lidarr
+	// libraries only, and per library — and gather artist + manager provenance.
+	//
+	// Tracks, not files: the same edition in two libraries is one edition with two
+	// copies, and counting files made it read 24/12. The file counts are kept beside
+	// the tracks so duplicates can be reported rather than lost. The tracks set is also
+	// what the video rule in releaseTrackTotal reads — a video track counts toward the
+	// total only when a file actually resolves to it.
+	releaseAll := map[string]*trackTally{}
+	releaseLidarr := map[string]*trackTally{}
+	releaseCopies := map[releaseCopyKey]*trackTally{}
 	artistName := map[string]string{}
 	artistManagers := map[string]map[string]bool{}
 	for _, r := range rows {
-		releaseOwned[r.MBReleaseID]++
-		if r.MBReleaseTrackID != "" {
-			if releaseOwnedTracks[r.MBReleaseID] == nil {
-				releaseOwnedTracks[r.MBReleaseID] = map[string]bool{}
-			}
-			releaseOwnedTracks[r.MBReleaseID][r.MBReleaseTrackID] = true
+		mt := libraryManager[r.LibraryID]
+		if mt == "" {
+			// The item points at a library that no longer exists.
+			mt = models.ManagedByUnknown
 		}
+		tallyFor(releaseAll, r.MBReleaseID).add(r.MBReleaseTrackID)
+		if mt == models.ManagerTypeLidarr {
+			tallyFor(releaseLidarr, r.MBReleaseID).add(r.MBReleaseTrackID)
+		}
+		tallyFor(releaseCopies, releaseCopyKey{release: r.MBReleaseID, library: r.LibraryID}).add(r.MBReleaseTrackID)
 
 		release, ok := modules.CachedRelease(r.MBReleaseID)
 		if !ok {
@@ -742,11 +751,6 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		albumCredit := albumArtistCredit(release)
 		if len(albumCredit) == 0 {
 			continue
-		}
-		mt := libraryManager[r.LibraryID]
-		if mt == "" {
-			// The item points at a library that no longer exists.
-			mt = models.ManagedByUnknown
 		}
 		// Every credited artist, not just the first: on a collaboration the second
 		// artist owns these files just as much, and crediting only the first left them
@@ -764,6 +768,21 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		}
 	}
 
+	// Which artists Lidarr answers for, decided the way upsertArtist will store it:
+	// a detached artist is native whatever its libraries say. Their albums compare the
+	// catalog against the Lidarr libraries' files only; everyone else's against all.
+	detached, err := detachedArtists(db)
+	if err != nil {
+		return RebuildStats{}, err
+	}
+	lidarrGoverned := func(artistID string) bool {
+		if detached[artistID] {
+			return false
+		}
+		label := managedByLabel(artistManagers[artistID])
+		return label == models.ManagedByLidarr || label == models.ManagedByMixed
+	}
+
 	// Pass 2: per release-group, keep the best-owned edition and its track counts —
 	// and, separately, every owned edition. The release-group summary stays
 	// best-edition (that is the useful headline: "how close am I to having this
@@ -775,10 +794,15 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		// who else is on a collaboration.
 		credits      []string
 		owned, total int
+		// The best edition as the artist's authority sees it — see
+		// models.CollectionReleaseGroup.AuthorityOwned.
+		authorityOwned  bool
+		authorityTracks int
 	}
 	rgBest := map[string]rgInfo{}
-	ownedEditions := make([]models.CollectionRelease, 0, len(releaseOwned))
-	for relID, ownedTracks := range releaseOwned {
+	ownedEditions := make([]models.CollectionRelease, 0, len(releaseAll))
+	for relID, tally := range releaseAll {
+		ownedTracks := tally.owned()
 		release, ok := modules.CachedRelease(relID)
 		if !ok {
 			continue
@@ -788,7 +812,7 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		if rgID == "" || len(albumCredit) == 0 {
 			continue
 		}
-		total := releaseTrackTotal(release, releaseOwnedTracks[relID])
+		total := releaseTrackTotal(release, tally.tracks)
 		credits := make([]string, 0, len(albumCredit))
 		for _, credit := range albumCredit {
 			if credit.Artist.ID != "" {
@@ -804,11 +828,21 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 			MBID: relID, ReleaseGroupMBID: rgID, ArtistMBID: artistID,
 			Title: release.Title, Date: release.Date, Country: release.Country,
 			Disambiguation: release.Disambiguation, Format: mediaSummary(release),
-			OwnedTracks: ownedTracks, TotalTracks: total,
+			OwnedTracks: ownedTracks, TotalTracks: total, Files: tally.files,
 		})
 
-		if cur, exists := rgBest[rgID]; !exists || ownedTracks > cur.owned {
-			rgBest[rgID] = rgInfo{
+		authorityTracks := ownedTracks
+		if lidarrGoverned(artistID) {
+			authorityTracks = 0
+			if lt := releaseLidarr[relID]; lt != nil {
+				authorityTracks = lt.owned()
+			}
+		}
+
+		cur, exists := rgBest[rgID]
+		if !exists || ownedTracks > cur.owned {
+			authOwned, authTracks := cur.authorityOwned, cur.authorityTracks
+			cur = rgInfo{
 				artistID:  artistID,
 				credits:   credits,
 				title:     release.ReleaseGroup.Title,
@@ -817,8 +851,14 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 				date:      release.ReleaseGroup.FirstReleaseDate,
 				owned:     ownedTracks,
 				total:     total,
+				// Carried over: the authority's best edition is chosen on its own.
+				authorityOwned: authOwned, authorityTracks: authTracks,
 			}
 		}
+		if authorityTracks > 0 && authorityTracks > cur.authorityTracks {
+			cur.authorityOwned, cur.authorityTracks = true, authorityTracks
+		}
+		rgBest[rgID] = cur
 	}
 	// An album the pass just discovered — files processed since the last rebuild, so
 	// no collection row named it yet — becomes this pass's to write from here on. The
@@ -828,6 +868,9 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 	scope.extend(ownedEditions)
 
 	if err := syncOwnedReleases(db, ownedEditions, scope); err != nil {
+		return RebuildStats{}, err
+	}
+	if err := syncReleaseCopies(db, ownedEditions, releaseCopies, scope); err != nil {
 		return RebuildStats{}, err
 	}
 
@@ -843,7 +886,10 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		if err := upsertReleaseGroup(db, rgWrite{
 			mbID: rgID, artistMBID: info.artistID, credits: info.credits, title: info.title,
 			primary: info.primary, secondary: info.secondary, date: info.date,
-			disk:    &diskState{owned: true, ownedTracks: info.owned, totalTracks: info.total},
+			disk: &diskState{
+				owned: true, ownedTracks: info.owned, totalTracks: info.total,
+				authorityOwned: info.authorityOwned, authorityTracks: info.authorityTracks,
+			},
 			changes: changes,
 		}); err != nil {
 			return RebuildStats{}, err
@@ -1119,6 +1165,7 @@ func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease, scope boun
 				"format":              rel.Format,
 				"owned_tracks":        rel.OwnedTracks,
 				"total_tracks":        rel.TotalTracks,
+				"files":               rel.Files,
 			}).Error; err != nil {
 				logger.Log.Warnf("failed to update owned edition %s: %s", rel.MBID, err.Error())
 				failed = err
@@ -1149,6 +1196,99 @@ func syncOwnedReleases(db *gorm.DB, owned []models.CollectionRelease, scope boun
 		failed = err
 	}
 	return failed
+}
+
+// trackTally counts what one set of files holds of one release: the distinct tracks,
+// files that carry no track ID (each assumed its own track, since there is nothing to
+// tell two of them apart by), and the files themselves.
+type trackTally struct {
+	tracks    map[string]bool
+	untracked int
+	files     int
+}
+
+func (t *trackTally) add(trackID string) {
+	t.files++
+	if trackID == "" {
+		t.untracked++
+		return
+	}
+	if t.tracks == nil {
+		t.tracks = map[string]bool{}
+	}
+	t.tracks[trackID] = true
+}
+
+// owned is how many of the release's tracks these files are.
+func (t *trackTally) owned() int { return len(t.tracks) + t.untracked }
+
+func tallyFor[K comparable](m map[K]*trackTally, key K) *trackTally {
+	t := m[key]
+	if t == nil {
+		t = &trackTally{}
+		m[key] = t
+	}
+	return t
+}
+
+// releaseCopyKey is one library's copy of one release.
+type releaseCopyKey struct {
+	release string
+	library uuid.UUID
+}
+
+// detachedArtists is the set of artists whose authority was taken back from their
+// library's manager — see models.CollectionArtist.ManagerDetached.
+func detachedArtists(db *gorm.DB) (map[string]bool, error) {
+	var ids []string
+	if err := db.Model(&models.CollectionArtist{}).Where("manager_detached = ?", true).
+		Pluck("mb_id", &ids).Error; err != nil {
+		return nil, err
+	}
+	set := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		set[id] = true
+	}
+	return set, nil
+}
+
+// syncReleaseCopies rewrites which libraries hold each owned edition. The rows carry
+// no identity worth keeping (nothing references them), so the pass clears its scope
+// and writes the copies afresh, in the same transaction as the editions they belong
+// to. Only copies of editions this pass actually recorded are written, so a release
+// missing from the cache — skipped above — leaves no orphaned copy behind.
+func syncReleaseCopies(db *gorm.DB, editions []models.CollectionRelease, copies map[releaseCopyKey]*trackTally, scope bounds) error {
+	clear := db.Session(&gorm.Session{AllowGlobalUpdate: true})
+	if !scope.all {
+		clear = clear.Where("release_mb_id IN ?", keys(scope.releases))
+	}
+	if err := clear.Delete(&models.CollectionReleaseCopy{}).Error; err != nil {
+		return fmt.Errorf("failed to clear edition copies: %w", err)
+	}
+
+	edition := make(map[string]models.CollectionRelease, len(editions))
+	for _, rel := range editions {
+		edition[rel.MBID] = rel
+	}
+	rows := make([]models.CollectionReleaseCopy, 0, len(copies))
+	for key, tally := range copies {
+		rel, ok := edition[key.release]
+		if !ok {
+			continue
+		}
+		rows = append(rows, models.CollectionReleaseCopy{
+			ReleaseMBID: key.release, LibraryID: key.library,
+			ReleaseGroupMBID: rel.ReleaseGroupMBID, ArtistMBID: rel.ArtistMBID,
+			OwnedTracks: tally.owned(), Files: tally.files,
+		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	if err := db.CreateInBatches(rows, collectionPruneBatch).Error; err != nil {
+		return fmt.Errorf("failed to record edition copies: %w", err)
+	}
+	return nil
 }
 
 // releaseTrackTotal is how many tracks of an edition you could own: every audio
@@ -1524,6 +1664,8 @@ func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
 type diskState struct {
 	owned                    bool
 	ownedTracks, totalTracks int
+	authorityOwned           bool
+	authorityTracks          int
 }
 
 // catalogState is what a manager reports should exist. Zero totalTracks means the
@@ -1573,6 +1715,8 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 		updates["owned"] = w.disk.owned
 		updates["owned_tracks"] = w.disk.ownedTracks
 		updates["total_tracks"] = w.disk.totalTracks
+		updates["authority_owned"] = w.disk.authorityOwned
+		updates["authority_owned_tracks"] = w.disk.authorityTracks
 	}
 	if w.catalog != nil {
 		updates["in_catalog"] = true
@@ -1631,6 +1775,7 @@ func upsertReleaseGroup(db *gorm.DB, w rgWrite) error {
 	}
 	if w.disk != nil {
 		row.Owned, row.OwnedTracks, row.TotalTracks = w.disk.owned, w.disk.ownedTracks, w.disk.totalTracks
+		row.AuthorityOwned, row.AuthorityOwnedTracks = w.disk.authorityOwned, w.disk.authorityTracks
 	}
 	if w.catalog != nil {
 		row.InCatalog = true
