@@ -1,6 +1,7 @@
 package routers
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/aunefyren/autotaggerr/collection"
@@ -45,30 +46,36 @@ func (a *API) plexSections(c *gin.Context) {
 // Plex album, and that is what the cache is keyed by. Libraries with Plex turned off,
 // files whose release is not cached, and albums Plex does not hold give no link.
 func (a *API) albumPlexLinks(c *gin.Context) {
+	links, err := a.plexAlbumLinks(c.Param("rgid"))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	c.JSON(http.StatusOK, links)
+}
+
+// plexAlbumLinks is albumPlexLinks' answer, shared with the MCP get_album tool. The
+// error is a failed database read; Plex not answering costs a link, not the call.
+func (a *API) plexAlbumLinks(releaseGroupMBID string) ([]collection.ExternalLink, error) {
 	links := []collection.ExternalLink{}
 	if a.Plex == nil {
-		c.JSON(http.StatusOK, links)
-		return
+		return links, nil
 	}
-	releases, err := collection.ReleaseGroupReleaseMBIDs(a.DB, c.Param("rgid"))
+	releases, err := collection.ReleaseGroupReleaseMBIDs(a.DB, releaseGroupMBID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to find the album's editions"})
-		return
+		return nil, errors.New("failed to find the album's editions")
 	}
 	if len(releases) == 0 {
-		c.JSON(http.StatusOK, links)
-		return
+		return links, nil
 	}
 	var items []models.LibraryItem
 	if err := a.DB.Where("mb_release_id IN ?", releases).Scopes(models.InDiskView).
 		Order("path").Find(&items).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load the album's files"})
-		return
+		return nil, errors.New("failed to load the album's files")
 	}
 	var libraries []models.Library
 	if err := a.DB.Order("name").Find(&libraries).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to load the libraries"})
-		return
+		return nil, errors.New("failed to load the libraries")
 	}
 	first := map[uuid.UUID]models.LibraryItem{}
 	for _, item := range items {
@@ -101,5 +108,5 @@ func (a *API) albumPlexLinks(c *gin.Context) {
 		}
 		links = append(links, collection.ExternalLink{Kind: "plex", Name: library.Name, URL: webURL})
 	}
-	c.JSON(http.StatusOK, links)
+	return links, nil
 }

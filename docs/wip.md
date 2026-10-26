@@ -90,7 +90,7 @@ still open:
   album page into Plex ([collection.md](collection.md#links-into-the-managers),
   [scanning.md](scanning.md#links-into-plex)). Not linked yet: the Plex *artist* (its key is the
   album's `parentKey` one level up, so it is one more field on the same lookup), an edition or track
-  in either service, and anything from the collection list. Plex links are resolved on demand rather
+  in either service, and anything from the collection list. The MCP `get_artist` and `get_album` tools carry the same links. Plex links are resolved on demand rather
   than for the whole collection; a pass that resolves every album would make them instant and let a
   refresh skip the lookup, at the cost of a few Plex requests per album once a month.
 

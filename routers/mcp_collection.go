@@ -146,7 +146,24 @@ type mcpArtistDetail struct {
 	Albums      []mcpAlbumRow      `json:"albums"`
 	// UnresolvableAlbums names albums whose stored ID resolves nowhere upstream — the
 	// artist page's repair prompt.
-	UnresolvableAlbums []string `json:"unresolvable_albums,omitempty" jsonschema:"MBIDs of albums that no longer resolve at MusicBrainz; a manager refresh repairs them"`
+	UnresolvableAlbums []string  `json:"unresolvable_albums,omitempty" jsonschema:"MBIDs of albums that no longer resolve at MusicBrainz; a manager refresh repairs them"`
+	Links              []mcpLink `json:"links,omitempty" jsonschema:"the artist's page in each Lidarr that holds them"`
+}
+
+// mcpLink is a link out of Autotaggerr to where an entity also lives, for an
+// assistant to hand to the person rather than to follow itself.
+type mcpLink struct {
+	Kind string `json:"kind" jsonschema:"lidarr or plex"`
+	Name string `json:"name" jsonschema:"the manager or library it is in"`
+	URL  string `json:"url"`
+}
+
+func newMCPLinks(links []collection.ExternalLink) []mcpLink {
+	out := make([]mcpLink, 0, len(links))
+	for _, l := range links {
+		out = append(out, mcpLink{Kind: l.Kind, Name: l.Name, URL: l.URL})
+	}
+	return out
 }
 
 type mcpListMissingInput struct {
@@ -193,6 +210,7 @@ type mcpAlbumDetail struct {
 	Album    mcpAlbumRow     `json:"album"`
 	Editions []mcpEditionRow `json:"editions" jsonschema:"every edition MusicBrainz lists, plus any owned edition it no longer does"`
 	Credits  []mcpArtistRef  `json:"credits,omitempty" jsonschema:"every credited artist in credit order, when the album has more than one; Lidarr may hold it under any of them"`
+	Links    []mcpLink       `json:"links,omitempty" jsonschema:"the album in each Lidarr that holds it and, per library, in Plex (app.plex.tv links)"`
 }
 
 type mcpGetReleaseTracksInput struct {
@@ -330,6 +348,7 @@ func (a *API) mcpGetArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpGetA
 		FollowSecondary: ar.FollowSecondary, FollowFromYear: ar.FollowFromYear,
 		Library: mcpLibraryName(ar), Libraries: newMCPArtistLibraries(ar.Libraries), EditBlocked: ar.EditBlocked,
 		Albums: make([]mcpAlbumRow, 0, len(detail.ReleaseGroups)),
+		Links:  newMCPLinks(a.managerLinks(models.ManagerLinkArtist, ar.MBID)),
 	}
 	for _, view := range detail.ReleaseGroups {
 		out.Albums = append(out.Albums, newMCPAlbumRow(view))
@@ -434,6 +453,11 @@ func (a *API) mcpGetAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpGetAl
 		Album:    newMCPAlbumRow(detail.ReleaseGroup),
 		Editions: make([]mcpEditionRow, 0, len(detail.Editions)),
 	}
+	links := a.managerLinks(models.ManagerLinkReleaseGroup, strings.TrimSpace(in.AlbumMBID))
+	if plex, err := a.plexAlbumLinks(strings.TrimSpace(in.AlbumMBID)); err == nil {
+		links = append(links, plex...)
+	}
+	out.Links = newMCPLinks(links)
 	if len(detail.Credits) > 1 {
 		for _, cr := range detail.Credits {
 			out.Credits = append(out.Credits, mcpArtistRef{MBID: cr.MBID, Name: cr.Name})

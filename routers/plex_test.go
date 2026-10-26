@@ -146,4 +146,19 @@ func TestAlbumLinksIntoPlexAndLidarr(t *testing.T) {
 	if len(detail.Links) != 1 || detail.Links[0].URL != "https://lidarr.example.com/album/rg-1" {
 		t.Errorf("lidarr links = %+v", detail.Links)
 	}
+
+	// The same links reach an assistant: get_album carries both services, get_artist
+	// the Lidarr that holds the artist.
+	if err := api.DB.Create(&models.ManagerLink{ManagerID: lidarr.ID, EntityType: models.ManagerLinkArtist, MBID: "art-1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	session := mcpSession(t, api, mcpReader)
+	album := callMCP[mcpAlbumDetail](t, session, "get_album", map[string]any{"artist_mbid": "art-1", "album_mbid": "rg-1"})
+	if len(album.Links) != 2 || album.Links[0].Kind != "lidarr" || album.Links[1].Kind != "plex" || album.Links[1].URL != want {
+		t.Errorf("get_album links = %+v, want Lidarr then Plex", album.Links)
+	}
+	artist := callMCP[mcpArtistDetail](t, session, "get_artist", map[string]any{"mbid": "art-1"})
+	if len(artist.Links) != 1 || artist.Links[0].URL != "https://lidarr.example.com/artist/art-1" {
+		t.Errorf("get_artist links = %+v", artist.Links)
+	}
 }
