@@ -324,12 +324,14 @@ func TestLidarrFindTrackFileByPathDiscFolderSpelling(t *testing.T) {
 
 // TestLidarrFindTrackFileByPathAmbiguous covers two trackfiles that both fit the
 // (album, media, basename) triple — a stale Lidarr row left behind by a move, say.
-// Picking the first is a coin flip between two discs, so the lookup must report no
-// match and let the file surface as unmatched.
+// The file's exact path decides when one of them has it; when neither does, picking
+// the first is a coin flip between two discs, so the lookup must report no match and
+// let the file surface as unmatched.
 func TestLidarrFindTrackFileByPathAmbiguous(t *testing.T) {
 	resetLidarrCaches()
 	root := filepath.Join("/", "music")
-	trackPath := filepath.Join(root, "Some Artist", "Greatest Hits (2001)", "CD2", "01 Intro.flac")
+	exact := filepath.Join(root, "Some Artist", "Greatest Hits (2001)", "CD2", "01 Intro.flac")
+	trackPath := filepath.Join(root, "Some Artist", "Greatest Hits (2001)", "Disc 2", "01 Intro.flac")
 
 	mock := newLidarrMock(t, map[string]any{
 		"/api/v1/trackfile": []models.LidarrTrackFile{
@@ -339,6 +341,9 @@ func TestLidarrFindTrackFileByPathAmbiguous(t *testing.T) {
 	})
 	client := NewLidarrClient(mock.server.URL, "test-key", nil)
 
+	if tf, err := client.FindTrackFileByPath(2, exact, root); err != nil || tf == nil || tf.ID != 100 {
+		t.Fatalf("the file at CD2 = %+v, %v; want trackfile 100, whose path it is", tf, err)
+	}
 	tf, err := client.FindTrackFileByPath(2, trackPath, root)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)

@@ -84,7 +84,14 @@ still open:
   never been tuned against those numbers, and a separate, higher cap for MP3s than for FLAC may be
   worth it — FLAC rewrites are more disk-bound.
 
-- Files are expected to have a certain path, mostly because we are trying to match with Lidarr path/files. This needs to change. We should attempt to match (if Lidarr managed), but also accept that files might be placed wrong/badly named. The move/rename module can fix this, but we must attempt to match the files meanwhile. Not being able to match is another beast. That should be fixed using an import/fix function.
+- **Layout-independent matching — what is left.** Lidarr matching no longer trusts the layout
+  ([media-manager.md](media-manager.md#matching-does-not-trust-where-a-file-sits)): track files by
+  the path below the root, artists by folder and then by the file's tags, and an unmatched file
+  says why. What still reads the layout: the collection's per-artist actions take the artist folder
+  as the folder to rescan (`collection.ArtistTargets`, which falls back to the file's own folder),
+  and folder attach and the disc guard read the disc folder. A file Lidarr has no track file for is
+  Lidarr's to import; the Organise verb (roadmap) is what moves misplaced files where their profile
+  names them.
 
 - **Links out — what is left.** Artist and album pages link into the Lidarr that holds them and the
   album page into Plex ([collection.md](collection.md#links-into-the-managers),

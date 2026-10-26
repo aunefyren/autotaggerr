@@ -304,38 +304,20 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 
 	logger.Log.Debug("cached artist not found for: " + artistName)
 
-	// get lidarr API response
-	var artists []models.LidarrArtist
-	if err := c.getJSON("/api/v1/artist", &artists); err != nil {
+	artists, err := c.fetchArtists()
+	if err != nil {
 		return nil, err
 	}
 
 	logger.Log.Debugf("we want artist: %s", want)
 
 	validArtists := []models.LidarrArtist{}
-	stored := make([]providerCacheItem, 0, len(artists))
-	lidarrArtistsCacheMu.Lock()
 	for i := range artists {
-		// add artist to cache
-		key := c.cacheKey(artists[i].ID)
-		entry := models.CachedLidarrArtistRelease{
-			Artist:    artists[i],
-			Timestamp: time.Now(),
-		}
-		lidarrArtistsCache[key] = entry
-		stored = append(stored, providerCacheItem{key: key, value: entry})
-
 		logger.Log.Debugf("comparing artist folder: %s, original path: %s", lidarrArtistFolder(artists[i]), artists[i].Path)
-
 		if lidarrArtistFolderMatches(artists[i], want) {
 			validArtists = append(validArtists, artists[i])
 		}
 	}
-	lidarrArtistsCacheMu.Unlock()
-
-	// The whole artist list was just (re)populated, so it persists as one statement
-	// rather than one per artist.
-	providerCachePutMany(models.ProviderCacheLidarrArtists, lidarrArtistsCacheDuration, stored...)
 
 	if len(validArtists) == 1 {
 		return validArtists, nil
@@ -351,6 +333,26 @@ func (c *LidarrClient) FindArtistByName(artistName string) ([]models.LidarrArtis
 	// usual cause, and the message has to point at the folders to be actionable.
 	return nil, fmt.Errorf("%w: no Lidarr artist has folder %q (compared against the last path segment of all %d artists Lidarr returned)",
 		ErrLidarrArtistNotFound, artistName, len(artists))
+}
+
+// fetchArtists reads every artist from Lidarr and caches them. The whole list is
+// (re)populated at once, so it persists as one statement rather than one per artist.
+func (c *LidarrClient) fetchArtists() ([]models.LidarrArtist, error) {
+	var artists []models.LidarrArtist
+	if err := c.getJSON("/api/v1/artist", &artists); err != nil {
+		return nil, err
+	}
+	stored := make([]providerCacheItem, 0, len(artists))
+	lidarrArtistsCacheMu.Lock()
+	for i := range artists {
+		key := c.cacheKey(artists[i].ID)
+		entry := models.CachedLidarrArtistRelease{Artist: artists[i], Timestamp: time.Now()}
+		lidarrArtistsCache[key] = entry
+		stored = append(stored, providerCacheItem{key: key, value: entry})
+	}
+	lidarrArtistsCacheMu.Unlock()
+	providerCachePutMany(models.ProviderCacheLidarrArtists, lidarrArtistsCacheDuration, stored...)
+	return artists, nil
 }
 
 // getTrackFilesByArtist returns all Lidarr track files for an artist, cached per
@@ -414,10 +416,19 @@ func (c *LidarrClient) FindTrackFileByPath(artistID int64, fullTrackPath string,
 		return nil, nil
 	}
 
-	// get album name from file path
+	// The file's whole path below the root identifies it whatever the layout — see
+	// lidarr_match.go. Only when no track file ends with it does the layout match
+	// below get a say, for a library root that does not line up with Lidarr's.
+	if match := trackFileByRelativePath(files, lidarrRelativeSegments(rootDir, fullTrackPath)); match != nil {
+		return match, nil
+	}
+
+	// get album name from file path; a file too shallow to have one has no layout to
+	// match by, which is a miss rather than an error
 	targetAlbum, err := utilities.ExtractAlbumNameFromTrackFilePath(rootDir, fullTrackPath)
 	if err != nil {
-		return nil, err
+		logger.Log.Debugf("no album folder to match %s by: %s", fullTrackPath, err.Error())
+		return nil, nil
 	}
 
 	// get the optional media folder (CD1/Disc 2/…); "" when the album folder holds the
@@ -811,20 +822,58 @@ func ResolveMetadataDetailsFromLidarrFresh(cli *LidarrClient, trackPath string, 
 }
 
 func resolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootDir string, fresh bool) (*models.LidarrTrackMetadataDetails, error) {
-	// derive the artist from the path folder
+	// The artist folder first: it is the cheap answer, and right for every file Lidarr
+	// put where it lives. A path with no artist folder, or one naming no Lidarr artist,
+	// is not an error yet — the file's tags are asked below.
+	var artists []models.LidarrArtist
+	var folderErr error
 	artistName, err := utilities.ExtractArtistNameFromTrackFilePath(rootDir, trackPath)
 	if err != nil {
-		return nil, fmt.Errorf("could not read an artist folder out of the file path (expected <root>/<artist>/<album>/[<media>/]<track> under root %q): %w", rootDir, err)
+		folderErr = fmt.Errorf("no artist folder in the path (expected <root>/<artist>/… under root %q): %w", rootDir, err)
+	} else {
+		logger.Log.Debugf("artist name found: %s", artistName)
+		artists, err = cli.FindArtistByName(artistName)
+		if err != nil && !errors.Is(err, ErrLidarrArtistNotFound) {
+			return nil, fmt.Errorf("artist lookup for %q failed: %w", artistName, err)
+		}
+		folderErr = err
+		if len(artists) > 1 {
+			logger.Log.Warnf("%d artists found by that name, checking all and returning first match", len(artists))
+		}
 	}
-	logger.Log.Debugf("artist name found: %s", artistName)
 
-	artists, err := cli.FindArtistByName(artistName)
+	details, err := resolveAmongArtists(cli, artists, trackPath, rootDir, fresh)
+	if details != nil || err != nil {
+		return details, err
+	}
+
+	// Not where its folder says: misplaced, misnamed, or under another artist's folder.
+	// The file's own tags name its artist; Lidarr is asked under those.
+	tried := map[int64]bool{}
+	for _, a := range artists {
+		tried[a.ID] = true
+	}
+	byTags, err := cli.lidarrArtistsFromTags(trackPath, tried)
 	if err != nil {
-		return nil, fmt.Errorf("artist lookup for %q failed: %w", artistName, err)
-	} else if len(artists) > 1 {
-		logger.Log.Warnf("%d artists found by that name, checking all and returning first match", len(artists))
+		return nil, fmt.Errorf("artist lookup by the file's tags failed: %w", err)
+	}
+	if len(byTags) > 0 {
+		logger.Log.Debugf("%s: trying %d Lidarr artist(s) named by its tags", trackPath, len(byTags))
+		if details, err := resolveAmongArtists(cli, byTags, trackPath, rootDir, fresh); details != nil || err != nil {
+			return details, err
+		}
 	}
 
+	if len(artists) == 0 && len(byTags) == 0 && folderErr != nil {
+		return nil, fmt.Errorf("%w; the file's tags name no Lidarr artist either", folderErr)
+	}
+	logger.Log.Warn("no artists in Lidarr had the matching tracks for file")
+	return nil, nil
+}
+
+// resolveAmongArtists resolves a file against each candidate artist in turn, with the
+// cached-answer recheck, and returns the first match.
+func resolveAmongArtists(cli *LidarrClient, artists []models.LidarrArtist, trackPath, rootDir string, fresh bool) (*models.LidarrTrackMetadataDetails, error) {
 	for _, artist := range artists {
 		logger.Log.Debugf("checking for artist: %s (%d)", artist.Name, artist.ID)
 
@@ -860,8 +909,6 @@ func resolveMetadataDetailsFromLidarr(cli *LidarrClient, trackPath string, rootD
 			return details, nil
 		}
 	}
-
-	logger.Log.Warn("no artists in Lidarr had the matching tracks for file")
 	return nil, nil
 }
 

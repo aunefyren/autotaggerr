@@ -375,6 +375,19 @@ const RETRY_TITLES: Record<string, string> = {
  * failed run would push the list off the screen.
  */
 function FailureLine({ item }: { item: LibraryItem }) {
+  // An unmatched file is not a failure, but its manager may have said what would match
+  // it — said quietly, in the muted colour, since nothing here went wrong.
+  if (item.status === "unmatched" && item.error) {
+    return (
+      <span
+        className="dim"
+        title={item.error}
+        style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "68ch" }}
+      >
+        {item.error}
+      </span>
+    );
+  }
   if (item.status !== "error" || !item.error) return null;
   const when = item.last_error_at ? new Date(item.last_error_at).toLocaleString() : "";
   return (

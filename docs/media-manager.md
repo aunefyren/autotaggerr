@@ -168,9 +168,41 @@ answers the question a decoder cannot:
 - **Whether credentials were sent at all**, on 401/403.
 
 `ErrLidarrArtistNotFound` is a sentinel because it is the one Lidarr failure that is about the
-*library*, not about Lidarr: the match is folder-to-folder (our artist directory against the last
-segment of Lidarr's stored path), never name-to-name, so "Lidarr obviously has this artist" and "no
-match" are entirely compatible. The message names both sides of that comparison.
+*library*, not about Lidarr. It is now the last word rather than the first: it is returned only when
+neither the artist folder nor the file's own tags name a Lidarr artist (see below), and the message
+says both were tried.
+
+### Matching does not trust where a file sits
+
+The path used to be read as `<root>/<ARTIST>/<ALBUM>/[<MEDIA>]/<TRACK>` twice over — the artist
+folder to find the Lidarr artist, the album and disc folders to find the track file — so a file
+under a misspelled artist folder, a level too deep or too shallow, or below a library root set one
+level above Lidarr's (a folder per genre, each its own Lidarr root folder) was unmatched although
+Lidarr has a track file at exactly that path. Both halves now degrade instead of failing
+(`modules/lidarr_match.go`):
+
+- **The track file is found by the file's path below the library root**, compared from the end of
+  Lidarr's stored path, by whole segments, as `Canon` compares, with either separator
+  (`trackFileByRelativePath`). It is the same file at the same place below the root, which
+  identifies it at any depth and under any names, and needs no path mapping. Two track files
+  ending with it — only possible for a file directly in the root — is no match, as before. The
+  album/disc/name match stays behind it for a root that does not line up with Lidarr's, and a file
+  too shallow for that is a miss rather than an error.
+- **The artist is found by the folder first** — the cheap answer, right for every file Lidarr placed
+  — and when that names no Lidarr artist, or one whose track files do not hold this file, by the
+  file's own tags (`lidarrArtistsFromTags`): the MusicBrainz album-artist and artist IDs Lidarr
+  keys its artists by (`MUSICBRAINZ_ALBUMARTISTID` in Vorbis, `MusicBrainz Album Artist Id` in
+  ID3), then the album-artist and artist names against Lidarr's names and folder names, loosely.
+  Artists already tried are skipped. The tags are read only on that miss, so a library Lidarr laid
+  out costs nothing more.
+
+A file still unmatched after all of that has no track file in Lidarr at that path, so where it sits
+is no longer the reason, and the index says what is: an unmatched row keeps `error` set to the
+reason (`modules.UnmatchedReason`) — Lidarr never imported it (its *Manual Import*), or it moved
+since Lidarr last looked (refresh the artist). Only error rows read `error` as a failure; the Items
+page shows the reason under an unmatched row in the muted colour. Both fixes are Lidarr's, since it
+owns identity there; in a native library an unmatched file is attached by hand or imported. Moving
+misplaced files to where their profile names them is the Organise verb on the roadmap.
 
 Guarded by `TestLidarrClientReportsLoginPage`, `…ReportsCrossHostRedirect`,
 `TestLidarrFindArtistByNameNotFound` and `TestResolveCorrelationKeepsLidarrCause`.

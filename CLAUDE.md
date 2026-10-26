@@ -83,9 +83,12 @@ index), *Refresh metadata*, *Tag files* — are named in
 4. Changed albums are collected into an `albumsWhoNeedMetadataRefresh` map (album name → Plex
    key) and, after the run, `plexClient.RefreshAlbum` is called for each.
 
-**Path convention matters:** metadata resolution and Lidarr/Plex lookups assume the library
-layout `<root>/<ARTIST>/<ALBUM> (<YEAR>)/[<MEDIA FOLDER>]/<TRACKS>`. `--fileRoot` is the
-directory *containing* the artist folder. Path normalization is OS-specific
+**Path convention:** the library layout is `<root>/<ARTIST>/<ALBUM> (<YEAR>)/[<MEDIA FOLDER>]/<TRACKS>`,
+and naming templates write it, but matching no longer depends on it: Lidarr track files are
+matched by the file's path below the root (any depth), with the artist folder tried first and the
+file's tags after it; Plex albums are matched by file path too. See
+[docs/media-manager.md](docs/media-manager.md#matching-does-not-trust-where-a-file-sits).
+`--fileRoot` is the library root — the directory *containing* the artist folders. Path normalization is OS-specific
 (`utilities/normalize_path_{unix,darwin,windows}.go`, build-tagged).
 
 **External clients** (`modules/lidarr.go`, `modules/plex.go`) are constructed in `main` only

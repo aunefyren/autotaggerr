@@ -47,6 +47,25 @@ var ErrDiscMismatch = errors.New("resolved track is on a different disc than the
 // collection instead of being tagged from its own (possibly stale) embedded tags.
 var ErrUnmatched = errors.New("no manager match for file")
 
+// lidarrUnmatchedReason is what an unmatched file in a Lidarr library is told. By the
+// time a file is unmatched its path below the root, its artist folder and its own tags
+// have all been tried (see lidarr_match.go), so where it sits is no longer the reason:
+// Lidarr has no track file there. Both fixes are Lidarr's — it owns identity here.
+const lidarrUnmatchedReason = "Lidarr has no track file at this path. If Lidarr never imported it, import it there " +
+	"(Wanted → Manual Import); if it was moved since Lidarr last looked, refresh the artist in Lidarr."
+
+// UnmatchedReason is the explanation an ErrUnmatched carries, without the sentinel and
+// the file name — what the index keeps and the Items page shows. "" for any other error.
+func UnmatchedReason(err error) string {
+	if !errors.Is(err, ErrUnmatched) {
+		return ""
+	}
+	if _, reason, ok := strings.Cut(err.Error(), " — "); ok {
+		return reason
+	}
+	return ""
+}
+
 // AlbumRefreshSet is a concurrency-safe collection of albums (album name -> Plex
 // album key) that changed during a scan and therefore need a Plex metadata
 // refresh. It replaces the previous pass-a-map-and-return-it threading so that
@@ -250,7 +269,7 @@ func resolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 			// and tagging from them is exactly the stale-identity drift this guards. Left
 			// unmatched, the file drops out of the collection until the manager knows it.
 			logger.Log.Debugf("manager returned no match for %s; not falling back to embedded tags", filePath)
-			return correlation, fmt.Errorf("%w: %s", ErrUnmatched, filepath.Base(filePath))
+			return correlation, fmt.Errorf("%w: %s — %s", ErrUnmatched, filepath.Base(filePath), lidarrUnmatchedReason)
 		}
 		// fall back to the file's own embedded MusicBrainz tags
 		var err error

@@ -114,7 +114,7 @@ func TestResolveMetadataDetailsFromLidarrBadPath(t *testing.T) {
 	cli := NewLidarrClient("http://127.0.0.1:1", "k", nil)
 	// A file directly under the root has no artist folder to look up.
 	_, err := ResolveMetadataDetailsFromLidarr(cli, filepath.Join("/", "music", "loose.flac"), filepath.Join("/", "music"))
-	if err == nil || !strings.Contains(err.Error(), "could not read an artist folder") {
+	if err == nil || !strings.Contains(err.Error(), "no artist folder in the path") {
 		t.Errorf("err = %v, want the path layout named", err)
 	}
 }

@@ -611,7 +611,9 @@ func recordItemTagged(db *gorm.DB, libraryID uuid.UUID, filePath string, correla
 		// settles it either way. A second miss in a row is the manager's answer.
 		firstMiss := item.MBReleaseID != "" && item.Status != models.LibraryItemStatusUnmatched
 		item.Status = models.LibraryItemStatusUnmatched
-		item.Error = ""
+		// Why, when the manager said — not as a failure (the status says unmatched, and
+		// only error rows read error text as one), but so the file says what would fix it.
+		item.Error = modules.UnmatchedReason(procErr)
 		item.LastErrorAt = nil
 		item.LastErrorTransient = firstMiss
 		if firstMiss {

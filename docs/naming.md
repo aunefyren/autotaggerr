@@ -19,7 +19,10 @@ A profile holds four templates, each one segment of the layout the rest of the a
 | `naming_media_folder` | `CD {medium:00}` | `CD 02` — only for 2+ discs of audio |
 | `naming_track_file` | `{track:00} {Track Title}` | `02 Dreams.flac` — extension kept |
 
-The split is the structural guarantee. Everything that reads the layout counts path segments: the
+The split is the structural guarantee. Matching a file to Lidarr or Plex no longer depends on it —
+both compare the file's path below the root, at any depth
+([media-manager.md](media-manager.md#matching-does-not-trust-where-a-file-sits)) — but the layout is
+still what the rest reads. Everything that reads it counts path segments: the
 collection's artist folders and the per-artist actions read segment one
 ([collection.md](collection.md)), Lidarr's track lookup compares album and disc folders
 (`FindTrackFileByPath`), folder attach and the disc guard read the disc folder. A template that may
