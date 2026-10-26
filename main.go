@@ -439,6 +439,7 @@ func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Ru
 		Rebuilder:  collection.NewRebuilder(db),
 		Meta:       modules.NewMetadataSource(),
 		Settings:   settingsRuntime,
+		Plex:       plexClient,
 		SigningKey: files.GetPrivateKey(0),
 		AppName:    cfg.AutotaggerrName,
 		Version:    cfg.AutotaggerrVersion,

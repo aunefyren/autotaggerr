@@ -45,7 +45,10 @@ type API struct {
 	// scan concurrency). May be nil: a nil *settings.Runtime saves to config.json and
 	// reports everything as needing a restart, which is the correct behaviour for a
 	// caller that owns no scheduler.
-	Settings   *settings.Runtime
+	Settings *settings.Runtime
+	// Plex is the configured Plex server, or nil when there is none. Read only to list
+	// its music sections for the library form; refreshes go through the runner.
+	Plex       *modules.PlexClient
 	SigningKey []byte
 	AppName    string
 	Version    string
@@ -155,6 +158,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/libraries/:id/refresh", a.refreshLibrary)
 		protected.POST("/libraries/:id/retag", a.retagLibrary)
 		protected.POST("/libraries/:id/recorrelate", a.recorrelateLibrary)
+		protected.GET("/plex/sections", a.plexSections)
 
 		// Library items (the correlation index)
 		protected.GET("/library-items", a.listLibraryItems)

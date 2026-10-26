@@ -417,6 +417,16 @@ type Library struct {
 	Enabled         bool       `json:"enabled"`
 	Cron            string     `json:"cron"`
 	LastScan        *time.Time `json:"last_scan"`
+	// PlexSectionKey is the Plex library section holding this library's files. Empty
+	// searches every music section, which is right for most installs: the album a
+	// refresh goes to is the one Plex lists this file in (modules.ResolveAlbumForFile),
+	// so a wider search costs requests, never a wrong album. Naming the section only
+	// saves those requests.
+	PlexSectionKey string `json:"plex_section_key"`
+	// PlexSkip turns the Plex refresh off for this library — one Plex does not scan.
+	// Phrased negatively for the same reason as Manager.LidarrSkipArtistRefresh: the
+	// zero value is the existing behaviour, and GORM drops a false default on insert.
+	PlexSkip bool `json:"plex_skip"`
 	// UseAcoustID opts this library in to fingerprint identification. Off by
 	// default and the third of three independent switches (a configured AcoustID
 	// data source, fpcalc on PATH, this flag) — any one of them off and the library
@@ -617,7 +627,7 @@ type MusicbrainzEntityCache struct {
 
 // Sources held in ProviderCache. Each is one endpoint of one service, keyed by
 // whatever identifier that service answers to: Lidarr's own numeric IDs, and for
-// Plex the album title, which is all the refresh path has to go on.
+// Plex a hash of the album folder (see modules.PlexRefreshForFile).
 const (
 	ProviderCacheLidarrArtists    = "lidarr_artists"
 	ProviderCacheLidarrAlbums     = "lidarr_albums"
@@ -643,9 +653,8 @@ const (
 type ProviderCache struct {
 	Source string `gorm:"primaryKey;size:32" json:"source"`
 	// Key is the service's own identifier. 191 characters is the classic index-safe
-	// limit, kept so the store can still move to MySQL; the only key not bounded by
-	// construction is a Plex album title, and one longer than that fails to cache
-	// rather than failing the lookup.
+	// limit, kept so the store can still move to MySQL. Every key is bounded by
+	// construction; Plex's, once an album title, is a fixed-length hash of the folder.
 	Key       string    `gorm:"primaryKey;size:191" json:"key"`
 	Payload   string    `gorm:"type:text" json:"-"`
 	FetchedAt time.Time `json:"fetched_at"`

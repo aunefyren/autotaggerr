@@ -87,10 +87,16 @@ still open:
 - Files are expected to have a certain path, mostly because we are trying to match with Lidarr path/files. This needs to change. We should attempt to match (if Lidarr managed), but also accept that files might be placed wrong/badly named. The move/rename module can fix this, but we must attempt to match the files meanwhile. Not being able to match is another beast. That should be fixed using an import/fix function.
 
 - We should attempt to link data properly to Lidarr and Plex assets in the backend. Also in the UI with hot links where applicable. Proper linking to Plex for instance will later allow us to better refresh albums, and perhaps to playlists.
+  Plex now resolves an album *by its file* ([scanning.md](scanning.md#which-album-in-which-section)),
+  so the answer is trustworthy enough to store — but it is only cached for an hour, per folder, and
+  only for files whose tags changed. Linking means keeping the ratingKey on the album (or the
+  edition, per library) and resolving it for everything, not only what a run touched.
 
-- Plex is tied to the tenant, but should be tied to library (libraries). Now Plex refresh is triggered even when the assets is actually not in Plex, if a similar object is within Plex.
-
-- If Plex is reworked/decoupled, Jellyfin support should be considered.
+- If Plex is reworked/decoupled, Jellyfin support should be considered. Plex is now per library
+  (a section or none, on the library row) and matched by file path, which is the shape a second
+  media server would take: a client with `ForLibrary` and a file-verified album lookup, chosen on the
+  library. The server itself is still two keys in `config.json`; a second kind of server is the point
+  at which it becomes a component row like a manager.
 
 ## Roadmap / ideas
 
@@ -169,17 +175,10 @@ still open:
   tokens, Clean/The tokens, the import's `other_edition` guard, authority per library (wants,
   editions and following for one library, library tabs on the artist and album pages), the attach
   gate honouring detach, `library` on the MCP read tools, Add artist needing a native library, the
-  repair hold asking the artist's own managers and the catalog mirror merging several managers have
-  shipped. Still open:
-  - *Global settings across managers — one left.* Process-wide settings that are genuinely
-    process-wide (concurrency, mirror, artwork, MCP, retention, tempo schedule, migration review
-    flags, MusicBrainz itself) are fine, as is everything read from the library row. The Lidarr
-    follower's scope, the repair hold, the catalog mirror across two managers, the dead
-    data-source/cron fields and the MusicBrainz source's URL and contact are fixed. What remains:
-    - **Plex refreshes the first music section.** `FindMusicSectionID` (`modules/plex.go`) takes the
-      first `artist` section, and the album-key cache is keyed by title alone, so a second library in
-      another Plex section is refreshed wrongly or not at all, and two same-titled albums share a key.
-      Belongs with the Plex-per-library note above.
+  repair hold asking the artist's own managers, the catalog mirror merging several managers, the
+  MusicBrainz source honoured in full and Plex per library (a section or none, albums matched by
+  file) have shipped — every process-wide setting is now either genuinely process-wide or read from
+  the library row. Still open:
   - *The collection list does not recount per library.* Its library filter narrows which artists are
     listed; the owned/missing/mismatch columns stay all-library. The artist page reads one library
     on its tabs. Recounting the list needs `LibraryHoldings` per artist, which nothing has asked for.

@@ -137,6 +137,17 @@ export interface Library {
   bpm_write: BPMWrite;
   /** Confidence a tempo needs to be written; 0 or less means the server default (0.5). */
   bpm_min_confidence: number;
+  /** The Plex section holding this library; "" searches every music section. */
+  plex_section_key: string;
+  /** Plex refresh turned off for this library. */
+  plex_skip: boolean;
+}
+
+/** GET /plex/sections — the server's music sections, for the library form. */
+export interface PlexSections {
+  configured: boolean;
+  sections: { key: string; title: string; locations: string[] | null }[];
+  error?: string;
 }
 
 export interface LibraryItem {

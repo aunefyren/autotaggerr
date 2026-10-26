@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { BPMWrite, Library, Manager, TaggerProfile, TempoStatus } from "../types";
+import { BPMWrite, Library, Manager, PlexSections, TaggerProfile, TempoStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { TempoAnalysis } from "../components/TempoAnalysis";
@@ -268,6 +268,10 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
   const [bpmWrite, setBPMWrite] = useState<BPMWrite>(initial?.bpm_write ?? "");
   const [bpmFloor, setBPMFloor] = useState(initial?.bpm_min_confidence ?? 0);
+  // One select for both fields: "skip" is the opt-out, anything else a section key,
+  // "" every music section.
+  const [plex, setPlex] = useState(initial?.plex_skip ? PLEX_SKIP : initial?.plex_section_key ?? "");
+  const plexSections = useFetch<PlexSections>(() => api.get("/plex/sections"));
   const [busy, setBusy] = useState(false);
   // Only to say so when the server cannot act on the switch. The switch itself stays
   // live: a library can opt in before aubio is installed, and is picked up once it is.
@@ -280,6 +284,8 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
       const body: Record<string, unknown> = {
         name, path, use_acoustid: useAcoustID, analyse_tempo: analyseTempo,
         bpm_write: bpmWrite, bpm_min_confidence: bpmFloor,
+        plex_skip: plex === PLEX_SKIP,
+        plex_section_key: plex === PLEX_SKIP ? "" : plex,
       };
       // Null, not absent: "No manager" and "Default" are choices, and absent would keep
       // the old one — an edit back to Default used to be silently ignored.
@@ -343,6 +349,35 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
             ))}
           </select>
         </div>
+
+        {/* Only once Plex is configured: a select of sections from a server that is not
+            there would be a control that can only be wrong. A section saved earlier
+            stays listed even if Plex cannot be asked right now. */}
+        {plexSections.data?.configured && (
+          <div className="field">
+            <label className="flabel">Plex</label>
+            <select className="select" value={plex} onChange={(e) => setPlex(e.target.value)}>
+              <option value="">Every music section</option>
+              {plexSections.data.sections.map((s) => (
+                <option key={s.key} value={s.key}>
+                  {s.title}{s.locations?.length ? ` — ${s.locations.join(", ")}` : ""}
+                </option>
+              ))}
+              {plex !== "" && plex !== PLEX_SKIP && !plexSections.data.sections.some((s) => s.key === plex) && (
+                <option value={plex}>Section {plex}</option>
+              )}
+              <option value={PLEX_SKIP}>Not in Plex — never refresh</option>
+            </select>
+            {plexSections.data.error ? (
+              <span className="help-warn">Plex did not answer, so its sections cannot be listed: {plexSections.data.error}</span>
+            ) : (
+              <span className="dim" style={{ fontSize: 11 }}>
+                Where albums are refreshed after their tags change. Only the album Plex lists the file in
+                is refreshed, so every section is a safe default; naming one saves the search.
+              </span>
+            )}
+          </div>
+        )}
 
         <label className="row" style={{ gap: 8, cursor: "pointer" }}>
           <input type="checkbox" checked={useAcoustID} onChange={(e) => setUseAcoustID(e.target.checked)} />
@@ -419,6 +454,9 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
     </Modal>
   );
 }
+
+/** The Plex select's value for "this library is not in Plex". */
+const PLEX_SKIP = "skip";
 
 /** The server reads 0 or less as its default floor. */
 const DEFAULT_BPM_MIN_CONFIDENCE = 0.5;

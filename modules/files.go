@@ -604,8 +604,8 @@ func ProcessTrackFileAfterMatch(
 		changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
 	}
 
-	if plexClient != nil && !unchanged {
-		err = PlexRefreshForFile(unchanged, tagsWritten, refreshSet, *plexClient, response.Title, metadata.AlbumArtist, track.Title)
+	if plexClient != nil && !unchanged && tagsWritten > 0 {
+		err = PlexRefreshForFile(refreshSet, plexClient, filePath, rootDir, response.Title, metadata.AlbumArtist, track.Title)
 		if err != nil {
 			logger.Log.Warn("failed to prepare Plex refresh for album. error: " + err.Error())
 		}

@@ -1190,6 +1190,36 @@ Changed albums are collected during a run (album name → Plex key) and `plexCli
 called for each afterwards. The Plex client is only constructed when its URL + token config is
 present and may be `nil` — always nil-check.
 
+### Which album, in which section
+
+Plex is one server for the process (**Settings → Plex**), but which of its sections holds a library —
+if any — is a fact about the library, so it lives on the library row: `PlexSectionKey` (empty: every
+music section) and `PlexSkip` (not in Plex; never refresh). `components.ProcessFile` and the re-tag
+path narrow the shared client with `PlexClient.ForLibrary`, which returns `nil` for a skipped library,
+so nothing downstream needed a new parameter.
+
+The album is found **by the file, not by its title** (`ResolveAlbumForFile`). Title searches in the
+library's sections (albums by the artist, then tracks) only nominate candidates; one is taken when
+Plex lists *this file* among its tracks (`Media/Part@file`). The comparison is on the path below the
+library root, by whole segments, ignoring case and separator style, so Plex may mount the library
+somewhere else entirely — a Docker volume, a Windows share — with no path mapping configured. A file
+no album holds is `ErrPlexAlbumNotFound`: Plex has not scanned it yet, or the library is not in Plex,
+and either way there is nothing to refresh (Plex's own scan picks a new album up).
+
+This replaced two faults. The section was always the *first* music section Plex listed, so a second
+library in another section was refreshed in the wrong place or not at all. And an album was matched
+by artist and title alone and cached by title, so a library Plex did not hold still triggered a
+refresh of any same-named album Plex had, and two albums sharing a title shared one key. Searching
+every section is therefore a safe default — the file check picks the album, so a wider search costs
+requests, never correctness — and naming the section only saves those requests.
+
+The answer is cached per **album folder and section scope** (`provider_cache`, source
+`plex_album_keys`, an hour), keyed by a hash since a path can outrun the key column; the folder and
+title ride in the payload. "Plex does not hold this folder" is cached too, so an album missing from
+Plex costs one lookup rather than one per track. The library form offers the sections through
+`GET /plex/sections`, which reports a Plex that does not answer in its body rather than failing, so
+*every section* can still be chosen.
+
 One event per run, not per album, which would flood the feed — but **one detail row per album**
 (`EventItemKindAlbum`), refreshed or failed with its reason. The stage used to report two numbers
 over nothing, so *which albums?* — the only question a Plex refresh provokes — had no answer

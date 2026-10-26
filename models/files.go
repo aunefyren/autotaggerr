@@ -110,7 +110,12 @@ type CachedLidarrTrackFilesRelease struct {
 	Timestamp  time.Time         `json:"timestamp"`
 }
 
+// PlexAlbumKeyCache is one album folder's answer from Plex: the album holding its
+// files, or an empty AlbumKey for "Plex does not have these files", which is cached
+// too so an album missing from Plex is not searched for once per track.
 type PlexAlbumKeyCache struct {
 	AlbumKey  string    `json:"album_key"`
+	Title     string    `json:"title,omitempty"`
+	Folder    string    `json:"folder,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 }

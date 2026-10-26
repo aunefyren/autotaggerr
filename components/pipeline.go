@@ -254,6 +254,9 @@ func ProcessFile(
 	filePath, rootDir, processedVersion string,
 ) (unchanged bool, tagsWritten int, err error) {
 	managerType := manager.Type()
+	// The shared client narrowed to this library's Plex section, or nil when the
+	// library is not refreshed in Plex.
+	plexClient = plexClient.ForLibrary(library)
 
 	item, indexed := indexedItem(db, filePath)
 	changed := bytesChanged(item, indexed, filePath)

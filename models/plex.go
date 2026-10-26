@@ -18,14 +18,39 @@ type PlexDirectory struct {
 	Type        string `xml:"type,attr"`        // "artist", "album"
 	ParentTitle string `xml:"parentTitle,attr"` // album->artist
 	Year        int    `xml:"year,attr"`
+	// Location is a library section's folders, on /library/sections.
+	Location []PlexLocation `xml:"Location"`
+}
+
+// PlexLocation is one folder a library section scans, as Plex sees the path.
+type PlexLocation struct {
+	Path string `xml:"path,attr"`
+}
+
+// PlexSection is a music library section, as the library form offers it.
+type PlexSection struct {
+	Key       string   `json:"key"`
+	Title     string   `json:"title"`
+	Locations []string `json:"locations"`
+}
+
+// PlexMedia and PlexPart carry a track's file, which is what an album is matched by:
+// Media/Part@file on every track Plex lists.
+type PlexMedia struct {
+	Part []PlexPart `xml:"Part"`
+}
+
+type PlexPart struct {
+	File string `xml:"file,attr"`
 }
 
 type PlexTrack struct {
-	Key              string `xml:"key,attr"`              // track key
-	Title            string `xml:"title,attr"`            // track title
-	ParentTitle      string `xml:"parentTitle,attr"`      // album title
-	GrandparentTitle string `xml:"grandparentTitle,attr"` // artist name
-	ParentKey        string `xml:"parentKey,attr"`        // album path e.g. /library/metadata/12345
-	ParentRatingKey  string `xml:"parentRatingKey,attr"`  // album numeric key
-	Year             int    `xml:"year,attr"`
+	Key              string      `xml:"key,attr"`              // track key
+	Title            string      `xml:"title,attr"`            // track title
+	ParentTitle      string      `xml:"parentTitle,attr"`      // album title
+	GrandparentTitle string      `xml:"grandparentTitle,attr"` // artist name
+	ParentKey        string      `xml:"parentKey,attr"`        // album path e.g. /library/metadata/12345
+	ParentRatingKey  string      `xml:"parentRatingKey,attr"`  // album numeric key
+	Year             int         `xml:"year,attr"`
+	Media            []PlexMedia `xml:"Media"`
 }

@@ -561,6 +561,8 @@ type libraryInput struct {
 	AnalyseTempo     *bool         `json:"analyse_tempo"`
 	BPMWrite         *string       `json:"bpm_write"`
 	BPMMinConfidence *float64      `json:"bpm_min_confidence"`
+	PlexSectionKey   *string       `json:"plex_section_key"`
+	PlexSkip         *bool         `json:"plex_skip"`
 }
 
 // validate rejects a BPM setting the writers would not understand. The mode is an
@@ -609,6 +611,12 @@ func (in libraryInput) apply(l *models.Library) {
 	}
 	if in.BPMMinConfidence != nil {
 		l.BPMMinConfidence = *in.BPMMinConfidence
+	}
+	if in.PlexSectionKey != nil {
+		l.PlexSectionKey = strings.TrimSpace(*in.PlexSectionKey)
+	}
+	if in.PlexSkip != nil {
+		l.PlexSkip = *in.PlexSkip
 	}
 }
 
