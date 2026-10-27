@@ -359,8 +359,8 @@ var namingTokens = []NamingToken{
 
 	{Name: "medium", Field: NamingMediaFolder, Description: "The disc number", Numeric: true,
 		number: func(c namingContext) int { return c.media.Position }},
-	{Name: "Medium Format", Field: NamingMediaFolder, Description: "CD, Vinyl, Digital Media…",
-		text: func(c namingContext) string { return c.media.Format }},
+	{Name: "Medium Format", Field: NamingMediaFolder, Description: "CD, Vinyl, Digital Media… — Disc when the format is missing or one the app could not read back as a disc",
+		text: func(c namingContext) string { return mediumFormatFolderName(c.media.Format) }},
 
 	{Name: "track", Field: NamingTrackFile, Description: "The track's position on its disc", Numeric: true,
 		number: func(c namingContext) int { return c.track.Position }},
@@ -620,6 +620,20 @@ func needsMediaFolder(release models.MusicBrainzReleaseResponse, own models.Musi
 		}
 	}
 	return audio > 1
+}
+
+// mediumFormatFolderName is what {Medium Format} renders: the medium's format, or "Disc"
+// when a disc folder starting with it would not be read back as its disc — no format
+// at all, "Other", or a name discFolderPattern does not know. It is probed with 07, not
+// the real number, so a format carrying its own digit ("Blu-spec CD2") cannot pass by
+// reading as disc 2. Lidarr would write the format there; every reader of the layout
+// needs the disc, which is worth more than matching Lidarr on a rare format.
+func mediumFormatFolderName(format string) string {
+	format = strings.TrimSpace(format)
+	if format == "" || discNumberFromFolderName(format+" 07") != 7 {
+		return "Disc"
+	}
+	return format
 }
 
 func mediumHasAudio(media models.MusicBrainzMedia) bool {

@@ -405,8 +405,8 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
             live on two pages, and a library analysed under a profile that wrote nothing
             looked like the feature not working. Disabled rather than hidden while analysis
             is off, so the dependency is visible. */}
-        <div className="row" style={{ gap: 12, alignItems: "flex-start", marginTop: -4 }}>
-          <div className="field" style={{ flex: 2 }}>
+        <div className="field-row lead" style={{ marginTop: -4 }}>
+          <div className="field">
             <label className="flabel">Write BPM</label>
             <select
               className="select"
@@ -420,7 +420,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
               <option value="overwrite">Always, replacing what is there</option>
             </select>
           </div>
-          <div className="field" style={{ flex: 1 }}>
+          <div className="field">
             <label className="flabel">Minimum confidence</label>
             <input
               className="input"

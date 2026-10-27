@@ -38,9 +38,13 @@ var trackNumberPattern = regexp.MustCompile(`^(?:(\d{1,2})[-_.])?(\d{1,3})(?:[^0
 // because Lidarr's default disc folder is "{Medium Format} {medium:00}" and a naming
 // template is validated by reading its disc folder back through this pattern — a
 // format it did not know would make that template unsaveable, and a Lidarr-named
-// "Vinyl 01" unreadable as a disc. "lp" is deliberately absent: an album called "LP1"
-// is not disc one of anything.
-var discFolderPattern = regexp.MustCompile(`(?i)\b(?:cd(?:-r)?|disc|disk|dvd(?:-audio|-video)?|vinyl|cassette|digital media|sacd|hdcd|minidisc|blu-ray)\s*[-_]?\s*(\d{1,2})\b`)
+// "Vinyl 01" unreadable as a disc. A bracketed qualifier may sit between the name and
+// the number, as MusicBrainz writes "SACD (2 channels)". Only distinctive names are
+// listed, because import and the AcoustID hint run this on album folders too: "lp" is
+// deliberately absent (an album called "LP1" is not disc one of anything), and so are
+// "Other" and "DAT" — a format this does not read renders as "Disc" instead
+// (mediumFormatFolderName).
+var discFolderPattern = regexp.MustCompile(`(?i)\b(?:cd(?:-r|\+g)?|hqcd|vcd|svcd|cdv|disc|disk|dualdisc|laserdisc|vinyldisc|dvd(?:-audio|-video)?|vinyl|shellac|cassette|microcassette|reel-to-reel|digital media|download card|usb flash drive|slotmusic|playbutton|sacd|hdcd|minidisc|blu-ray|umd|vhs|betamax|videotape|dcc|tefifon|cylinder)(?:\s*\([^)]*\))?\s*[-_]?\s*(\d{1,2})\b`)
 
 // MapFilesToTracks proposes a pairing of files to a release's tracks.
 //

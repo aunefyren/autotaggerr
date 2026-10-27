@@ -192,6 +192,18 @@
    fields are peers (artist + title + year), not a sequence. */
 .field-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 
+/* Fields side by side in a form. Each .field is a subgrid of label / control / help, so
+   the label row is as tall as the longest label and every control starts on one line —
+   a wrapped label no longer pushes its own input below its neighbour's. The gaps live on
+   the label and help (not row-gap) so a field without help adds no space. .lead gives
+   the first field twice the width; below 560px the fields stack. */
+.field-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); column-gap: 12px; }
+.field-row.lead { grid-template-columns: 2fr 1fr; }
+.field-row > .field { display: grid; grid-row: span 3; grid-template-rows: subgrid; gap: 0; }
+.field-row > .field > .flabel { align-self: end; margin-bottom: 5px; }
+.field-row > .field > :nth-child(3) { margin-top: 5px; }
+@media (max-width: 560px) { .field-row, .field-row.lead { grid-template-columns: 1fr; row-gap: 12px; } }
+
 /* Settings row: what the setting is on the left, its control on the right.
    A settings page is a list of definitions, not a form to fill top to bottom, so the
    label column carries the name, the config key and the help — and the control column

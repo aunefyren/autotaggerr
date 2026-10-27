@@ -198,6 +198,9 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   A **warning** (`.help-warn`) is helper text in `--warning-text` with the border left ordinary:
   the value is accepted, and only an error marks the input itself. A field shows one line under it —
   its error, else its warning, else its help — so the three never stack.
+  **Fields side by side go in a `.field-row`** (`.lead` makes the first one twice as wide), not
+  a flex `.row`: each field is a subgrid of label / control / help, so a label that wraps grows
+  the label track for the whole row and every control stays on one line. Stacks below 560px.
 - **Path autocomplete** (`.suggest`, `PathInput.tsx`) — a server-path input that lists the folders
   the typed text could name, in an overlay under it: `--surface-3`, `--border-strong`,
   `--shadow-2`, `--radius`, 28px rows. The highlighted row takes the selection treatment

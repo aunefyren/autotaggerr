@@ -354,8 +354,8 @@ function DataSourceForm({
         {/* The two settings MusicBrainz itself asks about. Only on its rows: no other
             provider is throttled or identified this way. */}
         {musicbrainz && (
-          <div className="row" style={{ gap: 12, alignItems: "flex-start" }}>
-            <div className="field" style={{ flex: 2 }}>
+          <div className="field-row lead">
+            <div className="field">
               <label className="flabel">Contact</label>
               <input
                 className="input"
@@ -367,7 +367,7 @@ function DataSourceForm({
                 Sent in the User-Agent, as MusicBrainz asks. Empty sends the project URL.
               </span>
             </div>
-            <div className="field" style={{ flex: 1 }}>
+            <div className="field">
               <label className="flabel">Requests per second</label>
               <input
                 className="input"

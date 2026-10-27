@@ -161,12 +161,12 @@ function ServerForm({ server, onClose, onSaved }: { server: MediaServer | null; 
   return (
     <Modal title={server ? `Edit ${server.name}` : "Add media server"} onClose={onClose}>
       <form onSubmit={submit} className="stack">
-        <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div className="field" style={{ flex: "1 1 200px" }}>
+        <div className="field-row lead">
+          <div className="field">
             <label className="flabel" htmlFor="ms-name">Name</label>
             <input id="ms-name" className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus={!server} />
           </div>
-          <div className="field" style={{ flex: "0 1 140px" }}>
+          <div className="field">
             <label className="flabel" htmlFor="ms-type">Type</label>
             {/* One type today; the select says what this is and where Jellyfin would go. */}
             <select id="ms-type" className="select" value="plex" disabled>

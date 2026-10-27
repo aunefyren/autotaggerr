@@ -356,11 +356,15 @@ function NamingSection({
                 ))}
               </tbody>
             </table>
-            <p className="dim" style={{ margin: "6px 0 0", fontSize: 11, maxWidth: "68ch" }}>
-              A token can be used in its own folder and anything below it. Written in lower case it
-              renders lower case; <span className="mono">{"{Artist.Name}"}</span> joins words with dots;{" "}
-              <span className="mono">{"{ (Album Disambiguation)}"}</span> writes the brackets only when there is a value.
-            </p>
+            {/* A footnote to the table, inside its frame: cell padding, and a hairline
+                because the last row draws none. */}
+            <div style={{ padding: "var(--space-4) var(--space-5)", borderTop: "1px solid var(--border)" }}>
+              <p className="dim" style={{ margin: 0, fontSize: 11, maxWidth: "68ch" }}>
+                A token can be used in its own folder and anything below it. Written in lower case it
+                renders lower case; <span className="mono">{"{Artist.Name}"}</span> joins words with dots;{" "}
+                <span className="mono">{"{ (Album Disambiguation)}"}</span> writes the brackets only when there is a value.
+              </p>
+            </div>
           </div>
         )}
       </div>

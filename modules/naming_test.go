@@ -257,22 +257,65 @@ func TestValidateNamingTemplatesAccepts(t *testing.T) {
 
 func TestDiscFolderNamesFromMediumFormats(t *testing.T) {
 	cases := map[string]int{
-		"CD 02":            2,
-		"Disc 3":           3,
-		"Vinyl 01":         1,
-		"12 Vinyl 02":      2,
-		"Digital Media 01": 1,
-		"Cassette 2":       2,
-		"SACD 1":           1,
-		"CD-R 02":          2,
-		"Blu-ray 1":        1,
-		"LP1":              0,
-		"Rumours (1977)":   0,
-		"Social Media":     0,
+		"CD 02":                2,
+		"Disc 3":               3,
+		"Vinyl 01":             1,
+		"12 Vinyl 02":          2,
+		"Digital Media 01":     1,
+		"Cassette 2":           2,
+		"SACD 1":               1,
+		"CD-R 02":              2,
+		"Blu-ray 1":            1,
+		"HQCD 02":              2,
+		"DualDisc 02":          2,
+		"Shellac 02":           2,
+		"Reel-to-reel 02":      2,
+		"USB Flash Drive 2":    2,
+		"SACD (2 channels) 03": 3,
+		"Hybrid SACD (SACD layer, 2 channels) 03": 3,
+		"LP1":            0,
+		"Rumours (1977)": 0,
+		"Social Media":   0,
+		"The Other 2":    0,
 	}
 	for name, want := range cases {
 		if got := discNumberFromFolderName(name); got != want {
 			t.Errorf("discNumberFromFolderName(%q) = %d, want %d", name, got, want)
+		}
+	}
+}
+
+// {Medium Format} {medium:00}, Lidarr's default, renders a folder read back as its own
+// disc whatever MusicBrainz calls the medium — the format where the pattern reads it,
+// "Disc" where it would not.
+func TestMediumFormatDiscFolderReadsBack(t *testing.T) {
+	templates := models.NamingTemplates{MediaFolder: "{Medium Format} {medium:00}"}
+	for format, want := range map[string]string{
+		"CD":                     "CD 02",
+		`12" Vinyl`:              "12 Vinyl 02",
+		"HQCD":                   "HQCD 02",
+		"SACD (2 channels)":      "SACD (2 channels) 02",
+		"Hybrid SACD (CD layer)": "Hybrid SACD (CD layer) 02",
+		"Blu-spec CD2":           "Disc 02",
+		"Other":                  "Disc 02",
+		"DAT":                    "Disc 02",
+		"":                       "Disc 02",
+	} {
+		probe := namingDiscProbe()
+		release := probe.Release
+		release.Media = append([]models.MusicBrainzMedia(nil), release.Media...)
+		for i := range release.Media {
+			release.Media[i].Format = format
+		}
+		path, err := RenderLibraryPath(templates, release, probe.TrackID, probe.File)
+		if err != nil {
+			t.Fatalf("%q: %v", format, err)
+		}
+		if path.Media != want {
+			t.Errorf("%q renders %q, want %q", format, path.Media, want)
+		}
+		if got := discNumberFromFolderName(path.Media); got != 2 {
+			t.Errorf("%q: %q reads back as disc %d, want 2", format, path.Media, got)
 		}
 	}
 }

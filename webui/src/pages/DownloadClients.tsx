@@ -258,12 +258,12 @@ function ClientForm({
   return (
     <Modal title={client ? `Edit ${client.name}` : "Add download client"} onClose={onClose} wide>
       <form onSubmit={submit} className="stack">
-        <div className="row" style={{ gap: 12, flexWrap: "wrap", alignItems: "flex-end" }}>
-          <div className="field" style={{ flex: "1 1 200px" }}>
+        <div className="field-row lead">
+          <div className="field">
             <label className="flabel" htmlFor="dc-name">Name</label>
             <input id="dc-name" className="input" value={name} onChange={(e) => setName(e.target.value)} autoFocus={!client} />
           </div>
-          <div className="field" style={{ flex: "0 1 160px" }}>
+          <div className="field">
             <label className="flabel" htmlFor="dc-type">Type</label>
             {/* Fixed once saved: a different client type is a different client, and its
                 categories, mappings and history would not carry over. */}
@@ -315,12 +315,12 @@ function ClientForm({
           </div>
         ) : (
         <>
-        <div className="row" style={{ gap: 12, flexWrap: "wrap" }}>
-          <div className="field" style={{ flex: "1 1 200px" }}>
+        <div className="field-row">
+          <div className="field">
             <label className="flabel" htmlFor="dc-user">Username</label>
             <input id="dc-user" className="input mono" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="off" />
           </div>
-          <div className="field" style={{ flex: "1 1 200px" }}>
+          <div className="field">
             <label className="flabel" htmlFor="dc-pass">Password</label>
             <input
               id="dc-pass"

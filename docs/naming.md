@@ -150,6 +150,16 @@ most likely to paste. `lp` is deliberately not on the list: an album called *LP1
 of anything. `isMediaFolder` (the AcoustID path hint) now uses the same recogniser rather than its
 own prefix list.
 
+The list covers MusicBrainz's distinctive format names (HQCD, DualDisc, Shellac, Reel-to-reel, USB
+Flash Drive, …) and reads past a bracketed qualifier, so `SACD (2 channels) 02` is disc 2. Generic
+names stay off it, because import and the AcoustID hint run the recogniser on album folders too and
+an album called *The Other 2* is not a disc. Instead **`{Medium Format}` renders `Disc`** for a
+medium whose format it would not read back: no format at all, `Other`, `DAT`, or one carrying its
+own digit (`Blu-spec CD2`, which would read as disc 2 on every disc). That is the one place
+Autotaggerr names a disc folder differently from Lidarr, and only for rare formats — a folder every
+reader of the layout understands is worth more than an exact Lidarr match.
+`TestMediumFormatDiscFolderReadsBack` holds it.
+
 **Only discs that carry audio count** towards "more than one disc", by the
 [video rule](collection.md#a-video-track-is-not-a-track-you-are-missing): a CD+DVD whose DVD is all
 video is a one-disc album and stays flat. The file's own medium always counts, so a file attached
