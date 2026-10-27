@@ -180,6 +180,11 @@ func TestMigrationPolicyEndpoint(t *testing.T) {
 func TestApproveBlockedAlbumAsksTheManager(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
+	// The approve queues the repair job, which writes events and drains migrations in
+	// the background. Left running, it outlives the test and races TempDir's cleanup
+	// (CI: "directory not empty"). Registered after setupAPI so it runs first. Not in
+	// setupAPI itself: other tests queue jobs that would wait on musicbrainz.org.
+	t.Cleanup(api.Scan.Wait)
 
 	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Some Band"}).Error; err != nil {
 		t.Fatalf("create artist: %v", err)
@@ -408,6 +413,9 @@ func TestListItemsFiltersByMBID(t *testing.T) {
 func TestArtistPageOffersTheRepair(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
+	// The 202 queues a repair job; wait it out so it cannot race TempDir's cleanup
+	// (see TestApproveBlockedAlbumAsksTheManager).
+	t.Cleanup(api.Scan.Wait)
 
 	if err := api.DB.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Some Band"}).Error; err != nil {
 		t.Fatal(err)
@@ -533,6 +541,9 @@ func TestReleaseFilesSettlesANativeAlbum(t *testing.T) {
 func TestReleaseFilesAsksTheManagerForItsFiles(t *testing.T) {
 	r, api := setupAPI(t)
 	token := loginToken(t, r)
+	// The 202 queues a repair job; wait it out so it cannot race TempDir's cleanup
+	// (see TestApproveBlockedAlbumAsksTheManager).
+	t.Cleanup(api.Scan.Wait)
 
 	release := make(chan struct{})
 	lidarr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
