@@ -200,6 +200,9 @@ export interface ReleaseSearchResult {
   disambiguation: string;
   "artist-credit": { name: string; joinphrase: string }[];
   media: { format: string; "track-count": number }[];
+  /** What the pressing is printed with — the facts a download's tags most often share. */
+  barcode?: string;
+  "label-info"?: { "catalog-number"?: string; label?: { name: string } | null }[] | null;
 }
 
 /** One page of release search hits. count is the total, not the page size. */
@@ -276,6 +279,19 @@ export interface ImportGroup {
   /** The release every tagged file agrees on, when they carry one. */
   release_id?: string;
   release_ids_disagree?: boolean;
+  /** What the tags say about which pressing the files are; absent when they say nothing. */
+  edition?: ImportEditionClues;
+}
+
+/** The tags that tell one edition from another, each the value most files agree on. */
+export interface ImportEditionClues {
+  barcode?: string;
+  catalog_number?: string;
+  label?: string;
+  country?: string;
+  media?: string;
+  /** The release's own date, not the original's. */
+  date?: string;
 }
 
 export interface ImportScan {

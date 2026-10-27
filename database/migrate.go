@@ -27,6 +27,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"seed_authority_owned", seedAuthorityOwned},
 		{"unscoped_library_columns", unscopedLibraryColumns},
 		{"follow_library_sets", followLibrarySets},
+		{"expire_edition_lists", expireEditionLists},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -131,6 +132,16 @@ func scopeLidarrCache(db *gorm.DB) error {
 		logger.Log.Infof("dropped %d Lidarr cache row(s) that did not say which Lidarr they came from", res.RowsAffected)
 	}
 	return nil
+}
+
+// expireEditionLists marks every cached edition list as due. They were fetched
+// without inc=labels, so they carry no label or catalog number for the import's
+// Browse step to set against the files' tags, and would keep carrying none for up to
+// a week. Expired rather than deleted: the payload stays as the stale answer
+// GetMusicBrainzReleaseGroupReleases serves when MusicBrainz is down.
+func expireEditionLists(db *gorm.DB) error {
+	return db.Model(&models.MusicbrainzEntityCache{}).Where("entity = ?", models.MBEntityEditions).
+		UpdateColumn("expires_at", time.Unix(0, 0)).Error
 }
 
 // seedAuthorityOwned fills the disk counts the catalog comparison now reads

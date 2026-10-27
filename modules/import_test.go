@@ -301,3 +301,43 @@ func TestImportHintPrefersTags(t *testing.T) {
 		t.Errorf("discs = %d", g.Discs)
 	}
 }
+
+// The tags that tell editions apart are read alongside the hint, each the value most
+// files agree on, and the release's own date rather than the original's.
+func TestImportHintReadsEditionClues(t *testing.T) {
+	requireTool(t, "metaflac")
+	root := t.TempDir()
+	write := func(name string, tags ...string) {
+		dst := filepath.Join(root, "Album", name)
+		if err := TransferFile(synthAudio(t, ".flac"), dst, TransferMove); err != nil {
+			t.Fatal(err)
+		}
+		args := []string{}
+		for _, tag := range tags {
+			args = append(args, "--set-tag="+tag)
+		}
+		if out, err := exec.Command("metaflac", append(args, dst)...).CombinedOutput(); err != nil {
+			t.Fatalf("metaflac: %v %s", err, out)
+		}
+	}
+	edition := []string{"BARCODE=00602478023293", "CATALOGNUMBER=4780232", "LABEL=Polydor", "RELEASECOUNTRY=GB", "MEDIA=CD", "ORIGINALDATE=1985-09-16", "DATE=2018-11-16"}
+	write("01.flac", edition...)
+	write("02.flac", edition...)
+	write("03.flac", "BARCODE=111")
+
+	groups, err := ScanImportSource(root)
+	if err != nil || len(groups) != 1 {
+		t.Fatalf("groups = %+v, %v", groups, err)
+	}
+	want := ImportEditionClues{Barcode: "00602478023293", CatalogNumber: "4780232", Label: "Polydor", Country: "GB", Media: "CD", Date: "2018-11-16"}
+	if got := groups[0].Edition; got == nil || *got != want {
+		t.Errorf("edition = %+v, want %+v", got, want)
+	}
+}
+
+// Untagged files say nothing about their edition, and the group says so with nil.
+func TestImportHintWithoutEditionClues(t *testing.T) {
+	if _, _, _, edition := tagHint(nil); edition != nil {
+		t.Errorf("edition = %+v, want nil", edition)
+	}
+}

@@ -174,6 +174,38 @@ func TestScopeLidarrCache(t *testing.T) {
 	}
 }
 
+// TestExpireEditionLists: cached edition lists predate inc=labels, so they are made
+// due — and kept, as the stale fallback — while other entity kinds are left alone.
+func TestExpireEditionLists(t *testing.T) {
+	db := testDB(t)
+	later := time.Now().Add(time.Hour)
+	rows := []models.MusicbrainzEntityCache{
+		{Entity: models.MBEntityEditions, MBID: "rg-1", Payload: "[]", FetchedAt: time.Now(), ExpiresAt: later},
+		{Entity: models.MBEntityArtist, MBID: "a-1", Payload: "{}", FetchedAt: time.Now(), ExpiresAt: later},
+	}
+	if err := db.Create(&rows).Error; err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := ApplyDataMigrations(db); err != nil {
+		t.Fatalf("ApplyDataMigrations: %v", err)
+	}
+
+	var left []models.MusicbrainzEntityCache
+	if err := db.Order("entity").Find(&left).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(left) != 2 {
+		t.Fatalf("rows = %d, want both kept", len(left))
+	}
+	for _, r := range left {
+		expired := r.ExpiresAt.Before(time.Now())
+		if want := r.Entity == models.MBEntityEditions; expired != want {
+			t.Errorf("%s expired = %v, want %v", r.Entity, expired, want)
+		}
+	}
+}
+
 // TestHashUserAPIKeys: an upgraded install's plaintext key keeps working — moved into
 // api_keys as a write key, stored only as its hash — and the plaintext is gone.
 func TestHashUserAPIKeys(t *testing.T) {

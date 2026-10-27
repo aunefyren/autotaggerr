@@ -273,6 +273,19 @@ type MusicBrainzReleaseSearchResult struct {
 		Format     string `json:"format"`
 		TrackCount int    `json:"track-count"`
 	} `json:"media"`
+	// Barcode and LabelInfo are what a pressing is printed with, so they are the facts
+	// most likely to match what a download's own tags say about which edition it is.
+	// Search returns both; the editions browse only with inc=labels.
+	Barcode   string                 `json:"barcode"`
+	LabelInfo []MusicBrainzLabelInfo `json:"label-info"`
+}
+
+// MusicBrainzLabelInfo is one label and catalog number a release was issued under.
+type MusicBrainzLabelInfo struct {
+	CatalogNumber string `json:"catalog-number"`
+	Label         *struct {
+		Name string `json:"name"`
+	} `json:"label"`
 }
 
 // MusicBrainzArtistSearchResponse is the /artist?query= search result, used to add

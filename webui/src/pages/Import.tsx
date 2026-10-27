@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
@@ -7,6 +7,7 @@ import {
   DownloadItem,
   DownloadScan,
   DownloadsList,
+  ImportEditionClues,
   ImportGroup,
   ImportPreview,
   ImportRow,
@@ -16,7 +17,7 @@ import {
   ReleaseSearchResult,
   ReleaseTrack,
 } from "../types";
-import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
+import { EmptyState, ErrorNote, Modal, Note, Pill, Skeleton } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { ReleaseSearch, guessFields } from "../components/ReleaseSearch";
 import { PathInput } from "../components/PathInput";
@@ -364,7 +365,7 @@ function DownloadsSource() {
           group={open.group}
           root={open.scan.root}
           library={libraryOf(open.item)!}
-          download={{ id: open.item.id, folder: open.group.folder, seeding: open.scan.seeding }}
+          download={{ id: open.item.id, name: open.item.name, folder: open.group.folder, seeding: open.scan.seeding }}
           onClose={() => setOpen(null)}
           onQueued={() => {
             setOpen(null);
@@ -671,7 +672,7 @@ function ImportModal({
   root: string;
   library: Library;
   /** The download the files came from, and which album of it this is. */
-  download?: { id: string; folder: string; seeding: boolean };
+  download?: { id: string; name: string; folder: string; seeding: boolean };
   onClose: () => void;
   onQueued: () => void;
 }) {
@@ -747,13 +748,13 @@ function ImportModal({
         {/* Identify stays mounted under the review, so going back finds the search,
             the artist, the album and the edition exactly as they were left. */}
         <div className="stack" style={{ display: step === "identify" ? undefined : "none" }}>
-          <FilesSay group={group} />
+          <FilesSay group={group} download={download?.name} />
           <div className="tabs" role="tablist" aria-label="How to find the release">
             <button type="button" role="tab" className="tab" aria-selected={tab === "browse"} onClick={() => setTab("browse")}>Browse</button>
             <button type="button" role="tab" className="tab" aria-selected={tab === "search"} onClick={() => setTab("search")}>Search all releases</button>
           </div>
           <div style={{ display: tab === "browse" ? undefined : "none" }}>
-            <Browse group={group} onCancel={onClose} onReview={review} reviewing={loading} />
+            <Browse group={group} visible={step === "identify" && tab === "browse"} onCancel={onClose} onReview={review} reviewing={loading} />
           </div>
           <div className="stack" style={{ display: tab === "search" ? undefined : "none" }}>
             <ReleaseSearch initialFields={searchFields} onPick={review} picking={loading} />
@@ -782,18 +783,48 @@ function ImportModal({
   );
 }
 
-/** What the scan read from the files, and from where — the facts a pick is checked against. */
-function FilesSay({ group }: { group: ImportGroup }) {
+/**
+ * What the scan read from the files, and from where — the facts a pick is checked
+ * against. The second line is what the tags say about the *edition*, which the
+ * edition column marks agreement with; the file list is folded away, since a name
+ * there ("CD2", "[24-96]", "bonus") settles a pick less often than it helps one.
+ */
+function FilesSay({ group, download }: { group: ImportGroup; download?: string }) {
   const from = (source?: string) => (source === "tags" ? "tags" : "folder name");
+  const clues = group.edition;
   return (
-    <div className="row" style={{ gap: 8, flexWrap: "wrap", fontSize: 12 }}>
-      <span className="eyebrow">The files say</span>
-      {group.artist && <span className="fact">Artist <b>{group.artist}</b> <span className="dim">· {from(group.artist_from)}</span></span>}
-      {group.album && <span className="fact">Album <b>{group.album}</b> <span className="dim">· {from(group.album_from)}</span></span>}
-      {group.year ? <span className="fact">Year <b className="mono">{group.year}</b> <span className="dim">· {from(group.year_from)}</span></span> : null}
-      <span className="fact">
-        <b className="mono">{group.files.length}</b> audio file{group.files.length === 1 ? "" : "s"} · {group.discs} disc{group.discs === 1 ? "" : "s"}
-      </span>
+    <div className="stack" style={{ gap: 6 }}>
+      <div className="row" style={{ gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+        <span className="eyebrow">The files say</span>
+        {group.artist && <span className="fact">Artist <b>{group.artist}</b> <span className="dim">· {from(group.artist_from)}</span></span>}
+        {group.album && <span className="fact">Album <b>{group.album}</b> <span className="dim">· {from(group.album_from)}</span></span>}
+        {group.year ? <span className="fact">Year <b className="mono">{group.year}</b> <span className="dim">· {from(group.year_from)}</span></span> : null}
+        <span className="fact">
+          <b className="mono">{group.files.length}</b> audio file{group.files.length === 1 ? "" : "s"} · {group.discs} disc{group.discs === 1 ? "" : "s"}
+        </span>
+      </div>
+      {clues && (
+        <div className="row" style={{ gap: 8, flexWrap: "wrap", fontSize: 12 }}>
+          <span className="eyebrow">Edition tags</span>
+          {clues.barcode && <span className="fact">Barcode <b className="mono">{clues.barcode}</b></span>}
+          {clues.catalog_number && <span className="fact">Cat. no. <b className="mono">{clues.catalog_number}</b></span>}
+          {clues.label && <span className="fact">Label <b>{clues.label}</b></span>}
+          {clues.date && <span className="fact">Released <b className="mono">{clues.date}</b></span>}
+          {clues.country && <span className="fact">Country <b className="mono">{clues.country}</b></span>}
+          {clues.media && <span className="fact">Format <b>{clues.media}</b></span>}
+        </div>
+      )}
+      <details>
+        <summary className="dim" style={{ fontSize: 11, cursor: "pointer" }}>
+          {download ? <>From download <span className="path">{download}</span> · </> : null}
+          <span className="path" title={group.folder}>{group.folder.split(/[\\/]/).pop() || group.folder}</span> · show {group.files.length} file{group.files.length === 1 ? "" : "s"}
+        </summary>
+        <ul className="pick-list scroll" style={{ marginTop: 6, maxHeight: 180, fontSize: 11 }}>
+          {group.files.map((f) => (
+            <li key={f} className="pick-static path" style={{ minHeight: 24 }}>{relativeTo(f, group.folder)}</li>
+          ))}
+        </ul>
+      </details>
     </div>
   );
 }
@@ -827,20 +858,135 @@ function editionFormats(e: ReleaseSearchResult): string {
   return [...counted].map(([f, n]) => (n > 1 ? `${n}×${f}` : f)).join(" + ") || "—";
 }
 
+/** Digits with leading zeros dropped: 602478023293 (UPC-A), 0602478023293 (EAN-13)
+ *  and 00602478023293 (GTIN-14) are one barcode written three ways. */
+function barcodeKey(s?: string): string {
+  return (s ?? "").replace(/\D/g, "").replace(/^0+/, "");
+}
+
+/** Catalog numbers are written with and without spaces and dashes ("KAB 1", "KAB-1"). */
+function catalogKey(s?: string): string {
+  return (s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+/** Which of an edition's facts agree with what the files' tags say about theirs. */
+interface Agreement {
+  barcode: boolean;
+  catalog: boolean;
+  label: boolean;
+  date: boolean;
+  country: boolean;
+  format: boolean;
+}
+
+function editionAgreement(e: ReleaseSearchResult, clues?: ImportEditionClues): Agreement {
+  const info = e["label-info"] ?? [];
+  const sameDate = (tag?: string, mb?: string) =>
+    !!tag && !!mb && (tag === mb || (tag.length === 4 && mb.startsWith(tag)));
+  return {
+    barcode: !!clues?.barcode && barcodeKey(clues.barcode) !== "" && barcodeKey(clues.barcode) === barcodeKey(e.barcode),
+    catalog: !!clues?.catalog_number && catalogKey(clues.catalog_number) !== "" && info.some((l) => catalogKey(l["catalog-number"]) === catalogKey(clues.catalog_number)),
+    label: !!clues?.label && info.some((l) => looseEq(l.label?.name, clues.label)),
+    date: sameDate(clues?.date, e.date),
+    country: !!clues?.country && clues.country.toUpperCase() === (e.country ?? "").toUpperCase(),
+    format: !!clues?.media && (e.media ?? []).some((m) => looseEq(m.format, clues.media)),
+  };
+}
+
+/** A barcode or catalog number is printed on one pressing; a country, date, label or
+ *  format is shared by many. Only the first kind is worth leading the eye to. */
+function strongAgreement(a: Agreement): boolean {
+  return a.barcode || a.catalog;
+}
+
+/** A value in the list's own colour, or in the diff's green where the tags agree with it. */
+function Agrees({ on, children }: { on: boolean; children: ReactNode }) {
+  return on ? <span className="pick-match" style={{ fontSize: "inherit" }} title="Matches the files' tags">{children}</span> : <>{children}</>;
+}
+
+/**
+ * Keeps a pick-list's selected row in view. A pick made for you — the artist or album
+ * whose name the tags match exactly, the edition whose barcode they carry — can sit
+ * far down a long list, and a selection out of sight reads as no selection. Scrolls
+ * the list only, never the modal, and only when the row is not already visible; it
+ * waits for the list to be shown, since a hidden list has no geometry to scroll by.
+ */
+function useScrollToPick(selector: string, visible: boolean, ...deps: unknown[]) {
+  const ref = useRef<HTMLUListElement>(null);
+  useEffect(() => {
+    const list = ref.current;
+    const row = list?.querySelector<HTMLElement>(selector);
+    if (!visible || !list || !row) return;
+    const l = list.getBoundingClientRect();
+    const r = row.getBoundingClientRect();
+    if (r.top < l.top || r.bottom > l.bottom) {
+      list.scrollTop += r.top - l.top - (l.height - r.height) / 2;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible, selector, ...deps]);
+  return ref;
+}
+
+/**
+ * A column's first load: the list's own geometry with the values missing (the style
+ * guide's loading placeholder). Widths cycle through the range real names take; the
+ * count fills the column and promises nothing.
+ */
+function PickSkeleton({ label, rows, kind }: { label: string; rows: number; kind: "artist" | "album" | "edition" }) {
+  const widths = [132, 88, 156, 104, 120, 76, 144];
+  return (
+    <>
+      <span className="sr-only" role="status">{label}</span>
+      <ul className="pick-list" aria-busy="true">
+        {kind === "album" && <li className="pick-head"><Skeleton w={52} h={8} /></li>}
+        {Array.from({ length: rows }, (_, i) => (
+          <li key={i} className={`pick-skel${kind === "album" ? " inline" : ""}`}>
+            {kind === "album" ? (
+              <>
+                <Skeleton w={widths[i % widths.length]} />
+                <Skeleton w={28} />
+              </>
+            ) : kind === "edition" ? (
+              <>
+                <span className="row" style={{ justifyContent: "space-between" }}>
+                  <Skeleton w={widths[i % widths.length]} />
+                  <Skeleton w={84} />
+                </span>
+                <Skeleton w={150} h={8} />
+              </>
+            ) : (
+              <>
+                <Skeleton w={widths[i % widths.length]} />
+                <Skeleton w={widths[(i + 3) % widths.length] + 24} h={8} />
+              </>
+            )}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 /**
  * Artist → album → edition, each a column that narrows the next. It exists so the
  * person importing can be sure: same-named artists are told apart by MusicBrainz's
  * description, the album the tags name is marked, and an edition's track count is set
  * against the number of files — the one fact that separates a 6-track CD from the
- * 14-track box set of the same album.
+ * 14-track box set of the same album. Where the tags carry a barcode, catalog number,
+ * label, date, country or format, each edition's matching values are marked in the
+ * diff's green, and the column opens scrolled to the first barcode or catalog-number
+ * match — marked and shown, never picked, and never sorted to the top.
  */
 function Browse({
   group,
+  visible,
   onCancel,
   onReview,
   reviewing,
 }: {
   group: ImportGroup;
+  /** Whether the step and tab are on screen: a hidden list cannot be scrolled. */
+  visible: boolean;
   onCancel: () => void;
   onReview: (mbid: string) => void;
   reviewing: boolean;
@@ -875,6 +1021,7 @@ function Browse({
 
   const pickArtist = async (a: ArtistSearchResult) => {
     setArtist(a);
+    setAlbums(null);
     setAlbum(null);
     setEditions(null);
     setEdition(null);
@@ -894,6 +1041,7 @@ function Browse({
 
   const pickAlbum = async (rg: ReleaseGroupHit) => {
     setAlbum(rg);
+    setEditions(null);
     setEdition(null);
     setLoading("editions");
     try {
@@ -925,6 +1073,17 @@ function Browse({
   const shownEditions = onlyMatching ? matching : editions ?? [];
   const hidden = (editions?.length ?? 0) - shownEditions.length;
 
+  const clues = group.edition;
+  const agreement = useMemo(() => new Map((editions ?? []).map((e) => [e.id, editionAgreement(e, clues)])), [editions, clues]);
+  const strong = (editions ?? []).filter((e) => strongAgreement(agreement.get(e.id)!));
+  const strongHidden = strong.filter((e) => !shownEditions.includes(e)).length;
+
+  const artistList = useScrollToPick('[aria-pressed="true"]', visible, artist?.id, artists);
+  const albumList = useScrollToPick('[aria-pressed="true"]', visible, album?.id, albumSections);
+  // The edition is never picked for you, so until one is, the row to show is the
+  // first the tags' barcode or catalog number names.
+  const editionList = useScrollToPick(edition ? '[aria-pressed="true"]' : '[data-agrees="strong"]', visible, edition?.id, editions, onlyMatching);
+
   return (
     <div className="stack">
       <div className="pick-grid">
@@ -940,10 +1099,10 @@ function Browse({
             <label className="flabel" htmlFor="browse-artist">1 · Artist</label>
             <input id="browse-artist" className="input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search artists" />
           </form>
-          {loading === "artists" && <span className="dim" style={{ fontSize: 11 }}>Searching…</span>}
-          {artists && artists.length === 0 && <span className="dim" style={{ fontSize: 11 }}>No artist by that name.</span>}
-          {artists && artists.length > 0 && (
-            <ul className="pick-list">
+          {loading === "artists" && <PickSkeleton label="Searching artists…" rows={5} kind="artist" />}
+          {loading !== "artists" && artists && artists.length === 0 && <span className="dim" style={{ fontSize: 11 }}>No artist by that name.</span>}
+          {loading !== "artists" && artists && artists.length > 0 && (
+            <ul className="pick-list" ref={artistList}>
               {artists.map((a) => (
                 <li key={a.id}>
                   <button type="button" className="pick-row" aria-pressed={artist?.id === a.id} onClick={() => pickArtist(a)}>
@@ -969,10 +1128,10 @@ function Browse({
             placeholder={artist ? `Filter ${artist.name}'s albums` : "Pick an artist first"}
             disabled={!artist}
           />
-          {loading === "albums" && <span className="dim" style={{ fontSize: 11 }}>Loading albums…</span>}
+          {loading === "albums" && <PickSkeleton label="Loading albums…" rows={7} kind="album" />}
           {albums && albumSections.length === 0 && <span className="dim" style={{ fontSize: 11 }}>No albums match.</span>}
           {albumSections.length > 0 && (
-            <ul className="pick-list">
+            <ul className="pick-list" ref={albumList}>
               {albumSections.map((s) => (
                 <li key={s.type}>
                   <div className="pick-head">{TYPE_LABELS[s.type]}</div>
@@ -1004,20 +1163,38 @@ function Browse({
             <input type="checkbox" checked={onlyMatching} onChange={(e) => setOnlyMatching(e.target.checked)} disabled={!editions} />
             Only editions with {files} track{files === 1 ? "" : "s"}
           </label>
-          {loading === "editions" && <span className="dim" style={{ fontSize: 11 }}>Loading editions…</span>}
+          {loading === "editions" && <PickSkeleton label="Loading editions…" rows={4} kind="edition" />}
+          {editions && strong.length > 0 && (
+            <span className="pick-match" style={{ fontSize: 12 }}>
+              The files' {strong.some((e) => agreement.get(e.id)!.barcode) ? "barcode" : "catalog number"} matches{" "}
+              {strong.length === 1 ? "one edition" : `${strong.length} editions`}
+              {strongHidden > 0 && <span className="dim"> — {strongHidden === strong.length ? "" : `${strongHidden} of them `}hidden by the track filter</span>}
+            </span>
+          )}
           {editions && shownEditions.length > 0 && (
-            <ul className="pick-list">
+            <ul className="pick-list" ref={editionList}>
               {shownEditions.map((e) => {
                 const tracks = editionTracks(e);
+                const a = agreement.get(e.id)!;
+                const labels = (e["label-info"] ?? []).filter((l) => l.label?.name || l["catalog-number"]);
                 return (
                   <li key={e.id}>
-                    <button type="button" className="pick-row" aria-pressed={edition?.id === e.id} onClick={() => setEdition(e)}>
+                    <button
+                      type="button"
+                      className="pick-row"
+                      aria-pressed={edition?.id === e.id}
+                      data-agrees={strongAgreement(a) ? "strong" : undefined}
+                      onClick={() => setEdition(e)}
+                    >
                       <span className="row" style={{ justifyContent: "space-between", gap: 8 }}>
                         <span>{e.title}</span>
-                        <span className="mono dim" style={{ fontSize: 12 }}>{[e.date || "no date", e.country].filter(Boolean).join(" · ")}</span>
+                        <span className="mono dim" style={{ fontSize: 12 }}>
+                          <Agrees on={a.date}>{e.date || "no date"}</Agrees>
+                          {e.country && <> · <Agrees on={a.country}>{e.country}</Agrees></>}
+                        </span>
                       </span>
                       <span className="pick-sub">
-                        {editionFormats(e)} ·{" "}
+                        <Agrees on={a.format}>{editionFormats(e)}</Agrees> ·{" "}
                         {tracks === files ? (
                           <span className="pick-match" style={{ whiteSpace: "nowrap" }}>{tracks} tracks — matches {files} files</span>
                         ) : (
@@ -1025,6 +1202,28 @@ function Browse({
                         )}
                         {e.disambiguation ? ` · ${e.disambiguation}` : ""}
                       </span>
+                      {(labels.length > 0 || e.barcode) && (
+                        <span className="pick-sub">
+                          {labels.map((l, i) => (
+                            <span key={i}>
+                              {i > 0 && " · "}
+                              {l.label?.name && <Agrees on={a.label && looseEq(l.label.name, clues?.label)}>{l.label.name}</Agrees>}
+                              {l.label?.name && l["catalog-number"] && " "}
+                              {l["catalog-number"] && (
+                                <span className="mono">
+                                  <Agrees on={a.catalog && catalogKey(l["catalog-number"]) === catalogKey(clues?.catalog_number)}>{l["catalog-number"]}</Agrees>
+                                </span>
+                              )}
+                            </span>
+                          ))}
+                          {e.barcode && (
+                            <>
+                              {labels.length > 0 && " · "}
+                              <span className="mono"><Agrees on={a.barcode}>{e.barcode}</Agrees></span>
+                            </>
+                          )}
+                        </span>
+                      )}
                     </button>
                   </li>
                 );
@@ -1045,7 +1244,18 @@ function Browse({
         <div className="selected-bar">
           <span className="eyebrow">Selected</span>
           <span>{(edition["artist-credit"] ?? []).map((c) => c.name + c.joinphrase).join("") || artist?.name} — {edition.title}</span>
-          <span className="mono dim">{[edition.date, edition.country, editionFormats(edition), `${editionTracks(edition)} tracks`].filter(Boolean).join(" · ")}</span>
+          <span className="mono dim">
+            {[
+              edition.date,
+              edition.country,
+              editionFormats(edition),
+              `${editionTracks(edition)} tracks`,
+              (edition["label-info"] ?? []).map((l) => l["catalog-number"]).filter(Boolean).join(", "),
+              edition.barcode,
+            ]
+              .filter(Boolean)
+              .join(" · ")}
+          </span>
           <span style={{ marginLeft: "auto" }}><MBLink entity="release" mbid={edition.id} /></span>
         </div>
       )}

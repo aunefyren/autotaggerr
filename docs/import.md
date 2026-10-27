@@ -28,6 +28,12 @@ already been in the library.
       directly under the root was searched for by whatever folder the downloads lived in —
       `config`, `complete`, `downloads`. `TestImportHintNeverReadsTheArtistFromAboveTheRoot`.
 
+   The same tag read collects **edition clues** (`ImportGroup.Edition`, the most common value of
+   each): barcode, catalog number, label, country, format and the release's own `DATE` (not the
+   original's, which every edition shares). The modal shows them as *Edition tags*, under a folded
+   list of the files by their path in the album folder, headed by the download's name when it came
+   from one — a file or torrent name (`CD2`, `[24-96]`) is sometimes the clue the tags lack.
+
    A group whose tags all name one release skips this step and opens on the review; Identify is
    one step back. Otherwise there are two tabs:
    - **Browse** (the default): artist → album → edition, each column narrowing the next. Artists
@@ -39,6 +45,14 @@ already been in the library.
      on by default and says how many it hid — the count is the one fact that separates the six-track
      CD from the box set of the same album. An exact artist name match and an exact album title
      match are selected for you; the edition never is, because that is the choice being made.
+     Each edition also lists its labels, catalog numbers and barcode (the browse asks for
+     `inc=media+labels`; the barcode comes unasked), and every value that agrees with the edition
+     clues is set in `--diff-add-text`. Barcodes compare as digits with leading zeros dropped, so
+     a UPC-A, its EAN-13 and its GTIN-14 (`602478023293`, `00602478023293`) are one code; catalog
+     numbers ignore case, spaces and dashes. A barcode or catalog-number match is the strong kind
+     — printed on one pressing — so the column says how many editions it names, says so if the
+     track filter hides them, and opens scrolled to the first; a shared country, date, label or
+     format is only marked. Each column keeps its selected row scrolled into view.
      A **Selected** line states the pick before *Review mapping*.
    - **Search all releases**: the fielded search folder attach uses, prefilled from the hint, which
      also takes a pasted musicbrainz.org link.
@@ -158,6 +172,9 @@ job stops between files, never inside a transfer.
 - **Plex learns of a new album by its own scan.** The Plex hand-off refreshes albums Plex already
   has; a brand-new album needs Plex's library scan (or its folder watcher) to appear.
 - **No AcoustID suggestion yet.** Identification is the release in the tags, or the search.
+- **Edition lists cached before labels were fetched** carry no label or catalog number; the
+  `expire_edition_lists` data migration made them all due once, so each refetches on its next read
+  (the old payload stays as the stale fallback while MusicBrainz is down).
 
 ## Tests
 

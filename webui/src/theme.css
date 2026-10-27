@@ -179,6 +179,13 @@ h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; }
 }
 .pick-static:last-child { border-bottom-color: transparent; }
 .pick-list.tall { max-height: 460px; }
+/* A column's first load (PickSkeleton): a pick-row's height and padding, no affordances. */
+.pick-skel {
+  display: flex; flex-direction: column; justify-content: center; gap: var(--space-3);
+  min-height: 46px; padding: var(--space-3) var(--space-5); border-bottom: 1px solid var(--border);
+}
+.pick-skel.inline { flex-direction: row; justify-content: space-between; align-items: center; min-height: 36px; }
+.pick-skel:last-child { border-bottom-color: transparent; }
 /* Master/detail form (Add artist): the list, and who the selected one is. */
 .pick-grid.two { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr); }
 .artist-preview {

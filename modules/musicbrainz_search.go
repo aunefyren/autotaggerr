@@ -112,6 +112,16 @@ func SearchResultFromRelease(release models.MusicBrainzReleaseResponse) models.M
 		Country:        release.Country,
 		Disambiguation: release.Disambiguation,
 		ArtistCredit:   release.ArtistCredit,
+		Barcode:        release.Barcode,
+	}
+	for _, info := range release.LabelInfo {
+		entry := models.MusicBrainzLabelInfo{CatalogNumber: info.CatalogNumber}
+		if info.Label.Name != "" {
+			entry.Label = &struct {
+				Name string `json:"name"`
+			}{Name: info.Label.Name}
+		}
+		hit.LabelInfo = append(hit.LabelInfo, entry)
 	}
 	hit.ReleaseGroup.ID = release.ReleaseGroup.ID
 	hit.ReleaseGroup.Title = release.ReleaseGroup.Title
@@ -271,7 +281,9 @@ func GetMusicBrainzReleaseGroupReleases(releaseGroupID string) ([]models.MusicBr
 
 	// inc=media is required: browse (unlike search) omits format and track counts
 	// without it, and those are exactly what distinguishes one edition from another.
-	endpoint := fmt.Sprintf("%s/release?release-group=%s&inc=media&limit=%d&fmt=json",
+	// inc=labels adds the label and catalog number, which a download's tags often
+	// carry too; the barcode comes without asking.
+	endpoint := fmt.Sprintf("%s/release?release-group=%s&inc=media+labels&limit=%d&fmt=json",
 		musicbrainzBaseURL(), url.QueryEscape(releaseGroupID), releaseBrowseLimit)
 
 	var parsed models.MusicBrainzReleaseBrowseResponse

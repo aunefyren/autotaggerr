@@ -286,7 +286,14 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   carries the fact that tells it apart from its neighbours (an artist's description, an album's
   year, an edition's format and track count), and agreement with what is already known is marked
   in `--diff-add-text` ("matches 6 files") rather than by sorting the match to the top, so the
-  order stays the list's own. A filter that hides rows says how many. Stacks below 900px.
+  order stays the list's own. Where a row's facts are several values (an edition's date, country,
+  formats, labels, catalog numbers, barcode), agreement is marked **per value** — the barcode that
+  matches is green, the country that does not stays muted — so the row says *what* agrees, not just
+  that something does. Since matches are not sorted up, **the list scrolls to them**: a column keeps
+  its selected row in view (`useScrollToPick`, the list only, never the modal), and a column with
+  no selection yet opens on its first strong match. A filter that hides rows says how many, and
+  says so when it hides a match. While a column's first fetch is in flight it shows `PickSkeleton`
+  (`.pick-skel`): its own rows, values missing, per *Loading placeholder*. Stacks below 900px.
   **Two columns** (`.pick-grid.two`, Add artist) when there is one choice to make but the list
   cannot make it alone: twenty artists share a name, and a bracketed description does not say
   which one you mean. The right pane says who the selected one is — type, origin, active years,

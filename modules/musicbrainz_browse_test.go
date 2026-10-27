@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -83,6 +84,7 @@ func TestGetReleaseGroupReleasesRequestsMedia(t *testing.T) {
 			{"id":"rel-1","title":"Hounds of Love","date":"1985-09-16","country":"GB",
 			 "media":[{"format":"12\" Vinyl","track-count":12}]},
 			{"id":"rel-2","title":"Hounds of Love","date":"1997-01-01","country":"GB",
+			 "barcode":"724385534123","label-info":[{"catalog-number":"KAB 1","label":{"name":"EMI"}}],
 			 "media":[{"format":"CD","track-count":24}]}
 		]}`)
 	})
@@ -101,6 +103,14 @@ func TestGetReleaseGroupReleasesRequestsMedia(t *testing.T) {
 	}
 	if releases[1].Media[0].TrackCount != 24 {
 		t.Errorf("second edition track count = %d, want 24", releases[1].Media[0].TrackCount)
+	}
+	// Labels too: the catalog number is what a download's tags most often share with
+	// the edition it came from, after the barcode.
+	if inc := gotURL.Query().Get("inc"); !strings.Contains(inc, "labels") {
+		t.Errorf("inc = %q, want it to include labels", inc)
+	}
+	if r := releases[1]; r.Barcode != "724385534123" || len(r.LabelInfo) != 1 || r.LabelInfo[0].CatalogNumber != "KAB 1" || r.LabelInfo[0].Label == nil || r.LabelInfo[0].Label.Name != "EMI" {
+		t.Errorf("second edition = barcode %q, label-info %+v", r.Barcode, r.LabelInfo)
 	}
 
 	// Cached: the release-group page reads this on every open, and each call costs a
@@ -441,6 +451,26 @@ func TestSearchResultFromRelease(t *testing.T) {
 	// deluxe one, and the full release states it as a list rather than a number.
 	if hit.Media[0].TrackCount != 2 || hit.Media[0].Format != `12" Vinyl` {
 		t.Errorf("media[0] = %+v, want the format and a count of 2", hit.Media[0])
+	}
+}
+
+// A release opened by its ID lands in the same list as browsed editions, so it carries
+// the same barcode and label facts — and a label-info entry with no label stays one.
+func TestSearchResultFromReleaseKeepsBarcodeAndLabels(t *testing.T) {
+	var release models.MusicBrainzReleaseResponse
+	if err := json.Unmarshal([]byte(`{"id":"rel-1","barcode":"724385534123",
+		"label-info":[{"catalog-number":"KAB 1","label":{"name":"EMI"}},{"catalog-number":"[none]"}]}`), &release); err != nil {
+		t.Fatal(err)
+	}
+	hit := SearchResultFromRelease(release)
+	if hit.Barcode != "724385534123" || len(hit.LabelInfo) != 2 {
+		t.Fatalf("hit = barcode %q, label-info %+v", hit.Barcode, hit.LabelInfo)
+	}
+	if l := hit.LabelInfo[0]; l.CatalogNumber != "KAB 1" || l.Label == nil || l.Label.Name != "EMI" {
+		t.Errorf("label-info[0] = %+v", l)
+	}
+	if l := hit.LabelInfo[1]; l.CatalogNumber != "[none]" || l.Label != nil {
+		t.Errorf("label-info[1] = %+v, want no label", l)
 	}
 }
 

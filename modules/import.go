@@ -51,6 +51,23 @@ type ImportGroup struct {
 	// get wrong, so it is reported (ReleaseIDsDisagree) rather than resolved.
 	ReleaseID          string `json:"release_id,omitempty"`
 	ReleaseIDsDisagree bool   `json:"release_ids_disagree,omitempty"`
+	// Edition is what the files' tags say about which pressing they are. Nil when
+	// they say nothing. See ImportEditionClues.
+	Edition *ImportEditionClues `json:"edition,omitempty"`
+}
+
+// ImportEditionClues are the tags that tell one edition of an album from another,
+// each the value most of a group's files agree on. A tagged download often carries
+// them even when it carries no MusicBrainz ID — the barcode especially, since a rip
+// is tagged from the disc or the store page it came from. They are only ever marked
+// against the editions MusicBrainz lists; the edition is still picked by a person.
+type ImportEditionClues struct {
+	Barcode       string `json:"barcode,omitempty"`
+	CatalogNumber string `json:"catalog_number,omitempty"`
+	Label         string `json:"label,omitempty"`
+	Country       string `json:"country,omitempty"`
+	Media         string `json:"media,omitempty"`
+	Date          string `json:"date,omitempty"`
 }
 
 // ScanImportSource walks root and groups its audio files by album folder. root may
@@ -183,7 +200,8 @@ const (
 // name, when given, is read in place of the album folder's name for a group whose
 // folder lies outside root (see GroupImportFiles).
 func importHint(group *ImportGroup, root, name string) {
-	artist, album, year := tagHint(group.Files)
+	artist, album, year, edition := tagHint(group.Files)
+	group.Edition = edition
 	if artist != "" {
 		group.Artist, group.ArtistFrom = artist, HintFromTags
 	}
@@ -215,28 +233,52 @@ func importHint(group *ImportGroup, root, name string) {
 	}
 }
 
-// tagHint reads the album artist, album and year most of a group's files agree on.
-// The most common value rather than the first, so one stray file does not name the
-// album; ALBUMARTIST before ARTIST, so a compilation's track artists do not either.
-func tagHint(files []string) (artist, album string, year int) {
+// tagHint reads the album artist, album and year most of a group's files agree on,
+// and the edition clues beside them. The most common value rather than the first, so
+// one stray file does not name the album; ALBUMARTIST before ARTIST, so a
+// compilation's track artists do not either.
+func tagHint(files []string) (artist, album string, year int, edition *ImportEditionClues) {
 	artists, albums, years := map[string]int{}, map[string]int{}, map[string]int{}
+	barcodes, catalogNumbers, labels := map[string]int{}, map[string]int{}, map[string]int{}
+	countries, media, dates := map[string]int{}, map[string]int{}, map[string]int{}
+	count := func(into map[string]int, value string) {
+		if value != "" {
+			into[value]++
+		}
+	}
 	for _, file := range files {
 		tags, err := ReadFileTagMap(file)
 		if err != nil {
 			continue
 		}
-		if v := firstOfTags(tags, "ALBUMARTIST", "ALBUM ARTIST", "ARTIST"); v != "" {
-			artists[v]++
-		}
-		if v := firstOfTags(tags, "ALBUM"); v != "" {
-			albums[v]++
-		}
-		if v := yearOf(firstOfTags(tags, "ORIGINALDATE", "TDOR", "ORIGINALYEAR", "DATE", "YEAR")); v != "" {
-			years[v]++
-		}
+		count(artists, firstOfTags(tags, "ALBUMARTIST", "ALBUM ARTIST", "ARTIST"))
+		count(albums, firstOfTags(tags, "ALBUM"))
+		count(years, yearOf(firstOfTags(tags, "ORIGINALDATE", "TDOR", "ORIGINALYEAR", "DATE", "YEAR")))
+		// MP3 spells three of these as their ID3 frame (TPUB, TMED) or Picard's TXXX
+		// description; FLAC as the Vorbis comment.
+		count(barcodes, firstOfTags(tags, "BARCODE", "UPC", "EAN"))
+		count(catalogNumbers, firstOfTags(tags, "CATALOGNUMBER", "CATALOG NUMBER", "CATALOG #"))
+		count(labels, firstOfTags(tags, "LABEL", "PUBLISHER", "ORGANIZATION"))
+		count(countries, firstOfTags(tags, "RELEASECOUNTRY", "MUSICBRAINZ ALBUM RELEASE COUNTRY"))
+		count(media, firstOfTags(tags, "MEDIA", "TMED"))
+		// The release's own date, not the original: the original is the album's, and
+		// every edition shares it.
+		count(dates, firstOfTags(tags, "RELEASEDATE", "DATE"))
 	}
 	year, _ = strconv.Atoi(mostCommon(years))
-	return mostCommon(artists), mostCommon(albums), year
+
+	clues := ImportEditionClues{
+		Barcode:       mostCommon(barcodes),
+		CatalogNumber: mostCommon(catalogNumbers),
+		Label:         mostCommon(labels),
+		Country:       mostCommon(countries),
+		Media:         mostCommon(media),
+		Date:          mostCommon(dates),
+	}
+	if clues != (ImportEditionClues{}) {
+		edition = &clues
+	}
+	return mostCommon(artists), mostCommon(albums), year, edition
 }
 
 func firstOfTags(tags map[string][]string, keys ...string) string {
