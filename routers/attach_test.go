@@ -74,14 +74,15 @@ func recordingWithID(id string) (r struct {
 		Name           string `json:"name"`
 		Count          int    `json:"count"`
 	} `json:"genres"`
-	ISRCs            []string              `json:"isrcs"`
-	FirstReleaseDate string                `json:"first-release-date"`
-	Disambiguation   string                `json:"disambiguation"`
-	ArtistCredit     []models.ArtistCredit `json:"artist-credit"`
-	Video            bool                  `json:"video"`
-	Length           int                   `json:"length"`
-	Title            string                `json:"title"`
-	ID               string                `json:"id"`
+	ISRCs            []string                     `json:"isrcs"`
+	FirstReleaseDate string                       `json:"first-release-date"`
+	Disambiguation   string                       `json:"disambiguation"`
+	ArtistCredit     []models.ArtistCredit        `json:"artist-credit"`
+	Video            bool                         `json:"video"`
+	Length           int                          `json:"length"`
+	Title            string                       `json:"title"`
+	ID               string                       `json:"id"`
+	Relations        []models.MusicBrainzRelation `json:"relations"`
 	Tags             []struct {
 		Name  string `json:"name"`
 		Count int    `json:"count"`

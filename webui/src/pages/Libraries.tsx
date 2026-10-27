@@ -2,11 +2,12 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { BPMWrite, Library, LibraryMediaServer, Manager, MediaServer, MediaServerSections, TaggerProfile, TempoStatus } from "../types";
+import { BPMWrite, Library, LibraryMediaServer, LoudnessStatus, Manager, MediaServer, MediaServerSections, TaggerProfile, TempoStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { OrganiseDialog } from "../components/OrganiseDialog";
 import { TempoAnalysis } from "../components/TempoAnalysis";
+import { LoudnessAnalysis } from "../components/LoudnessAnalysis";
 import { useToast } from "../toast";
 import { useSetup } from "../setup";
 
@@ -176,6 +177,11 @@ export default function Libraries() {
                           Tempo analysed{l.bpm_write ? ` · BPM ${BPM_WRITE_SHORT[l.bpm_write]}` : " · BPM not written"}
                         </span>
                       )}
+                      {l.analyse_loudness && (
+                        <span className="dim" style={{ fontSize: 11 }}>
+                          Loudness measured{l.replaygain_write ? ` · ReplayGain ${BPM_WRITE_SHORT[l.replaygain_write]}` : " · ReplayGain not written"}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="mono dim" style={{ fontSize: 11 }}>
@@ -237,6 +243,7 @@ export default function Libraries() {
       )}
 
       {libs.data && libs.data.length > 0 && <TempoAnalysis version={tempoVersion} />}
+      {libs.data && libs.data.length > 0 && <LoudnessAnalysis version={tempoVersion} />}
 
       {organising && (
         <OrganiseDialog scope={{ library_id: organising.id }} title={organising.name} onClose={() => setOrganising(null)} />
@@ -286,6 +293,9 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const [useAcoustID, setUseAcoustID] = useState(initial?.use_acoustid ?? false);
   const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
   const [bpmWrite, setBPMWrite] = useState<BPMWrite>(initial?.bpm_write ?? "");
+  const [analyseLoudness, setAnalyseLoudness] = useState(initial?.analyse_loudness ?? false);
+  const [replayGainWrite, setReplayGainWrite] = useState<BPMWrite>(initial?.replaygain_write ?? "");
+  const loudness = useFetch<LoudnessStatus>(() => api.get("/loudness/status"));
   const [bpmFloor, setBPMFloor] = useState(initial?.bpm_min_confidence ?? 0);
   const [mediaServers, setMediaServers] = useState<LibraryMediaServer[]>(initial?.media_servers ?? []);
   const [busy, setBusy] = useState(false);
@@ -300,6 +310,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
       const body: Record<string, unknown> = {
         name, path, use_acoustid: useAcoustID, analyse_tempo: analyseTempo,
         bpm_write: bpmWrite, bpm_min_confidence: bpmFloor,
+        analyse_loudness: analyseLoudness, replaygain_write: replayGainWrite,
         media_servers: mediaServers.map((l) => ({ media_server_id: l.media_server_id, section_key: l.section_key })),
       };
       // Null, not absent: "No manager" and "Default" are choices, and absent would keep
@@ -430,6 +441,39 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
           rounded to a whole number, by the next Process or Tag files. Confidence (0–1) is how steady the
           beat grid was: steady dance and pop measures 0.85 and up, clearly wrong readings near 0.1. It
           cannot tell half or double time from the real tempo. A BPM another tool wrote is never cleared.
+        </span>
+
+        <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+          <input type="checkbox" checked={analyseLoudness} onChange={(e) => setAnalyseLoudness(e.target.checked)} />
+          <span style={{ fontSize: 12 }}>Analyse loudness (ReplayGain)</span>
+        </label>
+        <span className="dim" style={{ fontSize: 11, marginTop: -6 }}>
+          Measures each track's and each album's gain with rsgain on the loudness schedule and stores it.
+          {loudness.data && !loudness.data.analyser_available && (
+            <span style={{ color: "var(--warning-text)" }}>
+              {" "}rsgain is not installed on the server, so nothing is measured until it is.
+            </span>
+          )}
+        </span>
+        <div className="field" style={{ marginTop: -4 }}>
+          <label className="flabel">Write ReplayGain</label>
+          <select
+            className="select"
+            value={replayGainWrite}
+            disabled={!analyseLoudness}
+            title={analyseLoudness ? undefined : "Turn on loudness analysis first."}
+            onChange={(e) => setReplayGainWrite(e.target.value as BPMWrite)}
+          >
+            <option value="">Don't write — store only</option>
+            <option value="fill_empty">Only where the file has none</option>
+            <option value="overwrite">Always, replacing what is there</option>
+          </select>
+        </div>
+        <span className="dim" style={{ fontSize: 11, marginTop: -6 }}>
+          Written as <span className="mono">REPLAYGAIN_TRACK_GAIN</span>, <span className="mono">_PEAK</span> and the
+          album pair (ReplayGain 2.0, -18 LUFS) by the next Process or Tag files. Jellyfin normalises volume from the
+          track gain; Plex measures loudness itself and does not need it. "Only where the file has none" keeps another
+          tool's four values together rather than mixing them with ours.
         </span>
 
         <div className="modal-actions">

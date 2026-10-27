@@ -97,10 +97,54 @@ type FileTags struct {
 	// MusicBrainz: modules.TempoTagValue fills it from track_tempos after the rest of
 	// the tags are built.
 	BPM string `json:"bpm"`
-	// Composer and Author used to sit here, hardcoded to "" and read by neither tag
-	// map, so their only possible effect was clearing another tagger's value under
-	// remove_values. MusicBrainz can supply composer via work relations; adding it
-	// back is a fetch and a mapping (docs/wip.md), not a field on this struct.
+	// Credits are the relationship credits (modules.TrackCredits): composer,
+	// lyricist, producer, performers and the rest, as Picard writes them with track
+	// and release relationships on.
+	Credits Credits `json:"credits"`
+	// HasCredits says Credits were looked up at all (the release was fetched with
+	// relationships). Without it the credit keys are not written, so an older cached
+	// release cannot clear credits another tagger wrote.
+	HasCredits bool `json:"has_credits"`
+	// ReplayGain is the stored loudness as tag values (modules.ReplayGainTagValues),
+	// or nil when there is nothing to write — like BPM, it does not come from
+	// MusicBrainz.
+	ReplayGain *ReplayGainTags `json:"replaygain,omitempty"`
+}
+
+// ReplayGainTags is the four ReplayGain tags as text, formatted as rsgain writes them.
+type ReplayGainTags struct {
+	TrackGain string `json:"track_gain"`
+	TrackPeak string `json:"track_peak"`
+	AlbumGain string `json:"album_gain"`
+	AlbumPeak string `json:"album_peak"`
+}
+
+// Performer is one performance credit: who, and as what ("guitar", "lead vocals",
+// "orchestra"). Role may be empty for a plain "performer" relationship.
+type Performer struct {
+	Role string `json:"role"`
+	Name string `json:"name"`
+}
+
+// Credits are the relationship credits of one track, each list in the order the
+// relationships were met — the release's first, then the recording's, then each
+// work's — with exact duplicates dropped, as Picard's add_unique does.
+type Credits struct {
+	Composers     []string    `json:"composers"`
+	ComposerSorts []string    `json:"composer_sorts"`
+	ComposerIDs   []string    `json:"composer_ids"`
+	Lyricists     []string    `json:"lyricists"`
+	Writers       []string    `json:"writers"`
+	Arrangers     []string    `json:"arrangers"`
+	Conductors    []string    `json:"conductors"`
+	Producers     []string    `json:"producers"`
+	Engineers     []string    `json:"engineers"`
+	Mixers        []string    `json:"mixers"`
+	Remixers      []string    `json:"remixers"`
+	DJMixers      []string    `json:"djmixers"`
+	Performers    []Performer `json:"performers"`
+	WorkIDs       []string    `json:"work_ids"`
+	Works         []string    `json:"works"`
 }
 
 type CachedMusicBrainzRelease struct {

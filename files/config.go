@@ -180,6 +180,12 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrLoudnessCronSchedule == "" {
+		// set new value — 02:00, after tempo analysis and before the metadata refresh
+		ConfigFile.AutotaggerrLoudnessCronSchedule = models.DefaultLoudnessCronSchedule
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrHealthCronSchedule == "" {
 		// set new value — every five minutes; cheap, and only records an event when a
 		// connection's health actually changes
@@ -285,6 +291,7 @@ func CreateConfigFile() error {
 
 	ConfigFile.AutotaggerrTempoCronSchedule = models.DefaultTempoCronSchedule
 	ConfigFile.AutotaggerrTempoConcurrency = models.DefaultTempoConcurrency
+	ConfigFile.AutotaggerrLoudnessCronSchedule = models.DefaultLoudnessCronSchedule
 
 	ConfigFile.AutotaggerrMCPDisabled = false
 

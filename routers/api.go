@@ -9,6 +9,7 @@ import (
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/components"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/loudness"
 	"github.com/aunefyren/autotaggerr/metadata"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
@@ -33,6 +34,9 @@ type API struct {
 	// it spends nothing the scan queue serialises. May be nil, in which case the
 	// tempo routes report unavailable.
 	Tempo *tempo.Runner
+	// Loudness runs the *Analyse loudness* verb (ReplayGain). May be nil, in which case
+	// the loudness routes report unavailable.
+	Loudness *loudness.Runner
 	// Rebuilder re-derives the collection after a handler changes the file index.
 	// May be nil, in which case requests are dropped (see collection.Rebuilder).
 	Rebuilder *collection.Rebuilder
@@ -214,6 +218,10 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/tempo/status", a.tempoStatus)
 		protected.POST("/tempo/analyse", a.triggerTempoAnalysis)
 		protected.POST("/tempo/cancel", a.cancelTempoAnalysis)
+		// Loudness (ReplayGain) analysis: the same three routes — see docs/replaygain.md.
+		protected.GET("/loudness/status", a.loudnessStatus)
+		protected.POST("/loudness/analyse", a.triggerLoudnessAnalysis)
+		protected.POST("/loudness/cancel", a.cancelLoudnessAnalysis)
 
 		// Activity events
 		protected.GET("/events", a.listEvents)

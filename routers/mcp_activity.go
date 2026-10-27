@@ -36,6 +36,7 @@ type mcpOverview struct {
 	MetadataRefresh   any   `json:"metadata_refresh,omitempty" jsonschema:"the MusicBrainz mirror refresh pass"`
 	ArtworkRefresh    any   `json:"artwork_refresh,omitempty"`
 	TempoAnalysis     any   `json:"tempo_analysis,omitempty"`
+	LoudnessAnalysis  any   `json:"loudness_analysis,omitempty" jsonschema:"the ReplayGain (loudness) analysis pass"`
 }
 
 type mcpEventRow struct {
@@ -146,15 +147,19 @@ type mcpConfiguration struct {
 }
 
 type mcpLibraryRow struct {
-	ID            string     `json:"id"`
-	Name          string     `json:"name"`
-	Path          string     `json:"path"`
-	Enabled       bool       `json:"enabled"`
-	Manager       string     `json:"manager,omitempty" jsonschema:"the correlation authority; empty means the native manager"`
-	TaggerProfile string     `json:"tagger_profile,omitempty"`
-	UseAcoustID   bool       `json:"use_acoustid"`
-	AnalyseTempo  bool       `json:"analyse_tempo"`
-	LastScan      *time.Time `json:"last_scan,omitempty"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Path          string `json:"path"`
+	Enabled       bool   `json:"enabled"`
+	Manager       string `json:"manager,omitempty" jsonschema:"the correlation authority; empty means the native manager"`
+	TaggerProfile string `json:"tagger_profile,omitempty"`
+	UseAcoustID   bool   `json:"use_acoustid"`
+	AnalyseTempo  bool   `json:"analyse_tempo"`
+	// AnalyseLoudness and ReplayGainWrite: whether the library is measured, and how the
+	// result reaches its files ("" off, fill_empty, overwrite).
+	AnalyseLoudness bool       `json:"analyse_loudness"`
+	ReplayGainWrite string     `json:"replaygain_write,omitempty"`
+	LastScan        *time.Time `json:"last_scan,omitempty"`
 }
 
 type mcpManagerRow struct {
@@ -263,6 +268,9 @@ func (a *API) mcpGetOverview(_ context.Context, _ *mcp.CallToolRequest, _ mcpNoI
 	if a.Tempo != nil {
 		out.TempoAnalysis = a.Tempo.Status()
 	}
+	if a.Loudness != nil {
+		out.LoudnessAnalysis = a.Loudness.Status()
+	}
 	return nil, out, nil
 }
 
@@ -306,6 +314,7 @@ func (a *API) mcpGetConfiguration(_ context.Context, _ *mcp.CallToolRequest, _ m
 			ID: l.ID.String(), Name: l.Name, Path: l.Path, Enabled: l.Enabled,
 			Manager: nameOf(l.ManagerID), TaggerProfile: nameOf(l.TaggerProfileID),
 			UseAcoustID: l.UseAcoustID, AnalyseTempo: l.AnalyseTempo, LastScan: l.LastScan,
+			AnalyseLoudness: l.AnalyseLoudness, ReplayGainWrite: l.ReplayGainWrite,
 		})
 	}
 	out.Managers = make([]mcpManagerRow, 0, len(managers))

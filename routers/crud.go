@@ -583,6 +583,8 @@ type libraryInput struct {
 	AnalyseTempo     *bool         `json:"analyse_tempo"`
 	BPMWrite         *string       `json:"bpm_write"`
 	BPMMinConfidence *float64      `json:"bpm_min_confidence"`
+	AnalyseLoudness  *bool         `json:"analyse_loudness"`
+	ReplayGainWrite  *string       `json:"replaygain_write"`
 	// MediaServers replaces the library's media server links as a set when present;
 	// absent leaves them alone, an empty list removes them all.
 	MediaServers *[]libraryMediaServerInput `json:"media_servers"`
@@ -599,6 +601,9 @@ type libraryMediaServerInput struct {
 // enum the UI offers as a select, and the confidence is a share — anything outside
 // 0–1 is a mistake rather than a stricter or looser floor.
 func (in libraryInput) validate() string {
+	if in.ReplayGainWrite != nil && !models.ValidBPMWrite(*in.ReplayGainWrite) {
+		return "replaygain_write must be one of \"\", \"" + models.BPMWriteFillEmpty + "\" or \"" + models.BPMWriteOverwrite + "\""
+	}
 	if in.BPMWrite != nil && !models.ValidBPMWrite(*in.BPMWrite) {
 		return "bpm_write must be one of \"\", \"" + models.BPMWriteFillEmpty + "\" or \"" + models.BPMWriteOverwrite + "\""
 	}
@@ -635,6 +640,12 @@ func (in libraryInput) apply(l *models.Library) {
 	}
 	if in.AnalyseTempo != nil {
 		l.AnalyseTempo = *in.AnalyseTempo
+	}
+	if in.AnalyseLoudness != nil {
+		l.AnalyseLoudness = *in.AnalyseLoudness
+	}
+	if in.ReplayGainWrite != nil {
+		l.ReplayGainWrite = *in.ReplayGainWrite
 	}
 	if in.BPMWrite != nil {
 		l.BPMWrite = *in.BPMWrite

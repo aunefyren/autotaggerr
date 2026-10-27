@@ -620,6 +620,8 @@ func ProcessTrackFileAfterMatch(
 	// The one field that is not MusicBrainz's: the stored tempo analysis, if the
 	// profile writes it (docs/tempo.md).
 	metadata.BPM = TempoTagValue(filePath, tagger)
+	// And the stored loudness, if the library writes ReplayGain (docs/replaygain.md).
+	metadata.ReplayGain = ReplayGainTagValues(filePath, tagger)
 
 	// re-tag file with new information
 	unchanged, tagsWritten, changed, err = SetFileTags(filePath, metadata, tagger)
@@ -637,6 +639,9 @@ func ProcessTrackFileAfterMatch(
 	// the write changed tags only, so keep the row matching the file.
 	if !unchanged && metadata.BPM != "" {
 		RestampTempoAfterWrite(filePath)
+	}
+	if !unchanged && metadata.ReplayGain != nil {
+		RestampLoudnessAfterWrite(filePath)
 	}
 
 	changeString := "unchanged"
@@ -805,6 +810,15 @@ func BuildFileTags(
 		CatalogNumbers:        utilities.NormalizeTagValues(catalogNumbers),
 	}
 
+	// Only from a payload fetched with relationships: one cached before carries none,
+	// and writing its empty credits would remove another tagger's composer under
+	// remove_values. Until the release is next refreshed (within two weeks), the
+	// credit keys are left out of the diff altogether.
+	if response.RelationsIncluded {
+		metadata.Credits = TrackCredits(response, media, track, tagger)
+		metadata.HasCredits = true
+	}
+
 	genres := make([]models.MusicBrainzNamedCount, 0, len(response.ReleaseGroup.Genres))
 	for _, genre := range response.ReleaseGroup.Genres {
 		genres = append(genres, models.MusicBrainzNamedCount{Name: genre.Name, Count: genre.Count})
@@ -877,6 +891,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 		}
 		existing = m
 		applyTempoPolicy(desired, existing, tagger)
+		applyReplayGainPolicy(desired, existing, tagger)
 		changed, _ = utilities.DiffFlacTags(existing, desired, tagger)
 	case ".mp3":
 		desired = renderMP3Tags(buildMP3DesiredTags(metadata), tagger)
@@ -886,6 +901,7 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 		}
 		existing = m
 		applyTempoPolicy(desired, existing, tagger)
+		applyReplayGainPolicy(desired, existing, tagger)
 		changed, _ = utilities.DiffID3Tags(existing, desired, tagger)
 	default:
 		return nil, errors.New("unsupported file type")

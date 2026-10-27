@@ -72,3 +72,37 @@ func TestTaggerSettingsCarryTheLibraryBPMPolicy(t *testing.T) {
 		t.Error("a profile that writes no tags writes BPM")
 	}
 }
+
+// TestLoudnessPending: a loudness measured after the file was last processed brings
+// an otherwise unchanged file back to the tagger, once; a failed one does not.
+func TestLoudnessPending(t *testing.T) {
+	db := testDB(t)
+	library := models.Library{Name: "Test", Path: "/music"}
+	if err := db.Create(&library).Error; err != nil {
+		t.Fatal(err)
+	}
+	scanned := time.Now().Add(-time.Hour)
+	item := models.LibraryItem{LibraryID: library.ID, Path: "/music/a.flac", LastScannedAt: &scanned}
+	if err := db.Create(&item).Error; err != nil {
+		t.Fatal(err)
+	}
+	if loudnessPending(db, item.Path) {
+		t.Fatal("pending with nothing stored")
+	}
+	row := models.TrackLoudness{Path: item.Path, TrackGain: -6, AnalysedAt: scanned.Add(time.Minute)}
+	db.Create(&row)
+	if !loudnessPending(db, item.Path) {
+		t.Fatal("not pending for a loudness measured after the last scan")
+	}
+	recordItem(db, library.ID, item.Path, correlated(), true, "v-test", models.ManagerTypeAutotaggerr, nil)
+	if loudnessPending(db, item.Path) {
+		t.Fatal("still pending after the file was processed")
+	}
+	db.Model(&row).Updates(map[string]any{"error": "rsgain failed", "analysed_at": time.Now().Add(time.Hour)})
+	if loudnessPending(db, item.Path) {
+		t.Fatal("pending for a failed analysis")
+	}
+	if loudnessPending(nil, item.Path) {
+		t.Fatal("pending with no database")
+	}
+}

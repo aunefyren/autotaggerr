@@ -402,10 +402,11 @@ func ScanLibraryRoots(
 	managerType := manager.Type()
 	taggedWith := tagger.Fingerprint()
 	writesTempo := tagger.WritesBPM()
+	writesLoudness := tagger.WritesReplayGain()
 	errorFiles = []string{}
 	for _, root := range roots {
 		c, u, tw, errs, walkErr := modules.WalkAndProcessContext(ctx, root, workers, func(path string) (bool, int, error) {
-			if !force && shouldSkip(db, path, processedVersion, managerType, taggedWith) && !(writesTempo && tempoPending(db, path)) {
+			if !force && shouldSkip(db, path, processedVersion, managerType, taggedWith) && !(writesTempo && tempoPending(db, path)) && !(writesLoudness && loudnessPending(db, path)) {
 				return true, 0, nil // counts as unchanged
 			}
 			return ProcessFile(db, library, manager, tagger, plex, refreshSet, detail, path, library.Path, processedVersion)
@@ -491,6 +492,23 @@ func tempoPending(db *gorm.DB, filePath string) bool {
 	}
 	var stored models.TrackTempo
 	if db.Where("path = ? AND bpm > 0", filePath).Limit(1).Find(&stored).RowsAffected == 0 {
+		return false
+	}
+	var item models.LibraryItem
+	if db.Where("path = ?", filePath).Limit(1).Find(&item).RowsAffected == 0 || item.LastScannedAt == nil {
+		return true
+	}
+	return stored.AnalysedAt.After(*item.LastScannedAt)
+}
+
+// loudnessPending is tempoPending for the stored loudness: a file measured since it
+// was last processed is processed once more, which writes its ReplayGain.
+func loudnessPending(db *gorm.DB, filePath string) bool {
+	if db == nil {
+		return false
+	}
+	var stored models.TrackLoudness
+	if db.Where("path = ? AND error = ''", filePath).Limit(1).Find(&stored).RowsAffected == 0 {
 		return false
 	}
 	var item models.LibraryItem

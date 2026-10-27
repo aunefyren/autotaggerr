@@ -55,25 +55,12 @@ in [tagging.md](tagging.md#several-values-in-one-field). FLAC writes one Vorbis 
 unconditionally, MP3 writes ID3v2.4's null-separated form when the profile's `mp3_multi_value_tags`
 says so, and the MP3 engine is `bogem/id3v2` rather than ffmpeg. `UFID` and `TSRC` have shipped as
 one pass — see [tagging.md](tagging.md#the-recording-mbid-is-written-twice-on-purpose). The review
-against Picard, Plex and Jellyfin has shipped its mapping half — sort names, the release-type and
-original-date options, and Picard's release fields
-([tagging.md](tagging.md#picards-fields-and-what-reads-them)). What is still open:
+against Picard, Plex and Jellyfin has shipped: sort names, the release-type and original-date
+options, Picard's release fields, relationship credits
+([tagging.md](tagging.md#credits-from-relationships)), ReplayGain ([replaygain.md](replaygain.md))
+and a measured account of what Jellyfin reads
+([tagging.md](tagging.md#what-jellyfin-reads-measured)). What is still open:
 
-- **Composer and the other relationship credits are not written.** Lyricist, writer, arranger,
-  conductor, producer, engineer, mixer, remixer, performers and the work ID too — Picard writes
-  them by default, and Jellyfin reads `Composer`. It needs relationship includes on the release
-  fetch (`recording-level-rels`, `work-rels`, `work-level-rels`, `artist-rels`), a heavier payload
-  and a cache change, then the mapping.
-- **ReplayGain is not written.** Jellyfin normalises volume from `REPLAYGAIN_TRACK_GAIN`; Plex
-  measures loudness itself. It needs audio analysis by an external tool, the way tempo analysis
-  uses aubio — its own optional runner, not part of tagging.
-- **Does Jellyfin lose the track artist when `ARTIST` is blank?** The default profile's
-  `ignore_redundant_contributing_artists` blanks `ARTIST` when it equals the album artist, and
-  Jellyfin's prober builds a track's artists from `ARTIST` alone. Plex falls back to the album
-  artist. Test on a real Jellyfin before deciding whether the default should change.
-- **MP3s carry `TXXX:year`, `TXXX:originaldate` and `TXXX:originalyear`**, artefacts of the old
-  ffmpeg writer that Picard does not write in ID3v2.4. Harmless; removing them re-tags every MP3
-  once, so only worth it alongside another change that does.
 - **AAC/M4A is where the separator choice starts to matter.** ffmpeg never gained multi-value
   support for MP4, so a delimited single value is the only thing Plex can read there — the MP3
   setting's reasoning applies, and the format work should reuse it rather than re-litigate the

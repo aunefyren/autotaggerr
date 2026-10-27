@@ -43,10 +43,22 @@ func renderMP3Values(values []string, multiValue bool) []string {
 func renderMP3Tags(desired map[string][]string, tagger models.TaggerSettings) map[string][]string {
 	rendered := make(map[string][]string, len(desired))
 	for key, values := range desired {
+		if id3PairListFrames[strings.ToUpper(key)] {
+			// A paired list is null-separated by definition; joining it with "; " would
+			// make it one meaningless string, whatever the multi-value setting says.
+			rendered[key] = utilities.NormalizeTagValues(values)
+			continue
+		}
 		rendered[key] = renderMP3Values(values, tagger.MP3MultiValueTags)
 	}
 	return rendered
 }
+
+// id3PairListFrames are ID3v2.4's paired list frames: TIPL (involved people: role,
+// name) and TMCL (musicians: instrument, name). Each desired value is one pair joined
+// by id3PairSeparator, so the frame written is "role\0name\0role\0name" and the diff
+// compares whole pairs; GetMP3Tags pairs them up again on the way back.
+var id3PairListFrames = map[string]bool{"TIPL": true, "TMCL": true}
 
 // encodeID3FrameValue renders a field's values as one frame payload. With one value
 // it is that value, so the single-valued form needs no special case.
@@ -138,6 +150,26 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
 	if metadata.BPM != "" {
 		desired[TempoTagKey] = single(metadata.BPM)
 	}
+	// TXXX:REPLAYGAIN_*, as Picard and rsgain spell them.
+	addReplayGain(desired, metadata.ReplayGain)
+	// Credits in Picard's ID3v2.4 frames, only when they were looked up (see
+	// buildFLACDesiredTags): TCOM, TSOC, TEXT, TPE3 and TPE4 through
+	// id3TextFrameForKey; TIPL and TMCL as role-and-name pairs (id3PairListFrames);
+	// writer, work and the MBIDs as TXXX, as Picard names them.
+	if metadata.HasCredits {
+		c := metadata.Credits
+		desired["COMPOSER"] = c.Composers
+		desired["COMPOSERSORT"] = c.ComposerSorts
+		desired["MusicBrainz Composer Id"] = c.ComposerIDs
+		desired["LYRICIST"] = c.Lyricists
+		desired["Writer"] = c.Writers
+		desired["CONDUCTOR"] = c.Conductors
+		desired["REMIXER"] = c.Remixers
+		desired["TIPL"] = involvedPeople(c)
+		desired["TMCL"] = musicianCredits(c)
+		desired["MusicBrainz Work Id"] = c.WorkIDs
+		desired["WORK"] = c.Works
+	}
 	return desired
 }
 
@@ -190,6 +222,14 @@ var id3TextFrameForKey = map[string]string{
 	"COMPILATION":     "TCMP",
 	"LANGUAGE":        "TLAN",
 	"RELEASEDATE":     "TDRL",
+	// The relationship credits.
+	"COMPOSER":     "TCOM",
+	"COMPOSERSORT": "TSOC",
+	"LYRICIST":     "TEXT",
+	"CONDUCTOR":    "TPE3",
+	"REMIXER":      "TPE4",
+	"TIPL":         "TIPL",
+	"TMCL":         "TMCL",
 	// TSRC is the standard frame for the ISRC. It replaced the TXXX artefact
 	// described by legacyISRCFrameDescription; being in this map gives it the read
 	// direction for free, through id3KeyForTextFrame.
@@ -278,6 +318,7 @@ func SetMP3Tags(filePath string, metadata models.FileTags, tagger models.TaggerS
 	}
 
 	applyTempoPolicy(desired, existing, tagger)
+	applyReplayGainPolicy(desired, existing, tagger)
 	changes, hasChanges := utilities.DiffID3Tags(existing, desired, tagger)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes, returning")
@@ -667,6 +708,16 @@ func GetMP3Tags(filePath string) (map[string][]string, error) {
 		for _, frame := range frames {
 			switch typed := frame.(type) {
 			case id3v2.TextFrame:
+				if id3PairListFrames[frameID] {
+					parts := strings.Split(typed.Text, id3MultiValueSeparator)
+					for i := 0; i+1 < len(parts); i += 2 {
+						role, name := utilities.NormalizeTagValue(parts[i]), utilities.NormalizeTagValue(parts[i+1])
+						if role != "" || name != "" {
+							res[frameID] = append(res[frameID], id3Pair(role, name))
+						}
+					}
+					continue
+				}
 				if halves, paired := id3PairedFrames[frameID]; paired {
 					number, total := splitPairedFrameValue(typed.Text)
 					add(halves[0], number)

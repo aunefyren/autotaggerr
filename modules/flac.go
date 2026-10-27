@@ -190,16 +190,40 @@ func buildFLACDesiredTags(metadata models.FileTags) map[string][]string {
 		"COMPILATION":                single(metadata.Compilation),
 		"LANGUAGE":                   single(metadata.Language),
 		"ASIN":                       single(metadata.ASIN),
-		// COMPOSER and AUTHOR are deliberately absent: nothing resolves a value for
-		// them, so listing them here would only clear whatever another tagger wrote
-		// once remove_values is on. Composer from MusicBrainz's work relations is a
-		// fetch and a mapping (docs/wip.md).
+		// AUTHOR is deliberately absent: nothing resolves a value for it, so listing it
+		// would only clear whatever another tagger wrote once remove_values is on. The
+		// relationship credits, COMPOSER among them, are added below.
 	}
 	// Only when there is one: an absent key is one the diff never looks at, so a
 	// profile that does not write tempo — or a file below its confidence floor —
 	// cannot have remove_values clear a BPM some other tool wrote.
 	if metadata.BPM != "" {
 		desired[TempoTagKey] = single(metadata.BPM)
+	}
+	addReplayGain(desired, metadata.ReplayGain)
+	// Credits only when they were looked up (FileTags.HasCredits), for the same
+	// reason: a release cached without relationships must not clear them.
+	if metadata.HasCredits {
+		c := metadata.Credits
+		performers := make([]string, 0, len(c.Performers))
+		for _, p := range c.Performers {
+			performers = append(performers, PerformerVorbis(p))
+		}
+		desired["COMPOSER"] = c.Composers
+		desired["COMPOSERSORT"] = c.ComposerSorts
+		desired["MUSICBRAINZ_COMPOSERID"] = c.ComposerIDs
+		desired["LYRICIST"] = c.Lyricists
+		desired["WRITER"] = c.Writers
+		desired["ARRANGER"] = c.Arrangers
+		desired["CONDUCTOR"] = c.Conductors
+		desired["PRODUCER"] = c.Producers
+		desired["ENGINEER"] = c.Engineers
+		desired["MIXER"] = c.Mixers
+		desired["REMIXER"] = c.Remixers
+		desired["DJMIXER"] = c.DJMixers
+		desired["PERFORMER"] = performers
+		desired["MUSICBRAINZ_WORKID"] = c.WorkIDs
+		desired["WORK"] = c.Works
 	}
 	return desired
 }
@@ -226,6 +250,7 @@ func SetFlacTags(filePath string, metadata models.FileTags, tagger models.Tagger
 	}
 
 	applyTempoPolicy(desired, existing, tagger)
+	applyReplayGainPolicy(desired, existing, tagger)
 	changes, hasChanges := utilities.DiffFlacTags(existing, desired, tagger)
 	if !hasChanges {
 		logger.Log.Debug("no tag changes needed: " + filePath)

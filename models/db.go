@@ -132,6 +132,10 @@ const (
 	// track_tempos table — the tags are written by the next tagging pass.
 	EventTypeTempo  = "tempo_analysis"
 	EventTypeHealth = "health_check"
+	// EventTypeLoudness is a pass of the *Analyse loudness* verb: ReplayGain measured
+	// per album over the files of the libraries that opted in. Like tempo, it writes
+	// only track_loudnesses; the tags are written by the next tagging pass.
+	EventTypeLoudness = "loudness_analysis"
 	// EventTypeLidarrFollow is a pass over Lidarr's history that found files Lidarr
 	// imported, deleted or renamed since the last one: the artists it named had their
 	// cached Lidarr answers dropped and a processing run queued. Recorded only when
@@ -439,6 +443,10 @@ type TaggerSettings struct {
 	// not the profile (Library.BPMWrite); components.Tagger merges them in.
 	BPMWrite         string
 	BPMMinConfidence float64
+	// ReplayGainWrite governs the REPLAYGAIN_* tags, from the library like BPMWrite
+	// (Library.ReplayGainWrite). omitempty, so a profile's fingerprint did not change
+	// when it was added.
+	ReplayGainWrite string `json:",omitempty"`
 }
 
 // Settings projects the stored profile onto the values the tag writers read.
@@ -501,6 +509,13 @@ type Library struct {
 	// less means DefaultBPMMinConfidence, so a row predating the column behaves like a
 	// new one.
 	BPMMinConfidence float64 `json:"bpm_min_confidence"`
+	// AnalyseLoudness opts this library in to ReplayGain analysis (docs/replaygain.md).
+	// Off by default, for tempo's reason: analysis decodes every file.
+	AnalyseLoudness bool `json:"analyse_loudness"`
+	// ReplayGainWrite is whether and how the stored loudness reaches the REPLAYGAIN_*
+	// tags — the same three modes as BPMWrite: "" off, fill_empty (only files with no
+	// ReplayGain yet), overwrite.
+	ReplayGainWrite string `json:"replaygain_write"`
 }
 
 // LibraryItem is the owned correlation index: one row per file, recording which
@@ -1616,6 +1631,43 @@ type TrackTempo struct {
 	AnalysedAt time.Time `json:"analysed_at"`
 }
 
+// TrackLoudness is one file's ReplayGain, measured by rsgain as part of its album
+// (docs/replaygain.md). Album gain is a property of the album's files together, so
+// a row also records which album it was measured in and with which members: a file
+// added to or gone from the album makes every member's album gain stale.
+type TrackLoudness struct {
+	Path string `gorm:"primarykey" json:"path"`
+
+	// Size, ModTime and AudioHash: the same identity rules as TrackTempo — a tag write
+	// changes the first two but not the audio, and is re-stamped rather than redone.
+	Size      int64      `json:"size"`
+	ModTime   *time.Time `json:"mod_time"`
+	AudioHash string     `gorm:"index" json:"audio_hash"`
+
+	// Album identifies the album the file was measured in (library and release), and
+	// AlbumMembers is a hash of that album's member paths at the time.
+	Album        string `gorm:"index" json:"album"`
+	AlbumMembers string `json:"album_members"`
+
+	// Loudness is the track's integrated loudness (LUFS). The gains are dB to reach
+	// ReplayGain 2.0's -18 LUFS reference; the peaks are linear sample peaks.
+	Loudness  float64 `json:"loudness"`
+	TrackGain float64 `json:"track_gain"`
+	TrackPeak float64 `json:"track_peak"`
+	AlbumGain float64 `json:"album_gain"`
+	AlbumPeak float64 `json:"album_peak"`
+
+	// Analyser and AnalyserVersion pin the result to what produced it, as tempo's
+	// detector fields do.
+	Analyser        string `json:"analyser"`
+	AnalyserVersion string `json:"analyser_version"`
+
+	// Error is why the album's analysis failed; not retried until the album changes.
+	Error string `json:"error,omitempty"`
+
+	AnalysedAt time.Time `json:"analysed_at"`
+}
+
 // CollectionRelease is one *edition* you own files of, under a release-group.
 //
 // It exists because collapsing a release-group to its best-owned edition throws
@@ -1771,6 +1823,7 @@ func AllDBModels() []any {
 		&ManagerLink{},
 		&MediaServer{},
 		&LibraryMediaServer{},
+		&TrackLoudness{},
 	}
 }
 

@@ -128,11 +128,17 @@ above). The differences that remain are ones the formats force:
 | Language | `LANGUAGE` | `TLAN` |
 | ASIN | `ASIN` | `TXXX:ASIN` |
 | Tempo | `BPM` | `TBPM` |
+| ReplayGain | `REPLAYGAIN_TRACK_GAIN` etc. | `TXXX:REPLAYGAIN_TRACK_GAIN` etc. |
 
 Dates are written at the precision MusicBrainz gives them — `1983`, `1983-10` or `1983-10-05` —
 never padded to an invented day; both `DATE` and `TDRC` accept the shorter forms
 (`ParseMusicBrainzDate`). Partial dates once failed to parse, which silently left such releases
 with no date or year tags at all.
+
+MP3s also carry `TXXX:year`, `TXXX:originaldate` and `TXXX:originalyear`, artefacts of the old
+ffmpeg writer that Picard does not write in ID3v2.4. They are **kept on purpose**: older Navidrome and
+Kodi mappings look for `TXXX:originaldate`, and removing them would re-tag every MP3 for nothing a
+player gains.
 
 Vorbis has no single spelling everyone agrees on, hence the duplicated keys; ID3 does. The `TXXX`
 spelling for the recording MBID is the one `extractFromID3v2` already read back for the `recording`
@@ -275,13 +281,82 @@ read:
   also has. Otherwise it is empty, so `remove_values` clears a stale flag.
 - **Both total spellings** on FLAC, `TRACKTOTAL` and `TOTALTRACKS`, as with the disc total.
 
-Not written yet, both tracked in `wip.md`. The relationship credits (composer, lyricist, producer
-and the rest; Jellyfin reads `Composer`) need a heavier release fetch. ReplayGain, which Jellyfin
-normalises volume by, needs audio analysis.
+ReplayGain is measured and written by its own verb; see [replaygain.md](replaygain.md).
 
-**Jellyfin reads one album artist** unless its library option *Prefer non-standard artists tag* is
-on. With it on, Jellyfin reads `ALBUMARTISTS` and `ARTISTS`, the full credits that `ALBUMARTIST`
-leaves out for Plex's sake.
+## Credits from relationships
+
+Composer, lyricist, writer, arranger, conductor, producer, engineer, mixer, remixer, DJ-mixer,
+performers and the work come from MusicBrainz's relationships. `modules.TrackCredits` is a port of
+Picard's `_relations_to_metadata` with **"Use track and release relationships" on**. That is
+deliberate: Picard's default is release relationships only, which writes producer and engineer
+when they are credited on the release, and almost never a composer, since composers live on the
+work a recording performs. Jellyfin reads `Composer`.
+
+- **Where credits come from.** The release lookup adds `artist-rels`, `recording-level-rels`,
+  `work-rels` and `work-level-rels`. That gives the release's own credits, then each recording's,
+  then the works it performs (a `performance` relationship) with the works' credits. Values keep
+  that order, with exact duplicates dropped, as Picard's `add_unique` does.
+- **Mapping.** Relationship types map to tags as in Picard's `_ARTIST_REL_TYPES`, without
+  `director` (a video credit), and with Picard's commented-out `mastering` and `recording` left out
+  too.
+- **Performers.** A performance (`instrument`, `vocal`, `performer`) becomes `PERFORMER=Name
+  (role)`, its role built as Picard builds it: qualifying attributes first, then instruments,
+  "and" before the last (`guest bass guitar and lead vocals`). With no instrument the role is
+  `instruments` or `vocals`. Instrument names are standardised, Picard's default.
+- **Special cases.** A DJ-mix credit naming a medium (`medium 2`) applies to that disc only. A work
+  performed as `instrumental` takes no lyricist. Names follow the profile: the artist's current
+  name, or the name the relationship credits them as (`target-credit`).
+
+| | FLAC (Vorbis) | MP3 (ID3v2.4) |
+|---|---|---|
+| Composer | `COMPOSER`, `COMPOSERSORT`, `MUSICBRAINZ_COMPOSERID` | `TCOM`, `TSOC`, `TXXX:MusicBrainz Composer Id` |
+| Lyricist, writer | `LYRICIST`, `WRITER` | `TEXT`, `TXXX:Writer` |
+| Conductor, remixer | `CONDUCTOR`, `REMIXER` | `TPE3`, `TPE4` |
+| Arranger, engineer, producer, DJ-mixer, mixer | `ARRANGER`, `ENGINEER`, `PRODUCER`, `DJMIXER`, `MIXER` | `TIPL` pairs: `arranger`, `engineer`, `producer`, `DJ-mix`, `mix` |
+| Performers | `PERFORMER=Name (role)` | `TMCL` pairs: instrument, name |
+| Work | `MUSICBRAINZ_WORKID`, `WORK` | `TXXX:MusicBrainz Work Id`, `TXXX:WORK` |
+
+**`TIPL` and `TMCL` are lists of pairs**, `role\0name\0role\0name`. Each pair is one desired value
+joined by a null byte, so the diff compares whole pairs and its case-insensitive dedup never folds
+the second producer into the first. They are always null-separated, whatever
+`mp3_multi_value_tags` says: a joined string would be meaningless. `GetMP3Tags` pairs them up again
+on the way back, and the diff shows a pair as `role: name`.
+
+**A release cached before relationships were fetched writes no credit keys at all.** The cached
+payload is marked when it was fetched with them (`RelationsIncluded`, kept in the cache). Without
+the mark, its empty credits would let `remove_values` clear a composer another tagger wrote, on the
+strength of data that was never asked for. Releases refresh within 7 to 14 days, and the refresh
+compares the whole payload, so each counts as *changed upstream* once. That re-tag is how credits
+reach the files.
+
+MusicBrainz leaves relationships out of a release lookup for very large releases; Picard then
+fetches each recording on its own. That is not done here: those tracks get no credits, rather than
+a request per track.
+
+Tests: `TestTrackCredits`, `TestCreditsOnlyFromARelationshipFetch` and `TestCreditsRoundTrip`
+(real files, two producers kept as two pairs, both multi-value settings).
+
+## What Jellyfin reads, measured
+
+Jellyfin 12.4.0 was run in Docker against FLAC and MP3 files written with every tag in question,
+and its API read back:
+
+- **Track artist.** With no `ARTIST`, a track's own artist list is empty (`Artists: []`). It is
+  still listed under its album artist: Jellyfin's artist filter matches album artists too. With
+  *ignore redundant contributing artists* on (the default profile), single-artist albums have no
+  track artist, and only the track row's artist column shows it. Turn the option off if that
+  matters on Jellyfin; Plex falls back to the album artist.
+- **Multiple artists.** Only `ALBUMARTIST` and `ARTIST` are read, so a joint `ARTIST` becomes one
+  artist named `A & B`. With the library option *Prefer non-standard artists tag* on, `ALBUMARTISTS`
+  and `ARTISTS` are read as separate artists, for both fields.
+- **Dates.** `DATE` sets the album's and the song's year and premiere date; `ORIGINALDATE` is
+  ignored. Hence `original_date_as_date` (see [Dates](#dates)).
+- **Credits.** `COMPOSER` becomes a Composer person. `LYRICIST` and `PERFORMER` are not read.
+- **ReplayGain.** `REPLAYGAIN_TRACK_GAIN` becomes the song's normalisation gain. The album gain
+  showed nothing without Jellyfin's own LUFS scan.
+- **Ignored.** Artist sort tags (Jellyfin derived its own `SortName`), `COMPILATION` and
+  `DISCSUBTITLE` changed nothing in the API. They are written for Plex, Picard, Navidrome and the
+  rest.
 
 ## Release type
 

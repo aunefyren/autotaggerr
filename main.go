@@ -31,6 +31,7 @@ import (
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/health"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/loudness"
 	"github.com/aunefyren/autotaggerr/migration"
 	"github.com/aunefyren/autotaggerr/mirror"
 	"github.com/aunefyren/autotaggerr/models"
@@ -47,11 +48,12 @@ import (
 )
 
 var (
-	db            *gorm.DB
-	scanRunner    *process.Runner
-	mirrorRunner  *mirror.Runner
-	artworkRunner *artwork.Runner
-	tempoRunner   *tempo.Runner
+	db             *gorm.DB
+	scanRunner     *process.Runner
+	mirrorRunner   *mirror.Runner
+	artworkRunner  *artwork.Runner
+	tempoRunner    *tempo.Runner
+	loudnessRunner *loudness.Runner
 	// settingsRuntime owns the recurring schedules and re-applies settings saved in
 	// the UI to this running process.
 	settingsRuntime *settings.Runtime
@@ -246,6 +248,9 @@ func main() {
 	// behind it. Instead it pauses between files while a file-writing job runs, so the
 	// job someone is waiting on gets the CPU and the disk. See docs/tempo.md.
 	tempoRunner = tempo.NewRunner(db, scanRunner.WritingFiles, files.ConfigFile)
+	// Loudness (ReplayGain) analysis: tempo's shape, measured per album with rsgain.
+	// See docs/replaygain.md.
+	loudnessRunner = loudness.NewRunner(db, scanRunner.WritingFiles, files.ConfigFile)
 
 	// Scheduled health checks for the configured connections. A baseline runs at
 	// startup (off the main goroutine, so a slow endpoint cannot stall boot); the cron
@@ -295,6 +300,12 @@ func main() {
 			Name:     "tempo analysis",
 			Run:      tempoRunner.Scheduled,
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrTempoCronSchedule },
+		},
+		settings.CronJob{
+			// Like tempo: the opt-in is per library, and Scheduled does nothing without one.
+			Name:     "loudness analysis",
+			Run:      loudnessRunner.Scheduled,
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrLoudnessCronSchedule },
 		},
 		settings.CronJob{
 			// Reads Lidarr's history and queues a Process per artist whose files Lidarr
@@ -446,6 +457,7 @@ func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Ru
 		Mirror:     mirrorRunner,
 		Artwork:    artworkRunner,
 		Tempo:      tempoRunner,
+		Loudness:   loudnessRunner,
 		Rebuilder:  collection.NewRebuilder(db),
 		Meta:       modules.NewMetadataSource(),
 		Settings:   settingsRuntime,

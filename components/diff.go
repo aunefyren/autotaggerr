@@ -44,6 +44,7 @@ func ComputeItemDiff(db *gorm.DB, meta metadata.MetadataSource, item models.Libr
 				}
 				// Same as the write path, so the preview shows the BPM a scan would write.
 				desired.BPM = modules.TempoTagValue(item.Path, tagger.Settings())
+				desired.ReplayGain = modules.ReplayGainTagValues(item.Path, tagger.Settings())
 				return modules.DiffFileTags(item.Path, desired, tagger.Settings())
 			}
 		}

@@ -147,6 +147,10 @@ export interface Library {
   bpm_write: BPMWrite;
   /** Confidence a tempo needs to be written; 0 or less means the server default (0.5). */
   bpm_min_confidence: number;
+  /** Per-library opt-in to ReplayGain (loudness) analysis with rsgain. Off by default. */
+  analyse_loudness: boolean;
+  /** How the stored loudness reaches the REPLAYGAIN_* tags; "" is off. */
+  replaygain_write: BPMWrite;
   /** The media servers that scan this library, each in one section ("" = every music section). */
   media_servers: LibraryMediaServer[];
 }
@@ -1147,6 +1151,26 @@ export interface SettingsSaveResult {
 }
 
 /** GET /tempo/status — the *Analyse tempo* verb. See docs/tempo.md. */
+/** GET /loudness/status — the ReplayGain pass. Counts are albums, except files and stored. */
+export interface LoudnessStatus {
+  running: boolean;
+  paused: boolean;
+  started_at?: string;
+  finished_at?: string;
+  total: number;
+  done: number;
+  files: number;
+  analysed: number;
+  fresh: number;
+  restamped: number;
+  failed: number;
+  last_error?: string;
+  analyser_available: boolean;
+  libraries: number;
+  /** Files with a loudness on record. */
+  stored: number;
+}
+
 export interface TempoStatus {
   running: boolean;
   /** Waiting between files while a file-writing job runs. */

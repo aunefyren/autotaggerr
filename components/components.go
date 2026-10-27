@@ -231,6 +231,7 @@ type Tagger struct {
 	profile          models.TaggerProfile
 	bpmWrite         string
 	bpmMinConfidence float64
+	replayGainWrite  string
 }
 
 // NewTagger builds a Tagger from its profile row. It writes no BPM until ForLibrary
@@ -244,6 +245,7 @@ func NewTagger(profile models.TaggerProfile) *Tagger {
 func (t *Tagger) ForLibrary(library models.Library) *Tagger {
 	t.bpmWrite = library.BPMWrite
 	t.bpmMinConfidence = library.BPMMinConfidence
+	t.replayGainWrite = library.ReplayGainWrite
 	if t.bpmMinConfidence <= 0 {
 		t.bpmMinConfidence = models.DefaultBPMMinConfidence
 	}
@@ -263,7 +265,13 @@ func (t *Tagger) Settings() models.TaggerSettings {
 	s := t.profile.Settings()
 	s.BPMWrite = t.bpmWrite
 	s.BPMMinConfidence = t.bpmMinConfidence
+	s.ReplayGainWrite = t.replayGainWrite
 	return s
+}
+
+// WritesReplayGain reports whether this tagger puts the stored loudness into files.
+func (t *Tagger) WritesReplayGain() bool {
+	return t.WriteEnabled() && t.replayGainWrite != models.BPMWriteOff
 }
 
 // WritesBPM reports whether this tagger puts the stored tempo into files at all.

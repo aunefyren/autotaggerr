@@ -54,7 +54,10 @@ WORKDIR /app
 # It reuses chromaprint's ffmpeg libraries for decoding and adds about 5 MiB
 # (libsndfile, libsamplerate, jack). The C tools only — not py3-aubio, which would
 # bring Python and numpy for a front end that reports less than aubiotrack does.
-RUN apk add --no-cache flac chromaprint aubio ca-certificates tzdata su-exec
+# rsgain measures ReplayGain for the optional loudness analysis (docs/replaygain.md),
+# scan-only: Autotaggerr writes the tags itself. It also links the ffmpeg libraries
+# chromaprint already brings, plus libebur128 and taglib.
+RUN apk add --no-cache flac chromaprint aubio rsgain ca-certificates tzdata su-exec
 COPY --from=builder /app/autotaggerr /app/autotaggerr
 COPY --from=builder /app/entrypoint.sh /app/entrypoint.sh
 COPY --from=builder /app/web/ /app/web/

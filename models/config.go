@@ -63,7 +63,9 @@ const (
 // refresh at 03:00.
 const (
 	DefaultTempoCronSchedule = "0 0 1 * * *"
-	DefaultTempoConcurrency  = 2
+	// DefaultLoudnessCronSchedule is 02:00: after tempo, before the metadata refresh.
+	DefaultLoudnessCronSchedule = "0 0 2 * * *"
+	DefaultTempoConcurrency     = 2
 )
 
 // What happens when a pinned file's audio is replaced underneath its pin (see
@@ -190,6 +192,11 @@ type ConfigStruct struct {
 	// docs/tempo.md.
 	AutotaggerrTempoCronSchedule string `json:"autotaggerr_tempo_cron_schedule"`
 	AutotaggerrTempoConcurrency  int    `json:"autotaggerr_tempo_concurrency"`
+
+	// Loudness (ReplayGain) analysis runs on its own schedule, one album at a time;
+	// like tempo, it has no on/off key — a library opts in (Library.AnalyseLoudness).
+	// See docs/replaygain.md.
+	AutotaggerrLoudnessCronSchedule string `json:"autotaggerr_loudness_cron_schedule"`
 
 	// Health-check schedule for the configured Lidarr/Plex connections. Checks are
 	// cheap and only record an Activity event when a service's health changes, so a

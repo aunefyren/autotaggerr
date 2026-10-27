@@ -28,7 +28,7 @@ jobs:
       # it synthesizes the fixture files, and the MP3 tests use it to reproduce what
       # the old ffmpeg writer put on disk.
       - name: Install audio tools
-        run: sudo apt-get update && sudo apt-get install -y flac ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y flac ffmpeg rsgain
 
       # The SPA must be built before any Go step: `go build`/`vet`/`test` compile
       # package web, which embeds web/dist via go:embed.

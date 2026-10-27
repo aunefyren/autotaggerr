@@ -261,6 +261,10 @@ func JoinTagValues(values []string) string {
 // other is itself the message.
 func DescribeTagValues(values []string) string {
 	normalized := NormalizeTagValues(values)
+	// A paired ID3 list entry (TIPL, TMCL) is "role\0name"; shown as "role: name".
+	for i := range normalized {
+		normalized[i] = strings.ReplaceAll(normalized[i], "\x00", ": ")
+	}
 	if len(normalized) < 2 {
 		return JoinTagValues(normalized)
 	}

@@ -121,6 +121,19 @@ itself as unavailable and nothing else changes. The Docker image includes it.
 
 Only `aubiotrack` is used — not the Python `aubio` command, so no Python is needed.
 
+### 🔊 [rsgain](https://github.com/complexlogic/rsgain) *(optional, for ReplayGain)*
+
+Measures each album's loudness for the optional ReplayGain analysis (opt in per library). It only
+scans: Autotaggerr writes the `REPLAYGAIN_*` tags itself. Without it the feature reports itself as
+unavailable. The Docker image includes it.
+
+- **Ubuntu/Debian**  
+  `sudo apt install rsgain`
+- **Alpine**  
+  `apk add rsgain`
+- **macOS (Homebrew)**  
+  `brew install rsgain`
+
 ---
 
 ## 🐳 Docker Compose Example
@@ -177,6 +190,7 @@ Edit the config.json, found within the config directory. If it isn't there, just
 	"autotaggerr_replaced_pin_policy": "review",
 	"autotaggerr_tempo_concurrency": 2,
 	"autotaggerr_tempo_cron_schedule": "0 0 1 * * *",
+	"autotaggerr_loudness_cron_schedule": "0 0 2 * * *",
 	"autotaggerr_test_email": "",
 	"autotaggerr_version": "v1.0.0",
 	"database": {
@@ -234,6 +248,7 @@ starts.
 | `autotaggerr_artwork_cron_schedule` | — | — | string | 6-field cron for the artwork fetch. Default `0 0 5 * * *` (nightly 05:00). New rows fetch their own artwork as they arrive, so this is a backstop for expiry. |
 | `autotaggerr_mcp_disabled` | — | — | bool | Turn off the MCP endpoint (`/api/v1/mcp`) that AI assistants connect to; it then answers 404. Default `false` (on — it takes the same API keys as the REST API, and a read-only key sees only the read tools). Editable on **Settings → AI assistants (MCP)**, applies without a restart. See [docs/mcp.md](docs/mcp.md). |
 | `autotaggerr_tempo_cron_schedule` | — | — | string | 6-field cron for tempo analysis. Default `0 0 1 * * *` (nightly 01:00). Which libraries are analysed is set per library (**Libraries → edit**); with none opted in the pass does nothing. Editable on **Settings → Tempo analysis**. |
+| `autotaggerr_loudness_cron_schedule` | — | — | string | 6-field cron for loudness (ReplayGain) analysis with rsgain. Default `0 0 2 * * *` (nightly 02:00). Which libraries are analysed is set per library (**Libraries → edit**); with none opted in the pass does nothing. Editable on **Settings → Loudness analysis**. |
 | `autotaggerr_tempo_concurrency` | — | — | int | Files analysed in parallel. Default `2`. Analysis is CPU-bound, and a pass pauses while files are being written regardless. Editable on **Settings → Tempo analysis**. |
 | `autotaggerr_migration_review_releases` | — | — | bool | Hold merged **releases** for manual approval instead of re-pointing records automatically. Default `false` (apply). |
 | `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |

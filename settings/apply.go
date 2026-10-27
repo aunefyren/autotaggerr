@@ -140,13 +140,14 @@ func (r *Runtime) applySchedules(cfg models.ConfigStruct, changed []string) []st
 	}
 
 	scheduleKeys := map[string]string{
-		"autotaggerr_process_cron_schedule": "scan",
-		"autotaggerr_mirror_cron_schedule":  "metadata refresh",
-		"autotaggerr_health_cron_schedule":  "health check",
-		"autotaggerr_mirror_enabled":        "metadata refresh",
-		"autotaggerr_artwork_cron_schedule": "artwork refresh",
-		"autotaggerr_artwork_enabled":       "artwork refresh",
-		"autotaggerr_tempo_cron_schedule":   "tempo analysis",
+		"autotaggerr_process_cron_schedule":  "scan",
+		"autotaggerr_mirror_cron_schedule":   "metadata refresh",
+		"autotaggerr_health_cron_schedule":   "health check",
+		"autotaggerr_mirror_enabled":         "metadata refresh",
+		"autotaggerr_artwork_cron_schedule":  "artwork refresh",
+		"autotaggerr_artwork_enabled":        "artwork refresh",
+		"autotaggerr_tempo_cron_schedule":    "tempo analysis",
+		"autotaggerr_loudness_cron_schedule": "loudness analysis",
 	}
 
 	needed := map[string]bool{}

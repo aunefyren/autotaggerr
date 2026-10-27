@@ -73,6 +73,38 @@ type MusicBrainzReleaseResponse struct {
 		Script   string `json:"script"`
 	} `json:"text-representation"`
 	Barcode string `json:"barcode"`
+	// Relations are the release's own relationships — release-level credits such as a
+	// producer or engineer for the whole release. Present only when the lookup asks
+	// for artist-rels.
+	Relations []MusicBrainzRelation `json:"relations"`
+	// RelationsIncluded is ours, not MusicBrainz's: set when the payload was fetched
+	// with the relationship includes, and kept in the cached payload. A release cached
+	// before then has none, and its credits are unknown rather than empty — which is
+	// the difference between leaving another tagger's COMPOSER alone and removing it.
+	RelationsIncluded bool `json:"autotaggerr_relations_included,omitempty"`
+}
+
+// MusicBrainzRelation is one relationship as the lookup returns it: to an artist (a
+// credit: composer, producer, an instrument) or to a work (the recording's
+// "performance" of a song, whose own relations carry its composer and lyricist).
+type MusicBrainzRelation struct {
+	Type             string            `json:"type"`
+	TargetType       string            `json:"target-type"`
+	Direction        string            `json:"direction"`
+	Attributes       []string          `json:"attributes"`
+	AttributeCredits map[string]string `json:"attribute-credits"`
+	// TargetCredit is the name the artist is credited as on this relationship, when
+	// it differs from their name.
+	TargetCredit string           `json:"target-credit"`
+	Artist       *Artist          `json:"artist"`
+	Work         *MusicBrainzWork `json:"work"`
+}
+
+// MusicBrainzWork is a composition a recording performs.
+type MusicBrainzWork struct {
+	ID        string                `json:"id"`
+	Title     string                `json:"title"`
+	Relations []MusicBrainzRelation `json:"relations"`
 }
 
 type Track struct {
@@ -91,7 +123,10 @@ type Track struct {
 		Length           int            `json:"length"`
 		Title            string         `json:"title"`
 		ID               string         `json:"id"`
-		Tags             []struct {
+		// Relations are the recording's credits and the works it performs; present
+		// when the release lookup asks for recording-level-rels.
+		Relations []MusicBrainzRelation `json:"relations"`
+		Tags      []struct {
 			Name  string `json:"name"`
 			Count int    `json:"count"`
 		} `json:"tags"`

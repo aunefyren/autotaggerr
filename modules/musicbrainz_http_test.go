@@ -61,10 +61,11 @@ func TestQueryMusicBrainzReleaseData(t *testing.T) {
 		},
 	}
 
-	var gotUA, gotPath string
+	var gotUA, gotPath, gotInc string
 	withMockMB(t, func(w http.ResponseWriter, r *http.Request) {
 		gotUA = r.Header.Get("User-Agent")
 		gotPath = r.URL.Path
+		gotInc = r.URL.Query().Get("inc")
 		_ = json.NewEncoder(w).Encode(want)
 	})
 
@@ -83,6 +84,16 @@ func TestQueryMusicBrainzReleaseData(t *testing.T) {
 	}
 	if !strings.Contains(gotPath, "/release/rel-1") {
 		t.Errorf("request path = %q, want to contain /release/rel-1", gotPath)
+	}
+	// Picard's "track and release relationships": the credits live on the release,
+	// the recordings and the works they perform.
+	for _, inc := range []string{"artist-rels", "recording-level-rels", "work-rels", "work-level-rels"} {
+		if !strings.Contains(gotInc, inc) {
+			t.Errorf("inc = %q, want it to include %s", gotInc, inc)
+		}
+	}
+	if !got.RelationsIncluded {
+		t.Error("a release fetched with relationships is not marked as such")
 	}
 }
 

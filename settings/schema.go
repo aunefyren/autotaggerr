@@ -251,6 +251,21 @@ func Sections() []Section {
 			},
 		},
 		{
+			// Like tempo: no on/off switch, a library opts in on the Libraries page.
+			ID:          "loudness",
+			Title:       "Loudness analysis",
+			Description: "Measuring ReplayGain (track and album gain) with rsgain, for the libraries that opt in on the Libraries page. The result is stored, not written: the next processing run or Tag files puts it into the files, as the library says.",
+			Fields: []Field{
+				{
+					Key: "autotaggerr_loudness_cron_schedule", Label: "Analysis schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "Default is nightly at 02:00. Albums measured before are skipped, so a pass after the first only costs what is new or changed.",
+					Placeholder: models.DefaultLoudnessCronSchedule,
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrLoudnessCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrLoudnessCronSchedule = v }, validCron),
+				},
+			},
+		},
+		{
 			// Named for what the setting governs, not for who supplies the data. A
 			// metadata source is a component you configure zero, one or several of, and
 			// only MusicBrainz is implemented today — but *whether an identity change

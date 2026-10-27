@@ -353,7 +353,11 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	}
 
 	// do API request
-	url := fmt.Sprintf("%s/release/%s?inc=recordings+labels+artists+genres+tags+release-groups+isrcs&fmt=json", musicbrainzBaseURL(), mbID)
+	// The relationship includes are Picard's "Use track and release relationships":
+	// the release's own credits (artist-rels), the recordings' (recording-level-rels)
+	// and the works they perform with those works' own credits (work-rels,
+	// work-level-rels) — composer and lyricist live on the work.
+	url := fmt.Sprintf("%s/release/%s?inc=recordings+labels+artists+genres+tags+release-groups+isrcs+artist-rels+recording-level-rels+work-rels+work-level-rels&fmt=json", musicbrainzBaseURL(), mbID)
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		logger.Log.Error("failed to create new request. error: " + err.Error())
@@ -397,6 +401,7 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 	if err != nil {
 		return apiResponse, fmt.Errorf("failed to parse MusicBrainz response for release %q: %w", mbID, err)
 	}
+	apiResponse.RelationsIncluded = true
 
 	// A merge is only visible here: MusicBrainz resolved the old ID and answered with
 	// the surviving release, whose payload id is the new one. Cache under the *asked
