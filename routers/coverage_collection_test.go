@@ -119,11 +119,22 @@ func TestDiscographyMergesLiveAndStored(t *testing.T) {
 		{ID: "rg-new", Title: "New", PrimaryType: "EP", SecondaryTypes: []string{"Remix", "Live"}, FirstReleaseDate: "2024-01-01"},
 	})
 
+	// Lidarr holds the new EP, which nothing on disk does: the row links into it
+	// anyway, since that is where it would be fetched from.
+	lidarr := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true, LidarrBaseURL: "http://lidarr:8686", LidarrWebURL: "https://lidarr.example.com/"}
+	if err := api.DB.Create(&lidarr).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := api.DB.Create(&models.ManagerLink{ManagerID: lidarr.ID, EntityType: models.ManagerLinkReleaseGroup, MBID: "rg-new", ArtistMBID: "art-1"}).Error; err != nil {
+		t.Fatal(err)
+	}
+
 	got := decodeJSON[[]struct {
 		MBID           string `json:"mb_id"`
 		Title          string `json:"title"`
 		SecondaryTypes string `json:"secondary_types"`
 		Owned          bool   `json:"owned"`
+		Links          []struct{ Kind, URL string }
 	}](t, r, "GET", "/api/v1/artists/art-1/discography", token, nil)
 
 	byID := map[string]int{}
@@ -141,6 +152,12 @@ func TestDiscographyMergesLiveAndStored(t *testing.T) {
 	}
 	if g := got[byID["rg-comp"]]; !g.Owned {
 		t.Errorf("rg-comp = %+v, want the stored-only album kept", g)
+	}
+	if l := got[byID["rg-new"]].Links; len(l) != 1 || l[0].Kind != "lidarr" || l[0].URL != "https://lidarr.example.com/album/rg-new" {
+		t.Errorf("rg-new links = %+v, want its Lidarr album page at the link address", l)
+	}
+	if l := got[byID["rg-owned"]].Links; len(l) != 0 {
+		t.Errorf("rg-owned links = %+v, want none — no manager holds it", l)
 	}
 }
 

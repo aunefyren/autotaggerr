@@ -112,18 +112,34 @@ type ExternalLink struct {
 // Disabled managers and managers with no address are left out: a link that cannot
 // open is worse than none.
 func ManagerLinks(db *gorm.DB, entityType, mbid string) ([]ExternalLink, error) {
-	var managers []models.Manager
-	if err := db.Joins("JOIN manager_links ON manager_links.manager_id = managers.id").
-		Where("manager_links.entity_type = ? AND manager_links.mb_id = ? AND managers.enabled = ?", entityType, mbid, true).
-		Order("managers.name").Find(&managers).Error; err != nil {
+	links, err := ManagerLinksFor(db, entityType, []string{mbid})
+	return links[mbid], err
+}
+
+// ManagerLinksFor is ManagerLinks for many entities of one type in one query — what a
+// discography needs, where every row may be held by a manager. Entities no manager
+// holds are absent from the map.
+func ManagerLinksFor(db *gorm.DB, entityType string, mbids []string) (map[string][]ExternalLink, error) {
+	out := map[string][]ExternalLink{}
+	if len(mbids) == 0 {
+		return out, nil
+	}
+	var rows []struct {
+		MBID string
+		models.Manager
+	}
+	if err := db.Table("managers").Select("manager_links.mb_id AS mb_id, managers.*").
+		Joins("JOIN manager_links ON manager_links.manager_id = managers.id").
+		Where("manager_links.entity_type = ? AND manager_links.mb_id IN ? AND managers.enabled = ?", entityType, mbids, true).
+		Order("managers.name").Scan(&rows).Error; err != nil {
 		return nil, err
 	}
 	segment := "artist"
 	if entityType == models.ManagerLinkReleaseGroup {
 		segment = "album"
 	}
-	out := make([]ExternalLink, 0, len(managers))
-	for _, m := range managers {
+	for _, row := range rows {
+		m := row.Manager
 		base := strings.TrimSpace(m.LidarrWebURL)
 		if base == "" {
 			base = strings.TrimSpace(m.LidarrBaseURL)
@@ -131,8 +147,8 @@ func ManagerLinks(db *gorm.DB, entityType, mbid string) ([]ExternalLink, error) 
 		if base == "" || m.Type != models.ManagerTypeLidarr {
 			continue
 		}
-		out = append(out, ExternalLink{Kind: models.ManagerTypeLidarr, Name: m.Name,
-			URL: strings.TrimRight(base, "/") + "/" + segment + "/" + url.PathEscape(mbid)})
+		out[row.MBID] = append(out[row.MBID], ExternalLink{Kind: models.ManagerTypeLidarr, Name: m.Name,
+			URL: strings.TrimRight(base, "/") + "/" + segment + "/" + url.PathEscape(row.MBID)})
 	}
 	return out, nil
 }

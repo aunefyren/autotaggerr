@@ -158,6 +158,8 @@ export interface MediaServer {
   type: MediaServerType;
   enabled: boolean;
   base_url: string;
+  /** Where a browser reaches the server, for links; "" links through app.plex.tv. */
+  web_url: string;
   token_set: boolean;
   /** How many libraries it scans. */
   libraries: number;
@@ -898,6 +900,8 @@ export interface CollectionReleaseGroup {
   identity_editable: boolean;
   /** Where the album lives: one entry per library holding files of it. */
   libraries: LibraryCopy[];
+  /** The managers holding the album, as links into each. Set by the discography only. */
+  links?: ExternalLink[];
 }
 
 /** One MusicBrainz edition of a release-group, plus what is owned of *that* edition. */

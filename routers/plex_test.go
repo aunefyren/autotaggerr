@@ -110,6 +110,12 @@ func TestMediaServersAndTheLibraryLinks(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &listed); err != nil || len(listed) != 1 || listed[0].Libraries != 1 {
 		t.Errorf("list = %s", w.Body.String())
 	}
+	if w := do(r, http.MethodPut, "/api/v1/media-servers/"+server.ID, token, map[string]any{"web_url": "plex.local"}); w.Code != http.StatusBadRequest {
+		t.Errorf("a link address without a scheme = %d, want 400", w.Code)
+	}
+	if w := do(r, http.MethodPut, "/api/v1/media-servers/"+server.ID, token, map[string]any{"web_url": " https://plex.example.com/ "}); w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"web_url":"https://plex.example.com"`) {
+		t.Errorf("set link address = %d %s", w.Code, w.Body.String())
+	}
 	if w := do(r, http.MethodPut, "/api/v1/media-servers/"+server.ID, token, map[string]any{"name": "Home Plex", "enabled": false}); w.Code != http.StatusOK {
 		t.Fatalf("update: %d %s", w.Code, w.Body.String())
 	}
@@ -219,6 +225,21 @@ func TestAlbumLinksIntoPlexAndLidarr(t *testing.T) {
 	want := "https://app.plex.tv/desktop/#!/server/machine-1/details?key=%2Flibrary%2Fmetadata%2F55"
 	if len(plexLinks) != 1 || plexLinks[0].Name != "Music" || plexLinks[0].URL != want {
 		t.Errorf("plex links = %+v, want one for Music only", plexLinks)
+	}
+
+	// With a link address the link opens that server's own web app, still addressed by
+	// its machine identifier, rather than going through app.plex.tv.
+	if err := api.DB.Model(&server).Update("web_url", "https://plex.example.com").Error; err != nil {
+		t.Fatal(err)
+	}
+	w = do(r, http.MethodGet, "/api/v1/artists/art-1/release-groups/rg-1/plex", token, nil)
+	plexLinks = nil
+	if err := json.Unmarshal(w.Body.Bytes(), &plexLinks); err != nil {
+		t.Fatal(err)
+	}
+	want = "https://plex.example.com/web/index.html#!/server/machine-1/details?key=%2Flibrary%2Fmetadata%2F55"
+	if len(plexLinks) != 1 || plexLinks[0].URL != want {
+		t.Errorf("plex links with a link address = %+v, want %s", plexLinks, want)
 	}
 
 	w = do(r, http.MethodGet, "/api/v1/artists/art-1/release-groups/rg-1", token, nil)

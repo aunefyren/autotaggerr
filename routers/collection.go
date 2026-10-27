@@ -120,6 +120,9 @@ type releaseGroupView struct {
 	// Libraries says where the album lives: one entry per library holding files of
 	// it. Empty for an album nobody owns.
 	Libraries []collection.LibraryCopy `json:"libraries"`
+	// Links are the managers holding the album, as links into each — set by the
+	// discography only, where a row is the way into the album in Lidarr.
+	Links []collection.ExternalLink `json:"links,omitempty"`
 }
 
 // editionView is one MusicBrainz edition of a release-group plus what is owned of
@@ -1403,6 +1406,19 @@ func (a *API) discography(c *gin.Context) {
 		return
 	}
 
+	// Which manager holds each album, read once for the whole list. Every listed
+	// album is asked about, not only the stored ones: Lidarr may hold an album the
+	// collection owns nothing of. Best-effort, like the album page's links.
+	listed := make([]string, 0, len(groups)+len(stored))
+	for _, g := range groups {
+		listed = append(listed, g.ID)
+	}
+	listed = append(listed, storedMBIDs...)
+	links, err := collection.ManagerLinksFor(a.DB, models.ManagerLinkReleaseGroup, listed)
+	if err != nil {
+		logger.Log.Warnf("failed to load the manager links of %s's albums: %s", mbid, err.Error())
+	}
+
 	out := make([]releaseGroupView, 0, len(groups))
 	seen := make(map[string]bool, len(groups))
 	for _, g := range groups {
@@ -1420,6 +1436,7 @@ func (a *API) discography(c *gin.Context) {
 		view := newReleaseGroupViewIn(rg, catalogued, artist, byGroup[g.ID], scope)
 		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, g.ID)
 		view.Libraries = librariesOf(copies, g.ID)
+		view.Links = links[g.ID]
 		out = append(out, view)
 	}
 
@@ -1433,6 +1450,7 @@ func (a *API) discography(c *gin.Context) {
 		view := newReleaseGroupViewIn(rg, catalogued, artist, byGroup[rg.MBID], scope)
 		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, rg.MBID)
 		view.Libraries = librariesOf(copies, rg.MBID)
+		view.Links = links[rg.MBID]
 		out = append(out, view)
 	}
 

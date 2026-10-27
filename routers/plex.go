@@ -25,6 +25,7 @@ type mediaServerInput struct {
 	Type    *string `json:"type"`
 	Enabled *bool   `json:"enabled"`
 	BaseURL *string `json:"base_url"`
+	WebURL  *string `json:"web_url"`
 	// Token is write-only: settable here, never returned (json:"-" on the model).
 	// Absent keeps the stored one.
 	Token *string `json:"token"`
@@ -43,6 +44,9 @@ func (in mediaServerInput) apply(row *models.MediaServer) {
 	if in.BaseURL != nil {
 		row.BaseURL = strings.TrimRight(strings.TrimSpace(*in.BaseURL), "/")
 	}
+	if in.WebURL != nil {
+		row.WebURL = strings.TrimRight(strings.TrimSpace(*in.WebURL), "/")
+	}
 	if in.Token != nil {
 		row.Token = strings.TrimSpace(*in.Token)
 	}
@@ -56,6 +60,8 @@ func validateMediaServer(row models.MediaServer) string {
 		return fmt.Sprintf("type must be %q", models.MediaServerTypePlex)
 	case !strings.HasPrefix(row.BaseURL, "http://") && !strings.HasPrefix(row.BaseURL, "https://"):
 		return "base_url must be an http:// or https:// URL"
+	case row.WebURL != "" && !strings.HasPrefix(row.WebURL, "http://") && !strings.HasPrefix(row.WebURL, "https://"):
+		return "web_url must be an http:// or https:// URL, or empty"
 	case row.Token == "":
 		return "token is required"
 	}

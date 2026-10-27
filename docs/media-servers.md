@@ -50,8 +50,16 @@ A rating key means nothing on another server, and the same number there is a dif
 Entries cached before servers were rows carry no server and simply age out.
 
 Organise asks each linked server to scan its sections after moving files
-([naming.md](naming.md#organise)). The album page links into each server holding the album
-(`app.plex.tv` links, one per library and server, named by server once there is more than one).
+([naming.md](naming.md#organise)). The album page links into each server holding the album, one
+link per library and server, named by server once there is more than one.
+
+**Where a link opens** is the server's **Link address** (`WebURL`), like a Lidarr manager's. With
+it set, a link opens that server's own web app (`<address>/web/index.html#!/server/<machine
+id>/details?key=…`). That is the right server for certain, even for an account with several, and
+it skips the round trip through plex.tv. Left empty, links go through `app.plex.tv`, which reaches
+the server from any browser signed in to the account. That matters because the base URL Autotaggerr
+uses is often one only it can reach. Both forms address the album by the server's machine
+identifier, so the link address is only where the web app is, never which server.
 
 ## The API
 
@@ -59,7 +67,7 @@ Organise asks each linked server to scan its sections after moving files
 |---|---|---|
 | `GET /media-servers` | signed in | the servers, without tokens, with how many libraries each scans |
 | `GET /media-servers/:id/sections` | signed in | one server's music sections, for the library form; a server that does not answer is reported in the body (200), so *every section* can still be chosen |
-| `POST /media-servers`, `GET\|PUT\|DELETE /media-servers/:id` | admin | manage servers; a token absent on edit keeps the stored one; delete removes the server's library links |
+| `POST /media-servers`, `GET\|PUT\|DELETE /media-servers/:id` | admin | manage servers (`name`, `base_url`, `web_url`, `token`, `enabled`); a token absent on edit keeps the stored one; delete removes the server's library links |
 | `POST /media-servers/:id/test` | admin | `/identity` with the token a refresh uses; 200 either way, `healthy` says which |
 | `PUT /libraries/:id` with `media_servers` | signed in | replace the library's links as a set: `[{media_server_id, section_key}]`. Absent leaves them alone, `[]` removes them all, and a server may appear once |
 

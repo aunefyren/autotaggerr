@@ -1077,6 +1077,9 @@ function ReleaseGroupRow({
             {g.title}
           </Link>
           <MBLink entity="release-group" mbid={g.mb_id} />
+          {/* The album in the Lidarr that holds it, when one does — the way to act on
+              a missing album where it would be fetched from. */}
+          <ExternalLinks links={g.links} />
           {showLibraries && <LibraryTags copies={g.libraries ?? []} total={g.total_tracks} />}
           {note && (
             <span className="mono" style={{ fontSize: 11, color: "var(--warning-text)" }} title={note.title}>

@@ -222,7 +222,7 @@ function EditManager({ manager, onClose, onSaved }: { manager: Manager; onClose:
                 placeholder={baseUrl || "same as the base URL"}
               />
               <span className="dim" style={{ fontSize: 11 }}>
-                Where your browser reaches Lidarr, for the Lidarr links on artist and album pages. Leave empty
+                Where your browser reaches Lidarr, for the Lidarr links on artist pages, their discography and album pages. Leave empty
                 unless the base URL is one only the server can reach, such as a Docker service name.
               </span>
             </div>

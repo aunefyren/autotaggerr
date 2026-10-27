@@ -139,6 +139,7 @@ function ServerForm({ server, onClose, onSaved }: { server: MediaServer | null; 
   const [name, setName] = useState(server?.name ?? "Plex");
   const [enabled, setEnabled] = useState(server?.enabled ?? true);
   const [baseUrl, setBaseUrl] = useState(server?.base_url ?? "");
+  const [webUrl, setWebUrl] = useState(server?.web_url ?? "");
   const [token, setToken] = useState("");
   const [busy, setBusy] = useState(false);
 
@@ -146,7 +147,7 @@ function ServerForm({ server, onClose, onSaved }: { server: MediaServer | null; 
     e.preventDefault();
     setBusy(true);
     try {
-      const body: Record<string, unknown> = { name, type: "plex", enabled, base_url: baseUrl };
+      const body: Record<string, unknown> = { name, type: "plex", enabled, base_url: baseUrl, web_url: webUrl };
       if (token || !server) body.token = token; // omit on edit to keep the stored one
       if (server) await api.put(`/media-servers/${server.id}`, body);
       else await api.post("/media-servers", body);
@@ -182,8 +183,14 @@ function ServerForm({ server, onClose, onSaved }: { server: MediaServer | null; 
         <div className="field">
           <label className="flabel" htmlFor="ms-url">Base URL</label>
           <input id="ms-url" className="input mono" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="http://192.168.1.10:32400" />
+          <span className="dim" style={{ fontSize: 11 }}>The address Autotaggerr reaches the server at.</span>
+        </div>
+        <div className="field">
+          <label className="flabel" htmlFor="ms-web">Link address</label>
+          <input id="ms-web" className="input mono" value={webUrl} onChange={(e) => setWebUrl(e.target.value)} placeholder="app.plex.tv" />
           <span className="dim" style={{ fontSize: 11 }}>
-            The address Autotaggerr reaches the server at. Links into Plex go through app.plex.tv, so this need not be one a browser can reach.
+            Where your browser reaches this server, for the Plex links on album pages — they then open its own web app
+            rather than app.plex.tv. Leave empty to link through app.plex.tv, which works from anywhere you are signed in.
           </span>
         </div>
         <div className="field">

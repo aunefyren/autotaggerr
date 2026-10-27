@@ -41,8 +41,11 @@ type PlexClient struct {
 	ServerID string
 	Name     string
 	BaseURL  string
-	Token    string
-	HTTP     *http.Client
+	// WebURL is where a browser reaches the server (NewPlexServer); empty links
+	// through app.plex.tv. See AlbumWebURL.
+	WebURL string
+	Token  string
+	HTTP   *http.Client
 	// SectionKey narrows album lookups to one library section. Empty searches every
 	// music section — the file-path check is what picks the album, so searching wide
 	// costs requests, never correctness. Set per library link by InSection.
@@ -83,6 +86,7 @@ func NewPlexServer(row models.MediaServer) *PlexClient {
 	client := NewPlexClient(row.BaseURL, row.Token)
 	client.ServerID = row.ID.String()
 	client.Name = row.Name
+	client.WebURL = strings.TrimRight(strings.TrimSpace(row.WebURL), "/")
 	return client
 }
 
@@ -117,15 +121,23 @@ func (p *PlexClient) MachineIdentifier() (string, error) {
 	return id.MachineIdentifier, nil
 }
 
-// AlbumWebURL is a link to one album in Plex's web app, through app.plex.tv: it
-// reaches the server from any browser signed in to the account, where the base URL
-// Autotaggerr talks to is often an address only it can reach.
+// AlbumWebURL is a link to one album in Plex's web app. By default it goes through
+// app.plex.tv, which reaches the server from any browser signed in to the account —
+// the base URL Autotaggerr talks to is often an address only it can reach. With a
+// link address set (WebURL), it opens the server's own web app there instead: the
+// right server for certain, without the round trip through plex.tv, and for an
+// account with several servers, never the wrong one. Both address the album by the
+// server's machine identifier.
 func (p *PlexClient) AlbumWebURL(albumKey string) (string, error) {
 	machineID, err := p.MachineIdentifier()
 	if err != nil {
 		return "", err
 	}
-	return "https://app.plex.tv/desktop/#!/server/" + url.PathEscape(machineID) +
+	base := "https://app.plex.tv/desktop/"
+	if p.WebURL != "" {
+		base = p.WebURL + "/web/index.html"
+	}
+	return base + "#!/server/" + url.PathEscape(machineID) +
 		"/details?key=" + url.QueryEscape(normalizeAlbumKey(albumKey)), nil
 }
 

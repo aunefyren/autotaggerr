@@ -386,6 +386,11 @@ often one only the server can reach (a Docker service name). Disabled managers l
 filed under another artist of the same manager keeps the first listing's row; a collaboration links
 once, not twice.
 
+The artist page's discography links each row too, for every album a manager holds, whether or not
+anything of it is owned: a missing album is acted on in the Lidarr that would fetch it. The links
+for the whole list are read in one query (`collection.ManagerLinksFor`, `links` on each discography
+row), not one per album.
+
 #### A pass reports what it could not account for
 
 `SyncStats` carries two findings beyond the counts, and both were previously log lines and nothing

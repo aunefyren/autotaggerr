@@ -21,6 +21,10 @@ type MediaServer struct {
 	Type    string `gorm:"not null" json:"type"`
 	Enabled bool   `json:"enabled"`
 	BaseURL string `json:"base_url"`
+	// WebURL is where a browser reaches this server, for links into it — the server's
+	// own web app rather than app.plex.tv. Empty links through app.plex.tv, which
+	// reaches the server from any browser signed in to the account.
+	WebURL string `json:"web_url"`
 	// Token authenticates every request (X-Plex-Token for Plex). Write-only, like the
 	// other credentials: settable through the API, never returned.
 	Token string `json:"-"`
