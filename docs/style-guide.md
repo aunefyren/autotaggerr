@@ -782,6 +782,17 @@ MUSICBRAINZ_ALBUMID   e28e29e0-…-a6beffd99aad   ← current (mono, --text-mute
   field a file did *not* have rendered eight times the height of one it did. A modifier class on a
   shared prefix is not namespaced by that prefix — check the whole file before naming one.
 
+- **Items modal** (`ItemsModal`) — an album's or an edition's files, opened from where the album is
+  read: the artist row's track count and the album page's *Items* buttons. The scope is said first,
+  in the muted line above the table (*In Sandbox · 12 files*), because the modal follows the page's
+  library tab and an empty list in one library is not an empty album. Paths are shown relative to
+  their library root (full path on hover), and the library column appears only on the overview with
+  more than one library. A file opens its tag diff (`ItemDiffBody`, the *File tags* modal's body
+  without the path it already shows) in a **row disclosure** under it, not a second modal over this
+  one. Attaching, pins and folder filters stay on the Items page, linked from the footer on the same
+  scope. A count that opens this is a `.railref` with a dotted underline, so it reads as a number
+  first and a control second.
+
 - **Path row** (`PathRow` in `ItemDiff.tsx`) — where the file is against where its profile names it,
   in the same remove/add colours, keyed `PATH`. It sits in its own `.diff` block *above* the tags,
   not among them: a path is not a tag and no tag write changes it. A note under it (sans,

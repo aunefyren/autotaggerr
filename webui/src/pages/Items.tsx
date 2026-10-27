@@ -3,12 +3,13 @@ import { useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
 import { ItemsPage, Library, LibraryItem } from "../types";
-import { ConfirmDialog, EmptyState, ErrorNote, IdChip, Pill, StatusPill } from "../components/ui";
+import { ConfirmDialog, EmptyState, ErrorNote, IdChip } from "../components/ui";
 import { useToast } from "../toast";
 import { ItemDiffModal } from "../components/ItemDiff";
 import { AttachModal } from "../components/AttachModal";
 import { BulkAttachModal } from "../components/BulkAttachModal";
 import { MBLink } from "../components/MBLink";
+import { FailureLine, ItemStatusPill } from "../components/ItemStatus";
 
 const PAGE = 50;
 
@@ -44,7 +45,9 @@ export default function Items() {
   // type here: any of the three kinds resolves, and the server does the resolving.
   const [params, setParams] = useSearchParams();
   const mbid = params.get("mbid") ?? "";
-  const [libraryId, setLibraryId] = useState("");
+  // Seeded from the URL too, so a link that knows its library (the Items modal on an
+  // artist or album page read in one) opens on the same files.
+  const [libraryId, setLibraryId] = useState(() => params.get("library_id") ?? "");
   // Seeded from the URL so the dashboard's counts can link straight to their rows.
   const [status, setStatus] = useState(() => {
     const s = params.get("status") ?? "";
@@ -237,19 +240,7 @@ export default function Items() {
                       {it.pinned && <span title="Manually attached; automatic resolution will not override it"> 📌</span>}
                     </td>
                     <td>
-                      {it.pin_held ? (
-                        <span title="This file's audio changed since it was attached by hand. It is not tagged until the pin is kept or released.">
-                          <Pill kind="warn">Pin needs review</Pill>
-                        </span>
-                      ) : it.last_error_transient ? (
-                        <span title={RETRY_TITLES[it.status]}>
-                          <Pill kind={it.status === "error" ? "warn" : "off"}>
-                            {it.status === "error" ? "Will retry" : "Unmatched · waiting"}
-                          </Pill>
-                        </span>
-                      ) : (
-                        <StatusPill status={it.status} />
-                      )}
+                      <ItemStatusPill item={it} />
                     </td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -358,53 +349,5 @@ export default function Items() {
         />
       )}
     </div>
-  );
-}
-
-/** Why a transient row is not a problem yet, for the pill's title. */
-const RETRY_TITLES: Record<string, string> = {
-  error:
-    "This failure is expected to clear by itself — MusicBrainz was unreachable or throttled. The next processing run retries the file.",
-  unmatched:
-    "The manager did not recognise a file it knew, which is what Lidarr looks like part-way through replacing it. The file stays in the collection on its old identity until the next run either matches it or misses it again.",
-};
-
-/**
- * The failure a row carries, and when it happened, under its path. Kept to one line:
- * the full message is in the row's detail, and a wrapped stack trace in every row of a
- * failed run would push the list off the screen.
- */
-function FailureLine({ item }: { item: LibraryItem }) {
-  // An unmatched file is not a failure, but its manager may have said what would match
-  // it — said quietly, in the muted colour, since nothing here went wrong.
-  if (item.status === "unmatched" && item.error) {
-    return (
-      <span
-        className="dim"
-        title={item.error}
-        style={{ fontSize: 11, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: "68ch" }}
-      >
-        {item.error}
-      </span>
-    );
-  }
-  if (item.status !== "error" || !item.error) return null;
-  const when = item.last_error_at ? new Date(item.last_error_at).toLocaleString() : "";
-  return (
-    <span
-      className="mono"
-      title={item.error}
-      style={{
-        fontSize: 11,
-        color: item.last_error_transient ? "var(--text-muted)" : "var(--danger-text)",
-        overflow: "hidden",
-        textOverflow: "ellipsis",
-        whiteSpace: "nowrap",
-        maxWidth: "68ch",
-      }}
-    >
-      {when && <span className="dim">{when} · </span>}
-      {item.error}
-    </span>
   );
 }

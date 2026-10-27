@@ -16,6 +16,7 @@ import { Artwork, ArtistBackdrop } from "../components/Artwork";
 import { CoverageBar, DiskMarker } from "../components/CoverageBar";
 import { FollowFields, describeFollow } from "../components/FollowFields";
 import { RunBar } from "../components/RunBar";
+import { ItemsModal } from "../components/ItemsModal";
 import {
   Browse,
   FilterChip,
@@ -975,6 +976,7 @@ function ReleaseGroupRow({
   const target = editLibraryParam(artist);
   const where = editLibraryName(artist);
   const [busy, setBusy] = useState(false);
+  const [showItems, setShowItems] = useState(false);
 
   const partial = g.owned && !g.complete;
   const note = discrepancyNote(g, manager);
@@ -1121,7 +1123,30 @@ function ReleaseGroupRow({
       </td>
       <td className="num dim mono" style={{ fontSize: 11 }}>{(g.first_release_date || "").slice(0, 4) || "—"}</td>
       <td className="num mono" style={{ fontSize: 11, color: partial ? "var(--warning-text)" : "var(--text-dim)" }}>
-        {g.total_tracks > 0 ? `${g.owned_tracks}/${g.total_tracks}` : "—"}
+        {/* The count is the way to the files behind it, in the library this view reads. */}
+        {g.owned_tracks > 0 ? (
+          <button
+            type="button"
+            className="railref mono"
+            style={{ fontSize: 11, color: "inherit", margin: 0, textDecoration: "underline dotted", textUnderlineOffset: 3 }}
+            onClick={() => setShowItems(true)}
+            title={artist?.view_library_id ? "The files of this album in this library" : "The files of this album"}
+          >
+            {g.owned_tracks}/{g.total_tracks}
+          </button>
+        ) : g.total_tracks > 0 ? (
+          `${g.owned_tracks}/${g.total_tracks}`
+        ) : (
+          "—"
+        )}
+        {showItems && (
+          <ItemsModal
+            mbid={g.mb_id}
+            title={g.title}
+            libraryId={artist?.view_library_id}
+            onClose={() => setShowItems(false)}
+          />
+        )}
         {/* The counts describe the best-owned edition only, so owning a second
             pressing would otherwise be invisible here. */}
         {g.owned_editions > 1 && (

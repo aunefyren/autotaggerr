@@ -6,13 +6,26 @@ import { Modal, StatusPill } from "./ui";
 // ItemDiffModal is the signature view: one monospace row per tag, showing the
 // current on-disk value vs what Autotaggerr would write (git-style old → new).
 export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: () => void }) {
+  return (
+    <Modal title="File tags" onClose={onClose} wide>
+      <ItemDiffBody item={item} />
+    </Modal>
+  );
+}
+
+/**
+ * The tag diff without its modal: the Items page opens it as one, the Items modal
+ * opens it in a row disclosure under the file — never as a second modal on top.
+ * `showPath` is off where the row above already shows the path.
+ */
+export function ItemDiffBody({ item, showPath = true }: { item: LibraryItem; showPath?: boolean }) {
   const { data, err, loading } = useFetch<ItemTags>(() => api.get(`/library-items/${item.id}/tags`), [item.id]);
   const changed = data?.tags.filter((t) => t.changed).length ?? 0;
 
   return (
-    <Modal title="File tags" onClose={onClose} wide>
+    <>
       <div style={{ marginBottom: 14 }}>
-        <div className="mono" style={{ color: "var(--text)", fontSize: 12, wordBreak: "break-all" }}>{item.path}</div>
+        {showPath && <div className="mono" style={{ color: "var(--text)", fontSize: 12, wordBreak: "break-all" }}>{item.path}</div>}
         <div className="row" style={{ marginTop: 8, gap: 10 }}>
           <StatusPill status={item.status} />
           <span className="dim" style={{ fontSize: 11 }}>
@@ -47,7 +60,7 @@ export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: (
           ))}
         </div>
       )}
-    </Modal>
+    </>
   );
 }
 

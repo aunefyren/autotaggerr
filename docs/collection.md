@@ -823,6 +823,13 @@ beside it. A library holding none of the artist's files is a 409 that says so
 (`ErrNothingInLibrary`), not an empty run. Organise stays disabled where Lidarr names the files: in
 a Lidarr library's view, or on the overview of an artist whose every library is Lidarr's.
 
+**Items follow the tab as well.** The artist page's track count (`8/12`) on an owned album and the
+album page's *Items* button open `ItemsModal`, the album's files from `GET /library-items?mbid=`
+with the tab's `library_id`. The album page's track pane has its own *Items* for the edition on
+screen, which passes the release MBID instead; the server resolves either. On *All libraries* the
+modal lists every library's files and tags each row with its library. Its *Open in Items* link opens
+the Items page on the same `mbid` and `library_id`, where files are attached and pins settled.
+
 The album page follows the same rules for its Organise, Re-correlate and Plex links. The MCP
 `get_artist` and `get_album` tools filter their links by their `library` argument the same way.
 

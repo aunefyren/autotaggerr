@@ -16,6 +16,7 @@ import {
 import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { OrganiseDialog } from "../components/OrganiseDialog";
+import { ItemsModal } from "../components/ItemsModal";
 import { MBLink } from "../components/MBLink";
 import { ExternalLinks } from "../components/ExternalLinks";
 import { mediaSummary } from "../components/mediaSummary";
@@ -84,6 +85,8 @@ export default function ReleaseGroup() {
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
   const [organiseAsk, setOrganiseAsk] = useState(false);
   const [sameAsk, setSameAsk] = useState(false);
+  // Whose files the Items modal lists: the album's (its release-group) or one edition's.
+  const [itemsOf, setItemsOf] = useState<{ mbid: string; title: string } | null>(null);
 
   // Re-correlate queues on the shared job runner, so the global status is what says
   // whether it can be started — the same poll the artist page runs, for the same
@@ -390,6 +393,18 @@ export default function ReleaseGroup() {
           )}
           <button
             className="btn btn-ghost btn-sm"
+            disabled={loading || !rg?.owned}
+            title={
+              rg?.owned
+                ? `The files of this album${inLibraryName ? ` in ${inLibraryName}` : ""}, with what tagging would change in each`
+                : "Nothing of this album is on disk."
+            }
+            onClick={() => rg && setItemsOf({ mbid: rgid, title: rg.title })}
+          >
+            Items
+          </button>
+          <button
+            className="btn btn-ghost btn-sm"
             disabled={busy || loading || running || !rg?.owned || lidarrNamesFiles}
             title={
               lidarrNamesFiles
@@ -430,6 +445,15 @@ export default function ReleaseGroup() {
           rg={rg}
           manager={managerLabel}
           onCancel={() => setSameAsk(false)}
+        />
+      )}
+
+      {itemsOf && (
+        <ItemsModal
+          mbid={itemsOf.mbid}
+          title={itemsOf.title}
+          libraryId={viewLibrary || null}
+          onClose={() => setItemsOf(null)}
         />
       )}
 
@@ -482,6 +506,8 @@ export default function ReleaseGroup() {
           />
           <TrackPane
             releaseMbid={detailRelease}
+            owned={!!editions.find((e) => e.id === detailRelease)?.owned}
+            onShowItems={(mbid, title) => setItemsOf({ mbid, title })}
             anyDesire={anyDesire}
             anyEditionOn={anyEditionOn}
             editionDesires={editionDesires}
@@ -760,6 +786,8 @@ function EditionList({
  */
 function TrackPane({
   releaseMbid,
+  owned,
+  onShowItems,
   anyDesire,
   anyEditionOn,
   editionDesires,
@@ -772,6 +800,9 @@ function TrackPane({
   onDrop,
 }: {
   releaseMbid: string | null;
+  /** Files of this edition are on disk, so it has items to show. */
+  owned: boolean;
+  onShowItems: (releaseMbid: string, title: string) => void;
   anyDesire?: CollectionDesire;
   anyEditionOn: boolean;
   editionDesires: CollectionDesire[];
@@ -849,7 +880,21 @@ function TrackPane({
   return (
     <div className="card" style={{ padding: 0, overflow: "hidden" }}>
       <div style={{ padding: "10px 12px 8px" }}>
-        <div className="eyebrow">Tracks</div>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+          <div className="eyebrow">Tracks</div>
+          {/* This edition's files — the album-wide button above lists every edition's. */}
+          {owned && (
+            <button
+              type="button"
+              className="railref"
+              style={{ marginLeft: "auto" }}
+              title="The files of this edition, with what tagging would change in each"
+              onClick={() => onShowItems(releaseMbid, tracks.data?.release.title ?? "this edition")}
+            >
+              <span>Items</span>
+            </button>
+          )}
+        </div>
         <div className="dim" style={{ fontSize: 11, marginTop: 2 }}>
           {tracks.data?.release.title}
           {locked
