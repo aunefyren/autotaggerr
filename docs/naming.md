@@ -102,13 +102,16 @@ file to plan an Organise.
 them, so a folder named by one would split an album. Validation refuses them in the folder
 templates, as it does `{track}`.
 
-**Unknown is not empty.** An MP3's depth and a download with no group are known to be empty. They
-render empty, and their brackets collapse like any empty token's. A value nobody knows is
-different. Files indexed before release groups were recorded have a nil `ReleaseGroup`, and some
-files' headers cannot be read. Rendering either as empty would rename `02 Song-GRP.flac` to
-`02 Song.flac`. So a template that uses such a token fails for that file with a
-`NamingUnknownError`. Organise lists the file as skipped ("its {Release Group} is not known, so it
-is not renamed"). The item's `PATH` row shows the reason instead of a path.
+**Missing renders empty, as in Lidarr.** An MP3's depth, a download with no group, a release group
+nobody recorded (files indexed before release groups were, and native files that were never
+imported) and audio whose headers cannot be read all render empty, and their brackets collapse
+like any empty token's. Lidarr does the same, and its naming formats are written for it.
+
+This was briefly the other way. An unknown value failed the render, and Organise skipped the file
+("its {Release Group} is not known, so it is not renamed") rather than drop `-GRP` from a name that
+might carry it. In practice that left most of a native library outside any template that used the
+token. The cost of the Lidarr rule is real: a group that was in a file's name and never recorded is
+dropped by Organise. Organise shows every move for review first, so it is visible.
 
 Where the release group comes from:
 
@@ -207,7 +210,11 @@ steps, always, and the first moves nothing:
    item's `PATH` row use, so the three cannot disagree — and lists each file whose path would change
    as a row of the review table: from, struck, and to, in the diff's colours, each with its own
    **Skip**. Files that cannot be moved are listed apart with the reason (no identity, a release that
-   cannot be read, a Lidarr library), and the files already in place are counted. Releases are read
+   cannot be read, a Lidarr library), and the files already in place are counted. The summary says
+   "already in place" only of files that were checked and are: a plan where every file was skipped
+   says *Nothing here can be moved* and lists the reasons, counted, under it. It used to open every
+   plan without moves with "Every file is already where its naming templates put it", which read as
+   nothing to do when the answer was in the skipped list. Releases are read
    cache-first, so a library processed recently costs no request.
 2. **The commit** (`POST /organise`, a queued file-writing job) plans again when it runs and makes
    only the moves that are still exactly what was reviewed; anything that changed meanwhile is

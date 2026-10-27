@@ -146,17 +146,10 @@ func (r *Runner) PlanOrganise(scope OrganiseScope) (OrganisePlan, error) {
 			}
 			releases[item.MBReleaseID] = release
 		}
-		// A file token whose value is not known for this file (a release group never
-		// recorded, audio that could not be read) fails the render rather than naming
-		// the file without it — which would strip "-GRP" from a name that carries it.
+		// A release group never recorded, or audio that could not be read, names the
+		// file without the token — Lidarr's rule (see modules.NamingFile).
 		file := modules.NamingFileFor(item.Path, lib.readsAudio, item.ReleaseGroup)
 		path, err := modules.RenderLibraryPath(lib.naming, release, item.MBReleaseTrackID, file)
-		var unknown *modules.NamingUnknownError
-		if errors.As(err, &unknown) {
-			row.Reason = fmt.Sprintf("its {%s} is not known, so it is not renamed", unknown.Token)
-			plan.Skipped = append(plan.Skipped, row)
-			continue
-		}
 		if err != nil {
 			row.Reason = "its path could not be rendered: " + err.Error()
 			plan.Skipped = append(plan.Skipped, row)

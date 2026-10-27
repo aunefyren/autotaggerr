@@ -22,9 +22,8 @@ type NamingSample struct {
 // sampleFLAC and sampleMP3 are the two kinds of file the samples are, as a naming
 // template reads them.
 var (
-	sampleFLAC = NamingFile{Ext: ".flac", Audio: AudioProperties{Codec: "FLAC", BitsPerSample: 24}, AudioKnown: true,
-		ReleaseGroup: "GRP", ReleaseGroupKnown: true}
-	sampleMP3 = NamingFile{Ext: ".mp3", Audio: AudioProperties{Codec: "MP3"}, AudioKnown: true, ReleaseGroupKnown: true}
+	sampleFLAC = NamingFile{Ext: ".flac", Audio: AudioProperties{Codec: "FLAC", BitsPerSample: 24}, ReleaseGroup: "GRP"}
+	sampleMP3  = NamingFile{Ext: ".mp3", Audio: AudioProperties{Codec: "MP3"}}
 )
 
 func sampleArtist(id, name, sortName string) []models.ArtistCredit {

@@ -92,14 +92,33 @@ export function OrganiseDialog({
         {!plan && !err && <span className="dim">Working out where every file belongs…</span>}
         {plan && (
           <>
+            {/* "Already in place" is said only of files that were checked and are. It used to
+                open every plan with no moves, so a plan where every file was skipped read
+                as "nothing to do" with the reason one click away. */}
             <p className="muted" style={{ margin: 0, fontSize: 12 }}>
-              {plan.moves.length === 0
-                ? "Every file is already where its library's naming templates put it."
-                : `${plan.moves.length} file${plan.moves.length === 1 ? "" : "s"} would move`}
+              {plan.moves.length > 0
+                ? `${plan.moves.length} file${plan.moves.length === 1 ? "" : "s"} would move`
+                : plan.skipped.length > 0
+                  ? "Nothing here can be moved"
+                  : plan.in_place > 0
+                    ? "Every file is already where its library's naming templates put it"
+                    : "No identified files to organise here"}
               {plan.in_place > 0 && ` · ${plan.in_place} already in place`}
               {plan.skipped.length > 0 && ` · ${plan.skipped.length} cannot be moved`}
               . Files are renamed within the library; folders left empty are removed, and Plex is asked to rescan.
             </p>
+
+            {/* Why files cannot be moved, by reason — stated up front, since a plan with
+                skipped files is one whose answer is in the reasons. */}
+            {plan.skipped.length > 0 && (
+              <ul className="stack" style={{ gap: 2, margin: 0, paddingLeft: 18, fontSize: 12 }}>
+                {skippedReasons(plan.skipped).map(([reason, count]) => (
+                  <li key={reason}>
+                    <span className="mono">{count}</span> file{count === 1 ? "" : "s"}: {reason}
+                  </li>
+                ))}
+              </ul>
+            )}
 
             {rows.length > 0 && (
               <div className="tablewrap" style={{ maxHeight: "55vh", overflow: "auto" }}>
@@ -175,4 +194,14 @@ export function OrganiseDialog({
       </div>
     </Modal>
   );
+}
+
+/** Skipped files counted by reason, most common first. */
+function skippedReasons(skipped: OrganiseRow[]): [string, number][] {
+  const counts = new Map<string, number>();
+  for (const row of skipped) {
+    const reason = row.reason ?? "no reason given";
+    counts.set(reason, (counts.get(reason) ?? 0) + 1);
+  }
+  return [...counts].sort((a, b) => b[1] - a[1]);
 }

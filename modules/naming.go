@@ -82,48 +82,37 @@ type namingContext struct {
 // MusicBrainz: its extension, what its audio is, and the release group of the
 // download it came from.
 //
-// "Known" is kept apart from "empty" because they lead to different answers. An MP3
-// has no bit depth and a download may have had no release group — those render empty,
-// and the brackets around them collapse. But a file whose headers could not be read,
-// or that arrived before release groups were recorded, has a value nobody knows: naming
-// it as empty would rename "Song-GRP.flac" to "Song.flac", so a template that uses such
-// a token fails for that file instead (NamingUnknownError).
+// A value that is not known renders empty, exactly like one that is known to be
+// empty — Lidarr's rule, and the one a Lidarr naming format is written for. A file
+// that arrived before release groups were recorded, or whose headers could not be
+// read, is named without the token and its brackets collapse, the same as an MP3's
+// bit depth. That does drop "-GRP" from a name that carries it when nothing recorded
+// the group; refusing to rename such files instead left Organise unable to apply a
+// template to most of a native library.
 type NamingFile struct {
-	Ext        string
-	Audio      AudioProperties
-	AudioKnown bool
+	Ext   string
+	Audio AudioProperties
 	// ReleaseGroup is the group that put out the download ("GRP" in
-	// "Artist-Album-WEB-FLAC-2014-GRP"), "" for none.
-	ReleaseGroup      string
-	ReleaseGroupKnown bool
+	// "Artist-Album-WEB-FLAC-2014-GRP"), "" for none or not recorded.
+	ReleaseGroup string
 }
 
 // NamingFileFor reads what a file's name may need to know about it: its extension and
 // its audio from the file, and the release group from wherever the caller recorded it
-// (nil: never recorded). The audio is only read when audio is true — a template that
-// uses no MediaInfo token should not cost a file open.
+// (nil: never recorded, which names it as none). The audio is only read when audio is
+// true — a template that uses no MediaInfo token should not cost a file open — and a
+// file whose headers cannot be read is named as having no codec or depth.
 func NamingFileFor(path string, readAudio bool, releaseGroup *string) NamingFile {
 	file := NamingFile{Ext: filepath.Ext(path)}
 	if readAudio {
 		if audio, err := ReadAudioProperties(path); err == nil {
-			file.Audio, file.AudioKnown = audio, true
+			file.Audio = audio
 		}
 	}
 	if releaseGroup != nil {
-		file.ReleaseGroup, file.ReleaseGroupKnown = strings.TrimSpace(*releaseGroup), true
+		file.ReleaseGroup = strings.TrimSpace(*releaseGroup)
 	}
 	return file
-}
-
-// NamingUnknownError is a template using a token whose value is not known for this
-// file — not empty, unknown. See NamingFile.
-type NamingUnknownError struct {
-	Token string
-	Field NamingField
-}
-
-func (e *NamingUnknownError) Error() string {
-	return fmt.Sprintf("the %s template uses {%s}, which is not known for this file", e.Field.label(), e.Token)
 }
 
 // NamingUsesAudio reports whether any of the templates reads the file's audio, so a
@@ -192,9 +181,6 @@ type NamingToken struct {
 
 	text   func(namingContext) string
 	number func(namingContext) int
-	// known, when set, says whether the value can be told for this file at all; a
-	// token without it is always known (MusicBrainz's data is the input, not a guess).
-	known func(namingContext) bool
 	// audio marks the tokens read from the file's audio headers.
 	audio bool
 }
@@ -388,8 +374,7 @@ var namingTokens = []NamingToken{
 	// Read from the file, not from MusicBrainz, so they belong to the track file only:
 	// the files of one album folder can differ in all three.
 	{Name: "MediaInfo AudioCodec", Field: NamingTrackFile, Description: "The file's audio codec, read from the file (\"FLAC\", \"MP3\")",
-		text:  func(c namingContext) string { return c.file.Audio.Codec },
-		known: func(c namingContext) bool { return c.file.AudioKnown }, audio: true},
+		text: func(c namingContext) string { return c.file.Audio.Codec }, audio: true},
 	{Name: "MediaInfo AudioBitsPerSample", Field: NamingTrackFile, Description: "The file's sample depth (\"16\", \"24\"); empty for MP3, which has none",
 		text: func(c namingContext) string {
 			if c.file.Audio.BitsPerSample <= 0 {
@@ -397,10 +382,9 @@ var namingTokens = []NamingToken{
 			}
 			return strconv.Itoa(c.file.Audio.BitsPerSample)
 		},
-		known: func(c namingContext) bool { return c.file.AudioKnown }, audio: true},
+		audio: true},
 	{Name: "Release Group", Field: NamingTrackFile, Description: "The group that put out the download the file came from (\"GRP\" in Artist-Album-WEB-FLAC-2014-GRP) — not MusicBrainz's release group, which is {Album Title}",
-		text:  func(c namingContext) string { return c.file.ReleaseGroup },
-		known: func(c namingContext) bool { return c.file.ReleaseGroupKnown }},
+		text: func(c namingContext) string { return c.file.ReleaseGroup }},
 }
 
 // NamingTokens lists every token a template may use.
@@ -567,9 +551,7 @@ func (e *NamingEmptyError) Error() string {
 
 // RenderLibraryPath renders where one track of a release belongs, keeping the file's
 // extension. The templates are assumed valid (ValidateNamingTemplates); an invalid one
-// is still an error here rather than a panic, since a stored row predates nothing. A
-// template using a token whose value is unknown for this file is a
-// *NamingUnknownError, never a name rendered without it.
+// is still an error here rather than a panic, since a stored row predates nothing.
 func RenderLibraryPath(templates models.NamingTemplates, release models.MusicBrainzReleaseResponse, trackID string, file NamingFile) (LibraryPath, error) {
 	templates = templates.WithDefaults()
 	ext := file.Ext
@@ -584,11 +566,6 @@ func RenderLibraryPath(templates models.NamingTemplates, release models.MusicBra
 		parts, err := parseNamingTemplate(field.template(templates))
 		if err != nil {
 			return "", fmt.Errorf("%s template %w", field.label(), err)
-		}
-		for _, part := range parts {
-			if part.token != nil && part.token.known != nil && !part.token.known(ctx) {
-				return "", &NamingUnknownError{Token: part.token.Name, Field: field}
-			}
 		}
 		segment := renderNamingParts(parts, ctx, maxBytes)
 		if segment == "" {

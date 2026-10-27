@@ -51,10 +51,10 @@ func TestImportNamesAndRecordsTheReleaseGroup(t *testing.T) {
 	}
 }
 
-// TestOrganiseSkipsAFileWhoseReleaseGroupIsUnknown: a file indexed before release groups
-// were recorded is not renamed by a template that uses one — that would strip the
-// group from a name that carries it — and says why. A recorded one is renamed.
-func TestOrganiseSkipsAFileWhoseReleaseGroupIsUnknown(t *testing.T) {
+// TestOrganiseNamesAnUnrecordedReleaseGroupAsNone: a file indexed before release groups
+// were recorded is renamed like one recorded as none — the token renders empty and its
+// prefix goes with it, Lidarr's rule — rather than left where it is.
+func TestOrganiseNamesAnUnrecordedReleaseGroupAsNone(t *testing.T) {
 	w := organisedWorld(t)
 	releaseGroupNaming(t, w)
 	var items []models.LibraryItem
@@ -62,17 +62,22 @@ func TestOrganiseSkipsAFileWhoseReleaseGroupIsUnknown(t *testing.T) {
 	if len(items) != 2 {
 		t.Fatalf("items = %d", len(items))
 	}
-	// The import recorded "" for both; forget the first, as an older row would have.
+	// The import recorded "" for both; forget the first, as an older row would have,
+	// and give the second a group.
 	w.db.Model(&items[0]).Update("release_group", nil)
+	w.db.Model(&items[1]).Update("release_group", "GRP")
 
 	plan, err := w.runner.PlanOrganise(OrganiseScope{LibraryID: w.library.ID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Skipped) != 1 || plan.Skipped[0].ItemID != items[0].ID || !strings.Contains(plan.Skipped[0].Reason, "{Release Group} is not known") {
-		t.Errorf("skipped = %+v, want the file with no recorded group", plan.Skipped)
+	if len(plan.Skipped) != 0 || len(plan.Moves) != 2 {
+		t.Fatalf("plan = %d moves, skipped %+v; want both moved", len(plan.Moves), plan.Skipped)
 	}
-	if len(plan.Moves) != 1 || !strings.HasSuffix(plan.Moves[0].ToRel, "02 Song Two [FLAC 16].flac") {
-		t.Errorf("moves = %+v, want the file whose group is recorded", plan.Moves)
+	if got := plan.Moves[0].ToRel; !strings.HasSuffix(got, "01 Song One [FLAC 16].flac") {
+		t.Errorf("unrecorded group = %q, want the name without it", got)
+	}
+	if got := plan.Moves[1].ToRel; !strings.HasSuffix(got, "02 Song Two [FLAC 16]-GRP.flac") {
+		t.Errorf("recorded group = %q", got)
 	}
 }

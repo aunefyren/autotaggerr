@@ -44,9 +44,9 @@ func TestReadAudioProperties(t *testing.T) {
 	}
 }
 
-// TestFileTokensRender: the three tokens read the file, an MP3's missing depth collapses
-// its brackets like any empty token, and a token whose value is not known fails the
-// render rather than naming the file without it.
+// TestFileTokensRender: the three tokens read the file, and anything missing — an MP3's
+// depth, a release group nobody recorded, audio that could not be read — renders empty
+// and collapses its brackets, as Lidarr does.
 func TestFileTokensRender(t *testing.T) {
 	templates := models.NamingTemplates{TrackFile: "{track:00} {Track Title} [{MediaInfo AudioCodec}{ MediaInfo AudioBitsPerSample}]{-Release Group}"}
 	render := func(file NamingFile) (string, error) {
@@ -61,21 +61,9 @@ func TestFileTokensRender(t *testing.T) {
 		t.Errorf("MP3 without depth or group = %q, %v", got, err)
 	}
 
-	var unknown *NamingUnknownError
-	noGroup := sampleFLAC
-	noGroup.ReleaseGroup, noGroup.ReleaseGroupKnown = "", false
-	if _, err := render(noGroup); !errors.As(err, &unknown) || unknown.Token != "Release Group" {
-		t.Errorf("unknown release group = %v, want a NamingUnknownError naming it", err)
-	}
-	noAudio := sampleFLAC
-	noAudio.Audio, noAudio.AudioKnown = AudioProperties{}, false
-	if _, err := render(noAudio); !errors.As(err, &unknown) || unknown.Token != "MediaInfo AudioCodec" {
-		t.Errorf("unreadable audio = %v, want a NamingUnknownError naming the codec", err)
-	}
-
-	// A template that does not use the tokens renders for a file nothing is known of.
-	if _, err := RenderLibraryPath(models.NamingTemplates{}, sampleRumours, sampleID("32"), NamingFile{Ext: ".flac"}); err != nil {
-		t.Errorf("default templates with an unknown file = %v", err)
+	// Nothing known about the file at all: named without any of the three.
+	if got, err := render(NamingFile{Ext: ".flac"}); err != nil || got != "02 Dreams.flac" {
+		t.Errorf("a file nothing is known of = %q, %v; want the name without the tokens", got, err)
 	}
 }
 
@@ -114,16 +102,12 @@ func TestNamingUsesAudio(t *testing.T) {
 
 func TestNamingFileFor(t *testing.T) {
 	path := synthAudio(t, ".flac")
-	if f := NamingFileFor(path, false, nil); f.Ext != ".flac" || f.AudioKnown || f.ReleaseGroupKnown {
+	if f := NamingFileFor(path, false, nil); f != (NamingFile{Ext: ".flac"}) {
 		t.Errorf("nothing asked = %+v, want only the extension", f)
 	}
 	group := " GRP "
-	if f := NamingFileFor(path, true, &group); !f.AudioKnown || f.Audio.Codec != "FLAC" || f.ReleaseGroup != "GRP" || !f.ReleaseGroupKnown {
+	if f := NamingFileFor(path, true, &group); f.Audio.Codec != "FLAC" || f.Audio.BitsPerSample != 16 || f.ReleaseGroup != "GRP" {
 		t.Errorf("audio and group = %+v", f)
-	}
-	none := ""
-	if f := NamingFileFor(path, false, &none); !f.ReleaseGroupKnown || f.ReleaseGroup != "" {
-		t.Errorf("a recorded empty group = %+v, want known and empty", f)
 	}
 }
 

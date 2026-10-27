@@ -536,8 +536,7 @@ type LibraryItem struct {
 	// ReleaseGroup is the group of the download the file came from — what the
 	// {Release Group} naming token renders. Recorded by the import (parsed from the
 	// download's name, confirmed in the review) and from Lidarr's track file. Nil means
-	// never recorded, which is not the same as "" (recorded: there was none): a file
-	// whose group is unknown is not renamed by a template that uses it.
+	// never recorded; for naming it is the same as "" (none) — Lidarr's rule.
 	ReleaseGroup *string `json:"release_group,omitempty"`
 
 	CorrelationSource string `json:"correlation_source"`
