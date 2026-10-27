@@ -105,8 +105,25 @@ manager. So the choice is allowed, but it is never silent:
 - **The form can actually choose it.** `PUT /libraries/:id` treats `"manager_id": null` as "clear"
   and an absent `manager_id` as "unchanged" (`routers.clearableUUID`). The form sends null. Before
   this, choosing the empty option while editing kept the old manager. The library's
-  `data_source_id` and `tagger_profile_id` work the same way, so *Default* on either is an edit that
-  sticks, and so does a manager's `default_data_source_id`.
+  `data_source_id` works the same way, so *Default* is an edit that sticks, and so does a manager's
+  `default_data_source_id`.
+
+**A library always names its tagger profile.** There used to be a *Default* option that stored
+none, and a library without one was tagged by the first profile by id — next to the seeded profile,
+which is also called *Default*, so the dropdown offered two entries with one name and the first of
+them meant whichever profile sorted first. Now:
+
+- **The dropdown lists the profiles and nothing else.** A new library preselects the first by id,
+  the oldest (IDs are UUIDv7) — the seeded one on most installs.
+- **`POST /libraries` without a profile is given that same one**, so an older client or a script
+  still gets a library that says what tags it. `"tagger_profile_id": null` on an edit is a 400, and an
+  unknown ID on either is a 400.
+- **A profile a library uses, and the last profile, cannot be deleted** (409, naming the libraries),
+  so the reference cannot dangle again.
+- **Upgrades keep behaviour**: the `pin_fallback_tagger_profile` data migration gives each library
+  naming none, or a deleted profile, the profile it was already tagged by — as
+  `pin_fallback_manager` did for managers. `resolveTaggerProfile` keeps its first-by-id fallback
+  only as a guard; nothing should reach it.
 
 Internally the library resolves to a manager row with no ID, of the native type. Native is the type
 because the resolution is the same, embedded tags only, and because it is what files correlated

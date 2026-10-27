@@ -471,8 +471,45 @@ func checkProfileNaming(c *gin.Context, p models.TaggerProfile) bool {
 	return false
 }
 
-func (a *API) getTaggerProfile(c *gin.Context)    { getEntity[models.TaggerProfile](a, c) }
-func (a *API) deleteTaggerProfile(c *gin.Context) { deleteEntity[models.TaggerProfile](a, c) }
+func (a *API) getTaggerProfile(c *gin.Context) { getEntity[models.TaggerProfile](a, c) }
+
+// deleteTaggerProfile refuses (409) a profile a library is tagged by, and the last
+// profile there is. Either would leave a library naming no profile, and a library
+// without one used to be tagged by whichever profile sorted first.
+func (a *API) deleteTaggerProfile(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	var exists int64
+	if err := a.DB.Model(&models.TaggerProfile{}).Where("id = ?", id).Count(&exists).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
+		return
+	}
+	if exists == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	var users []string
+	if err := a.DB.Model(&models.Library{}).Where("tagger_profile_id = ?", id).Order("name").Pluck("name", &users).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
+		return
+	}
+	if len(users) > 0 {
+		c.JSON(http.StatusConflict, gin.H{"error": "this profile tags " + strings.Join(users, ", ") + " — give them another profile first"})
+		return
+	}
+	var count int64
+	if err := a.DB.Model(&models.TaggerProfile{}).Count(&count).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
+		return
+	}
+	if count == 1 {
+		c.JSON(http.StatusConflict, gin.H{"error": "the last tagger profile cannot be deleted — every library needs one"})
+		return
+	}
+	deleteEntity[models.TaggerProfile](a, c)
+}
 
 func (a *API) createTaggerProfile(c *gin.Context) {
 	var in taggerProfileInput
@@ -797,6 +834,27 @@ func (a *API) checkLibraryDataSource(c *gin.Context, id *uuid.UUID) bool {
 	return true
 }
 
+// checkLibraryTaggerProfile validates a library's profile when an edit names one: it
+// must exist, and it cannot be cleared. There is no "default" profile to fall back
+// to — a library says which profile tags it (database.pinFallbackTaggerProfile).
+// Absent leaves the library's own alone.
+func (a *API) checkLibraryTaggerProfile(c *gin.Context, ref clearableUUID) bool {
+	if !ref.Set {
+		return true
+	}
+	if ref.Value == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "a library needs a tagger profile"})
+		return false
+	}
+	var count int64
+	a.DB.Model(&models.TaggerProfile{}).Where("id = ?", *ref.Value).Count(&count)
+	if count == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "tagger profile not found"})
+		return false
+	}
+	return true
+}
+
 func (a *API) createLibrary(c *gin.Context) {
 	var in libraryInput
 	if err := c.ShouldBindJSON(&in); err != nil {
@@ -812,6 +870,20 @@ func (a *API) createLibrary(c *gin.Context) {
 		return
 	}
 	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) || !a.checkLibraryMediaServers(c, in.MediaServers) {
+		return
+	}
+	// A create that names no profile gets the first, the one the seed made: a caller
+	// that has never heard of profiles (an older client, a script) still gets a
+	// library that says what it is tagged by.
+	if !in.TaggerProfileID.Set || in.TaggerProfileID.Value == nil {
+		var first models.TaggerProfile
+		if err := a.DB.Order("id").First(&first).Error; err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "create a tagger profile first — every library needs one"})
+			return
+		}
+		in.TaggerProfileID = clearableUUID{Set: true, Value: &first.ID}
+	}
+	if !a.checkLibraryTaggerProfile(c, in.TaggerProfileID) {
 		return
 	}
 	l := models.Library{Enabled: true}
@@ -848,7 +920,8 @@ func (a *API) updateLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
-	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) || !a.checkLibraryMediaServers(c, in.MediaServers) {
+	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) || !a.checkLibraryMediaServers(c, in.MediaServers) ||
+		!a.checkLibraryTaggerProfile(c, in.TaggerProfileID) {
 		return
 	}
 	in.apply(&l)

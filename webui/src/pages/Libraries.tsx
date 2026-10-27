@@ -290,6 +290,11 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const [path, setPath] = useState(initial?.path ?? "");
   const [managerId, setManagerId] = useState(initial?.manager_id ?? "");
   const [taggerProfileId, setTaggerProfileId] = useState(initial?.tagger_profile_id ?? "");
+  // A library always names its profile; until one is picked, the form shows the one the
+  // server gives a library that names none — the first by id, the oldest (IDs are
+  // UUIDv7). Derived rather than seeded so the profiles can load after the form opens.
+  const firstProfileId = options.profiles.map((p) => p.id).sort()[0] ?? "";
+  const profileId = taggerProfileId || firstProfileId;
   const [useAcoustID, setUseAcoustID] = useState(initial?.use_acoustid ?? false);
   const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
   const [bpmWrite, setBPMWrite] = useState<BPMWrite>(initial?.bpm_write ?? "");
@@ -313,10 +318,11 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
         analyse_loudness: analyseLoudness, replaygain_write: replayGainWrite,
         media_servers: mediaServers.map((l) => ({ media_server_id: l.media_server_id, section_key: l.section_key })),
       };
-      // Null, not absent: "No manager" and "Default" are choices, and absent would keep
-      // the old one — an edit back to Default used to be silently ignored.
+      // Null, not absent: "No manager" is a choice, and absent would keep the old one —
+      // an edit back to it used to be silently ignored. The profile has no such choice:
+      // absent only before the profiles have loaded, and the server then picks the same one.
       body.manager_id = managerId || null;
-      body.tagger_profile_id = taggerProfileId || null;
+      if (profileId) body.tagger_profile_id = profileId;
 
       if (editing) await api.put(`/libraries/${initial!.id}`, body);
       else await api.post("/libraries", { ...body, enabled: true });
@@ -368,8 +374,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
             A control that changes nothing reads as a setting that does not work. */}
         <div className="field">
           <label className="flabel">Tagger profile</label>
-          <select className="select" value={taggerProfileId} onChange={(e) => setTaggerProfileId(e.target.value)}>
-            <option value="">Default</option>
+          <select className="select" value={profileId} onChange={(e) => setTaggerProfileId(e.target.value)}>
             {options.profiles.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}

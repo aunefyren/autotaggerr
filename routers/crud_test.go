@@ -269,10 +269,11 @@ func TestLibraryManagerCanBeCleared(t *testing.T) {
 	}
 }
 
-// TestLibraryDefaultsCanBeRestored: the form's "Default" for a metadata source or a
-// tagger profile sends null, and null has to clear the choice. Both were plain
-// pointers, so null decoded as "not sent" and an edit back to Default kept the old
-// choice with nothing on the page saying so.
+// TestLibraryDefaultsCanBeRestored: the form's "Default" for a metadata source sends
+// null, and null has to clear the choice. It was a plain pointer, so null decoded as
+// "not sent" and an edit back to Default kept the old choice with nothing on the page
+// saying so. The tagger profile went the other way: it has no "Default" any more, so
+// null is refused rather than cleared.
 func TestLibraryDefaultsCanBeRestored(t *testing.T) {
 	r, api := setupAPI(t)
 	tok := loginToken(t, r)
@@ -301,13 +302,17 @@ func TestLibraryDefaultsCanBeRestored(t *testing.T) {
 		t.Fatalf("an edit sending neither field cleared one: %+v", got)
 	}
 
-	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{
-		"data_source_id": nil, "tagger_profile_id": nil,
-	}); w.Code != http.StatusOK {
-		t.Fatalf("restore defaults = %d: %s", w.Code, w.Body.String())
+	if w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"data_source_id": nil}); w.Code != http.StatusOK {
+		t.Fatalf("restore default data source = %d: %s", w.Code, w.Body.String())
 	}
-	if got := read(); got.DataSourceID != nil || got.TaggerProfileID != nil {
-		t.Errorf("null left data source %v, tagger profile %v", got.DataSourceID, got.TaggerProfileID)
+	if got := read(); got.DataSourceID != nil {
+		t.Errorf("null left data source %v", got.DataSourceID)
+	}
+	// A tagger profile has no default to restore: a library names the one it is tagged by.
+	w := do(r, "PUT", "/api/v1/libraries/"+lib.ID.String(), tok, map[string]any{"tagger_profile_id": nil})
+	expectStatus(t, "clear tagger profile", w.Code, w.Body.String(), http.StatusBadRequest, "needs a tagger profile")
+	if got := read(); got.TaggerProfileID == nil || *got.TaggerProfileID != profile.ID {
+		t.Errorf("refused clear changed the tagger profile to %v", got.TaggerProfileID)
 	}
 
 	// Setting one again still goes through the metadata-provider check.
@@ -497,4 +502,40 @@ func TestEventDetailItems(t *testing.T) {
 	if bytes.Contains(w.Body.Bytes(), []byte(`"changes"`)) {
 		t.Errorf("the feed should not carry per-file detail: %s", w.Body.String())
 	}
+}
+
+// TestLibraryAlwaysNamesATaggerProfile: a create that names no profile is given the
+// first; one naming a profile that does not exist is refused. A profile a library
+// uses, and the last profile, cannot be deleted — either would leave a library
+// tagged by whichever profile happened to sort first.
+func TestLibraryAlwaysNamesATaggerProfile(t *testing.T) {
+	r, api := setupAPI(t)
+	tok := loginToken(t, r)
+	var first models.TaggerProfile
+	if err := api.DB.Order("id").First(&first).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	created := createEntity(t, r, tok, "/api/v1/libraries", map[string]any{"name": "L", "path": "/l"})
+	if created["tagger_profile_id"] != first.ID.String() {
+		t.Errorf("tagger_profile_id = %v, want the first profile %s", created["tagger_profile_id"], first.ID)
+	}
+	w := do(r, "POST", "/api/v1/libraries", tok, map[string]any{"name": "M", "path": "/m", "tagger_profile_id": uuid.New().String()})
+	expectStatus(t, "unknown profile", w.Code, w.Body.String(), http.StatusBadRequest, "tagger profile not found")
+
+	w = do(r, "DELETE", "/api/v1/tagger-profiles/"+first.ID.String(), tok, nil)
+	expectStatus(t, "in use", w.Code, w.Body.String(), http.StatusConflict, "tags L")
+
+	other := createEntity(t, r, tok, "/api/v1/tagger-profiles", map[string]any{"name": "Other"})
+	if w := do(r, "PUT", "/api/v1/libraries/"+created["id"].(string), tok, map[string]any{"tagger_profile_id": other["id"]}); w.Code != http.StatusOK {
+		t.Fatalf("move library = %d: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "DELETE", "/api/v1/tagger-profiles/"+first.ID.String(), tok, nil); w.Code != http.StatusNoContent {
+		t.Fatalf("delete unused = %d: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "DELETE", "/api/v1/libraries/"+created["id"].(string), tok, nil); w.Code != http.StatusNoContent {
+		t.Fatalf("delete library = %d: %s", w.Code, w.Body.String())
+	}
+	w = do(r, "DELETE", "/api/v1/tagger-profiles/"+other["id"].(string), tok, nil)
+	expectStatus(t, "last", w.Code, w.Body.String(), http.StatusConflict, "last tagger profile")
 }

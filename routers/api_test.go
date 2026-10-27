@@ -45,6 +45,11 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 		t.Fatalf("create user: %v", err)
 	}
 	storeAPIKey(t, db, admin.ID, "key-123", models.APIKeyScopeWrite)
+	// The profile database.Seed makes on a real install: a library always names one,
+	// and a create that names none is given the first.
+	if err := db.Create(&models.TaggerProfile{Name: "Default", WriteTags: true}).Error; err != nil {
+		t.Fatalf("create tagger profile: %v", err)
+	}
 
 	scanRunner := process.NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	api := &API{

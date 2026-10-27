@@ -28,6 +28,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"unscoped_library_columns", unscopedLibraryColumns},
 		{"follow_library_sets", followLibrarySets},
 		{"expire_edition_lists", expireEditionLists},
+		{"pin_fallback_tagger_profile", pinFallbackTaggerProfile},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -73,6 +74,33 @@ func pinFallbackManager(db *gorm.DB) error {
 	}
 	if res.RowsAffected > 0 {
 		logger.Log.Infof("assigned manager %q to %d library(ies) that had none and were already using it as the default", first.Name, res.RowsAffected)
+	}
+	return nil
+}
+
+// pinFallbackTaggerProfile names the profile each library was already tagged by,
+// where it named none or one since deleted. Such a library was tagged by the first
+// profile by id (components.resolveTaggerProfile), and the form offered that as a
+// "Default" option beside a profile the seed also calls "Default" — two entries with
+// one name, the first of them a profile chosen by sort order rather than by anyone.
+// A library now always names its profile; pinning keeps every library tagging
+// exactly as it did, as pinFallbackManager did for managers.
+func pinFallbackTaggerProfile(db *gorm.DB) error {
+	var first models.TaggerProfile
+	if err := db.Order("id").First(&first).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil // no profile to pin; the seed creates one before migrations run
+		}
+		return err
+	}
+	res := db.Model(&models.Library{}).
+		Where("tagger_profile_id IS NULL OR tagger_profile_id NOT IN (?)", db.Model(&models.TaggerProfile{}).Select("id")).
+		Update("tagger_profile_id", first.ID)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		logger.Log.Infof("assigned tagger profile %q to %d library(ies) that named none and were already tagged by it", first.Name, res.RowsAffected)
 	}
 	return nil
 }

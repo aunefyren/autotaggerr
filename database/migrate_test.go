@@ -280,3 +280,39 @@ func TestFollowLibrarySets(t *testing.T) {
 		t.Errorf("every = %v, want empty", every.FollowLibraryIDs)
 	}
 }
+
+// TestPinFallbackTaggerProfile: a library naming no profile, or one since deleted, is
+// given the profile it was being tagged by — the first by id, the resolver's fallback.
+// A library naming a real profile keeps it.
+func TestPinFallbackTaggerProfile(t *testing.T) {
+	db := testDB(t)
+	first := models.TaggerProfile{Name: "Default", WriteTags: true}
+	second := models.TaggerProfile{Name: "Strict", WriteTags: true}
+	for _, p := range []*models.TaggerProfile{&first, &second} {
+		if err := db.Create(p).Error; err != nil {
+			t.Fatalf("profile: %v", err)
+		}
+	}
+	gone := uuid.New()
+	none := models.Library{Name: "None", Path: "/a", Enabled: true}
+	dangling := models.Library{Name: "Dangling", Path: "/b", Enabled: true, TaggerProfileID: &gone}
+	own := models.Library{Name: "Own", Path: "/c", Enabled: true, TaggerProfileID: &second.ID}
+	for _, l := range []*models.Library{&none, &dangling, &own} {
+		if err := db.Create(l).Error; err != nil {
+			t.Fatalf("library: %v", err)
+		}
+	}
+
+	if err := ApplyDataMigrations(db); err != nil {
+		t.Fatalf("ApplyDataMigrations: %v", err)
+	}
+	for lib, want := range map[uuid.UUID]uuid.UUID{none.ID: first.ID, dangling.ID: first.ID, own.ID: second.ID} {
+		var got models.Library
+		if err := db.First(&got, "id = ?", lib).Error; err != nil {
+			t.Fatal(err)
+		}
+		if got.TaggerProfileID == nil || *got.TaggerProfileID != want {
+			t.Errorf("%s: tagger profile = %v, want %s", got.Name, got.TaggerProfileID, want)
+		}
+	}
+}

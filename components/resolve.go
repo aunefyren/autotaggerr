@@ -113,6 +113,8 @@ func resolveTaggerProfile(db *gorm.DB, library models.Library, found bool) model
 				return p
 			}
 		}
+		// A guard only: every library names a profile that exists (the
+		// pin_fallback_tagger_profile migration, the library and profile endpoints).
 		var first models.TaggerProfile
 		if err := db.Order("id").First(&first).Error; err == nil {
 			return first

@@ -105,9 +105,6 @@ and a measured account of what Jellyfin reads
   does — find the album holding a file, refresh it, list sections (libraries), scan, link — plus a
   `type` value; `PlexTargets` would become an interface over both. No table, page or migration.
 
-- The default tagger is "Default" and you can select a default tagger in the drop down, meaning two "Default"
-  - Do we need a default option?
-
 - /settings must be reworked with /frontend-design & style guide. New design must make the categories more navigable.
 
 ## Roadmap / ideas
