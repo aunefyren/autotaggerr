@@ -520,6 +520,9 @@ func artworkKeySize(entity string, size int) int {
 	return nearestCoverArtSize(size)
 }
 
+// ArtworkCacheDir is where cached images are written, for the storage overview.
+func ArtworkCacheDir() string { return artworkCacheDir() }
+
 func artworkCacheDir() string {
 	return filepath.Join("config", "artwork")
 }

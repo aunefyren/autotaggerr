@@ -38,6 +38,10 @@ func ClearLegacyPlex() error {
 	return SaveConfig()
 }
 
+// ConfigDir is the directory config.json lives in — where the database, the log and
+// the artwork cache sit by default, and what the storage overview measures.
+func ConfigDir() string { return configDirectoryPath }
+
 // SetConfigPaths points the package at a different config directory and returns a
 // function that restores the previous one. It exists as a seam for tests in other
 // packages — anything that saves config (the settings API) has to be exercised
@@ -224,6 +228,18 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrLogMaxSizeMB < 1 {
+		// set new value (log size before rotation)
+		ConfigFile.AutotaggerrLogMaxSizeMB = models.DefaultLogMaxSizeMB
+		anythingChanged = true
+	}
+
+	if ConfigFile.AutotaggerrLogKeep < 1 {
+		// set new value (rotated log files kept)
+		ConfigFile.AutotaggerrLogKeep = models.DefaultLogKeep
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrEventRetention < 1 {
 		// set new value (how many Activity runs are kept)
 		ConfigFile.AutotaggerrEventRetention = models.DefaultEventRetention
@@ -282,6 +298,8 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrProcessConcurrency = 4
 	ConfigFile.AutotaggerrEventRetention = models.DefaultEventRetention
 	ConfigFile.AutotaggerrEventDetailRetention = models.DefaultEventDetailRetention
+	ConfigFile.AutotaggerrLogMaxSizeMB = models.DefaultLogMaxSizeMB
+	ConfigFile.AutotaggerrLogKeep = models.DefaultLogKeep
 
 	ConfigFile.AutotaggerrMirrorDisabled = false
 	ConfigFile.AutotaggerrMirrorCronSchedule = "0 0 3 * * *"

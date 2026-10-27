@@ -190,6 +190,11 @@ and an unattended pass on every boot was the price. Both verbs now have a button
 a restart is a restart — which matters most for the case the keys were worst for, a container that
 restarts on a health check and re-walks the whole library each time.
 
+## The log is rotated
+
+`autotaggerr_log_max_size_mb` and `autotaggerr_log_keep` (Logs & Activity, both live) cap the log
+file and how many rotated copies are kept. See [storage.md](storage.md#the-log-is-rotated).
+
 ## Email, and the test message
 
 The **Email** section configures an SMTP server (`mail`, stdlib `net/smtp`). PLAIN auth is used

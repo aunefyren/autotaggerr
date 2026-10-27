@@ -50,6 +50,11 @@ const (
 	// Counted in runs rather than rows, so a run's stages never prune each other
 	// out (see events.Prune).
 	DefaultEventRetention = 200
+	// DefaultLogMaxSizeMB and DefaultLogKeep bound the log file: 20 MB live plus three
+	// rotated files is 80 MB at most, which is days of info-level logging on a large
+	// library and minutes of trace.
+	DefaultLogMaxSizeMB = 20
+	DefaultLogKeep      = 3
 	// DefaultEventDetailRetention bounds the per-file (or per-entity) detail rows one
 	// event stores. A cold scan can change tens of thousands of files; the detail
 	// exists to show *what* happened, which the first few hundred rows do, so the
@@ -137,6 +142,11 @@ type ConfigStruct struct {
 	AutotaggerrEnvironment string         `json:"autotaggerr_environment"`
 	AutotaggerrTestEmail   string         `json:"autotaggerr_test_email"`
 	AutotaggerrLogLevel    string         `json:"autotaggerr_log_level"`
+	// AutotaggerrLogMaxSizeMB caps config/autotaggerr.log: past it the file is rotated
+	// to autotaggerr.log.1, and AutotaggerrLogKeep rotated files are kept. The log used
+	// to be appended to forever. Zero or less means the default.
+	AutotaggerrLogMaxSizeMB int `json:"autotaggerr_log_max_size_mb"`
+	AutotaggerrLogKeep      int `json:"autotaggerr_log_keep"`
 
 	AutotaggerrProcessCronSchedule string `json:"autotaggerr_process_cron_schedule"`
 	AutotaggerrProcessConcurrency  int    `json:"autotaggerr_process_concurrency"`

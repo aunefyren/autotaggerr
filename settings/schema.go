@@ -352,6 +352,18 @@ func Sections() []Section {
 					get:     func(c models.ConfigStruct) any { return c.AutotaggerrEnvironment },
 					set:     setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrEnvironment = v }, oneOf("prod", "test")),
 				},
+				{
+					Key: "autotaggerr_log_max_size_mb", Label: "Log file size (MB)", Type: TypeInt, Tier: TierLive,
+					Help: "Past this, config/autotaggerr.log is rotated to autotaggerr.log.1 and a new file started. Storage shows what the log takes.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrLogMaxSizeMB },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrLogMaxSizeMB = v }, intRange(1, 1024)),
+				},
+				{
+					Key: "autotaggerr_log_keep", Label: "Rotated log files kept", Type: TypeInt, Tier: TierLive,
+					Help: "Older files are deleted. The log takes at most the size above times one more than this.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrLogKeep },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrLogKeep = v }, intRange(1, 20)),
+				},
 			},
 		},
 		{

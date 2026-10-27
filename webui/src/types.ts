@@ -1301,3 +1301,90 @@ export interface OrganisePlan {
   /** Covers, cue sheets and logs that move with a whole album. */
   extras: { from: string; to: string; from_rel: string; to_rel: string; exists?: boolean }[];
 }
+
+/** GET /storage — what takes space, and where. `app` is sent to admins only. */
+export interface StorageReport {
+  measured_at: string;
+  volumes: StorageVolume[];
+  libraries: StorageLibrary[];
+  largest_artists: StorageRanked[];
+  largest_albums: StorageRanked[];
+  /** Albums held more than once — two editions, or one edition in two libraries. */
+  duplicates: { albums: number; extra: number; top: StorageRanked[] };
+  app?: StorageApp;
+}
+
+/** One disk, with what Autotaggerr put on it. `path` is empty when not shown. */
+export interface StorageVolume {
+  path: string;
+  libraries: string[];
+  holds_app: boolean;
+  total: number;
+  free: number;
+  music: number;
+  app: number;
+  error?: string;
+}
+
+export interface StorageCount {
+  files: number;
+  bytes: number;
+}
+
+export interface StorageLibrary {
+  id: string;
+  name: string;
+  path: string;
+  files: number;
+  bytes: number;
+  formats: { format: string; files: number; bytes: number }[];
+  unidentified: StorageCount;
+}
+
+export interface StorageRanked {
+  mb_id: string;
+  name: string;
+  artist_mb_id?: string;
+  artist?: string;
+  files: number;
+  bytes: number;
+  copies?: number;
+  /** For an album held more than once: every copy but the largest. */
+  extra?: number;
+}
+
+export interface StorageFile {
+  name: string;
+  bytes: number;
+}
+
+export interface StorageApp {
+  dir: string;
+  total: number;
+  database: {
+    path: string;
+    file: number;
+    wal: number;
+    shm: number;
+    reclaimable: number;
+    groups: { label: string; bytes: number; rows: number; tables: { name: string; bytes: number; rows: number }[] }[];
+    error?: string;
+  };
+  artwork: {
+    path: string;
+    files: number;
+    bytes: number;
+    kinds: { label: string; files: number; bytes: number }[];
+    no_image: number;
+    leftovers: StorageCount;
+  };
+  logs: { files: StorageFile[]; bytes: number };
+  other: StorageFile[];
+}
+
+/** What a storage action did. */
+export interface StorageOutcome {
+  before: number;
+  after: number;
+  message: string;
+}

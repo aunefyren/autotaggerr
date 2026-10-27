@@ -552,6 +552,16 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   stripes are the runs — with its frequency in words on a `--surface-1` chip. A switched-off job is
   hollow (`--text-dim` ring) and labelled *off*; an edited lane carries the 2px `--accent` dirty
   bar. Tags hide below 760px.
+- **Disk bar** (`.disk`, `DiskRow` in `components/storage.tsx`) — one disk as one 12px bar on the
+  `--surface-2` track: music in `--accent`, Autotaggerr's data in `--accent-text`, the rest of the disk
+  in `--surface-3`, free space as the empty track. Music and app segments are at least 3px when
+  non-zero — megabytes on a terabyte disk must still read as *there*. The free figure turns
+  `--warning-text` under a tenth of the disk and `--danger-text` under a twentieth. A legend of 8px
+  keys sits under the bar with each figure. The same shape shares out `config/` on the Storage page
+  (`.app-bar`, with `--warning` for the log).
+- **Ranked list** (`.ranked`, Storage) — a largest-first list: name and sub-line left, the figure
+  in mono right, and a 3px `--accent` bar under each row scaled to the first, so the list reads as a
+  comparison before a number is read.
 - **Setting row** (`.setting-row`, `pages/settings/fields.tsx`) — a settings page is a list of *definitions*, not
   a form filled top to bottom, so each row is two columns: name + config key + help on the left, the
   control on the right at a fixed width, so a column of inputs reads as a column. The config key is

@@ -8,7 +8,7 @@ Shipped features are documented in [media-manager.md](media-manager.md),
 [collection.md](collection.md), [attach.md](attach.md), [scanning.md](scanning.md),
 [tagging.md](tagging.md), [fingerprinting.md](fingerprinting.md),
 [mb-migration.md](mb-migration.md), [mirror.md](mirror.md), [artwork.md](artwork.md),
-[authentication.md](authentication.md), [settings.md](settings.md), [tempo.md](tempo.md),
+[authentication.md](authentication.md), [settings.md](settings.md), [storage.md](storage.md), [tempo.md](tempo.md),
 [naming.md](naming.md), [import.md](import.md), [downloads.md](downloads.md) and [mcp.md](mcp.md).
 
 ## Open work

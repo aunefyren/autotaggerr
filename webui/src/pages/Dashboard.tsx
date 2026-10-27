@@ -2,7 +2,8 @@ import { useEffect } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api";
 import { useFetch } from "../hooks";
-import { Health, ScanStatus } from "../types";
+import { DiskRow, diskHolds } from "../components/storage";
+import { Health, ScanStatus, StorageReport } from "../types";
 import { ErrorNote } from "../components/ui";
 import { ProgressBar } from "../components/ProgressBar";
 import { PHASE_LABELS, phaseDrivesProgress } from "../components/phases";
@@ -131,6 +132,33 @@ export default function Dashboard() {
           <div className="muted">Nothing processed yet. Start a run from the Collection page.</div>
         )}
       </div>
+
+      <StorageCard />
+    </div>
+  );
+}
+
+/**
+ * One row per disk: what Autotaggerr put on it against what is left. The question it
+ * answers at a glance is whether a disk is running out; the breakdown is on Storage.
+ */
+function StorageCard() {
+  const storage = useFetch<StorageReport>(() => api.get("/storage"));
+  const volumes = storage.data?.volumes ?? [];
+  return (
+    <div className="card stack" style={{ gap: 14 }}>
+      <div className="row" style={{ justifyContent: "space-between" }}>
+        <div className="eyebrow">Storage</div>
+        <Link to="/storage" className="mono" style={{ fontSize: 12 }}>
+          View storage →
+        </Link>
+      </div>
+      {storage.err && <ErrorNote message={storage.err} />}
+      {!storage.data && !storage.err && <div className="muted">Measuring…</div>}
+      {storage.data && volumes.length === 0 && <div className="muted">No library is configured yet.</div>}
+      {volumes.map((v, i) => (
+        <DiskRow key={i} volume={v} label={diskHolds(v)} />
+      ))}
     </div>
   );
 }

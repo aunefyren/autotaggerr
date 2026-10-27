@@ -2,6 +2,7 @@ package settings
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"codnect.io/chrono"
@@ -99,6 +100,7 @@ func (r *Runtime) Stop() {
 // are not its business — Save decides that from the field tiers.
 func (r *Runtime) Apply(cfg models.ConfigStruct, changed []string) []string {
 	applied := []string{}
+	logRotation := false
 
 	for _, key := range changed {
 		switch key {
@@ -106,6 +108,14 @@ func (r *Runtime) Apply(cfg models.ConfigStruct, changed []string) []string {
 			if level, err := logrus.ParseLevel(cfg.AutotaggerrLogLevel); err == nil {
 				logger.Log.SetLevel(level)
 				applied = append(applied, "log level is now "+cfg.AutotaggerrLogLevel)
+			}
+		case "autotaggerr_log_max_size_mb", "autotaggerr_log_keep":
+			// Both limits go to the writer together, and are reported once when both
+			// changed in the same save.
+			if !logRotation {
+				logRotation = true
+				logger.SetRotation(cfg.AutotaggerrLogMaxSizeMB, cfg.AutotaggerrLogKeep)
+				applied = append(applied, fmt.Sprintf("the log now rotates at %d MB, keeping %d", cfg.AutotaggerrLogMaxSizeMB, cfg.AutotaggerrLogKeep))
 			}
 		case "autotaggerr_process_concurrency":
 			if r != nil && r.setConcurrency != nil {

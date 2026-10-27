@@ -58,6 +58,7 @@ const GROUPS: NavGroup[] = [
     title: "System",
     items: [
       { to: "/settings", label: "Settings", ic: "⚙", adminOnly: true },
+      { to: "/storage", label: "Storage", ic: "◫" },
       { to: "/account", label: "Account", ic: "◉" },
       { to: "/login-providers", label: "Login providers", ic: "⚿" },
     ],

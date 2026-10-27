@@ -345,4 +345,5 @@ Feature docs:
 - `authentication.md` — local login, scoped API keys, OIDC.
 - `mcp.md` — the MCP server for AI assistants: scoped API keys, the read and action tools, and how they share query methods and commands with the REST handlers.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.
+- `storage.md` — the storage overview: music and Autotaggerr's own data measured apart, the disks, the actions that shrink config/, and log rotation.
 - `media-servers.md` — Plex servers as rows: linked per library, refreshed per server, and the upgrade from the config keys.

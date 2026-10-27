@@ -3,6 +3,7 @@ package routers
 import (
 	"errors"
 	"net/http"
+	"sync"
 
 	"github.com/aunefyren/autotaggerr/artwork"
 	"github.com/aunefyren/autotaggerr/auth"
@@ -16,6 +17,7 @@ import (
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/aunefyren/autotaggerr/process"
 	"github.com/aunefyren/autotaggerr/settings"
+	"github.com/aunefyren/autotaggerr/storage"
 	"github.com/aunefyren/autotaggerr/tempo"
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -53,6 +55,12 @@ type API struct {
 	SigningKey []byte
 	AppName    string
 	Version    string
+
+	// Storage measures disk use for the dashboard and /storage. May be nil: storage()
+	// builds one on first use from the real config paths; a test injects one pointed
+	// at a temp directory.
+	Storage     *storage.Measurer
+	storageOnce sync.Once
 
 	// artists memoises GET /artists against a fingerprint of the tables it reads
 	// (see listArtists). Zero value is ready to use.
@@ -167,6 +175,10 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/organise", a.organise)
 
 		// Library items (the correlation index)
+		// What takes space, and where. Everyone sees the music and the disks; the
+		// breakdown of config/ and the actions are an admin's (see getStorage).
+		protected.GET("/storage", a.getStorage)
+
 		protected.GET("/library-items", a.listLibraryItems)
 		protected.GET("/library-items/:id/tags", a.itemTags)
 		protected.GET("/library-items/:id/tempo", a.itemTempo)
@@ -293,6 +305,13 @@ func (a *API) Register(rg *gin.RouterGroup) {
 			admin.GET("/settings/secrets/:key", a.revealSecret)
 			admin.POST("/settings/cron/preview", a.previewCron)
 			admin.POST("/settings/email/test", a.sendTestEmail)
+
+			// Storage actions change what is on disk under config/ — admin power, like
+			// the settings that size the same things.
+			admin.POST("/storage/compact", a.compactDatabase)
+			admin.POST("/storage/checkpoint", a.checkpointDatabase)
+			admin.POST("/storage/prune-activity", a.pruneActivity)
+			admin.POST("/storage/artwork-leftovers", a.removeArtworkLeftovers)
 
 			// File import reads, moves and deletes files at a path the request names,
 			// anywhere on the server — admin power for the same reason as settings.

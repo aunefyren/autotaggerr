@@ -368,3 +368,71 @@
   .daystrip-body { grid-template-columns: 92px minmax(0, 1fr); gap: var(--space-4); }
   .daystrip-tag { display: none; }
 }
+
+/* Storage (pages/Storage.tsx, the dashboard's Storage card). A disk is one bar: music in
+   the accent, Autotaggerr's own data in the lighter accent (at least 3px — megabytes on
+   a terabyte disk would otherwise not be drawn), everything else on the disk in a
+   neutral, and free space left as the empty track. Free under a tenth of the disk is
+   told in the warning colour, under a twentieth in the danger colour. Music takes the
+   same 3px minimum: a library of a few gigabytes on a terabyte disk is still there. */
+.disk { display: flex; flex-direction: column; gap: 6px; }
+.disk-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; font-size: 12px; }
+.disk-name { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.disk-holds { font-size: 12px; }
+.disk-free { margin-left: auto; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+.disk-free.is-warn { color: var(--warning-text); }
+.disk-free.is-danger { color: var(--danger-text); }
+.disk-bar {
+  display: flex; height: 12px; border-radius: var(--radius-sm); overflow: hidden;
+  background: var(--surface-2); box-shadow: inset 0 0 0 1px var(--border);
+}
+.disk-seg { height: 100%; }
+.disk-seg.music { background: var(--accent); min-width: 3px; }
+.disk-seg.app { background: var(--accent-text); min-width: 3px; }
+.disk-seg.other { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.disk-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--text-muted); }
+.disk-legend span { display: inline-flex; align-items: center; gap: 5px; }
+.disk-key, .app-key { display: inline-block; width: 8px; height: 8px; border-radius: 2px; }
+.disk-key.music { background: var(--accent); }
+.disk-key.app { background: var(--accent-text); }
+.disk-key.other { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--border-strong); }
+
+.storage-intro { margin: 4px 0 0; font-size: 12px; max-width: 76ch; }
+.storage-pair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-6); }
+@media (max-width: 900px) { .storage-pair { grid-template-columns: 1fr; } }
+
+/* A largest-first list: the bar under each row is scaled to the first, so the list
+   reads as a comparison before any figure is read. */
+.ranked { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.ranked li { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px; padding-bottom: 6px; }
+.ranked-text { display: flex; flex-direction: column; min-width: 0; }
+.ranked-name { color: var(--text); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ranked-sub { font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ranked-value { font-size: 12px; color: var(--text-muted); align-self: start; }
+.ranked-bar { position: absolute; left: 0; bottom: 0; height: 3px; border-radius: 2px; background: var(--accent); opacity: 0.7; }
+
+/* Autotaggerr's own data: one bar shared out by size, then each part with its figures
+   and the action that shrinks it beside the figure it changes. */
+.app-bar { display: flex; height: 12px; border-radius: var(--radius-sm); overflow: hidden; gap: 2px; }
+.app-seg { min-width: 3px; height: 100%; flex-basis: 0; }
+.app-seg.db, .app-key.db { background: var(--accent); }
+.app-seg.art, .app-key.art { background: var(--accent-text); }
+.app-seg.log, .app-key.log { background: var(--warning); }
+.app-seg.other, .app-key.other { background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--border-strong); }
+.storage-part { padding-top: var(--space-6); border-top: 1px solid var(--border); }
+.storage-part-title { font-size: 14px; font-weight: 600; }
+.storage-part-title .mono { font-size: 12px; font-weight: 400; margin-left: 6px; }
+.storage-figures { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: var(--space-6); }
+.storage-figure { display: flex; flex-direction: column; gap: 2px; min-height: 52px; }
+.storage-figure-label { font-size: 11px; }
+.storage-figure-value { font-size: 15px; color: var(--text); }
+.storage-figure-note { font-size: 11px; max-width: 34ch; }
+/* Figures and the row's action never wrap: "1.5 MB" broken over two lines reads as two numbers. */
+.storage-db td.num, .storage-db td .btn { white-space: nowrap; }
+.storage-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.storage-list li {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto 90px; gap: 12px; align-items: baseline;
+  padding: 5px 0; border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.storage-list li:last-child { border-bottom: 0; }
+.storage-list li > :last-child { text-align: right; }

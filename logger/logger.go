@@ -18,11 +18,13 @@ var Log = logrus.New()
 func InitLogger(configFile models.ConfigStruct) {
 	Log = logrus.New()
 
-	// Define log file
-	logFile, err := os.OpenFile("config/autotaggerr.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
+	// Define log file, capped and rotated (rotate.go)
+	logFile, err := openRotating(LogPath, int64(positive(configFile.AutotaggerrLogMaxSizeMB, models.DefaultLogMaxSizeMB))<<20,
+		positive(configFile.AutotaggerrLogKeep, models.DefaultLogKeep))
 	if err != nil {
 		logrus.Fatalf("Failed to load log file: %v", err)
 	}
+	active = logFile
 
 	// Set a plain text format with old-style timestamp
 	Log.SetFormatter(&logrus.JSONFormatter{})
@@ -41,4 +43,11 @@ func InitLogger(configFile models.ConfigStruct) {
 	Log.SetLevel(level)
 
 	Log.Info("Log level set to: " + level.String())
+}
+
+func positive(v, fallback int) int {
+	if v < 1 {
+		return fallback
+	}
+	return v
 }
