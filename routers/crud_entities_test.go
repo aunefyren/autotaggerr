@@ -112,12 +112,12 @@ func TestEntityCRUDRoundTrips(t *testing.T) {
 			collection: "/api/v1/data-sources",
 			create: map[string]any{
 				"name": "fanart.tv", "type": models.DataSourceTypeFanart,
-				"base_url": "https://webservice.fanart.tv/v3", "api_key": "secret", "rate_limit": 2.0,
+				"base_url": "https://webservice.fanart.tv/v3", "api_key": "secret",
 			},
 			update: map[string]any{"enabled": false},
 			verify: func(t *testing.T, body map[string]any) {
-				if body["rate_limit"] != 2.0 {
-					t.Errorf("rate_limit = %v, want it preserved", body["rate_limit"])
+				if body["base_url"] != "https://webservice.fanart.tv/v3" {
+					t.Errorf("base_url = %v, want it preserved", body["base_url"])
 				}
 				if _, leaked := body["api_key"]; leaked {
 					t.Error("api_key came back out of the API")

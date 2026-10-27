@@ -535,6 +535,22 @@ func (a *API) listManagers(c *gin.Context) {
 type dataSourceView struct {
 	models.DataSource
 	InUse bool `json:"in_use,omitempty"`
+	// FixedRateLimit is the pace the app holds itself to for a provider whose rate is
+	// not a setting (requests per second; per image host for artwork). Absent for
+	// MusicBrainz, whose RateLimit is the row's own.
+	FixedRateLimit float64 `json:"fixed_rate_limit,omitempty"`
+}
+
+// fixedRateLimit is FixedRateLimit for a data source type: 0 where the row's own
+// RateLimit is what the client reads.
+func fixedRateLimit(dsType string) float64 {
+	switch dsType {
+	case models.DataSourceTypeCoverArtArchive, models.DataSourceTypeFanart:
+		return modules.ArtworkRequestsPerSecond()
+	case models.DataSourceTypeAcoustID:
+		return modules.AcoustIDRequestsPerSecond()
+	}
+	return 0
 }
 
 func (a *API) listDataSources(c *gin.Context) {
@@ -550,7 +566,7 @@ func (a *API) listDataSources(c *gin.Context) {
 	}
 	out := make([]dataSourceView, len(rows))
 	for i, r := range rows {
-		out[i] = dataSourceView{DataSource: r, InUse: ok && r.ID == inUse.ID}
+		out[i] = dataSourceView{DataSource: r, InUse: ok && r.ID == inUse.ID, FixedRateLimit: fixedRateLimit(r.Type)}
 	}
 	c.JSON(http.StatusOK, out)
 }

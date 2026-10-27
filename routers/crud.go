@@ -3,6 +3,7 @@ package routers
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"path/filepath"
@@ -115,6 +116,16 @@ func (in dataSourceInput) apply(ds *models.DataSource) {
 
 func (a *API) getDataSource(c *gin.Context) { getEntity[models.DataSource](a, c) }
 
+// rateLimitProblem refuses a rate on a source whose pace is fixed in code. Only the
+// MusicBrainz client reads a row's rate_limit; on any other type it was stored and
+// ignored, so a caller setting it would believe it had done something.
+func (in dataSourceInput) rateLimitProblem(dsType string) string {
+	if in.RateLimit == nil || dsType == models.DataSourceTypeMusicBrainz {
+		return ""
+	}
+	return fmt.Sprintf("rate_limit applies only to MusicBrainz sources — %s requests are paced by the app at %g/s", dsType, fixedRateLimit(dsType))
+}
+
 // deleteDataSource re-applies the MusicBrainz source afterwards: deleting the mirror
 // in use has to send the next request somewhere that still exists.
 func (a *API) deleteDataSource(c *gin.Context) {
@@ -136,6 +147,10 @@ func (a *API) createDataSource(c *gin.Context) {
 	}
 	if !validDataSourceType(*in.Type) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported data source type"})
+		return
+	}
+	if problem := in.rateLimitProblem(*in.Type); problem != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
 	// One AcoustID, one Cover Art Archive, one fanart.tv. A second row of a singleton
@@ -182,6 +197,14 @@ func (a *API) updateDataSource(c *gin.Context) {
 	}
 	if in.Type != nil && !validDataSourceType(*in.Type) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "unsupported data source type"})
+		return
+	}
+	dsType := ds.Type
+	if in.Type != nil {
+		dsType = *in.Type
+	}
+	if problem := in.rateLimitProblem(dsType); problem != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
 	in.apply(&ds)

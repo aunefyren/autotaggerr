@@ -539,3 +539,35 @@ func TestLibraryAlwaysNamesATaggerProfile(t *testing.T) {
 	w = do(r, "DELETE", "/api/v1/tagger-profiles/"+other["id"].(string), tok, nil)
 	expectStatus(t, "last", w.Code, w.Body.String(), http.StatusConflict, "last tagger profile")
 }
+
+// TestFixedRateSourcesRefuseARateLimit: only the MusicBrainz client reads a source's
+// rate_limit, so setting one on an artwork or fingerprinting source is refused rather
+// than stored and ignored. The listing states the pace those sources are held to.
+func TestFixedRateSourcesRefuseARateLimit(t *testing.T) {
+	r, _ := setupAPI(t)
+	tok := loginToken(t, r)
+
+	w := do(r, "POST", "/api/v1/data-sources", tok, map[string]any{"name": "fanart.tv", "type": models.DataSourceTypeFanart, "rate_limit": 5})
+	expectStatus(t, "create with rate", w.Code, w.Body.String(), http.StatusBadRequest, "applies only to MusicBrainz")
+
+	caa := createEntity(t, r, tok, "/api/v1/data-sources", map[string]any{"name": "CAA", "type": models.DataSourceTypeCoverArtArchive})
+	acoustid := createEntity(t, r, tok, "/api/v1/data-sources", map[string]any{"name": "AcoustID", "type": models.DataSourceTypeAcoustID})
+	mb := createEntity(t, r, tok, "/api/v1/data-sources", map[string]any{"name": "MB", "type": models.DataSourceTypeMusicBrainz, "rate_limit": 1})
+
+	w = do(r, "PUT", "/api/v1/data-sources/"+caa["id"].(string), tok, map[string]any{"rate_limit": 10})
+	expectStatus(t, "update with rate", w.Code, w.Body.String(), http.StatusBadRequest, "paced by the app at 2/s")
+	if w := do(r, "PUT", "/api/v1/data-sources/"+caa["id"].(string), tok, map[string]any{"enabled": false}); w.Code != http.StatusOK {
+		t.Errorf("update without rate = %d: %s", w.Code, w.Body.String())
+	}
+	if w := do(r, "PUT", "/api/v1/data-sources/"+mb["id"].(string), tok, map[string]any{"rate_limit": 5}); w.Code != http.StatusOK {
+		t.Errorf("MusicBrainz rate = %d: %s", w.Code, w.Body.String())
+	}
+
+	list := decodeJSON[[]map[string]any](t, r, "GET", "/api/v1/data-sources", tok, nil)
+	want := map[any]any{caa["id"]: 2.0, acoustid["id"]: 3.0, mb["id"]: nil}
+	for _, row := range list {
+		if got := row["fixed_rate_limit"]; got != want[row["id"]] {
+			t.Errorf("%v: fixed_rate_limit = %v, want %v", row["name"], got, want[row["id"]])
+		}
+	}
+}

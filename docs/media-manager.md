@@ -54,6 +54,15 @@ keeping the last values, so disabling a mirror stops it being asked. The endpoin
 atomic pointer, since an edit swaps it while workers are mid-scan; nothing cached is dropped, as a
 mirror serves the same IDs with the same data.
 
+**Only MusicBrainz has a rate setting.** The rate is there because a local mirror lifts the public
+service's 1 req/s. The other providers are paced in code and nothing makes that worth tuning:
+artwork at ~2 req/s **per image host** (`artworkRateLimit`; the Cover Art Archive redirects to
+archive.org, so a rate on its row would not even name the host being paced), AcoustID at ~3 req/s,
+its documented ceiling (`acoustidRateLimit`). Their rows used to carry a `rate_limit` that was stored
+and never read; setting one is now a 400. The Data sources page states the fixed pace on each
+provider row instead, from `fixed_rate_limit` on `GET /data-sources` (`modules.ArtworkRequestsPerSecond`,
+`AcoustIDRequestsPerSecond`), so the number shown is the one the code uses.
+
 "Oldest" is the rule because with a local mirror beside the public service exactly one is read, and
 it has to be the same one on every start. The Data sources page marks it *In use* (the list carries
 `in_use`, so the SPA never re-derives the rule) and any other enabled row *Not used*. The URL and

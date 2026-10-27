@@ -19,6 +19,18 @@ const BLURB: Record<string, string> = {
     "Artist portraits and backdrops for the collection pages. MusicBrainz has no artist images, so this is the only source for them. Needs a personal key.",
 };
 
+/**
+ * What a provider's fixed pace applies to. Its rate is not a setting — the server holds
+ * these to a pace of its own (`fixed_rate_limit`) — so the row states it rather than
+ * leaving the page silent about a throttle that exists. Artwork is paced per image host:
+ * the Cover Art Archive redirects to archive.org, so the number is not the archive's own.
+ */
+const PACE: Record<string, string> = {
+  acoustid: ", AcoustID's own limit",
+  coverartarchive: " to each image host",
+  fanart: " to each image host",
+};
+
 export default function DataSources() {
   const { data, err, loading, reload } = useFetch<DataSource[]>(() => api.get("/data-sources"));
   const [editing, setEditing] = useState<DataSource | null>(null);
@@ -219,6 +231,12 @@ function ProviderPanel({
                 </div>
               </div>
               <span className="dim" style={{ fontSize: 11, maxWidth: "68ch" }}>{BLURB[type]}</span>
+              {primary?.fixed_rate_limit ? (
+                <span className="dim" style={{ fontSize: 11 }}>
+                  At most <span className="mono">{primary.fixed_rate_limit}</span> requests a second{PACE[type]}. Set by
+                  Autotaggerr, not a setting.
+                </span>
+              ) : null}
 
               {duplicates.map((d) => (
                 <div key={d.id} className="row" style={{ gap: 10, alignItems: "center", paddingLeft: 12 }}>

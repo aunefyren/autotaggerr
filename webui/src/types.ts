@@ -22,6 +22,12 @@ export interface DataSource {
   health: string;
   /** The one MusicBrainz source the client reads — the oldest enabled. Set by the server. */
   in_use?: boolean;
+  /**
+   * The pace the server holds this provider to, in requests a second — per image host
+   * for artwork. Set for the providers whose rate is not a setting; absent for MusicBrainz,
+   * whose `rate_limit` is its own.
+   */
+  fixed_rate_limit?: number;
 }
 
 /**
