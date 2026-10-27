@@ -163,6 +163,7 @@ func TestCRUDAppliesEveryField(t *testing.T) {
 		"use_custom_artist_delimiter": true, "custom_artist_delimiter": " & ",
 		"custom_artist_delimiter_commas": true, "ignore_redundant_contributing_artists": true,
 		"max_genres": 3, "mp3_multi_value_tags": true, "single_record_label": true,
+		"musicbrainz_release_type": true, "ignore_remix_editions": true, "original_date_as_date": true,
 	})
 	var storedTP models.TaggerProfile
 	if err := api.DB.First(&storedTP, "id = ?", tp["id"]).Error; err != nil {
@@ -171,7 +172,8 @@ func TestCRUDAppliesEveryField(t *testing.T) {
 	if storedTP.WriteTags || !storedTP.RemoveValues || !storedTP.UseCurrentArtistName ||
 		!storedTP.UseCustomArtistDelimiter || storedTP.CustomArtistDelimiter != " & " ||
 		!storedTP.CustomArtistDelimiterCommas || !storedTP.IgnoreRedundantContributingArtists ||
-		storedTP.MaxGenres != 3 || !storedTP.MP3MultiValueTags || !storedTP.SingleRecordLabel {
+		storedTP.MaxGenres != 3 || !storedTP.MP3MultiValueTags || !storedTP.SingleRecordLabel ||
+		!storedTP.MusicBrainzReleaseType || !storedTP.IgnoreRemixEditions || !storedTP.OriginalDateAsDate {
 		t.Errorf("tagger profile = %+v, want every field sent", storedTP)
 	}
 

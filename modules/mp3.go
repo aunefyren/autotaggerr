@@ -65,11 +65,14 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
 		// Single-valued for Plex, which renders a joined string as one artist named
 		// "A; B"; ALBUMARTISTS carries the full credit alongside it.
 		"ALBUMARTISTS": metadata.AlbumArtists,
-		"GENRE":        metadata.Genres,
-		"ALBUM":        single(metadata.Album),
-		"TITLE":        single(metadata.Title),
-		"TRACKNUMBER":  single(metadata.Track),
-		"DISCNUMBER":   single(metadata.DiscNumber),
+		// TSOP and TSO2, through id3TextFrameForKey.
+		"ARTISTSORT":      single(metadata.ArtistSort),
+		"ALBUMARTISTSORT": single(metadata.AlbumArtistSort),
+		"GENRE":           metadata.Genres,
+		"ALBUM":           single(metadata.Album),
+		"TITLE":           single(metadata.Title),
+		"TRACKNUMBER":     single(metadata.Track),
+		"DISCNUMBER":      single(metadata.DiscNumber),
 
 		// Totals ride along in the composite TRCK/TPOS frames ("3/12", "1/2")
 		// written below — the standard ID3 representation, which GetMP3Tags splits
@@ -85,15 +88,24 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
 		"publisher":     metadata.RecordLabels,
 		"BARCODE":       single(metadata.Barcode),
 		"CATALOGNUMBER": metadata.CatalogNumbers,
+		// TSST, TCMP and TLAN through id3TextFrameForKey; ASIN is a TXXX, as Picard
+		// writes it.
+		"DISCSUBTITLE": single(metadata.DiscSubtitle),
+		"COMPILATION":  single(metadata.Compilation),
+		"LANGUAGE":     single(metadata.Language),
+		"ASIN":         single(metadata.ASIN),
 
 		// Release
-		"DATE": single(metadata.ReleaseDate), // maps to TDRC
+		"DATE": single(metadata.Date), // maps to TDRC
+		// The edition's own date, in TDRL, as Picard maps releasedate — kept when
+		// DATE carries the original date instead.
+		"RELEASEDATE": single(metadata.ReleaseDate),
 		// Lower case deliberately: ID3v2.4 dropped TYER, so the year lands in a TXXX
 		// frame described by this key, and ffmpeg spelled it "year" when it wrote it.
 		// The reader is case-insensitive, so a mismatch here would not show up as a
 		// diff — it would just quietly leave a second, differently-cased frame on
 		// every file. TestNewWriterReproducesTheLegacyFrames is what catches that.
-		"year": single(metadata.ReleaseYear),
+		"year": single(metadata.Year),
 
 		// Original release
 		"TDOR":         single(metadata.OriginalDate), // maps to TDOR
@@ -102,7 +114,7 @@ func buildMP3DesiredTags(metadata models.FileTags) map[string][]string {
 
 		// MUSICBRAINZ
 		"MusicBrainz Album Status":          single(metadata.MBAlbumStatus),
-		"MusicBrainz Album Type":            single(metadata.MBAlbumType),
+		"MusicBrainz Album Type":            metadata.MBAlbumTypes,
 		"MusicBrainz Album Release Country": single(metadata.MBAlbumReleaseCountry),
 		"MusicBrainz Album Id":              single(metadata.MBAlbumID),
 		"MusicBrainz Artist Id":             metadata.MBArtistIDs,
@@ -170,6 +182,14 @@ var id3TextFrameForKey = map[string]string{
 	"TDOR":        "TDOR",
 	"TMED":        "TMED",
 	"PUBLISHER":   "TPUB",
+	// Picard's frames for these: sort names, disc subtitle, the iTunes compilation
+	// flag, language and the edition's release date.
+	"ARTISTSORT":      "TSOP",
+	"ALBUMARTISTSORT": "TSO2",
+	"DISCSUBTITLE":    "TSST",
+	"COMPILATION":     "TCMP",
+	"LANGUAGE":        "TLAN",
+	"RELEASEDATE":     "TDRL",
 	// TSRC is the standard frame for the ISRC. It replaced the TXXX artefact
 	// described by legacyISRCFrameDescription; being in this map gives it the read
 	// direction for free, through id3KeyForTextFrame.

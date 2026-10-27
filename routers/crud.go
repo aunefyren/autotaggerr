@@ -393,6 +393,9 @@ type taggerProfileInput struct {
 	MaxGenres                          *int    `json:"max_genres"`
 	MP3MultiValueTags                  *bool   `json:"mp3_multi_value_tags"`
 	SingleRecordLabel                  *bool   `json:"single_record_label"`
+	MusicBrainzReleaseType             *bool   `json:"musicbrainz_release_type"`
+	IgnoreRemixEditions                *bool   `json:"ignore_remix_editions"`
+	OriginalDateAsDate                 *bool   `json:"original_date_as_date"`
 	NamingArtistFolder                 *string `json:"naming_artist_folder"`
 	NamingAlbumFolder                  *string `json:"naming_album_folder"`
 	NamingMediaFolder                  *string `json:"naming_media_folder"`
@@ -432,6 +435,15 @@ func (in taggerProfileInput) apply(p *models.TaggerProfile) {
 	}
 	if in.SingleRecordLabel != nil {
 		p.SingleRecordLabel = *in.SingleRecordLabel
+	}
+	if in.MusicBrainzReleaseType != nil {
+		p.MusicBrainzReleaseType = *in.MusicBrainzReleaseType
+	}
+	if in.IgnoreRemixEditions != nil {
+		p.IgnoreRemixEditions = *in.IgnoreRemixEditions
+	}
+	if in.OriginalDateAsDate != nil {
+		p.OriginalDateAsDate = *in.OriginalDateAsDate
 	}
 	if in.NamingArtistFolder != nil {
 		p.NamingArtistFolder = strings.TrimSpace(*in.NamingArtistFolder)

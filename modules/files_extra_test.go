@@ -110,8 +110,8 @@ func TestBuildFileTags(t *testing.T) {
 	if len(tags.ISRCs) != 2 || tags.ISRCs[0] != "GBAYE9700340" {
 		t.Errorf("ISRCs = %v, want both codes as separate values", tags.ISRCs)
 	}
-	if tags.MBAlbumType != "album" || tags.MBAlbumStatus != "official" {
-		t.Errorf("album type/status = %q/%q", tags.MBAlbumType, tags.MBAlbumStatus)
+	if len(tags.MBAlbumTypes) != 1 || tags.MBAlbumTypes[0] != "album" || tags.MBAlbumStatus != "official" {
+		t.Errorf("album type/status = %q/%q", tags.MBAlbumTypes, tags.MBAlbumStatus)
 	}
 
 	// Current artist name selected, and redundant contributing artists dropped for a

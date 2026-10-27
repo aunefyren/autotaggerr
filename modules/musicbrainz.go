@@ -443,6 +443,34 @@ func QueryMusicBrainzReleaseData(mbID string, autotaggerrVersion string) (models
 }
 
 func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit, tagger models.TaggerSettings) string {
+	return joinArtistCredit(artists, tagger, func(credit models.ArtistCredit) string {
+		// either use original release artist name or current name
+		if tagger.UseCurrentArtistName {
+			return credit.Artist.Name
+		}
+		return credit.Name
+	})
+}
+
+// MusicBrainzArtistsSortString is the same credit as MusicBrainzArtistsArrayToString,
+// joined the same way, by each artist's MusicBrainz sort name ("Paak, Anderson") —
+// what Picard writes as ARTISTSORT. A credit naming an artist with no sort name falls
+// back to the name the credit would have used.
+func MusicBrainzArtistsSortString(artists []models.ArtistCredit, tagger models.TaggerSettings) string {
+	return joinArtistCredit(artists, tagger, func(credit models.ArtistCredit) string {
+		if sort := strings.TrimSpace(credit.Artist.SortName); sort != "" {
+			return sort
+		}
+		if tagger.UseCurrentArtistName {
+			return credit.Artist.Name
+		}
+		return credit.Name
+	})
+}
+
+// joinArtistCredit joins a credit's names with its join phrases, or the profile's
+// custom delimiter.
+func joinArtistCredit(artists []models.ArtistCredit, tagger models.TaggerSettings, name func(models.ArtistCredit) string) string {
 	artistString := ""
 	for index, feature := range artists {
 		logger.Log.Trace("processing featuring artist: " + feature.Artist.Name)
@@ -458,13 +486,7 @@ func MusicBrainzArtistsArrayToString(artists []models.ArtistCredit, tagger model
 		}
 
 		logger.Log.Trace("feature join phrase to use: " + joinPhrase)
-
-		// either use original release artist name or current name
-		if tagger.UseCurrentArtistName {
-			artistString += feature.Artist.Name + joinPhrase
-		} else {
-			artistString += feature.Name + joinPhrase
-		}
+		artistString += name(feature) + joinPhrase
 	}
 
 	return artistString

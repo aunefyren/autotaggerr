@@ -75,6 +75,12 @@ export interface TaggerProfile {
   mp3_multi_value_tags: boolean;
   /** Write only the first record label MusicBrainz lists — Plex shows one. */
   single_record_label: boolean;
+  /** Stored the other way up from the form: false writes the Plex-shaped release type. */
+  musicbrainz_release_type: boolean;
+  /** Stored the other way up from the form: false types remix editions as remixes. */
+  ignore_remix_editions: boolean;
+  /** Write the album's original release date as DATE rather than the edition's. */
+  original_date_as_date: boolean;
   /** Naming templates; empty means the default (see NamingInfo.defaults). */
   naming_artist_folder: string;
   naming_album_folder: string;

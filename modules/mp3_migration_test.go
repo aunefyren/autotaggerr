@@ -137,7 +137,7 @@ func writeLegacyMP3Tags(t *testing.T, path string, meta models.FileTags) {
 	add("BARCODE", meta.Barcode)
 	add("CATALOGNUMBER", utilities.JoinTagValues(meta.CatalogNumbers))
 	add("MusicBrainz Album Status", meta.MBAlbumStatus)
-	add("MusicBrainz Album Type", meta.MBAlbumType)
+	add("MusicBrainz Album Type", utilities.JoinTagValues(meta.MBAlbumTypes))
 	add("MusicBrainz Album Release Country", meta.MBAlbumReleaseCountry)
 	add("MusicBrainz Album Id", meta.MBAlbumID)
 	add("MusicBrainz Artist Id", utilities.JoinTagValues(meta.MBArtistIDs))
@@ -186,9 +186,10 @@ func TestLegacyFfmpegFilesConvergeAfterOneRewrite(t *testing.T) {
 		t.Fatalf("a legacy file must be migrated once, got unchanged=%v written=%d", unchanged, written)
 	}
 	// The ISRC moves frames without changing value, so it is not in the diff — the
-	// migration is silent by design. UFID is the only field whose value is new.
+	// migration is silent by design. UFID and the edition's date in TDRL (Picard's
+	// releasedate) are the only fields whose values are new.
 	for _, change := range changes {
-		if change.Field != ufidTagKey {
+		if change.Field != ufidTagKey && change.Field != "RELEASEDATE" {
 			t.Errorf("unexpected field in the migration diff: %s (%q -> %q)",
 				change.Field, change.Old, change.New)
 		}
@@ -378,6 +379,7 @@ func TestNewWriterReproducesTheLegacyFrames(t *testing.T) {
 	added := []string{
 		"TSRC=" + isrc,
 		fmt.Sprintf("UFID[%s]=%s", musicBrainzUFIDOwner, meta.MBRecordingID),
+		"TDRL=" + meta.ReleaseDate,
 	}
 
 	for _, frame := range legacy {

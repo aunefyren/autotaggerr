@@ -125,6 +125,9 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
         max_genres: p.max_genres,
         mp3_multi_value_tags: p.mp3_multi_value_tags,
         single_record_label: p.single_record_label,
+        musicbrainz_release_type: p.musicbrainz_release_type,
+        ignore_remix_editions: p.ignore_remix_editions,
+        original_date_as_date: p.original_date_as_date,
         naming_artist_folder: stored("artist_folder"),
         naming_album_folder: stored("album_folder"),
         naming_media_folder: stored("media_folder"),
@@ -192,6 +195,48 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
             (<span className="mono">APESHIT;EMPIRE;Mass Appeal</span>). On, files get only the first label
             MusicBrainz lists — the order its editors entered them in, which usually leads with the label the
             release is known by. Applies to FLAC and MP3; catalogue numbers are kept in full.
+          </p>
+        </div>
+        {/* Both stored the other way up, so a profile from before they existed keeps the
+            behaviour it always had: checked here is false in the row. */}
+        <div className="field">
+          <Check
+            label="Write release types the way Plex reads them"
+            checked={!p.musicbrainz_release_type}
+            onChange={(v) => set({ musicbrainz_release_type: !v })}
+          />
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            Recommended for Plex. Writes one value Plex sorts albums by — <span className="mono">album</span>,{" "}
+            <span className="mono">ep</span>, <span className="mono">single</span>, or{" "}
+            <span className="mono">album; live</span> for a live, soundtrack, compilation, remix or demo release,
+            whatever its primary type — since Plex does not read <span className="mono">ep; live</span>. Off, the
+            release type is MusicBrainz's own: the primary type and every secondary type as separate values, as
+            Picard writes it.
+          </p>
+        </div>
+        <div className="field">
+          <Check
+            label="Mark remix editions as remixes"
+            checked={!p.ignore_remix_editions}
+            onChange={(v) => set({ ignore_remix_editions: !v })}
+          />
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            An edition whose title or MusicBrainz comment says <em>remix</em> is typed as a remix even when its release
+            group is not — for the remix editions MusicBrainz files beside the original album.
+          </p>
+        </div>
+        <div className="field">
+          <Check
+            label="Use the original release date as the date"
+            checked={p.original_date_as_date}
+            onChange={(v) => set({ original_date_as_date: v })}
+          />
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            Plex and Jellyfin take an album's year from <span className="mono">DATE</span>, which is the edition's, so a
+            2011 remaster of a 1977 album shows as 2011 — Jellyfin reads no original date at all. On,{" "}
+            <span className="mono">DATE</span> and <span className="mono">YEAR</span> carry the date the album first came
+            out. Nothing is lost: <span className="mono">ORIGINALDATE</span> keeps the original either way, and{" "}
+            <span className="mono">RELEASEDATE</span> the edition's.
           </p>
         </div>
         {naming.err && <ErrorNote message={naming.err} />}

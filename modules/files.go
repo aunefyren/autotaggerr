@@ -692,8 +692,15 @@ func BuildFileTags(
 	// whose artist the album artist does not name at all. Loose comparison so
 	// punctuation or accent differences between the two credits do not keep a
 	// genuinely redundant string.
+	trackArtistSort := MusicBrainzArtistsSortString(track.ArtistCredit, tagger)
 	if tagger.IgnoreRedundantContributingArtists && utilities.EqLoose(trackArtist, releaseArtist) {
-		trackArtist = ""
+		// The sort name goes with the name it sorts: no ARTIST, no ARTISTSORT.
+		trackArtist, trackArtistSort = "", ""
+	}
+	// The first album artist's sort name, matching ALBUMARTIST being the first only.
+	releaseArtistSort := strings.TrimSpace(response.ArtistCredit[0].Artist.SortName)
+	if releaseArtistSort == "" {
+		releaseArtistSort = releaseArtist
 	}
 	logger.Log.Trace("track artists: " + trackArtist)
 
@@ -730,6 +737,13 @@ func BuildFileTags(
 	// writing a wrong one.
 	releaseYear, releaseDate, _ := ParseMusicBrainzDate(response.Date)
 	releaseGroupYear, releaseGroupDate, _ := ParseMusicBrainzDate(response.ReleaseGroup.FirstReleaseDate)
+	// DATE and YEAR are the edition's unless the profile asks for the album's own
+	// (TaggerSettings.OriginalDateAsDate) — and only when there is one to give, so a
+	// release group with no known first date keeps the edition's rather than none.
+	date, year := releaseDate, releaseYear
+	if tagger.OriginalDateAsDate && releaseGroupDate != "" {
+		date, year = releaseGroupDate, releaseGroupYear
+	}
 
 	// A release's labels and catalogue numbers are two lists off one LabelInfo, and
 	// either half can be blank on any given entry. Collecting them separately and
@@ -760,6 +774,14 @@ func BuildFileTags(
 		OriginalYear:          releaseGroupYear,
 		ReleaseDate:           releaseDate,
 		ReleaseYear:           releaseYear,
+		Date:                  date,
+		Year:                  year,
+		ArtistSort:            trackArtistSort,
+		AlbumArtistSort:       releaseArtistSort,
+		DiscSubtitle:          strings.TrimSpace(media.Title),
+		Compilation:           compilationFlag(response),
+		Language:              response.TextRepresentation.Language,
+		ASIN:                  strings.TrimSpace(response.Asin),
 		Album:                 response.Title,
 		Title:                 track.Title,
 		ISRCs:                 utilities.NormalizeTagValues(track.Recording.ISRCs),
@@ -768,7 +790,7 @@ func BuildFileTags(
 		DiscNumber:            strconv.Itoa(media.Position),
 		DiscTotal:             strconv.Itoa(len(response.Media)),
 		MBAlbumStatus:         strings.ToLower(response.Status),
-		MBAlbumType:           ReleaseToAlbumType(response),
+		MBAlbumTypes:          ReleaseTypes(response, tagger),
 		MBAlbumReleaseCountry: response.Country,
 		MBAlbumID:             response.ID,
 		MBArtistIDs:           trackArtistIDs,
@@ -1066,8 +1088,59 @@ func WalkAndProcessContext(ctx context.Context, root string, workers int, proces
 	return counter, unchangedFiles, allTagsWritten, errorFiles, err
 }
 
-func ReleaseToAlbumType(release models.MusicBrainzReleaseResponse) string {
-	if strings.Contains(strings.ToLower(release.Title), "remix") || strings.Contains(strings.ToLower(release.Disambiguation), "remix") {
+// variousArtistsMBID is MusicBrainz's special purpose artist for compilations of
+// several artists.
+const variousArtistsMBID = "89ad4ac3-39f7-470e-963a-56509c546377"
+
+// compilationFlag is Picard's COMPILATION: "1" when the release is credited to Various
+// Artists, "" otherwise. It is not MusicBrainz's "compilation" secondary type — a
+// greatest-hits album by one artist is that, and is not a various-artists compilation.
+func compilationFlag(release models.MusicBrainzReleaseResponse) string {
+	if len(release.ArtistCredit) > 0 && release.ArtistCredit[0].Artist.ID == variousArtistsMBID {
+		return "1"
+	}
+	return ""
+}
+
+// isRemixEdition reports an edition that says it is a remix in its own title or
+// disambiguation — the remix editions MusicBrainz files in a release group that is not
+// itself typed remix.
+func isRemixEdition(release models.MusicBrainzReleaseResponse) bool {
+	return strings.Contains(strings.ToLower(release.Title), "remix") || strings.Contains(strings.ToLower(release.Disambiguation), "remix")
+}
+
+// ReleaseTypes is the release type tag's values (RELEASETYPE, TXXX:MusicBrainz Album
+// Type). By default one Plex-shaped value (PlexReleaseType); with the profile's
+// MusicBrainzReleaseType, MusicBrainz's own types as separate values, primary first,
+// as Picard writes them. The remix-edition rule applies to both unless the profile
+// turns it off: as "album; remix", or as a "remix" value beside the others.
+func ReleaseTypes(release models.MusicBrainzReleaseResponse, tagger models.TaggerSettings) []string {
+	remix := !tagger.IgnoreRemixEditions && isRemixEdition(release)
+	if !tagger.MusicBrainzReleaseType {
+		return single(PlexReleaseType(release, remix))
+	}
+	types := []string{strings.ToLower(release.ReleaseGroup.PrimaryType)}
+	hasRemix := false
+	for _, secondary := range release.ReleaseGroup.SecondaryTypes {
+		secondary = strings.ToLower(secondary)
+		hasRemix = hasRemix || secondary == "remix"
+		types = append(types, secondary)
+	}
+	if remix && !hasRemix {
+		types = append(types, "remix")
+	}
+	return utilities.NormalizeTagValues(types)
+}
+
+// PlexReleaseType is the release type as one value in the shape Plex sorts albums by:
+// the primary type alone when there is no secondary type ("album", "ep", "broadcast"),
+// "album; <type>" when the first secondary type is soundtrack, compilation, remix, live
+// or demo — whatever the primary type, since Plex shelves those by the second half and
+// does not read "ep; live" — and otherwise the primary type if it is an album, EP or
+// single, or "" for any other. Only the first secondary type counts. remixEditions
+// applies the remix-edition rule (isRemixEdition) ahead of MusicBrainz's types.
+func PlexReleaseType(release models.MusicBrainzReleaseResponse, remixEditions bool) string {
+	if remixEditions && isRemixEdition(release) {
 		return "album; remix"
 	}
 

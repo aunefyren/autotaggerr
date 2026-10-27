@@ -2,6 +2,7 @@ package modules
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/aunefyren/autotaggerr/models"
@@ -18,7 +19,9 @@ func TestResolveCorrelationNoFallbackUnmatched(t *testing.T) {
 	}
 }
 
-func TestReleaseToAlbumType(t *testing.T) {
+// TestPlexReleaseType pins the Plex-shaped value exactly as it has always been
+// written, so the default profile's files do not re-tag.
+func TestPlexReleaseType(t *testing.T) {
 	rg := func(primary string, secondary ...string) models.ReleaseGroup {
 		return models.ReleaseGroup{PrimaryType: primary, SecondaryTypes: secondary}
 	}
@@ -82,9 +85,39 @@ func TestReleaseToAlbumType(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := ReleaseToAlbumType(tt.release); got != tt.want {
-				t.Errorf("ReleaseToAlbumType() = %q, want %q", got, tt.want)
+			if got := PlexReleaseType(tt.release, true); got != tt.want {
+				t.Errorf("PlexReleaseType() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestReleaseTypes: the default is the one Plex-shaped value; MusicBrainz's form is the
+// primary and every secondary type as separate values; the remix-edition rule is on
+// by default in either form, adds "remix" once, and can be turned off.
+func TestReleaseTypes(t *testing.T) {
+	liveEP := models.MusicBrainzReleaseResponse{ReleaseGroup: models.ReleaseGroup{PrimaryType: "EP", SecondaryTypes: []string{"Live", "DJ-mix"}}}
+	remixed := models.MusicBrainzReleaseResponse{Title: "Album (Remixes)", ReleaseGroup: models.ReleaseGroup{PrimaryType: "Album"}}
+	alreadyRemix := models.MusicBrainzReleaseResponse{Title: "Remixed", ReleaseGroup: models.ReleaseGroup{PrimaryType: "Album", SecondaryTypes: []string{"Remix"}}}
+	mb := models.TaggerSettings{MusicBrainzReleaseType: true}
+
+	cases := []struct {
+		name     string
+		release  models.MusicBrainzReleaseResponse
+		settings models.TaggerSettings
+		want     string
+	}{
+		{"plex: a live EP is a live album", liveEP, models.TaggerSettings{}, "album; live"},
+		{"musicbrainz: every type, as values", liveEP, mb, "ep|live|dj-mix"},
+		{"plex: a remix edition", remixed, models.TaggerSettings{}, "album; remix"},
+		{"plex: remix rule off", remixed, models.TaggerSettings{IgnoreRemixEditions: true}, "album"},
+		{"musicbrainz: a remix edition", remixed, mb, "album|remix"},
+		{"musicbrainz: remix rule off", remixed, models.TaggerSettings{MusicBrainzReleaseType: true, IgnoreRemixEditions: true}, "album"},
+		{"musicbrainz: remix once", alreadyRemix, mb, "album|remix"},
+	}
+	for _, tc := range cases {
+		if got := strings.Join(ReleaseTypes(tc.release, tc.settings), "|"); got != tc.want {
+			t.Errorf("%s = %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

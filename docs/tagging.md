@@ -118,8 +118,15 @@ above). The differences that remain are ones the formats force:
 | Genres | `GENRE` | `GENRE` → `TCON` |
 | Recording MBID | `MUSICBRAINZ_TRACKID` | `TXXX:MusicBrainz Recording Id` **and** `UFID` |
 | ISRC | `ISRC` | `TSRC` |
-| Release date | `DATE` + `RELEASEDATE` | `TDRC` |
+| Date | `DATE` + `YEAR` | `TDRC` + `TXXX:year` |
+| The edition's date | `RELEASEDATE` | `TDRL` |
+| Track total | `TRACKTOTAL` + `TOTALTRACKS` | half of the paired `TRCK` |
 | Disc total | `DISCTOTAL` + `TOTALDISCS` | half of the paired `TPOS` |
+| Sort names | `ARTISTSORT`, `ALBUMARTISTSORT` | `TSOP`, `TSO2` |
+| Disc subtitle | `DISCSUBTITLE` | `TSST` |
+| Compilation | `COMPILATION` | `TCMP` |
+| Language | `LANGUAGE` | `TLAN` |
+| ASIN | `ASIN` | `TXXX:ASIN` |
 | Tempo | `BPM` | `TBPM` |
 
 Dates are written at the precision MusicBrainz gives them — `1983`, `1983-10` or `1983-10-05` —
@@ -249,6 +256,76 @@ even though the format could carry more.
 
 Before `ALBUMARTISTS` existed the names disagreed with `MUSICBRAINZ_ALBUMARTISTID`, which has
 always listed every credited artist's MBID.
+
+## Picard's fields, and what reads them
+
+Every field Picard writes from the release itself, without relationship lookups, is written. The
+spellings are Picard's tag mapping, compared side by side with what Jellyfin's prober and Plex
+read:
+
+- **Sort names.** `ARTISTSORT` is the track credit by each artist's MusicBrainz sort name, joined
+  like `ARTIST` (`Nicks, Stevie & Buckingham, Lindsey`). `ALBUMARTISTSORT` is the first album
+  artist's, because `ALBUMARTIST` is the first only. Plex reads both, but only when it first ingests
+  an artist, so changing them later needs Plex to forget the artist. A blanked redundant `ARTIST`
+  takes its sort name with it.
+- **`DISCSUBTITLE`** is the medium's own title; **`LANGUAGE`** is the release's text language (ISO
+  639-3); **`ASIN`** is the release's.
+- **`COMPILATION`** is `1` for a release credited to Various Artists, which is Picard's meaning since
+  1.3. It is not MusicBrainz's *compilation* secondary type, which a one-artist greatest-hits album
+  also has. Otherwise it is empty, so `remove_values` clears a stale flag.
+- **Both total spellings** on FLAC, `TRACKTOTAL` and `TOTALTRACKS`, as with the disc total.
+
+Not written yet, both tracked in `wip.md`. The relationship credits (composer, lyricist, producer
+and the rest; Jellyfin reads `Composer`) need a heavier release fetch. ReplayGain, which Jellyfin
+normalises volume by, needs audio analysis.
+
+**Jellyfin reads one album artist** unless its library option *Prefer non-standard artists tag* is
+on. With it on, Jellyfin reads `ALBUMARTISTS` and `ARTISTS`, the full credits that `ALBUMARTIST`
+leaves out for Plex's sake.
+
+## Release type
+
+Two forms, chosen per tagger profile:
+
+- **The Plex shape (the default, recommended for Plex).** One value: the primary type when there
+  is no secondary type (`album`, `ep`), and `album; live` (or soundtrack, compilation, remix, demo)
+  when the first secondary type is one of those, whatever the primary type. That is how Plex sorts
+  albums onto its Live, Compilations and Soundtracks shelves; it does not read `ep; live`. Only the
+  first secondary type counts. `PlexReleaseType` is exactly what was always written, so profiles
+  predating the choice re-tag nothing.
+- **MusicBrainz's own (`musicbrainz_release_type`).** The primary type and every secondary type as
+  separate values, `ep` and `live`, as Picard writes them. On FLAC that is one comment per value. On
+  MP3 the values are joined like any multi-value field.
+
+**Remix editions** are typed as remixes in both forms unless the profile turns it off
+(`ignore_remix_editions`). The rule: an edition whose title or disambiguation says *remix*, for the
+remix editions MusicBrainz files in a release group that is not itself typed remix. In the Plex
+shape that is `album; remix`. In MusicBrainz's it is a `remix` value beside the others, added once.
+
+Both are stored the other way up from how the editor shows them ("Write release types the way Plex
+reads them", "Mark remix editions as remixes"), so a row predating them keeps its behaviour.
+
+## Dates
+
+`DATE` and `YEAR` are the edition's release date by default, as in Picard. `ORIGINALDATE` and
+`ORIGINALYEAR` are the album's first. On MP3 those are `TDRC` and `TDOR`. `RELEASEDATE` is always
+the edition's, on MP3 in `TDRL`.
+
+**Players take the album's year from `DATE`.** Jellyfin reads no original date at all, and Plex
+users report the reissue's year winning. So a 2011 remaster of a 1977 album shows as 2011. The
+tagger profile's `original_date_as_date` writes the album's first date as `DATE` and `YEAR`
+instead. Nothing is lost: `ORIGINALDATE` keeps it as well, and `RELEASEDATE` keeps the edition's.
+A release group with no known first date keeps the edition's date rather than none. Picard users
+get the same with `$set(date,%originaldate%)`.
+
+**Settings added after profiles existed are `omitempty` in `TaggerSettings`** while they mean what
+was already written: `single_record_label`, `musicbrainz_release_type`, `ignore_remix_editions` and
+`original_date_as_date`. `Tagger.Fingerprint` hashes the settings as JSON, so a new field present
+at its zero value would have changed every profile's fingerprint and re-processed every file.
+Fields that add new tags (the sort names and the rest) need no such care. Skip-unchanged does not
+look at the tag set, so they reach files the next time each is processed, which every release does
+for every file. Tests: `TestPlexReleaseType`, `TestReleaseTypes`, `TestBuildFileTagsPicardFields`,
+`TestPicardFieldsRoundTrip`, `TestSingleRecordLabelIsNotInTheFingerprintWhileOff`.
 
 ## Record labels
 

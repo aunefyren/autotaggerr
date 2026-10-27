@@ -346,6 +346,13 @@ type TaggerProfile struct {
 	// SingleRecordLabel writes only the first of a release's labels; see
 	// TaggerSettings.SingleRecordLabel.
 	SingleRecordLabel bool `json:"single_record_label"`
+	// MusicBrainzReleaseType, IgnoreRemixEditions and OriginalDateAsDate: see
+	// TaggerSettings. The first two are stored the other way up from how the form
+	// shows them ("Write release types the way Plex reads them", "Mark remix editions
+	// as remixes"), so a row predating them keeps the behaviour it always had.
+	MusicBrainzReleaseType bool `json:"musicbrainz_release_type"`
+	IgnoreRemixEditions    bool `json:"ignore_remix_editions"`
+	OriginalDateAsDate     bool `json:"original_date_as_date"`
 	// The naming templates: where a file belongs under its library root, one template
 	// per path level. Empty means the default (see NamingTemplates), so a profile row
 	// predating the columns names files the way the layout convention always has.
@@ -408,6 +415,26 @@ type TaggerSettings struct {
 	// omitempty keeps it out of Tagger.Fingerprint while off, so adding the field did
 	// not change every existing profile's fingerprint and re-process every file.
 	SingleRecordLabel bool `json:",omitempty"`
+	// MusicBrainzReleaseType writes the release type as MusicBrainz states it: the
+	// primary type and every secondary type, as separate values ("ep", "live"), as
+	// Picard does. Off (the default) writes one Plex-shaped value instead — "album",
+	// "ep", "single", or "album; <first secondary>" for a soundtrack, compilation,
+	// remix, live or demo release whatever its primary type — which is the form Plex
+	// sorts into its Live, Compilations and Soundtracks shelves; it does not read
+	// "ep; live" (see modules.ReleaseTypes).
+	MusicBrainzReleaseType bool `json:",omitempty"`
+	// IgnoreRemixEditions turns off the remix-edition rule: by default an edition
+	// whose title or disambiguation says "remix" is typed as a remix, for the remix
+	// editions MusicBrainz files in a release group that is not itself typed remix.
+	IgnoreRemixEditions bool `json:",omitempty"`
+	// OriginalDateAsDate writes the album's original release date as DATE (and YEAR)
+	// rather than the edition's. Jellyfin reads no original date at all and Plex users
+	// see the reissue's year, so a 2011 remaster of a 1977 album shows as 2011.
+	// ORIGINALDATE keeps the original either way, and RELEASEDATE the edition's.
+	//
+	// All three are omitempty for the reason SingleRecordLabel is: a field present
+	// while it means today's behaviour would have changed every profile's fingerprint.
+	OriginalDateAsDate bool `json:",omitempty"`
 	// BPMWrite and BPMMinConfidence govern the BPM tag. They come from the library,
 	// not the profile (Library.BPMWrite); components.Tagger merges them in.
 	BPMWrite         string
@@ -426,6 +453,9 @@ func (t TaggerProfile) Settings() TaggerSettings {
 		MaxGenres:                          t.MaxGenres,
 		MP3MultiValueTags:                  t.MP3MultiValueTags,
 		SingleRecordLabel:                  t.SingleRecordLabel,
+		MusicBrainzReleaseType:             t.MusicBrainzReleaseType,
+		IgnoreRemixEditions:                t.IgnoreRemixEditions,
+		OriginalDateAsDate:                 t.OriginalDateAsDate,
 	}
 }
 

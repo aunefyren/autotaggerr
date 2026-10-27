@@ -49,16 +49,21 @@ func TestSingleRecordLabel(t *testing.T) {
 	}
 }
 
-// TestSingleRecordLabelIsNotInTheFingerprintWhileOff: the setting is invisible in
-// what Tagger.Fingerprint hashes until it is turned on, so adding it did not change
-// every existing profile's fingerprint and re-process the whole library.
+// TestSingleRecordLabelIsNotInTheFingerprintWhileOff: settings added after profiles
+// existed are invisible in what Tagger.Fingerprint hashes while they mean what files
+// were already tagged with, so adding them did not change every existing profile's
+// fingerprint and re-process the whole library. Turned on, they change it.
 func TestSingleRecordLabelIsNotInTheFingerprintWhileOff(t *testing.T) {
 	off, _ := json.Marshal(models.TaggerSettings{})
-	if strings.Contains(string(off), "SingleRecordLabel") {
-		t.Errorf("settings JSON with the setting off = %s, want it absent", off)
+	for _, field := range []string{"SingleRecordLabel", "MusicBrainzReleaseType", "IgnoreRemixEditions", "OriginalDateAsDate"} {
+		if strings.Contains(string(off), field) {
+			t.Errorf("settings JSON at its zero value = %s, want %s absent", off, field)
+		}
 	}
-	on, _ := json.Marshal(models.TaggerSettings{SingleRecordLabel: true})
-	if !strings.Contains(string(on), "SingleRecordLabel") {
-		t.Errorf("settings JSON with the setting on = %s, want it present so files re-tag", on)
+	on, _ := json.Marshal(models.TaggerSettings{SingleRecordLabel: true, MusicBrainzReleaseType: true, IgnoreRemixEditions: true, OriginalDateAsDate: true})
+	for _, field := range []string{"SingleRecordLabel", "MusicBrainzReleaseType", "IgnoreRemixEditions", "OriginalDateAsDate"} {
+		if !strings.Contains(string(on), field) {
+			t.Errorf("settings JSON with %s on = %s, want it present so files re-tag", field, on)
+		}
 	}
 }

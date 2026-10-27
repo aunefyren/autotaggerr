@@ -152,23 +152,28 @@ func buildFLACDesiredTags(metadata models.FileTags) map[string][]string {
 		// stays true even once this engine writes the spec-correct form.
 		// ALBUMARTISTS carries the full credit for players that can read it, exactly
 		// as ARTISTS already sits beside ARTIST.
-		"ALBUMARTISTS":               metadata.AlbumArtists,
-		"GENRE":                      metadata.Genres,
-		"DATE":                       single(metadata.ReleaseDate),
-		"YEAR":                       single(metadata.ReleaseYear),
-		"ORIGINALDATE":               single(metadata.OriginalDate),
-		"ORIGINALYEAR":               single(metadata.OriginalYear),
-		"RELEASEDATE":                single(metadata.ReleaseDate),
-		"ALBUM":                      single(metadata.Album),
-		"TITLE":                      single(metadata.Title),
-		"TRACKNUMBER":                single(metadata.Track),
-		"TRACKTOTAL":                 single(metadata.TrackTotal),
+		"ALBUMARTISTS":    metadata.AlbumArtists,
+		"ARTISTSORT":      single(metadata.ArtistSort),
+		"ALBUMARTISTSORT": single(metadata.AlbumArtistSort),
+		"GENRE":           metadata.Genres,
+		"DATE":            single(metadata.Date),
+		"YEAR":            single(metadata.Year),
+		"ORIGINALDATE":    single(metadata.OriginalDate),
+		"ORIGINALYEAR":    single(metadata.OriginalYear),
+		"RELEASEDATE":     single(metadata.ReleaseDate),
+		"ALBUM":           single(metadata.Album),
+		"TITLE":           single(metadata.Title),
+		"TRACKNUMBER":     single(metadata.Track),
+		"TRACKTOTAL":      single(metadata.TrackTotal),
+		// Both spellings of each total, as Picard writes them: readers disagree on
+		// which one they look for.
+		"TOTALTRACKS":                single(metadata.TrackTotal),
 		"DISCNUMBER":                 single(metadata.DiscNumber),
 		"DISCTOTAL":                  single(metadata.DiscTotal),
 		"TOTALDISCS":                 single(metadata.DiscTotal),
 		"ISRC":                       metadata.ISRCs,
 		"RELEASESTATUS":              single(metadata.MBAlbumStatus),
-		"RELEASETYPE":                single(metadata.MBAlbumType),
+		"RELEASETYPE":                metadata.MBAlbumTypes,
 		"RELEASECOUNTRY":             single(metadata.MBAlbumReleaseCountry),
 		"MUSICBRAINZ_ALBUMID":        single(metadata.MBAlbumID),
 		"MUSICBRAINZ_ARTISTID":       metadata.MBArtistIDs,
@@ -181,12 +186,14 @@ func buildFLACDesiredTags(metadata models.FileTags) map[string][]string {
 		"MEDIA":                      single(metadata.Media),
 		"BARCODE":                    single(metadata.Barcode),
 		"CATALOGNUMBER":              metadata.CatalogNumbers,
-		// ASIN, COMPOSER and AUTHOR are deliberately absent: nothing ever resolved a
-		// value for them, so listing them here only ever cleared whatever another
-		// tagger had written once remove_values was on. Leaving them out means a
-		// foreign tagger's value survives. MusicBrainz can supply composer (via work
-		// relations) and ASIN (on the release) if they are ever wanted for real —
-		// that is a fetch and a mapping, and it starts with models.FileTags.
+		"DISCSUBTITLE":               single(metadata.DiscSubtitle),
+		"COMPILATION":                single(metadata.Compilation),
+		"LANGUAGE":                   single(metadata.Language),
+		"ASIN":                       single(metadata.ASIN),
+		// COMPOSER and AUTHOR are deliberately absent: nothing resolves a value for
+		// them, so listing them here would only clear whatever another tagger wrote
+		// once remove_values is on. Composer from MusicBrainz's work relations is a
+		// fetch and a mapping (docs/wip.md).
 	}
 	// Only when there is one: an absent key is one the diff never looks at, so a
 	// profile that does not write tempo — or a file below its confidence floor —

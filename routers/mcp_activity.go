@@ -177,16 +177,21 @@ type mcpDataSourceRow struct {
 }
 
 type mcpTaggerProfileRow struct {
-	ID                 string `json:"id"`
-	Name               string `json:"name"`
-	WriteTags          bool   `json:"write_tags"`
-	MaxGenres          int    `json:"max_genres"`
-	MP3MultiValueTags  bool   `json:"mp3_multi_value_tags"`
-	SingleRecordLabel  bool   `json:"single_record_label"`
-	NamingArtistFolder string `json:"naming_artist_folder,omitempty"`
-	NamingAlbumFolder  string `json:"naming_album_folder,omitempty"`
-	NamingMediaFolder  string `json:"naming_media_folder,omitempty"`
-	NamingTrackFile    string `json:"naming_track_file,omitempty"`
+	ID                string `json:"id"`
+	Name              string `json:"name"`
+	WriteTags         bool   `json:"write_tags"`
+	MaxGenres         int    `json:"max_genres"`
+	MP3MultiValueTags bool   `json:"mp3_multi_value_tags"`
+	SingleRecordLabel bool   `json:"single_record_label"`
+	// MusicBrainzReleaseType and IgnoreRemixEditions as stored: false is the
+	// Plex-shaped release type and the remix-edition rule on.
+	MusicBrainzReleaseType bool   `json:"musicbrainz_release_type"`
+	IgnoreRemixEditions    bool   `json:"ignore_remix_editions"`
+	OriginalDateAsDate     bool   `json:"original_date_as_date"`
+	NamingArtistFolder     string `json:"naming_artist_folder,omitempty"`
+	NamingAlbumFolder      string `json:"naming_album_folder,omitempty"`
+	NamingMediaFolder      string `json:"naming_media_folder,omitempty"`
+	NamingTrackFile        string `json:"naming_track_file,omitempty"`
 }
 
 func (a *API) addMCPOverviewTools(server *mcp.Server) {
@@ -320,6 +325,7 @@ func (a *API) mcpGetConfiguration(_ context.Context, _ *mcp.CallToolRequest, _ m
 	for _, p := range profiles {
 		out.TaggerProfiles = append(out.TaggerProfiles, mcpTaggerProfileRow{
 			ID: p.ID.String(), Name: p.Name, WriteTags: p.WriteTags, MaxGenres: p.MaxGenres, MP3MultiValueTags: p.MP3MultiValueTags, SingleRecordLabel: p.SingleRecordLabel,
+			MusicBrainzReleaseType: p.MusicBrainzReleaseType, IgnoreRemixEditions: p.IgnoreRemixEditions, OriginalDateAsDate: p.OriginalDateAsDate,
 			NamingArtistFolder: p.NamingArtistFolder, NamingAlbumFolder: p.NamingAlbumFolder,
 			NamingMediaFolder: p.NamingMediaFolder, NamingTrackFile: p.NamingTrackFile,
 		})

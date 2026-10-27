@@ -43,22 +43,35 @@ type FileTags struct {
 	// AlbumArtists carries the whole credit for players that can read it — without
 	// it the names disagreed with MBAlbumArtistIDs, which has always listed every
 	// credited artist.
-	AlbumArtist           string   `json:"album_artist"`
-	AlbumArtists          []string `json:"album_artists"`
-	Genres                []string `json:"genres"`
-	OriginalDate          string   `json:"original_date"`
-	OriginalYear          string   `json:"original_year"`
-	ReleaseDate           string   `json:"release_date"`
-	ReleaseYear           string   `json:"release_year"`
-	Album                 string   `json:"album"`
-	Title                 string   `json:"title"`
-	ISRCs                 []string `json:"isrcs"`
-	Track                 string   `json:"track"`
-	TrackTotal            string   `json:"track_total"`
-	DiscNumber            string   `json:"disc_number"`
-	DiscTotal             string   `json:"disc_total"`
-	MBAlbumStatus         string   `json:"mm_album_status"`
-	MBAlbumType           string   `json:"mm_album_type"`
+	AlbumArtist  string   `json:"album_artist"`
+	AlbumArtists []string `json:"album_artists"`
+	// ArtistSort and AlbumArtistSort are MusicBrainz's sort names for the same two,
+	// shaped the same way: the whole track credit, and the first album artist. Plex
+	// reads both when it first ingests an artist.
+	ArtistSort      string   `json:"artist_sort"`
+	AlbumArtistSort string   `json:"album_artist_sort"`
+	Genres          []string `json:"genres"`
+	OriginalDate    string   `json:"original_date"`
+	OriginalYear    string   `json:"original_year"`
+	ReleaseDate     string   `json:"release_date"`
+	ReleaseYear     string   `json:"release_year"`
+	// Date and Year are what DATE and YEAR carry: the edition's release date, or the
+	// album's original one when the profile asks (TaggerSettings.OriginalDateAsDate).
+	// ReleaseDate stays the edition's either way, in RELEASEDATE.
+	Date          string   `json:"date"`
+	Year          string   `json:"year"`
+	Album         string   `json:"album"`
+	Title         string   `json:"title"`
+	ISRCs         []string `json:"isrcs"`
+	Track         string   `json:"track"`
+	TrackTotal    string   `json:"track_total"`
+	DiscNumber    string   `json:"disc_number"`
+	DiscTotal     string   `json:"disc_total"`
+	MBAlbumStatus string   `json:"mm_album_status"`
+	// MBAlbumTypes is the release type: MusicBrainz's primary and secondary types as
+	// separate values, or the one Plex-shaped value ("album; live") the tagger
+	// profile can ask for instead (see modules.ReleaseTypes).
+	MBAlbumTypes          []string `json:"mm_album_types"`
 	MBAlbumReleaseCountry string   `json:"mm_album_release_country"`
 	MBAlbumID             string   `json:"mm_album_id"`
 	MBArtistIDs           []string `json:"mm_artist_ids"`
@@ -71,17 +84,23 @@ type FileTags struct {
 	Media                 string   `json:"media"`
 	Barcode               string   `json:"barcode"`
 	CatalogNumbers        []string `json:"catalog_numbers"`
+	// DiscSubtitle is the medium's own title, when MusicBrainz gives it one.
+	DiscSubtitle string `json:"disc_subtitle"`
+	// Compilation is "1" for a Various Artists release and "" otherwise — Picard's
+	// meaning since 1.3, not MusicBrainz's "compilation" secondary type.
+	Compilation string `json:"compilation"`
+	// Language is the release's text language, ISO 639-3 ("eng").
+	Language string `json:"language"`
+	ASIN     string `json:"asin"`
 	// BPM is the stored tempo rounded to a whole number, or "" when the profile does
 	// not write it or there is nothing good enough to write. It does not come from
 	// MusicBrainz: modules.TempoTagValue fills it from track_tempos after the rest of
 	// the tags are built.
 	BPM string `json:"bpm"`
-	// ASIN, Composer and Author used to sit here. Nothing ever populated them —
-	// BuildFileTags hardcoded all three to "" — and neither tag map reads them, so
-	// they were three fields whose only possible effect was clearing another
-	// tagger's value under remove_values. MusicBrainz can supply composer (via work
-	// relations) and ASIN (on the release); adding either back is a fetch and a
-	// mapping, not a field on this struct.
+	// Composer and Author used to sit here, hardcoded to "" and read by neither tag
+	// map, so their only possible effect was clearing another tagger's value under
+	// remove_values. MusicBrainz can supply composer via work relations; adding it
+	// back is a fetch and a mapping (docs/wip.md), not a field on this struct.
 }
 
 type CachedMusicBrainzRelease struct {

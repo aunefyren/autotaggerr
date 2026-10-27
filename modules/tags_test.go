@@ -20,6 +20,14 @@ func sampleFileTags() models.FileTags {
 		OriginalYear:          "v_originalyear",
 		ReleaseDate:           "v_releasedate",
 		ReleaseYear:           "v_releaseyear",
+		Date:                  "v_date",
+		Year:                  "v_year",
+		ArtistSort:            "v_artistsort",
+		AlbumArtistSort:       "v_albumartistsort",
+		DiscSubtitle:          "v_discsubtitle",
+		Compilation:           "1",
+		Language:              "v_language",
+		ASIN:                  "v_asin",
 		Album:                 "v_album",
 		Title:                 "v_title",
 		ISRCs:                 []string{"v_isrc"},
@@ -28,7 +36,7 @@ func sampleFileTags() models.FileTags {
 		DiscNumber:            "v_discnumber",
 		DiscTotal:             "v_disctotal",
 		MBAlbumStatus:         "v_albumstatus",
-		MBAlbumType:           "v_albumtype",
+		MBAlbumTypes:          []string{"v_albumtype"},
 		MBAlbumReleaseCountry: "v_releasecountry",
 		MBAlbumID:             "v_albumid",
 		MBArtistIDs:           []string{"v_artistid"},
@@ -70,11 +78,24 @@ func TestBuildFLACDesiredTags(t *testing.T) {
 	assertTag(t, m, "ALBUMARTIST", "v_albumartist")
 	assertTag(t, m, "ALBUMARTISTS", "v_albumartists_one; v_albumartists_two")
 
-	// Duplicated source fields must all be present.
-	assertTag(t, m, "DATE", "v_releasedate")
+	// Duplicated source fields must all be present. DATE is FileTags.Date — the
+	// edition's date, or the original's when the profile asks — and RELEASEDATE is
+	// always the edition's.
+	assertTag(t, m, "DATE", "v_date")
+	assertTag(t, m, "YEAR", "v_year")
 	assertTag(t, m, "RELEASEDATE", "v_releasedate")
 	assertTag(t, m, "DISCTOTAL", "v_disctotal")
 	assertTag(t, m, "TOTALDISCS", "v_disctotal")
+	assertTag(t, m, "TRACKTOTAL", "v_tracktotal")
+	assertTag(t, m, "TOTALTRACKS", "v_tracktotal")
+
+	// Picard's fields from the release itself.
+	assertTag(t, m, "ARTISTSORT", "v_artistsort")
+	assertTag(t, m, "ALBUMARTISTSORT", "v_albumartistsort")
+	assertTag(t, m, "DISCSUBTITLE", "v_discsubtitle")
+	assertTag(t, m, "COMPILATION", "1")
+	assertTag(t, m, "LANGUAGE", "v_language")
+	assertTag(t, m, "ASIN", "v_asin")
 
 	// FLAC-only fields (Vorbis has no agreed ID3 spelling for these).
 	assertTag(t, m, "BARCODE", "v_barcode")
@@ -83,7 +104,7 @@ func TestBuildFLACDesiredTags(t *testing.T) {
 	// Nothing resolves a value for these — they are not even fields on FileTags any
 	// more — so listing them would only ever clear another tagger's value once
 	// remove_values is on.
-	for _, absent := range []string{"COMPOSER", "AUTHOR", "ASIN"} {
+	for _, absent := range []string{"COMPOSER", "AUTHOR"} {
 		if _, ok := m[absent]; ok {
 			t.Errorf("FLAC desired tags unexpectedly contains %q", absent)
 		}
@@ -108,8 +129,16 @@ func TestBuildMP3DesiredTags(t *testing.T) {
 	assertTag(t, m, "MusicBrainz Release Track Id", "v_releasetrackid")
 	assertTag(t, m, "publisher", "v_recordlabel")
 	assertTag(t, m, "TMED", "v_media")
-	assertTag(t, m, "DATE", "v_releasedate")
+	assertTag(t, m, "DATE", "v_date")
+	assertTag(t, m, "year", "v_year")
+	assertTag(t, m, "RELEASEDATE", "v_releasedate")
 	assertTag(t, m, "TDOR", "v_originaldate")
+	assertTag(t, m, "ARTISTSORT", "v_artistsort")
+	assertTag(t, m, "ALBUMARTISTSORT", "v_albumartistsort")
+	assertTag(t, m, "DISCSUBTITLE", "v_discsubtitle")
+	assertTag(t, m, "COMPILATION", "1")
+	assertTag(t, m, "LANGUAGE", "v_language")
+	assertTag(t, m, "ASIN", "v_asin")
 
 	// Parity with FLAC: the recording MBID and the release's identifiers.
 	assertTag(t, m, "MusicBrainz Recording Id", "v_recordingid")
@@ -118,7 +147,7 @@ func TestBuildMP3DesiredTags(t *testing.T) {
 	assertTag(t, m, "ALBUMARTISTS", "v_albumartists_one; v_albumartists_two")
 
 	// Never populated, so never written by either engine.
-	for _, absent := range []string{"COMPOSER", "AUTHOR", "ASIN", "MUSICBRAINZ_TRACKID"} {
+	for _, absent := range []string{"COMPOSER", "AUTHOR", "MUSICBRAINZ_TRACKID"} {
 		if _, ok := m[absent]; ok {
 			t.Errorf("MP3 desired tags unexpectedly contains %q", absent)
 		}
