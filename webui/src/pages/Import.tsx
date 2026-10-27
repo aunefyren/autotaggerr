@@ -1,4 +1,4 @@
-import { FormEvent, ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
@@ -7,7 +7,6 @@ import {
   DownloadItem,
   DownloadScan,
   DownloadsList,
-  ImportEditionClues,
   ImportGroup,
   ImportPreview,
   ImportRow,
@@ -23,6 +22,17 @@ import { ReleaseSearch, guessFields } from "../components/ReleaseSearch";
 import { PathInput } from "../components/PathInput";
 import { useToast } from "../toast";
 import { CopyWarning } from "./DownloadClients";
+import {
+  Agrees,
+  EditionClues,
+  EditionFacts,
+  EditionPrinting,
+  editionAgreement,
+  editionTheTagsName,
+  editionTracks,
+  looseEq,
+  strongAgreement,
+} from "../components/editionClues";
 
 /** A path relative to a folder above it, for display; the full path stays in the title. */
 function relativeTo(path: string, folder: string): string {
@@ -757,7 +767,7 @@ function ImportModal({
             <Browse group={group} visible={step === "identify" && tab === "browse"} onCancel={onClose} onReview={review} reviewing={loading} />
           </div>
           <div className="stack" style={{ display: tab === "search" ? undefined : "none" }}>
-            <ReleaseSearch initialFields={searchFields} onPick={review} picking={loading} />
+            <ReleaseSearch initialFields={searchFields} onPick={review} picking={loading} clues={{ edition: group.edition, name: group.name_clues }} />
             <div className="modal-actions">
               <button type="button" className="btn btn-ghost btn-sm" style={{ marginRight: "auto" }} onClick={onClose}>Cancel</button>
             </div>
@@ -785,13 +795,12 @@ function ImportModal({
 
 /**
  * What the scan read from the files, and from where — the facts a pick is checked
- * against. The second line is what the tags say about the *edition*, which the
- * edition column marks agreement with; the file list is folded away, since a name
+ * against. Below it, what the tags and the folder's name say about the *edition*,
+ * which the edition column marks agreement with; the file list is folded away, since a name
  * there ("CD2", "[24-96]", "bonus") settles a pick less often than it helps one.
  */
 function FilesSay({ group, download }: { group: ImportGroup; download?: string }) {
   const from = (source?: string) => (source === "tags" ? "tags" : "folder name");
-  const clues = group.edition;
   return (
     <div className="stack" style={{ gap: 6 }}>
       <div className="row" style={{ gap: 8, flexWrap: "wrap", fontSize: 12 }}>
@@ -803,17 +812,7 @@ function FilesSay({ group, download }: { group: ImportGroup; download?: string }
           <b className="mono">{group.files.length}</b> audio file{group.files.length === 1 ? "" : "s"} · {group.discs} disc{group.discs === 1 ? "" : "s"}
         </span>
       </div>
-      {clues && (
-        <div className="row" style={{ gap: 8, flexWrap: "wrap", fontSize: 12 }}>
-          <span className="eyebrow">Edition tags</span>
-          {clues.barcode && <span className="fact">Barcode <b className="mono">{clues.barcode}</b></span>}
-          {clues.catalog_number && <span className="fact">Cat. no. <b className="mono">{clues.catalog_number}</b></span>}
-          {clues.label && <span className="fact">Label <b>{clues.label}</b></span>}
-          {clues.date && <span className="fact">Released <b className="mono">{clues.date}</b></span>}
-          {clues.country && <span className="fact">Country <b className="mono">{clues.country}</b></span>}
-          {clues.media && <span className="fact">Format <b>{clues.media}</b></span>}
-        </div>
-      )}
+      <EditionFacts clues={{ edition: group.edition, name: group.name_clues }} />
       <details>
         <summary className="dim" style={{ fontSize: 11, cursor: "pointer" }}>
           {download ? <>From download <span className="path">{download}</span> · </> : null}
@@ -829,13 +828,6 @@ function FilesSay({ group, download }: { group: ImportGroup; download?: string }
   );
 }
 
-/** Loose equality for "the album the tags name": case, accents and punctuation aside. */
-function looseEq(a?: string, b?: string): boolean {
-  const norm = (s?: string) =>
-    (s ?? "").normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-  return norm(a) !== "" && norm(a) === norm(b);
-}
-
 interface ReleaseGroupHit {
   id: string;
   title: string;
@@ -847,61 +839,11 @@ interface ReleaseGroupHit {
 const TYPE_ORDER = ["Album", "EP", "Single", "Broadcast", "Other", ""];
 const TYPE_LABELS: Record<string, string> = { Album: "Albums", EP: "EPs", Single: "Singles", Broadcast: "Broadcasts", Other: "Other", "": "Other" };
 
-function editionTracks(e: ReleaseSearchResult): number {
-  return (e.media ?? []).reduce((n, m) => n + (m["track-count"] ?? 0), 0);
-}
-
 function editionFormats(e: ReleaseSearchResult): string {
   const formats = (e.media ?? []).map((m) => m.format || "?");
   const counted = new Map<string, number>();
   formats.forEach((f) => counted.set(f, (counted.get(f) ?? 0) + 1));
   return [...counted].map(([f, n]) => (n > 1 ? `${n}×${f}` : f)).join(" + ") || "—";
-}
-
-/** Digits with leading zeros dropped: 602478023293 (UPC-A), 0602478023293 (EAN-13)
- *  and 00602478023293 (GTIN-14) are one barcode written three ways. */
-function barcodeKey(s?: string): string {
-  return (s ?? "").replace(/\D/g, "").replace(/^0+/, "");
-}
-
-/** Catalog numbers are written with and without spaces and dashes ("KAB 1", "KAB-1"). */
-function catalogKey(s?: string): string {
-  return (s ?? "").toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
-}
-
-/** Which of an edition's facts agree with what the files' tags say about theirs. */
-interface Agreement {
-  barcode: boolean;
-  catalog: boolean;
-  label: boolean;
-  date: boolean;
-  country: boolean;
-  format: boolean;
-}
-
-function editionAgreement(e: ReleaseSearchResult, clues?: ImportEditionClues): Agreement {
-  const info = e["label-info"] ?? [];
-  const sameDate = (tag?: string, mb?: string) =>
-    !!tag && !!mb && (tag === mb || (tag.length === 4 && mb.startsWith(tag)));
-  return {
-    barcode: !!clues?.barcode && barcodeKey(clues.barcode) !== "" && barcodeKey(clues.barcode) === barcodeKey(e.barcode),
-    catalog: !!clues?.catalog_number && catalogKey(clues.catalog_number) !== "" && info.some((l) => catalogKey(l["catalog-number"]) === catalogKey(clues.catalog_number)),
-    label: !!clues?.label && info.some((l) => looseEq(l.label?.name, clues.label)),
-    date: sameDate(clues?.date, e.date),
-    country: !!clues?.country && clues.country.toUpperCase() === (e.country ?? "").toUpperCase(),
-    format: !!clues?.media && (e.media ?? []).some((m) => looseEq(m.format, clues.media)),
-  };
-}
-
-/** A barcode or catalog number is printed on one pressing; a country, date, label or
- *  format is shared by many. Only the first kind is worth leading the eye to. */
-function strongAgreement(a: Agreement): boolean {
-  return a.barcode || a.catalog;
-}
-
-/** A value in the list's own colour, or in the diff's green where the tags agree with it. */
-function Agrees({ on, children }: { on: boolean; children: ReactNode }) {
-  return on ? <span className="pick-match" style={{ fontSize: "inherit" }} title="Matches the files' tags">{children}</span> : <>{children}</>;
 }
 
 /**
@@ -973,9 +915,11 @@ function PickSkeleton({ label, rows, kind }: { label: string; rows: number; kind
  * description, the album the tags name is marked, and an edition's track count is set
  * against the number of files — the one fact that separates a 6-track CD from the
  * 14-track box set of the same album. Where the tags carry a barcode, catalog number,
- * label, date, country or format, each edition's matching values are marked in the
- * diff's green, and the column opens scrolled to the first barcode or catalog-number
- * match — marked and shown, never picked, and never sorted to the top.
+ * label, date, country or format — or the folder's name an edition word, format or
+ * country — each edition's matching values are marked in the diff's green, never
+ * sorted to the top. The one edition the tags' barcode (or, failing that, catalog
+ * number) names is selected for you when its track count matches the files; several
+ * such editions are only scrolled to.
  */
 function Browse({
   group,
@@ -992,6 +936,8 @@ function Browse({
   reviewing: boolean;
 }) {
   const toast = useToast();
+  const clues: EditionClues = useMemo(() => ({ edition: group.edition, name: group.name_clues }), [group]);
+  const files = group.files.length;
   const [query, setQuery] = useState(group.artist ?? "");
   const [artists, setArtists] = useState<ArtistSearchResult[] | null>(null);
   const [artist, setArtist] = useState<ArtistSearchResult | null>(null);
@@ -1000,6 +946,8 @@ function Browse({
   const [album, setAlbum] = useState<ReleaseGroupHit | null>(null);
   const [editions, setEditions] = useState<ReleaseSearchResult[] | null>(null);
   const [edition, setEdition] = useState<ReleaseSearchResult | null>(null);
+  // Why the edition was selected for you; cleared the moment someone picks one.
+  const [pickedBecause, setPickedBecause] = useState<"" | "barcode" | "catalog number">("");
   const [onlyMatching, setOnlyMatching] = useState(true);
   const [loading, setLoading] = useState<"" | "artists" | "albums" | "editions">("");
 
@@ -1025,6 +973,7 @@ function Browse({
     setAlbum(null);
     setEditions(null);
     setEdition(null);
+    setPickedBecause("");
     setAlbumFilter("");
     setLoading("albums");
     try {
@@ -1043,9 +992,16 @@ function Browse({
     setAlbum(rg);
     setEditions(null);
     setEdition(null);
+    setPickedBecause("");
     setLoading("editions");
     try {
-      setEditions((await api.get<ReleaseSearchResult[]>(`/release-groups/${rg.id}/releases`)) ?? []);
+      const fetched = (await api.get<ReleaseSearchResult[]>(`/release-groups/${rg.id}/releases`)) ?? [];
+      setEditions(fetched);
+      const named = editionTheTagsName(fetched, clues, files);
+      if (named) {
+        setEdition(named.edition);
+        setPickedBecause(named.why);
+      }
     } catch (e) {
       toast("err", errMsg(e));
     } finally {
@@ -1058,7 +1014,6 @@ function Browse({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [group.folder]);
 
-  const files = group.files.length;
   const albumSections = useMemo(() => {
     const shown = (albums ?? []).filter((a) => !albumFilter || a.title.toLowerCase().includes(albumFilter.toLowerCase()));
     return TYPE_ORDER.map((type) => ({
@@ -1073,15 +1028,14 @@ function Browse({
   const shownEditions = onlyMatching ? matching : editions ?? [];
   const hidden = (editions?.length ?? 0) - shownEditions.length;
 
-  const clues = group.edition;
   const agreement = useMemo(() => new Map((editions ?? []).map((e) => [e.id, editionAgreement(e, clues)])), [editions, clues]);
   const strong = (editions ?? []).filter((e) => strongAgreement(agreement.get(e.id)!));
   const strongHidden = strong.filter((e) => !shownEditions.includes(e)).length;
 
   const artistList = useScrollToPick('[aria-pressed="true"]', visible, artist?.id, artists);
   const albumList = useScrollToPick('[aria-pressed="true"]', visible, album?.id, albumSections);
-  // The edition is never picked for you, so until one is, the row to show is the
-  // first the tags' barcode or catalog number names.
+  // Until an edition is selected, the row to show is the first the tags' barcode or
+  // catalog number names (several of them, or one with the wrong track count).
   const editionList = useScrollToPick(edition ? '[aria-pressed="true"]' : '[data-agrees="strong"]', visible, edition?.id, editions, onlyMatching);
 
   return (
@@ -1176,7 +1130,6 @@ function Browse({
               {shownEditions.map((e) => {
                 const tracks = editionTracks(e);
                 const a = agreement.get(e.id)!;
-                const labels = (e["label-info"] ?? []).filter((l) => l.label?.name || l["catalog-number"]);
                 return (
                   <li key={e.id}>
                     <button
@@ -1184,7 +1137,10 @@ function Browse({
                       className="pick-row"
                       aria-pressed={edition?.id === e.id}
                       data-agrees={strongAgreement(a) ? "strong" : undefined}
-                      onClick={() => setEdition(e)}
+                      onClick={() => {
+                        setEdition(e);
+                        setPickedBecause("");
+                      }}
                     >
                       <span className="row" style={{ justifyContent: "space-between", gap: 8 }}>
                         <span>{e.title}</span>
@@ -1200,30 +1156,9 @@ function Browse({
                         ) : (
                           <span>{tracks} tracks</span>
                         )}
-                        {e.disambiguation ? ` · ${e.disambiguation}` : ""}
+                        {e.disambiguation && <> · <Agrees on={a.disambiguation}>{e.disambiguation}</Agrees></>}
                       </span>
-                      {(labels.length > 0 || e.barcode) && (
-                        <span className="pick-sub">
-                          {labels.map((l, i) => (
-                            <span key={i}>
-                              {i > 0 && " · "}
-                              {l.label?.name && <Agrees on={a.label && looseEq(l.label.name, clues?.label)}>{l.label.name}</Agrees>}
-                              {l.label?.name && l["catalog-number"] && " "}
-                              {l["catalog-number"] && (
-                                <span className="mono">
-                                  <Agrees on={a.catalog && catalogKey(l["catalog-number"]) === catalogKey(clues?.catalog_number)}>{l["catalog-number"]}</Agrees>
-                                </span>
-                              )}
-                            </span>
-                          ))}
-                          {e.barcode && (
-                            <>
-                              {labels.length > 0 && " · "}
-                              <span className="mono"><Agrees on={a.barcode}>{e.barcode}</Agrees></span>
-                            </>
-                          )}
-                        </span>
-                      )}
+                      <EditionPrinting e={e} clues={clues} a={a} />
                     </button>
                   </li>
                 );
@@ -1256,6 +1191,7 @@ function Browse({
               .filter(Boolean)
               .join(" · ")}
           </span>
+          {pickedBecause && <span className="pick-match" style={{ fontSize: 12 }}>Selected for you — the files' {pickedBecause} names it</span>}
           <span style={{ marginLeft: "auto" }}><MBLink entity="release" mbid={edition.id} /></span>
         </div>
       )}

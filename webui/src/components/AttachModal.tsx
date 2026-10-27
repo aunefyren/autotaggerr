@@ -4,6 +4,7 @@ import { IdentifyAvailability, IdentifyMatch, LibraryItem, ReleaseTracks } from 
 import { Modal } from "./ui";
 import { MBLink } from "./MBLink";
 import { ReleaseSearch, guessFields } from "./ReleaseSearch";
+import { EditionFacts, useEditionClues } from "./editionClues";
 import { useToast } from "../toast";
 
 export function AttachModal({
@@ -26,6 +27,8 @@ export function AttachModal({
   const [matches, setMatches] = useState<IdentifyMatch[] | null>(null);
   const [identifying, setIdentifying] = useState(false);
   const [suggestedRecording, setSuggestedRecording] = useState("");
+
+  const clues = useEditionClues([item.id]);
 
   useEffect(() => {
     api.get<IdentifyAvailability>("/identify").then(setFingerprinting).catch(() => setFingerprinting(null));
@@ -150,8 +153,10 @@ export function AttachModal({
           </div>
         )}
 
+        {!release && <EditionFacts clues={clues} />}
+
         {!release && (
-          <ReleaseSearch initialFields={guessFields(item.path)} onPick={pickRelease} picking={loadingTracks} />
+          <ReleaseSearch initialFields={guessFields(item.path)} onPick={pickRelease} picking={loadingTracks} clues={clues} />
         )}
 
         {loadingTracks && <div className="muted">Loading tracklist…</div>}

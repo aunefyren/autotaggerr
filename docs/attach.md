@@ -109,6 +109,14 @@ on this page".
 The UI (`ReleaseSearch`, shared by both attach flows) prefills artist/title/year *per field* from
 the library layout, so an album title can never be mistaken for part of the artist name.
 
+**Each hit is marked against what the files say about their edition** — the same clues the import
+reads ([import.md](import.md#the-flow)): their tags' barcode, catalog number, label, date, country
+and format, and the album folder's edition words. `POST /attach/clues` reads them on request
+(`modules.ReadEditionClues`), since indexed files have no scan step; the modal shows them above
+the search, and a hit's agreeing values are set in `--diff-add-text`. A file Autotaggerr already
+tagged carries the release it was matched to, so on a re-attach the marks point at the current
+match — useful as a reference, not as evidence. Marking only: attach never picks a release.
+
 ## Attaching a folder
 
 Files arrive as albums, so identifying them one at a time is what made attach unusable at scale.
@@ -160,6 +168,7 @@ Optional, and only ever a suggestion — see [fingerprinting.md](fingerprinting.
 | `GET /library-items?pin_held=true` | the pins held for review |
 | `POST /attach/preview` | propose a file → track mapping; **writes nothing** |
 | `POST /attach/bulk` | apply a reviewed mapping |
+| `POST /attach/clues` | what the selected files say about their edition (tags, folder name); reads only |
 
 The bulk endpoints live under `/attach/*` rather than `/library-items/*` to avoid colliding with
 the `:id` route.

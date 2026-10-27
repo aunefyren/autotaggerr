@@ -291,7 +291,10 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   matches is green, the country that does not stays muted — so the row says *what* agrees, not just
   that something does. Since matches are not sorted up, **the list scrolls to them**: a column keeps
   its selected row in view (`useScrollToPick`, the list only, never the modal), and a column with
-  no selection yet opens on its first strong match. A filter that hides rows says how many, and
+  no selection yet opens on its first strong match. A match is **selected for you only when it is
+  certain** — one row, named by an identifier printed on that thing alone (a barcode), with the
+  count agreeing too — and the selected bar then says what selected it, in the same green. A
+  shared fact (a country, a word in a folder name) is never strong, however many agree. A filter that hides rows says how many, and
   says so when it hides a match. While a column's first fetch is in flight it shows `PickSkeleton`
   (`.pick-skel`): its own rows, values missing, per *Loading placeholder*. Stacks below 900px.
   **Two columns** (`.pick-grid.two`, Add artist) when there is one choice to make but the list

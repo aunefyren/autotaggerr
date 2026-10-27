@@ -30,9 +30,14 @@ already been in the library.
 
    The same tag read collects **edition clues** (`ImportGroup.Edition`, the most common value of
    each): barcode, catalog number, label, country, format and the release's own `DATE` (not the
-   original's, which every edition shares). The modal shows them as *Edition tags*, under a folded
-   list of the files by their path in the album folder, headed by the download's name when it came
-   from one — a file or torrent name (`CD2`, `[24-96]`) is sometimes the clue the tags lack.
+   original's, which every edition shares). The album folder's name — the download's, for a
+   download — gives weaker **name clues** (`ImportGroup.NameClues`, `modules.ParseImportNameClues`):
+   edition words (`Deluxe`, `Remaster`, `Expanded`, …), a format (`WEB` and the stores → Digital
+   Media, `LP` → Vinyl), a country (`Japan` → JP) and a bit depth / sample rate (`24-96`), which is
+   shown only, since MusicBrainz has no such fact. A name with spaces is read only inside its
+   brackets — `Japan - Tin Drum` names a band, `Tin Drum [Japan]` a pressing; a scene name is read
+   whole but for its first token. The modal shows both as *Edition tags* and *The name says*, under
+   a folded list of the files by their path in the album folder, headed by the download's name.
 
    A group whose tags all name one release skips this step and opens on the review; Identify is
    one step back. Otherwise there are two tabs:
@@ -44,7 +49,10 @@ already been in the library.
      formats and **track count set against the number of files**. *Only editions with N tracks* is
      on by default and says how many it hid — the count is the one fact that separates the six-track
      CD from the box set of the same album. An exact artist name match and an exact album title
-     match are selected for you; the edition never is, because that is the choice being made.
+     match are selected for you. The edition is selected only when the tags name it: exactly one
+     edition whose barcode matches (or, if none does, whose catalog number does) and whose track
+     count equals the files (`editionTheTagsName`). The **Selected** line then says which fact
+     picked it; anything less certain is marked and left to the person importing.
      Each edition also lists its labels, catalog numbers and barcode (the browse asks for
      `inc=media+labels`; the barcode comes unasked), and every value that agrees with the edition
      clues is set in `--diff-add-text`. Barcodes compare as digits with leading zeros dropped, so
@@ -52,10 +60,13 @@ already been in the library.
      numbers ignore case, spaces and dashes. A barcode or catalog-number match is the strong kind
      — printed on one pressing — so the column says how many editions it names, says so if the
      track filter hides them, and opens scrolled to the first; a shared country, date, label or
-     format is only marked. Each column keeps its selected row scrolled into view.
+     format — and anything from the name, whose edition words are matched against the
+     disambiguation — is only marked. Each column keeps its selected row scrolled into view.
      A **Selected** line states the pick before *Review mapping*.
    - **Search all releases**: the fielded search folder attach uses, prefilled from the hint, which
-     also takes a pasted musicbrainz.org link.
+     also takes a pasted musicbrainz.org link. Its rows are marked against the same clues; the
+     prefill stays artist, album and year, since a store-specific barcode in a field would return
+     nothing until cleared.
 3. **Review** — step two (`POST /import/preview`). Given sources, the server maps them with
    `MapFilesToTracks` (the folder attach mapper); given rows — the table after someone changed a
    track or ticked Replace — it plans those as they are. Every edit goes back to the server, which

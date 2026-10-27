@@ -179,6 +179,8 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// which would collide with the :id parameter above.
 		protected.POST("/attach/preview", a.previewBulkAttach)
 		protected.POST("/attach/bulk", a.attachBulk)
+		// What the selected files say about their edition, to mark in the release search.
+		protected.POST("/attach/clues", a.attachClues)
 
 		// AcoustID: suggests what an unmatched file is. Suggestion only — it never
 		// writes a correlation, so it feeds the attach picker above.

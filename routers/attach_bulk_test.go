@@ -277,3 +277,37 @@ func TestBulkAttachRequiresAuth(t *testing.T) {
 		t.Errorf("status = %d, want 401", w.Code)
 	}
 }
+
+// TestAttachCluesReadsTheFolderName: the clues route answers from the files and their
+// folder alone. These files do not exist, so the tags say nothing (no edition) and the
+// folder name is all there is.
+func TestAttachCluesReadsTheFolderName(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+	items := seedBulkFixtures(t, api.DB)
+	if err := api.DB.Model(&items[0]).Update("path", "/m/Fleetwood Mac/Rumours [2004 Remaster] [Japan]/01.flac").Error; err != nil {
+		t.Fatal(err)
+	}
+
+	w := do(r, "POST", "/api/v1/attach/clues", token, map[string]any{"item_ids": itemIDs(items[:1])})
+	if w.Code != http.StatusOK {
+		t.Fatalf("clues = %d: %s", w.Code, w.Body.String())
+	}
+	var got struct {
+		Edition   *modules.ImportEditionClues `json:"edition"`
+		NameClues *modules.ImportNameClues    `json:"name_clues"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Edition != nil {
+		t.Errorf("edition = %+v, want nil for unreadable files", got.Edition)
+	}
+	if got.NameClues == nil || got.NameClues.Country != "JP" || len(got.NameClues.Words) != 1 || got.NameClues.Words[0] != "Remaster" {
+		t.Errorf("name clues = %+v", got.NameClues)
+	}
+
+	if w := do(r, "POST", "/api/v1/attach/clues", token, map[string]any{"item_ids": []string{}}); w.Code != http.StatusBadRequest {
+		t.Errorf("no items = %d, want 400", w.Code)
+	}
+}

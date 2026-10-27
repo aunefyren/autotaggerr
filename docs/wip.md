@@ -107,12 +107,6 @@ still open:
   library. The server itself is still two keys in `config.json`; a second kind of server is the point
   at which it becomes a component row like a manager.
 
-- **Import Browse — what is left** ([import.md](import.md#the-flow)). Edition clues from the tags,
-  per-value agreement, scroll-to-pick and skeleton columns have shipped. Open: whether a lone
-  barcode match should *pre-select* the edition (today it is marked and scrolled to, never picked —
-  the doc's rule), and whether the Search tab's rows should get the same per-value marking. Torrent
-  names are shown but not parsed for edition words (`Deluxe`, `Remaster`, `24-96`).
-
 - The default tagger is "Default" and you can select a default tagger in the drop down, meaning two "Default"
   - Do we need a default option?
 

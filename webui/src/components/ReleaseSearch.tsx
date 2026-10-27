@@ -1,8 +1,9 @@
-import { FormEvent, useState } from "react";
+import { FormEvent, Fragment, ReactNode, useState } from "react";
 import { api, errMsg } from "../api";
 import { ReleaseSearchPage, ReleaseSearchResult } from "../types";
 import { MBLink } from "./MBLink";
 import { useToast } from "../toast";
+import { Agreement, Agrees, EditionClues, EditionPrinting, editionAgreement } from "./editionClues";
 
 const PAGE = 25;
 
@@ -31,16 +32,21 @@ function creditLine(credits: ReleaseSearchResult["artist-credit"]): string {
 }
 
 /** "1977 · UK · Official · 2×CD, 17 tracks" — enough to tell editions apart. */
-function releaseMeta(r: ReleaseSearchResult): string {
-  const bits: string[] = [];
-  if (r.date) bits.push(r.date.slice(0, 4));
-  if (r.country) bits.push(r.country);
+function releaseMeta(r: ReleaseSearchResult, a: Agreement): ReactNode {
+  const bits: ReactNode[] = [];
+  if (r.date) bits.push(<Agrees on={a.date}>{r.date.slice(0, 4)}</Agrees>);
+  if (r.country) bits.push(<Agrees on={a.country}>{r.country}</Agrees>);
   if (r.status) bits.push(r.status);
   const tracks = (r.media ?? []).reduce((n, m) => n + (m["track-count"] ?? 0), 0);
   const formats = (r.media ?? []).map((m) => m.format).filter(Boolean);
-  if (formats.length) bits.push(formats.join(" + "));
+  if (formats.length) bits.push(<Agrees on={a.format}>{formats.join(" + ")}</Agrees>);
   if (tracks) bits.push(`${tracks} tracks`);
-  return bits.join(" · ");
+  return bits.map((b, i) => (
+    <Fragment key={i}>
+      {i > 0 && " · "}
+      {b}
+    </Fragment>
+  ));
 }
 
 /**
@@ -94,10 +100,13 @@ export function ReleaseSearch({
   initialFields,
   onPick,
   picking,
+  clues,
 }: {
   initialFields?: ReleaseFields;
   onPick: (mbid: string) => void;
   picking?: boolean;
+  /** What the files say about their edition; each hit's agreeing values are marked. */
+  clues?: EditionClues;
 }) {
   const toast = useToast();
   const [text, setText] = useState("");
@@ -225,32 +234,36 @@ export function ReleaseSearch({
           </div>
           <div className="scroll">
             <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-              {results.map((r) => (
-                <div
-                  key={r.id}
-                  className="row"
-                  style={{
-                    justifyContent: "space-between", padding: "6px 0",
-                    borderBottom: "1px solid var(--border)",
-                    cursor: picking ? "default" : "pointer", opacity: picking ? 0.5 : 1,
-                  }}
-                  onClick={() => !picking && onPick(r.id)}
-                >
-                  <div>
-                    <div style={{ color: "var(--text)" }}>
-                      {r.title}
-                      {r.disambiguation && <span className="dim"> ({r.disambiguation})</span>}
+              {results.map((r) => {
+                const a = editionAgreement(r, clues);
+                return (
+                  <div
+                    key={r.id}
+                    className="row"
+                    style={{
+                      justifyContent: "space-between", padding: "6px 0",
+                      borderBottom: "1px solid var(--border)",
+                      cursor: picking ? "default" : "pointer", opacity: picking ? 0.5 : 1,
+                    }}
+                    onClick={() => !picking && onPick(r.id)}
+                  >
+                    <div>
+                      <div style={{ color: "var(--text)" }}>
+                        {r.title}
+                        {r.disambiguation && <span className="dim"> (<Agrees on={a.disambiguation}>{r.disambiguation}</Agrees>)</span>}
+                      </div>
+                      <div className="dim" style={{ fontSize: 11 }}>{creditLine(r["artist-credit"])}</div>
+                      <EditionPrinting e={r} clues={clues} a={a} />
                     </div>
-                    <div className="dim" style={{ fontSize: 11 }}>{creditLine(r["artist-credit"])}</div>
-                  </div>
-                  <div className="row" style={{ gap: 8 }}>
-                    <span className="dim mono" style={{ fontSize: 11, textAlign: "right" }}>{releaseMeta(r)}</span>
-                    <div onClick={(e) => e.stopPropagation()}>
-                      <MBLink entity="release" mbid={r.id} />
+                    <div className="row" style={{ gap: 8 }}>
+                      <span className="dim mono" style={{ fontSize: 11, textAlign: "right" }}>{releaseMeta(r, a)}</span>
+                      <div onClick={(e) => e.stopPropagation()}>
+                        <MBLink entity="release" mbid={r.id} />
+                      </div>
                     </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
           {total > results.length && (

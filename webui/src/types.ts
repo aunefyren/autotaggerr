@@ -281,6 +281,19 @@ export interface ImportGroup {
   release_ids_disagree?: boolean;
   /** What the tags say about which pressing the files are; absent when they say nothing. */
   edition?: ImportEditionClues;
+  /** What the album folder's (or download's) name says about the edition. */
+  name_clues?: ImportNameClues;
+}
+
+/** Edition words read from a folder or download name: weak clues, marked but never picked by. */
+export interface ImportNameClues {
+  name: string;
+  words?: string[];
+  /** A MusicBrainz medium format, e.g. "Digital Media". */
+  format?: string;
+  country?: string;
+  /** Bit depth and sample rate ("24-96"); shown only. */
+  quality?: string;
 }
 
 /** The tags that tell one edition from another, each the value most files agree on. */

@@ -54,6 +54,9 @@ type ImportGroup struct {
 	// Edition is what the files' tags say about which pressing they are. Nil when
 	// they say nothing. See ImportEditionClues.
 	Edition *ImportEditionClues `json:"edition,omitempty"`
+	// NameClues is what the album folder's name says about the edition — the
+	// download's name, for a download. Nil when it says nothing. See ImportNameClues.
+	NameClues *ImportNameClues `json:"name_clues,omitempty"`
 }
 
 // ImportEditionClues are the tags that tell one edition of an album from another,
@@ -216,6 +219,7 @@ func importHint(group *ImportGroup, root, name string) {
 	if name != "" && !PathWithin(group.Folder, root) {
 		folderName = name
 	}
+	group.NameClues = ParseImportNameClues(folderName)
 	fArtist, fAlbum, fYear := ParseAlbumFolderName(folderName)
 	if group.Artist == "" && fArtist == "" {
 		if parent := filepath.Dir(group.Folder); parent != group.Folder && parent != filepath.Clean(root) && PathWithin(parent, root) {

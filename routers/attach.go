@@ -322,6 +322,31 @@ func (a *API) loadItemsForBulk(itemIDs []uuid.UUID) ([]models.LibraryItem, error
 	return items, nil
 }
 
+// attachClues reads what the selected files say about which edition they are — their
+// tags and their album folder's name — the same clues the import scan reads, so the
+// attach release search can mark the editions that agree. Reading only: nothing is
+// fetched from MusicBrainz and nothing is written.
+func (a *API) attachClues(c *gin.Context) {
+	var body struct {
+		ItemIDs []uuid.UUID `json:"item_ids"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	items, err := a.loadItemsForBulk(body.ItemIDs)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	paths := make([]string, len(items))
+	for i, item := range items {
+		paths[i] = item.Path
+	}
+	edition, name := modules.ReadEditionClues(paths)
+	c.JSON(http.StatusOK, gin.H{"edition": edition, "name_clues": name})
+}
+
 // maxBulkAttachItems bounds one bulk attach. Well above any real album (a boxed
 // set is tens of tracks), low enough that a runaway selection cannot hold the scan
 // guard while it rewrites thousands of files.

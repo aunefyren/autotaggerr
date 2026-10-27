@@ -341,3 +341,58 @@ func TestImportHintWithoutEditionClues(t *testing.T) {
 		t.Errorf("edition = %+v, want nil", edition)
 	}
 }
+
+func TestParseImportNameClues(t *testing.T) {
+	cases := []struct {
+		name string
+		want *ImportNameClues
+	}{
+		{"Kate Bush - Hounds of Love (2018 Remaster) [FLAC 24-96]", &ImportNameClues{Words: []string{"Remaster"}, Quality: "24-96"}},
+		{"Artist - Album [Deluxe Edition] [WEB FLAC]", &ImportNameClues{Words: []string{"Deluxe"}, Format: "Digital Media"}},
+		{"Artist - Album (Japan Edition) [Vinyl 24bit]", &ImportNameClues{Country: "JP", Format: "Vinyl", Quality: "24-bit"}},
+		{"Artist-Album-Expanded_Edition-WEB-2014-GRP", &ImportNameClues{Words: []string{"Expanded"}, Format: "Digital Media"}},
+		// A band called Japan is a band, not a pressing: outside brackets, a name with
+		// spaces is the title.
+		{"Japan - Tin Drum (1981)", nil},
+		{"Rumours", nil},
+		{"", nil},
+	}
+	for _, tc := range cases {
+		got := ParseImportNameClues(tc.name)
+		if tc.want == nil {
+			if got != nil {
+				t.Errorf("ParseImportNameClues(%q) = %+v, want nil", tc.name, got)
+			}
+			continue
+		}
+		tc.want.Name = tc.name
+		if got == nil || got.Name != tc.want.Name || strings.Join(got.Words, ",") != strings.Join(tc.want.Words, ",") ||
+			got.Format != tc.want.Format || got.Country != tc.want.Country || got.Quality != tc.want.Quality {
+			t.Errorf("ParseImportNameClues(%q) = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// Attach reads the same clues for files already in a library: the tags, and the album
+// folder's name above any disc folder.
+func TestReadEditionClues(t *testing.T) {
+	requireTool(t, "metaflac")
+	root := t.TempDir()
+	dst := filepath.Join(root, "Album (2018 Remaster)", "CD 1", "01.flac")
+	if err := TransferFile(synthAudio(t, ".flac"), dst, TransferMove); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("metaflac", "--set-tag=BARCODE=724385534123", dst).CombinedOutput(); err != nil {
+		t.Fatalf("metaflac: %v %s", err, out)
+	}
+	edition, name := ReadEditionClues([]string{dst})
+	if edition == nil || edition.Barcode != "724385534123" {
+		t.Errorf("edition = %+v", edition)
+	}
+	if name == nil || name.Name != "Album (2018 Remaster)" || len(name.Words) != 1 {
+		t.Errorf("name = %+v", name)
+	}
+	if e, n := ReadEditionClues(nil); e != nil || n != nil {
+		t.Errorf("no files = %+v, %+v", e, n)
+	}
+}

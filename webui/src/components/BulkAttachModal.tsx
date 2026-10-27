@@ -4,6 +4,7 @@ import { BulkMapping, BulkPreview, LibraryItem } from "../types";
 import { Modal } from "./ui";
 import { MBLink } from "./MBLink";
 import { ReleaseSearch, guessFields } from "./ReleaseSearch";
+import { EditionFacts, useEditionClues } from "./editionClues";
 import { useToast } from "../toast";
 
 /** The file's own name — the part that identifies which track it is. */
@@ -46,6 +47,7 @@ export function BulkAttachModal({
   const [mappings, setMappings] = useState<BulkMapping[]>([]);
   const [loading, setLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const clues = useEditionClues(items.map((i) => i.id));
 
   const pickRelease = async (mbid: string) => {
     setLoading(true);
@@ -103,7 +105,8 @@ export function BulkAttachModal({
               Find the release these files are from. You will map each file to a track before
               anything is written.
             </div>
-            <ReleaseSearch initialFields={guessFields(items[0].path)} onPick={pickRelease} picking={loading} />
+            <EditionFacts clues={clues} />
+            <ReleaseSearch initialFields={guessFields(items[0].path)} onPick={pickRelease} picking={loading} clues={clues} />
             <div className="scroll" style={{ maxHeight: "20vh" }}>
               {items.map((it) => (
                 <div key={it.id} className="path" style={{ display: "block", fontSize: 11, padding: "2px 0" }}>
