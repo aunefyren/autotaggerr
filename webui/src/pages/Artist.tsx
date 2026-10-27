@@ -194,6 +194,9 @@ export default function Artist() {
   const viewAuthority = artist?.libraries?.find((l) => l.library_id === artist.view_library_id)?.authority;
   const lidarrView = viewAuthority ? viewAuthority === "lidarr" : isLidarr;
   const managerLabel = lidarrView ? "Lidarr" : "MusicBrainz";
+  // Organise cannot move files Lidarr names: in a Lidarr library's view, or on the
+  // overview of an artist whose every library is Lidarr's.
+  const lidarrNamesFiles = viewLibrary ? viewAuthority === "lidarr" : artist?.managed_by === "lidarr";
 
   // Two conditions, both required, and they are not the same fact: this artist has to
   // be Lidarr's to answer for, *and* there has to be an enabled Lidarr to ask. A row
@@ -201,7 +204,11 @@ export default function Artist() {
   // the endpoint rejects that with a 400 — a button whose only outcome is an error
   // message is a button that should not be there. Same rule as the Collection page.
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
-  const canSyncLidarr = isLidarr && (managers.data ?? []).some((m) => m.type === "lidarr" && m.enabled);
+  const lidarrCount = (managers.data ?? []).filter((m) => m.type === "lidarr" && m.enabled).length;
+  // Read in a native library there is nothing for it to read; read in a Lidarr library
+  // or the overview it reads every Lidarr, because what Lidarr holds of an artist is one
+  // merged view across them all — narrowing it to one would drop the others' albums.
+  const canSyncLidarr = isLidarr && lidarrCount > 0 && (!viewLibrary || viewAuthority === "lidarr");
   const [syncAsk, setSyncAsk] = useState(false);
   const [choosingRefresh, setChoosingRefresh] = useState(false);
   const [scanAsk, setScanAsk] = useState(false);
@@ -254,7 +261,7 @@ export default function Artist() {
   const recorrelate = async () => {
     setBusy(true);
     try {
-      await api.post(`/artists/${mbid}/recorrelate`);
+      await api.post(`/artists/${mbid}/recorrelate${inLibrary}`);
       toast("info", "Re-correlate started — see Activity");
       setRecorrelateAsk(false);
       setTimeout(() => status.reload(), 300);
@@ -287,7 +294,7 @@ export default function Artist() {
     setScanAsk(false);
     try {
       if (walkDisk) {
-        await api.post(`/artists/${mbid}/scan`, { walk_disk: true });
+        await api.post(`/artists/${mbid}/scan${inLibrary}`, { walk_disk: true });
         toast("info", "Scan with disk walk started — see Activity");
         setTimeout(() => status.reload(), 300);
         return;
@@ -356,6 +363,23 @@ export default function Artist() {
   // lacks is half of what it is for.
   const scoped = groups;
   const viewLibraries = libraries.multi ? artist?.libraries ?? [] : [];
+  // What the run bar's verbs act on, said where they are (docs/style-guide.md, "Library
+  // view"): the viewed library, or every library holding the artist on the overview.
+  // A single-library install has nothing to tell apart, so the bar just says Idle.
+  // The confirm dialogs name the same scope: "Band in Sandbox" when narrowed.
+  const viewLibraryName = viewLibraries.find((l) => l.library_id === viewLibrary)?.name;
+  const actionScopeName = `${artist?.name ?? "this artist"}${viewLibrary && viewLibraryName ? ` in ${viewLibraryName}` : ""}`;
+  const scopeLabel = (() => {
+    if (!libraries.multi) return "Idle";
+    if (viewLibrary) {
+      const name = viewLibraries.find((l) => l.library_id === viewLibrary)?.name;
+      return name ? `Acts on ${name}` : "Idle";
+    }
+    const held = viewLibraries.filter((l) => l.holds).map((l) => l.name);
+    if (held.length === 0) return "Idle";
+    if (held.length === 1) return `Acts on ${held[0]}`;
+    return `Acts on all ${held.length} libraries: ${held.join(", ")}`;
+  })();
   // Who decides where, for the overview's meta line: "Lidarr in Music 2 · Native in
   // Music 3". Only libraries holding something — an empty native library is a tab,
   // not a fact about where the artist lives.
@@ -521,10 +545,10 @@ export default function Artist() {
                 <span className="sep">·</span>
                 <button
                   className="btn btn-ghost btn-sm"
-                  title="Mirror what Lidarr says should exist for this artist — which albums it tracks, monitors, and how many files it has of each. Reads Lidarr, not MusicBrainz; writes no files."
+                  title={`Mirror what Lidarr says should exist for this artist — which albums it tracks, monitors, and how many files it has of each. Reads ${lidarrCount > 1 ? `all ${lidarrCount} Lidarrs, whichever library this page is read in: their albums are one merged view` : "Lidarr"}, not MusicBrainz; writes no files.`}
                   onClick={() => setSyncAsk(true)}
                 >
-                  Sync from Lidarr
+                  {lidarrCount > 1 ? `Sync from ${lidarrCount} Lidarrs` : "Sync from Lidarr"}
                 </button>
               </>
             )}
@@ -577,7 +601,7 @@ export default function Artist() {
           while the header's controls are this artist's *state* — who manages it, whether
           it is followed, what following means. Eight controls in one wrapping row made
           those two kinds of thing indistinguishable. */}
-      <RunBar status={status.data} idle="Idle" onStopped={() => status.reload()}>
+      <RunBar status={status.data} idle={scopeLabel} onStopped={() => status.reload()}>
         <button
           className="btn btn-ghost btn-sm"
           disabled={running}
@@ -590,16 +614,16 @@ export default function Artist() {
           className="btn btn-ghost btn-sm"
           disabled={running}
           title="Rewrite the tags of this artist's indexed files from the metadata already known. Writes tags. No disk walk, no MusicBrainz lookups."
-          onClick={action("retag", "Tagging started")}
+          onClick={action(`retag${inLibrary}`, "Tagging started")}
         >
           Tag files
         </button>
         <button
           className="btn btn-ghost btn-sm"
-          disabled={running || artist?.managed_by === "lidarr"}
+          disabled={running || lidarrNamesFiles}
           title={
-            artist?.managed_by === "lidarr"
-              ? "Lidarr names this artist's files — rename them in Lidarr."
+            lidarrNamesFiles
+              ? "Lidarr names these files — rename them in Lidarr."
               : "Move this artist's files to where their library's naming templates put them. Shows every move for review first; nothing moves until you confirm."
           }
           onClick={() => setOrganiseAsk(true)}
@@ -609,7 +633,7 @@ export default function Artist() {
         <button
           className="btn btn-ghost btn-sm"
           disabled={running}
-          title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
+          title="Re-read this artist from MusicBrainz — who they are, their discography, every edition and release. The same in every library, so it is never narrowed to one. Reads only: no files are written. If anything changed upstream it is reported, and Tag files (or the next Process) applies it."
           // The same verb as the collection's, so it opens the same dialog. Forcing is
           // offered here because one artist is minutes rather than hours — but it is
           // still a choice, never what the button means on its own.
@@ -621,7 +645,7 @@ export default function Artist() {
           className="btn btn-primary btn-sm"
           disabled={running}
           title="Walk this artist's folders, resolve their metadata and write tags — the full pipeline, narrowed to this artist. Finds files that were added, moved or changed on disk. Writes tags."
-          onClick={action("process", "Processing started")}
+          onClick={action(`process${inLibrary}`, "Processing started")}
         >
           Process
         </button>
@@ -696,7 +720,7 @@ export default function Artist() {
 
       {scanAsk && (
         <ScanDialog
-          scope={artist ? artist.name : "this artist"}
+          scope={actionScopeName}
           onConfirm={scan}
           onCancel={() => setScanAsk(false)}
         />
@@ -721,12 +745,16 @@ export default function Artist() {
       )}
 
       {organiseAsk && (
-        <OrganiseDialog scope={{ artist_mb_id: mbid }} title={artist?.name ?? "this artist"} onClose={() => setOrganiseAsk(false)} />
+        <OrganiseDialog
+          scope={viewLibrary ? { artist_mb_id: mbid, library_id: viewLibrary } : { artist_mb_id: mbid }}
+          title={artist?.name ?? "this artist"}
+          onClose={() => setOrganiseAsk(false)}
+        />
       )}
 
       {recorrelateAsk && (
         <RecorrelateDialog
-          scope={artist ? artist.name : "this artist"}
+          scope={actionScopeName}
           manager={managerLabel}
           // Only Lidarr-governed files lose their pins; the runner skips every other
           // manager type. Warning about it regardless would describe work that does
@@ -803,7 +831,7 @@ export default function Artist() {
                   browse={browse}
                   manager={managerLabel}
                   managerGoverns={lidarrView}
-                  showLibraries={libraries.multi}
+                  showLibraries={libraries.multi && !viewLibrary}
                   artist={artist}
                   artistMbid={mbid}
                   onChanged={refresh}

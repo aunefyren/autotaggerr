@@ -266,6 +266,9 @@ wrong should not cost a cold run. They differ in what they re-read, cheapest fir
 | **Refresh metadata** (`refresh`) | no | yes, TTL ignored | a release looks wrong upstream, or a new album should have appeared |
 | **Process** (`process`) | yes | as needed | files were added, moved or changed on disk |
 
+Each takes `?library=` to act on one library's files, which is what the artist page sends when it is
+read in a library (see [the library view scopes the actions](collection.md#the-library-view-scopes-the-actions)).
+
 The three queued ones go through the same [job queue](#the-job-queue) as a collection-wide run,
 report through the same `GET /process/status`, and record the same `process` / `tag_files` events
 with the artist named in the payload. `scan` is not queued: it re-derives from the index and

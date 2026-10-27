@@ -677,7 +677,7 @@ func (a *API) getArtist(c *gin.Context) {
 		return
 	}
 	body := gin.H{"artist": detail.Artist, "release_groups": detail.ReleaseGroups, "desires": detail.Desires,
-		"links": a.managerLinks(models.ManagerLinkArtist, detail.Artist.MBID)}
+		"links": a.managerLinks(models.ManagerLinkArtist, detail.Artist.MBID, library)}
 	if detail.Repair != nil {
 		body["repair"] = detail.Repair
 	}
@@ -1418,6 +1418,10 @@ func (a *API) discography(c *gin.Context) {
 	if err != nil {
 		logger.Log.Warnf("failed to load the manager links of %s's albums: %s", mbid, err.Error())
 	}
+	// Read in a library, a row links only into that library's manager.
+	for rg, rgLinks := range links {
+		links[rg] = collection.LinksInLibrary(a.DB, rgLinks, library)
+	}
 
 	out := make([]releaseGroupView, 0, len(groups))
 	seen := make(map[string]bool, len(groups))
@@ -1608,14 +1612,16 @@ func (a *API) releaseGroupDetail(c *gin.Context) {
 		"editions":      detail.Editions,
 		"desires":       detail.Desires,
 		"credits":       detail.Credits,
-		"links":         a.managerLinks(models.ManagerLinkReleaseGroup, c.Param("rgid")),
+		"links":         a.managerLinks(models.ManagerLinkReleaseGroup, c.Param("rgid"), library),
 	})
 }
 
 // managerLinks is the links into the managers holding an entity, never nil so the
-// page can map it. Best-effort: a failed read costs the links, not the page.
-func (a *API) managerLinks(entityType, mbid string) []collection.ExternalLink {
+// page can map it — narrowed to the viewed library's manager when the page is read in
+// one (nil: every manager). Best-effort: a failed read costs the links, not the page.
+func (a *API) managerLinks(entityType, mbid string, library *uuid.UUID) []collection.ExternalLink {
 	links, err := collection.ManagerLinks(a.DB, entityType, mbid)
+	links = collection.LinksInLibrary(a.DB, links, library)
 	if err != nil {
 		logger.Log.Warnf("failed to load the manager links of %s: %s", mbid, err.Error())
 	}

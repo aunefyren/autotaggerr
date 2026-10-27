@@ -93,9 +93,29 @@ func ArtistItems(db *gorm.DB, artistMBID string) ([]models.LibraryItem, error) {
 	return items, err
 }
 
+// ArtistItemsIn is ArtistItems narrowed to one library (nil: every library).
+func ArtistItemsIn(db *gorm.DB, artistMBID string, library *uuid.UUID) ([]models.LibraryItem, error) {
+	items, err := ArtistItems(db, artistMBID)
+	if err != nil || library == nil {
+		return items, err
+	}
+	kept := items[:0]
+	for _, item := range items {
+		if item.LibraryID == *library {
+			kept = append(kept, item)
+		}
+	}
+	return kept, nil
+}
+
 // ArtistItemIDs is ArtistItems reduced to the IDs a re-tag needs.
 func ArtistItemIDs(db *gorm.DB, artistMBID string) ([]uuid.UUID, error) {
-	items, err := ArtistItems(db, artistMBID)
+	return ArtistItemIDsIn(db, artistMBID, nil)
+}
+
+// ArtistItemIDsIn is ArtistItemIDs narrowed to one library (nil: every library).
+func ArtistItemIDsIn(db *gorm.DB, artistMBID string, library *uuid.UUID) ([]uuid.UUID, error) {
+	items, err := ArtistItemsIn(db, artistMBID, library)
 	if err != nil {
 		return nil, err
 	}

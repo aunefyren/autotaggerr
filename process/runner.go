@@ -466,6 +466,19 @@ func LibraryScope(libraries []models.Library) Scope {
 // the artist has no files yet — there is no folder to walk, and the artist's own name
 // is not a reliable guess at what the folder is called.
 func (r *Runner) ArtistScope(artistMBID string) (Scope, error) {
+	return r.ArtistScopeIn(artistMBID, nil)
+}
+
+// ErrNothingInLibrary is an artist scope narrowed to a library holding none of the
+// artist's files — an answer, like ErrNothingToProcess, not a run of zero files.
+var ErrNothingInLibrary = errors.New("this artist has no files in that library")
+
+// ArtistScopeIn is ArtistScope narrowed to one library's folders (nil: every library):
+// what the artist page's actions do when it is read in a library (docs/collection.md,
+// "The library view scopes the actions"). The library is part of the scope's detail,
+// and so of its job key, so a library-scoped run never collapses into an artist-wide
+// one or the reverse.
+func (r *Runner) ArtistScopeIn(artistMBID string, library *uuid.UUID) (Scope, error) {
 	var artist models.CollectionArtist
 	if err := r.db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
 		return Scope{}, err
@@ -478,15 +491,48 @@ func (r *Runner) ArtistScope(artistMBID string) (Scope, error) {
 	if len(found) == 0 {
 		return Scope{}, ErrNothingToProcess
 	}
+	detail := map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID}
+	title := "Processing " + artist.Name
+	if library != nil {
+		kept := found[:0]
+		for _, target := range found {
+			if target.Library.ID == *library {
+				kept = append(kept, target)
+			}
+		}
+		if len(kept) == 0 {
+			return Scope{}, ErrNothingInLibrary
+		}
+		found = kept
+		detail["library_id"] = library.String()
+		detail["library"] = kept[0].Library.Name
+		title += " in " + kept[0].Library.Name
+	}
+	return buildScope(title, detail, found), nil
+}
 
-	return buildScope("Processing "+artist.Name,
-		map[string]any{"artist": artist.Name, "artist_mb_id": artistMBID}, found), nil
+// scopeKey is a job key for an artist scope, with its library when it has one.
+func scopeKey(prefix string, scope Scope) string {
+	key := prefix + scope.Title
+	if mbid, ok := scope.Detail["artist_mb_id"].(string); ok && mbid != "" {
+		key = prefix + mbid
+	}
+	if library, ok := scope.Detail["library_id"].(string); ok && library != "" {
+		key += "@" + library
+	}
+	return key
 }
 
 // ReleaseGroupScope covers the album folders of one release-group, for the narrowest
 // force re-correlate. It returns ErrNothingToProcess when nothing is owned of the group,
 // and the DB error when the release-group is unknown.
 func (r *Runner) ReleaseGroupScope(rgMBID string) (Scope, error) {
+	return r.ReleaseGroupScopeIn(rgMBID, nil)
+}
+
+// ReleaseGroupScopeIn is ReleaseGroupScope narrowed to one library's folders (nil:
+// every library), for the album page read in a library.
+func (r *Runner) ReleaseGroupScopeIn(rgMBID string, library *uuid.UUID) (Scope, error) {
 	var rg models.CollectionReleaseGroup
 	if err := r.db.Where("mb_id = ?", rgMBID).First(&rg).Error; err != nil {
 		return Scope{}, err
@@ -502,8 +548,22 @@ func (r *Runner) ReleaseGroupScope(rgMBID string) (Scope, error) {
 	if title == "" {
 		title = rgMBID
 	}
-	return buildScope("Processing "+title,
-		map[string]any{"release_group": title, "release_group_mb_id": rgMBID}, found), nil
+	detail := map[string]any{"release_group": title, "release_group_mb_id": rgMBID}
+	if library != nil {
+		kept := found[:0]
+		for _, target := range found {
+			if target.Library.ID == *library {
+				kept = append(kept, target)
+			}
+		}
+		if len(kept) == 0 {
+			return Scope{}, ErrNothingInLibrary
+		}
+		found = kept
+		detail["library_id"] = library.String()
+		detail["library"] = kept[0].Library.Name
+	}
+	return buildScope("Processing "+title, detail, found), nil
 }
 
 // buildScope groups per-folder targets by library into scan Targets and records the
@@ -579,11 +639,7 @@ func (r *Runner) RunArtist(artistMBID string) error {
 // has no files" is answered immediately) and hands the result here; the dedup key comes
 // from the scope title, so a second identical request collapses onto the first.
 func (r *Runner) Run(scope Scope) {
-	key := "process_artist:" + scope.Title
-	if mbid, ok := scope.Detail["artist_mb_id"].(string); ok && mbid != "" {
-		key = "process_artist:" + mbid
-	}
-	r.enqueue(job{jobProcessArtist, key, scope.Title, func() { r.runScope(scope) }})
+	r.enqueue(job{jobProcessArtist, scopeKey("process_artist:", scope), scope.Title, func() { r.runScope(scope) }})
 }
 
 // ForceRecorrelateArtist repairs an artist whose files diverged from what their
@@ -597,13 +653,22 @@ func (r *Runner) Run(scope Scope) {
 // It returns an error only when the scope cannot be resolved now (unknown artist, no
 // files on disk); the work itself runs later on the queue worker.
 func (r *Runner) ForceRecorrelateArtist(artistMBID string) error {
-	scope, err := r.ArtistScope(artistMBID)
+	return r.ForceRecorrelateArtistIn(artistMBID, nil)
+}
+
+// ForceRecorrelateArtistIn is ForceRecorrelateArtist narrowed to one library (nil:
+// every library).
+func (r *Runner) ForceRecorrelateArtistIn(artistMBID string, library *uuid.UUID) error {
+	scope, err := r.ArtistScopeIn(artistMBID, library)
 	if err != nil {
 		return err
 	}
 	name, _ := scope.Detail["artist"].(string)
 	scope.Title = forceTitle(name, "artist")
-	r.enqueueForceRecorrelate("force_recorrelate:"+artistMBID, scope)
+	if lib, ok := scope.Detail["library"].(string); ok {
+		scope.Title += " in " + lib
+	}
+	r.enqueueForceRecorrelate(scopeKey("force_recorrelate:", scope), scope)
 	return nil
 }
 
@@ -611,13 +676,24 @@ func (r *Runner) ForceRecorrelateArtist(artistMBID string) error {
 // least disruptive repair when only a single release drifted. Same mechanics: bust the
 // caches, drop Lidarr-governed pins in scope, force a re-walk.
 func (r *Runner) ForceRecorrelateReleaseGroup(rgMBID string) error {
-	scope, err := r.ReleaseGroupScope(rgMBID)
+	return r.ForceRecorrelateReleaseGroupIn(rgMBID, nil)
+}
+
+// ForceRecorrelateReleaseGroupIn is ForceRecorrelateReleaseGroup narrowed to one
+// library (nil: every library).
+func (r *Runner) ForceRecorrelateReleaseGroupIn(rgMBID string, library *uuid.UUID) error {
+	scope, err := r.ReleaseGroupScopeIn(rgMBID, library)
 	if err != nil {
 		return err
 	}
 	title, _ := scope.Detail["release_group"].(string)
 	scope.Title = forceTitle(title, "release group")
-	r.enqueueForceRecorrelate("force_recorrelate_rg:"+rgMBID, scope)
+	key := "force_recorrelate_rg:" + rgMBID
+	if lib, ok := scope.Detail["library"].(string); ok {
+		scope.Title += " in " + lib
+		key += "@" + library.String()
+	}
+	r.enqueueForceRecorrelate(key, scope)
 	return nil
 }
 
@@ -2052,26 +2128,42 @@ func (r *Runner) retagLibraryNow(libraryID uuid.UUID) {
 // disk), and a metadata refresh would spend rate limit re-reading releases that never
 // changed; this writes what is already known and stops.
 func (r *Runner) RetagArtist(artistMBID string) {
-	r.enqueue(job{jobRetagArtist, "retag_artist:" + artistMBID, "Tag files", func() {
-		r.retagArtistNow(artistMBID)
+	r.RetagArtistIn(artistMBID, nil)
+}
+
+// RetagArtistIn is RetagArtist narrowed to one library's files (nil: every library).
+func (r *Runner) RetagArtistIn(artistMBID string, library *uuid.UUID) {
+	key := "retag_artist:" + artistMBID
+	if library != nil {
+		key += "@" + library.String()
+	}
+	r.enqueue(job{jobRetagArtist, key, "Tag files", func() {
+		r.retagArtistNow(artistMBID, library)
 	}})
 }
 
-func (r *Runner) retagArtistNow(artistMBID string) {
+func (r *Runner) retagArtistNow(artistMBID string, library *uuid.UUID) {
 	var artist models.CollectionArtist
 	if err := r.db.Where("mb_id = ?", artistMBID).First(&artist).Error; err != nil {
 		logger.Log.Warnf("re-tag skipped: artist %s not found: %s", artistMBID, err.Error())
 		return
 	}
-	items, err := collection.ArtistItems(r.db, artistMBID)
+	items, err := collection.ArtistItemsIn(r.db, artistMBID, library)
 	if err != nil {
 		logger.Log.Warnf("failed to load items for %s: %s", artist.Name, err.Error())
 		return
 	}
+	title := "Tag files for " + artist.Name
+	if library != nil {
+		var lib models.Library
+		if r.db.First(&lib, "id = ?", *library).Error == nil {
+			title += " in " + lib.Name
+		}
+	}
 
 	logger.Log.Infof("re-tagging %d files for artist: %s", len(items), artist.Name)
 	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
-	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files for "+artist.Name)
+	event := events.Begin(r.db, models.EventTypeTagFiles, title)
 	refreshSet := modules.NewAlbumRefreshSet()
 	detail := components.NewDetailCollector(r.detailRetention)
 

@@ -794,6 +794,41 @@ every row would carry the same word. Then:
 
 The tag is the style guide's *Library tag* (`LibraryTags`, `components/Libraries.tsx`).
 
+### The library view scopes the actions
+
+A library tab used to change what the page *showed* and nothing the buttons *did*. Process, Scan,
+Tag files, Organise and Re-correlate acted on every library holding the artist, so a press on the
+native library's tab also re-tagged Lidarr's copy. The tab now scopes the actions too, and the
+links:
+
+| | All libraries | One library |
+|---|---|---|
+| Process, Tag files, Re-correlate, Organise | every library holding the artist | that library's files (`?library=`, `organise` `library_id`) |
+| Scan | re-derives the artist (the collection counts an artist across libraries) | the same re-derive; its optional disk walk covers only that library's folders |
+| Refresh metadata | MusicBrainz: library-independent, never narrowed | the same |
+| Sync from Lidarr | every Lidarr | every Lidarr on a Lidarr library's tab; hidden on a native one |
+| Lidarr and Plex links | every manager and server holding it | only that library's manager and Plex servers |
+| Library tags on rows | shown | hidden (the tab already says which) |
+
+The sync is the one action that cannot narrow. What Lidarr holds of an artist is **one merged view**
+across every Lidarr, written once after all are read (`SyncLidarrWith`). Syncing one Lidarr would
+write its view alone and drop the albums only another holds. So it reads them all wherever it is
+pressed, and with more than one it says so: *Sync from 2 Lidarrs*.
+
+The run bar's idle slot says what its verbs act on: *Acts on all 2 libraries: Music, Sandbox* or
+*Acts on Sandbox* (only with more than one library configured). The confirm dialogs, job titles and
+Activity events name the library too (*Processing Band in Sandbox*). The library is part of each
+job's key (`process.scopeKey`), so a library's run never collapses into the artist-wide one queued
+beside it. A library holding none of the artist's files is a 409 that says so
+(`ErrNothingInLibrary`), not an empty run. Organise stays disabled where Lidarr names the files: in
+a Lidarr library's view, or on the overview of an artist whose every library is Lidarr's.
+
+The album page follows the same rules for its Organise, Re-correlate and Plex links. The MCP
+`get_artist` and `get_album` tools filter their links by their `library` argument the same way.
+
+Tests: `process/library_scope_test.go`, `collection/links_test.go` (`TestLinksInLibrary`),
+`routers/library_scope_test.go`.
+
 ## The desire model
 
 Desire is **authored** user intent: sparse, typed by a human, and it must never be recomputed.

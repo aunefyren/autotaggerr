@@ -66,3 +66,34 @@ func managerID(t *testing.T, db *gorm.DB, name string) uuid.UUID {
 	}
 	return m.ID
 }
+
+// TestLinksInLibrary: read in a library, only its own manager's links stay; a library
+// with no manager keeps none; the overview keeps every one.
+func TestLinksInLibrary(t *testing.T) {
+	db := testDB(t)
+	one := models.Manager{Name: "Lidarr A", Type: models.ManagerTypeLidarr, Enabled: true}
+	two := models.Manager{Name: "Lidarr B", Type: models.ManagerTypeLidarr, Enabled: true}
+	for _, m := range []*models.Manager{&one, &two} {
+		if err := db.Create(m).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	inOne := models.Library{Name: "A", Path: "/a", Enabled: true, ManagerID: &one.ID}
+	native := models.Library{Name: "N", Path: "/n", Enabled: true}
+	for _, l := range []*models.Library{&inOne, &native} {
+		if err := db.Create(l).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	links := []ExternalLink{{Kind: "lidarr", Name: "Lidarr A", ManagerID: one.ID}, {Kind: "lidarr", Name: "Lidarr B", ManagerID: two.ID}}
+
+	if got := LinksInLibrary(db, links, nil); len(got) != 2 {
+		t.Errorf("overview = %+v, want both", got)
+	}
+	if got := LinksInLibrary(db, links, &inOne.ID); len(got) != 1 || got[0].Name != "Lidarr A" {
+		t.Errorf("library A = %+v, want only its own Lidarr", got)
+	}
+	if got := LinksInLibrary(db, links, &native.ID); len(got) != 0 {
+		t.Errorf("native library = %+v, want none", got)
+	}
+}

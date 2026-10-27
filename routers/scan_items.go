@@ -161,6 +161,10 @@ func (a *API) artistAction(c *gin.Context) (models.CollectionArtist, bool) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "processor unavailable"})
 		return artist, false
 	}
+	if _, err := parseLibraryParam(c.Query("library")); err != nil {
+		respondErr(c, err)
+		return artist, false
+	}
 	if err := a.DB.Where("mb_id = ?", c.Param("mbid")).First(&artist).Error; err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
 		return artist, false
@@ -168,6 +172,13 @@ func (a *API) artistAction(c *gin.Context) (models.CollectionArtist, bool) {
 	// No running-scan refusal: an overlapping action queues rather than being dropped,
 	// and the runner collapses a duplicate of one already queued or running.
 	return artist, true
+}
+
+// libraryQuery is the ?library= an artist action is narrowed to, already validated by
+// artistAction; nil is every library.
+func libraryQuery(c *gin.Context) *uuid.UUID {
+	library, _ := parseLibraryParam(c.Query("library"))
+	return library
 }
 
 // processArtist walks just this artist's folders. The scope is resolved before
@@ -178,7 +189,7 @@ func (a *API) processArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := a.queueProcess(verbTarget{ArtistMBID: artist.MBID})
+	res, err := a.queueProcess(verbTarget{ArtistMBID: artist.MBID, In: libraryQuery(c)})
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -200,7 +211,7 @@ func (a *API) scanArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := a.runScan(verbTarget{ArtistMBID: artist.MBID}, walkDiskRequested(c))
+	res, err := a.runScan(verbTarget{ArtistMBID: artist.MBID, In: libraryQuery(c)}, walkDiskRequested(c))
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -250,7 +261,7 @@ func (a *API) retagArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	res, err := a.queueTag(verbTarget{ArtistMBID: artist.MBID})
+	res, err := a.queueTag(verbTarget{ArtistMBID: artist.MBID, In: libraryQuery(c)})
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -267,9 +278,14 @@ func (a *API) recorrelateReleaseGroup(c *gin.Context) {
 		return
 	}
 	rgMBID := c.Param("mbid")
-	if err := a.Scan.ForceRecorrelateReleaseGroup(rgMBID); err != nil {
+	library, err := parseLibraryParam(c.Query("library"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	if err := a.Scan.ForceRecorrelateReleaseGroupIn(rgMBID, library); err != nil {
 		switch {
-		case errors.Is(err, process.ErrNothingToProcess):
+		case errors.Is(err, process.ErrNothingToProcess), errors.Is(err, process.ErrNothingInLibrary):
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		case errors.Is(err, gorm.ErrRecordNotFound):
 			c.JSON(http.StatusNotFound, gin.H{"error": "release group not found"})
@@ -309,8 +325,8 @@ func (a *API) recorrelateArtist(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := a.Scan.ForceRecorrelateArtist(artist.MBID); err != nil {
-		if errors.Is(err, process.ErrNothingToProcess) {
+	if err := a.Scan.ForceRecorrelateArtistIn(artist.MBID, libraryQuery(c)); err != nil {
+		if errors.Is(err, process.ErrNothingToProcess) || errors.Is(err, process.ErrNothingInLibrary) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}

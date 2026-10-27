@@ -248,7 +248,12 @@ func (a *API) mediaServerSections(c *gin.Context) {
 // server, files whose release is not cached, and albums a server does not hold give
 // no link.
 func (a *API) albumPlexLinks(c *gin.Context) {
-	links, err := a.plexAlbumLinks(c.Param("rgid"))
+	library, err := parseLibraryParam(c.Query("library"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	links, err := a.plexAlbumLinks(c.Param("rgid"), library)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -256,9 +261,10 @@ func (a *API) albumPlexLinks(c *gin.Context) {
 	c.JSON(http.StatusOK, links)
 }
 
-// plexAlbumLinks is albumPlexLinks' answer, shared with the MCP get_album tool. The
-// error is a failed database read; a server not answering costs a link, not the call.
-func (a *API) plexAlbumLinks(releaseGroupMBID string) ([]collection.ExternalLink, error) {
+// plexAlbumLinks is albumPlexLinks' answer, shared with the MCP get_album tool. Read in
+// one library (only non-nil), only that library's servers are linked. The error is a failed
+// database read; a server not answering costs a link, not the call.
+func (a *API) plexAlbumLinks(releaseGroupMBID string, only *uuid.UUID) ([]collection.ExternalLink, error) {
 	links := []collection.ExternalLink{}
 	releases, err := collection.ReleaseGroupReleaseMBIDs(a.DB, releaseGroupMBID)
 	if err != nil {
@@ -288,7 +294,7 @@ func (a *API) plexAlbumLinks(releaseGroupMBID string) ([]collection.ExternalLink
 	seen := map[string]bool{}
 	for _, library := range libraries {
 		item, ok := first[library.ID]
-		if !ok {
+		if !ok || (only != nil && library.ID != *only) {
 			continue
 		}
 		for _, client := range components.MediaServersForLibrary(a.DB, library) {

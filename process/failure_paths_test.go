@@ -169,7 +169,7 @@ func TestRetagVerbsStopWhenItemsCannotBeLoaded(t *testing.T) {
 
 	r.retagAllNow()
 	r.retagLibraryNow(library.ID)
-	r.retagArtistNow("artist-1")
+	r.retagArtistNow("artist-1", nil)
 
 	if n := len(eventsOfType(t, db, models.EventTypeTagFiles)); n != 0 {
 		t.Errorf("recorded %d tag-files event(s) though no items could be read", n)

@@ -56,14 +56,18 @@ type OrganiseScope struct {
 	ReleaseGroupMBID string    `json:"release_group_mb_id"`
 }
 
+// valid is one library, one artist or one album — and an artist or album may be
+// narrowed to one library, which is what their pages do when read in a library.
 func (s OrganiseScope) valid() bool {
-	n := 0
-	for _, set := range []bool{s.LibraryID != uuid.Nil, s.ArtistMBID != "", s.ReleaseGroupMBID != ""} {
-		if set {
-			n++
-		}
+	if s.ArtistMBID != "" && s.ReleaseGroupMBID != "" {
+		return false
 	}
-	return n == 1
+	return s.LibraryID != uuid.Nil || s.ArtistMBID != "" || s.ReleaseGroupMBID != ""
+}
+
+// wholeLibrary is a scope of a library alone, not an artist or album in it.
+func (s OrganiseScope) wholeLibrary() bool {
+	return s.LibraryID != uuid.Nil && s.ArtistMBID == "" && s.ReleaseGroupMBID == ""
 }
 
 // OrganiseRow is one file: a move the plan proposes, or one it cannot make (Reason).
@@ -575,16 +579,27 @@ func (r *Runner) organiseLibrariesOf(moves []OrganiseRow) map[uuid.UUID]organise
 
 // organiseItems lists the identified files a scope covers.
 func (r *Runner) organiseItems(scope OrganiseScope) ([]models.LibraryItem, error) {
+	var items []models.LibraryItem
+	var err error
 	switch {
-	case scope.LibraryID != uuid.Nil:
-		var items []models.LibraryItem
-		err := r.db.Where("library_id = ?", scope.LibraryID).Scopes(models.TaggableItems).Order("path").Find(&items).Error
+	case scope.wholeLibrary():
+		err = r.db.Where("library_id = ?", scope.LibraryID).Scopes(models.TaggableItems).Order("path").Find(&items).Error
 		return items, err
 	case scope.ArtistMBID != "":
-		return collection.ArtistItems(r.db, scope.ArtistMBID)
+		items, err = collection.ArtistItems(r.db, scope.ArtistMBID)
 	default:
-		return collection.ReleaseGroupItems(r.db, scope.ReleaseGroupMBID)
+		items, err = collection.ReleaseGroupItems(r.db, scope.ReleaseGroupMBID)
 	}
+	if err != nil || scope.LibraryID == uuid.Nil {
+		return items, err
+	}
+	kept := items[:0]
+	for _, item := range items {
+		if item.LibraryID == scope.LibraryID {
+			kept = append(kept, item)
+		}
+	}
+	return kept, nil
 }
 
 type organiseLibrary struct {

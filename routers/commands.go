@@ -50,6 +50,18 @@ var errProcessorUnavailable = failWith(http.StatusServiceUnavailable, "processor
 type verbTarget struct {
 	LibraryID  *uuid.UUID
 	ArtistMBID string
+	// In narrows an artist target to one library: the artist page read in a library
+	// acts on that library's files only (docs/collection.md). Nil is every library.
+	In *uuid.UUID
+}
+
+// artistScopeErr turns a failure to resolve an artist scope into the API's answer.
+func artistScopeErr(err error, what string) error {
+	if errors.Is(err, process.ErrNothingToProcess) || errors.Is(err, process.ErrNothingInLibrary) {
+		return failWith(http.StatusConflict, err.Error())
+	}
+	logger.Log.Errorf("failed to resolve artist %s scope: %s", what, err.Error())
+	return failWith(http.StatusInternalServerError, "failed to resolve what to "+what)
 }
 
 // verbResult is what queueing a verb reports. A queued verb has no event yet — the
@@ -104,13 +116,9 @@ func (a *API) queueProcess(t verbTarget) (verbResult, error) {
 		if err != nil {
 			return verbResult{}, err
 		}
-		scope, err := a.Scan.ArtistScope(artist.MBID)
+		scope, err := a.Scan.ArtistScopeIn(artist.MBID, t.In)
 		if err != nil {
-			if errors.Is(err, process.ErrNothingToProcess) {
-				return verbResult{}, failWith(http.StatusConflict, err.Error())
-			}
-			logger.Log.Error("failed to resolve artist process scope. error: " + err.Error())
-			return verbResult{}, failWith(http.StatusInternalServerError, "failed to resolve what to process")
+			return verbResult{}, artistScopeErr(err, "process")
 		}
 		a.Scan.Run(scope)
 		return verbResult{Status: "processing queued", Artist: artist.Name, Folders: scope.Detail["folders"]}, nil
@@ -174,15 +182,18 @@ func (a *API) queueTag(t verbTarget) (verbResult, error) {
 		if err != nil {
 			return verbResult{}, err
 		}
-		items, err := collection.ArtistItemIDs(a.DB, artist.MBID)
+		items, err := collection.ArtistItemIDsIn(a.DB, artist.MBID, t.In)
 		if err != nil {
 			logger.Log.Error("failed to load artist items. error: " + err.Error())
 			return verbResult{}, failWith(http.StatusInternalServerError, "failed to resolve what to tag")
 		}
 		if len(items) == 0 {
+			if t.In != nil {
+				return verbResult{}, failWith(http.StatusConflict, "no indexed files for this artist in that library — process them first")
+			}
 			return verbResult{}, failWith(http.StatusConflict, "no indexed files for this artist — process them first")
 		}
-		a.Scan.RetagArtist(artist.MBID)
+		a.Scan.RetagArtistIn(artist.MBID, t.In)
 		return verbResult{Status: "tagging queued", Artist: artist.Name, Files: len(items)}, nil
 	}
 	var count int64
@@ -231,12 +242,12 @@ func (a *API) runScan(t verbTarget, walkDisk bool) (scanResult, error) {
 		}
 		var err error
 		if artist.MBID != "" {
-			err = a.Scan.DiscoverArtist(artist.MBID)
+			err = a.Scan.DiscoverArtistIn(artist.MBID, t.In)
 		} else {
 			err = a.Scan.DiscoverAll()
 		}
 		if err != nil {
-			if errors.Is(err, process.ErrNothingToProcess) {
+			if errors.Is(err, process.ErrNothingToProcess) || errors.Is(err, process.ErrNothingInLibrary) {
 				if artist.MBID == "" {
 					return scanResult{}, failWith(http.StatusConflict, "no enabled libraries to walk")
 				}

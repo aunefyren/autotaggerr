@@ -243,6 +243,14 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   Rendered only with more than one library configured and more than one to choose. Where the
   overview cannot edit (an artist Lidarr governs: its rows mix two authorities), the header's frozen
   pill says **Choose a library** rather than naming a manager that does not govern every row.
+  **The tab scopes the actions as well as the rows.** In a library the run bar's verbs, the album
+  page's actions and the links act on and lead into that library only; on *All libraries* they act
+  on every library holding the artist. Either way the run bar's idle slot says which, in words
+  (*Acts on all 2 libraries: Music, Sandbox*, *Acts on Sandbox*), and confirm dialogs name the
+  library: the scope is stated where the press happens rather than inferred from the tab above. A
+  control with nothing to act on in a view is absent there (Sync from Lidarr on a native library),
+  not disabled; one whose action is refused for a reason stays, disabled with the reason (Organise
+  where Lidarr names the files). Row library tags show on *All libraries* only.
 - **Card / panel** — `--surface-1`, `1px --border`, `--radius-lg`, `--space-6` padding. Optional
   header row with title (`--text-lg`, 600) + actions.
 - **Sidebar nav** — `--bg`, item height 34px, icon + label. Active = `--accent-subtle` fill,

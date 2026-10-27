@@ -1227,7 +1227,8 @@ export interface CollectionPolicy {
   follow_secondary: boolean;
 }
 
-/** What an organise covers: exactly one of the three. */
+/** What an organise covers: a library, an artist or an album — an artist or album
+ *  narrowed to one library when their page is read in one. */
 export interface OrganiseScope {
   library_id?: string;
   artist_mb_id?: string;

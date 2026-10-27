@@ -10,6 +10,7 @@ import (
 	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/google/uuid"
 )
 
 // A Scan that walks the disk. Scan on its own re-derives the collection from the
@@ -42,13 +43,23 @@ func (r *Runner) DiscoverAll() error {
 // their indexed files sit — the same folders an artist Process walks. It returns
 // ErrNothingToProcess when the artist has no indexed files to locate a folder from.
 func (r *Runner) DiscoverArtist(artistMBID string) error {
-	scope, err := r.ArtistScope(artistMBID)
+	return r.DiscoverArtistIn(artistMBID, nil)
+}
+
+// DiscoverArtistIn walks only one library's folders of the artist (nil: every
+// library). The scan that follows is still the artist's: the collection counts an
+// artist across libraries, so it has no narrower reading.
+func (r *Runner) DiscoverArtistIn(artistMBID string, library *uuid.UUID) error {
+	scope, err := r.ArtistScopeIn(artistMBID, library)
 	if err != nil {
 		return err
 	}
 	name, _ := scope.Detail["artist"].(string)
 	scope.Title = "Scan with disk walk for " + name
-	r.enqueue(job{jobDiscoverArtist, "discover_artist:" + artistMBID, "Scan with disk walk", func() {
+	if lib, ok := scope.Detail["library"].(string); ok {
+		scope.Title += " in " + lib
+	}
+	r.enqueue(job{jobDiscoverArtist, scopeKey("discover_artist:", scope), "Scan with disk walk", func() {
 		r.discoverNow(scope, collection.RebuildScope{ArtistMBID: artistMBID}, "Collection scan for "+name)
 	}})
 	return nil

@@ -74,9 +74,10 @@ export default function ReleaseGroup() {
   );
 
   // Asked separately: a Plex link may need Plex asked, and the page should not wait.
+  // Read in a library, only that library's servers are linked.
   const plexLinks = useFetch<ExternalLink[]>(
-    () => api.get(`/artists/${mbid}/release-groups/${rgid}/plex`),
-    [mbid, rgid]
+    () => api.get(`/artists/${mbid}/release-groups/${rgid}/plex${inLibrary}`),
+    [mbid, rgid, inLibrary]
   );
 
   const [busy, setBusy] = useState(false);
@@ -142,6 +143,9 @@ export default function ReleaseGroup() {
   // act on those); lidarrView is whether it decides what this view shows as wanted.
   const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
   const viewAuthority = artist?.libraries?.find((l) => l.library_id === artist.view_library_id)?.authority;
+  // The album's actions follow the library it is read in, as the artist page's do.
+  const inLibraryName = viewLibrary ? artist?.libraries?.find((l) => l.library_id === viewLibrary)?.name : undefined;
+  const lidarrNamesFiles = viewLibrary ? viewAuthority === "lidarr" : artist?.managed_by === "lidarr";
   const lidarrView = viewAuthority ? viewAuthority === "lidarr" : isLidarr;
   const managerLabel = isLidarr ? "Lidarr" : "the manager";
   const target = editLibraryParam(artist);
@@ -200,7 +204,7 @@ export default function ReleaseGroup() {
   const recorrelate = async () => {
     setBusy(true);
     try {
-      await api.post(`/release-groups/${rgid}/recorrelate`);
+      await api.post(`/release-groups/${rgid}/recorrelate${inLibrary}`);
       toast("info", "Re-correlate started — see Activity");
       setRecorrelateAsk(false);
       setTimeout(() => status.reload(), 300);
@@ -386,8 +390,14 @@ export default function ReleaseGroup() {
           )}
           <button
             className="btn btn-ghost btn-sm"
-            disabled={busy || loading || running || !rg?.owned}
-            title={rg?.owned ? "Move this album's files to where their library's naming templates put them. Shows every move for review first." : "Nothing of this album is on disk, so there is nothing to organise."}
+            disabled={busy || loading || running || !rg?.owned || lidarrNamesFiles}
+            title={
+              lidarrNamesFiles
+                ? "Lidarr names these files — rename them in Lidarr."
+                : rg?.owned
+                  ? `Move this album's files${inLibraryName ? ` in ${inLibraryName}` : ""} to where their library's naming templates put them. Shows every move for review first.`
+                  : "Nothing of this album is on disk, so there is nothing to organise."
+            }
             onClick={() => setOrganiseAsk(true)}
           >
             Organise
@@ -398,7 +408,7 @@ export default function ReleaseGroup() {
             disabled={busy || loading || running || !rg?.owned}
             title={
               rg?.owned
-                ? `Ask ${managerLabel} what this album's files are, ignoring the cached answers and the unchanged-file skip, and rewrite their tags to match. The repair for an album that disagrees with ${managerLabel} — a changed edition, a re-import — which an ordinary Process cannot fix because nothing on disk changed. Writes tags.`
+                ? `Ask ${managerLabel} what this album's files${inLibraryName ? ` in ${inLibraryName}` : ""} are, ignoring the cached answers and the unchanged-file skip, and rewrite their tags to match. The repair for an album that disagrees with ${managerLabel} — a changed edition, a re-import — which an ordinary Process cannot fix because nothing on disk changed. Writes tags.`
                 : "Nothing of this album is on disk, so there are no files to re-correlate."
             }
             onClick={() => setRecorrelateAsk(true)}
@@ -424,12 +434,16 @@ export default function ReleaseGroup() {
       )}
 
       {organiseAsk && (
-        <OrganiseDialog scope={{ release_group_mb_id: rgid }} title={rg?.title ?? "this album"} onClose={() => setOrganiseAsk(false)} />
+        <OrganiseDialog
+          scope={viewLibrary ? { release_group_mb_id: rgid, library_id: viewLibrary } : { release_group_mb_id: rgid }}
+          title={`${rg?.title ?? "this album"}${inLibraryName ? ` in ${inLibraryName}` : ""}`}
+          onClose={() => setOrganiseAsk(false)}
+        />
       )}
 
       {recorrelateAsk && (
         <RecorrelateDialog
-          scope={rg ? rg.title : "this album"}
+          scope={`${rg ? rg.title : "this album"}${inLibraryName ? ` in ${inLibraryName}` : ""}`}
           manager={managerLabel}
           discardsPins={isLidarr}
           busy={busy}
@@ -460,7 +474,7 @@ export default function ReleaseGroup() {
             selected={detailRelease}
             busy={busy}
             browse={browse}
-            showLibraries={libraries.multi}
+            showLibraries={libraries.multi && !viewLibrary}
             onSelect={(id) => browse.setFlag("edition", id)}
             onChooseAny={() => save("", [])}
             onWantEdition={(id) => save(id, [])}

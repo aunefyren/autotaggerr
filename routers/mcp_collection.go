@@ -359,7 +359,7 @@ func (a *API) mcpGetArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpGetA
 		FollowSecondary: ar.FollowSecondary, FollowFromYear: ar.FollowFromYear,
 		Library: mcpLibraryName(ar), Libraries: newMCPArtistLibraries(ar.Libraries), EditBlocked: ar.EditBlocked,
 		Albums: make([]mcpAlbumRow, 0, len(detail.ReleaseGroups)),
-		Links:  newMCPLinks(a.managerLinks(models.ManagerLinkArtist, ar.MBID)),
+		Links:  newMCPLinks(a.managerLinks(models.ManagerLinkArtist, ar.MBID, library)),
 	}
 	names := map[uuid.UUID]string{}
 	for _, l := range ar.Libraries {
@@ -473,8 +473,8 @@ func (a *API) mcpGetAlbum(_ context.Context, _ *mcp.CallToolRequest, in mcpGetAl
 		Album:    newMCPAlbumRow(detail.ReleaseGroup),
 		Editions: make([]mcpEditionRow, 0, len(detail.Editions)),
 	}
-	links := a.managerLinks(models.ManagerLinkReleaseGroup, strings.TrimSpace(in.AlbumMBID))
-	if plex, err := a.plexAlbumLinks(strings.TrimSpace(in.AlbumMBID)); err == nil {
+	links := a.managerLinks(models.ManagerLinkReleaseGroup, strings.TrimSpace(in.AlbumMBID), library)
+	if plex, err := a.plexAlbumLinks(strings.TrimSpace(in.AlbumMBID), library); err == nil {
 		links = append(links, plex...)
 	}
 	out.Links = newMCPLinks(links)

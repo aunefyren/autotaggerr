@@ -104,6 +104,31 @@ type ExternalLink struct {
 	// Name is the manager or library it is in, to tell two of a kind apart.
 	Name string `json:"name"`
 	URL  string `json:"url"`
+	// ManagerID is the manager a link leads into, so a page read in one library can
+	// keep only its own manager's links. Not serialised: the page needs the link, not
+	// the row behind it.
+	ManagerID uuid.UUID `json:"-"`
+}
+
+// LinksInLibrary keeps the links into the manager of one library — the links that
+// belong on a page read in that library. A library with no manager keeps none: a
+// native library's view does not link into a Lidarr, even one that also holds the
+// album. Nil keeps every link (the overview).
+func LinksInLibrary(db *gorm.DB, links []ExternalLink, library *uuid.UUID) []ExternalLink {
+	if library == nil || len(links) == 0 {
+		return links
+	}
+	var lib models.Library
+	if err := db.First(&lib, "id = ?", *library).Error; err != nil || lib.ManagerID == nil {
+		return []ExternalLink{}
+	}
+	kept := make([]ExternalLink, 0, len(links))
+	for _, link := range links {
+		if link.ManagerID == *lib.ManagerID {
+			kept = append(kept, link)
+		}
+	}
+	return kept
 }
 
 // ManagerLinks lists the managers holding an artist or an album, as links into each
@@ -148,7 +173,7 @@ func ManagerLinksFor(db *gorm.DB, entityType string, mbids []string) (map[string
 			continue
 		}
 		out[row.MBID] = append(out[row.MBID], ExternalLink{Kind: models.ManagerTypeLidarr, Name: m.Name,
-			URL: strings.TrimRight(base, "/") + "/" + segment + "/" + url.PathEscape(row.MBID)})
+			URL: strings.TrimRight(base, "/") + "/" + segment + "/" + url.PathEscape(row.MBID), ManagerID: m.ID})
 	}
 	return out, nil
 }
