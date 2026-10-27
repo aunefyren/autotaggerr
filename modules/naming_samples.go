@@ -14,8 +14,18 @@ type NamingSample struct {
 	Label   string                            `json:"label"`
 	Release models.MusicBrainzReleaseResponse `json:"-"`
 	TrackID string                            `json:"-"`
-	Ext     string                            `json:"-"`
+	// File is the sample's file: one lossless with a release group, one lossy without
+	// either, so a template is seen with its file tokens both filled and empty.
+	File NamingFile `json:"-"`
 }
+
+// sampleFLAC and sampleMP3 are the two kinds of file the samples are, as a naming
+// template reads them.
+var (
+	sampleFLAC = NamingFile{Ext: ".flac", Audio: AudioProperties{Codec: "FLAC", BitsPerSample: 24}, AudioKnown: true,
+		ReleaseGroup: "GRP", ReleaseGroupKnown: true}
+	sampleMP3 = NamingFile{Ext: ".mp3", Audio: AudioProperties{Codec: "MP3"}, AudioKnown: true, ReleaseGroupKnown: true}
+)
 
 func sampleArtist(id, name, sortName string) []models.ArtistCredit {
 	return []models.ArtistCredit{{Name: name, Artist: models.Artist{ID: id, Name: name, SortName: sortName}}}
@@ -93,15 +103,15 @@ var (
 // a disc of a multi-disc one, and the two kinds of name that cleaning exists for.
 func NamingSamples() []NamingSample {
 	return []NamingSample{
-		{Label: "a single-disc album", Release: sampleRumours, TrackID: sampleID("32"), Ext: ".flac"},
-		{Label: "a disc of a multi-disc album", Release: sampleWhiteAlbum, TrackID: sampleID("51"), Ext: ".flac"},
-		{Label: "a name with a slash", Release: sampleBackInBlack, TrackID: sampleID("61"), Ext: ".mp3"},
-		{Label: "a name with leading dots", Release: sampleJustice, TrackID: sampleID("72"), Ext: ".flac"},
+		{Label: "a single-disc album", Release: sampleRumours, TrackID: sampleID("32"), File: sampleFLAC},
+		{Label: "a disc of a multi-disc album", Release: sampleWhiteAlbum, TrackID: sampleID("51"), File: sampleFLAC},
+		{Label: "a name with a slash", Release: sampleBackInBlack, TrackID: sampleID("61"), File: sampleMP3},
+		{Label: "a name with leading dots", Release: sampleJustice, TrackID: sampleID("72"), File: sampleFLAC},
 	}
 }
 
 // namingDiscProbe is disc 2, track 5: the numbers validation reads back, chosen so
 // that neither can be right by accident.
 func namingDiscProbe() NamingSample {
-	return NamingSample{Label: "disc 2, track 5", Release: sampleWhiteAlbum, TrackID: sampleID("55"), Ext: ".flac"}
+	return NamingSample{Label: "disc 2, track 5", Release: sampleWhiteAlbum, TrackID: sampleID("55"), File: sampleFLAC}
 }

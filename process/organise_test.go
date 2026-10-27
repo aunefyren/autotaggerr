@@ -16,7 +16,7 @@ import (
 func organisedWorld(t *testing.T) importWorld {
 	t.Helper()
 	w := newImportWorld(t)
-	w.run(t, modules.TransferCopy, w.runner.ProposeImport(w.library, w.release, w.sources()))
+	w.run(t, modules.TransferCopy, w.runner.ProposeImport(w.library, w.release, "", w.sources()))
 	if err := w.db.Model(&models.TaggerProfile{}).Where("id = ?", *w.library.TaggerProfileID).
 		Update("naming_album_folder", "{Album Title}").Error; err != nil {
 		t.Fatal(err)

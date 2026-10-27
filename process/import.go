@@ -113,24 +113,29 @@ type ImportPlan struct {
 	// Auto marks an import nobody reviewed: auto-import queued it because the files'
 	// own tags decided everything a review would have.
 	Auto bool
+	// ReleaseGroup is the download's release group, as the review confirmed it ("" for
+	// none). Recorded on every imported file, and what {Release Group} renders.
+	ReleaseGroup string
 }
 
 // ProposeImport maps sources onto a release's tracks by the folder-attach mapper and
 // plans where each would go. It writes nothing.
-func (r *Runner) ProposeImport(library models.Library, release models.MusicBrainzReleaseResponse, sources []string) []ImportRow {
+func (r *Runner) ProposeImport(library models.Library, release models.MusicBrainzReleaseResponse, releaseGroup string, sources []string) []ImportRow {
 	proposed := modules.MapFilesToTracks(sources, modules.ReleaseTracks(release))
 	rows := make([]ImportRow, len(sources))
 	for i, source := range sources {
 		rows[i] = ImportRow{Source: source, MBReleaseTrackID: proposed[i].TrackID, How: proposed[i].How}
 	}
-	return r.PlanImport(library, release, rows)
+	return r.PlanImport(library, release, releaseGroup, rows)
 }
 
 // PlanImport works out, for rows whose track is already chosen, where each file goes
 // and what is in the way. It keeps each row's Replace and reads nothing but the disk
 // and the index.
-func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzReleaseResponse, rows []ImportRow) []ImportRow {
+func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzReleaseResponse, releaseGroup string, rows []ImportRow) []ImportRow {
 	naming := components.TaggerForLibrary(r.db, library).Naming()
+	readsAudio := modules.NamingUsesAudio(naming)
+	releaseGroup = strings.TrimSpace(releaseGroup)
 	planned := make([]ImportRow, len(rows))
 	byTarget := map[string]int{}
 	// One answer per album folder: an import is one release, so this is almost always
@@ -153,7 +158,9 @@ func (r *Runner) PlanImport(library models.Library, release models.MusicBrainzRe
 		}
 		row.TrackNumber, row.TrackTitle, row.Medium = track.Number, track.Title, track.Medium
 
-		path, err := modules.RenderLibraryPath(naming, release, track.TrackID, filepath.Ext(row.Source))
+		// The source's audio, read before it moves; the release group the review set,
+		// which is always known here — an import is where it is decided.
+		path, err := modules.RenderLibraryPath(naming, release, track.TrackID, modules.NamingFileFor(row.Source, readsAudio, &releaseGroup))
 		if err != nil {
 			row.Error = err.Error()
 			planned[i] = row
@@ -456,7 +463,7 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 			approved[path] = true
 		}
 	}
-	rows := r.PlanImport(plan.Library, plan.Release, plan.Rows)
+	rows := r.PlanImport(plan.Library, plan.Release, plan.ReleaseGroup, plan.Rows)
 
 	var todo []ImportRow
 	for _, row := range rows {
@@ -520,7 +527,7 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 		replaced += r.removeReplaced(row)
 
 		track, _ := modules.FindReleaseTrack(plan.Release, row.MBReleaseTrackID)
-		indexed, err := r.recordImportedItem(plan.Library, plan.Release.ID, track, row.Target)
+		indexed, err := r.recordImportedItem(plan.Library, plan.Release.ID, track, row.Target, plan.ReleaseGroup)
 		if err != nil {
 			fail(fmt.Errorf("imported to %s, but it could not be indexed: %w", row.Target, err))
 			continue
@@ -677,7 +684,7 @@ func (r *Runner) removeReplaced(row ImportRow) int {
 // the reviewer chose, with the audio it was chosen for, exactly as a manual attach
 // records one (routers.saveCorrelation). A row already at the path — the file this
 // one replaced — is re-used, so it keeps its ID.
-func (r *Runner) recordImportedItem(library models.Library, releaseID string, track modules.ReleaseTrack, path string) (models.LibraryItem, error) {
+func (r *Runner) recordImportedItem(library models.Library, releaseID string, track modules.ReleaseTrack, path, releaseGroup string) (models.LibraryItem, error) {
 	audioHash, err := components.PinAudioHash(path)
 	if err != nil {
 		logger.Log.Warnf("import: could not hash the audio of %s: %s", path, err.Error())
@@ -699,6 +706,8 @@ func (r *Runner) recordImportedItem(library models.Library, releaseID string, tr
 	item.CorrelatedAt = &now
 	item.Pinned = true
 	item.PinnedAudioHash = audioHash
+	group := strings.TrimSpace(releaseGroup)
+	item.ReleaseGroup = &group
 	item.PinHeld = false
 	item.Status = models.LibraryItemStatusOK
 	item.Error = ""

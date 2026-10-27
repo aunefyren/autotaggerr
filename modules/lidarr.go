@@ -952,6 +952,7 @@ func resolveFromLidarrArtist(cli *LidarrClient, artist models.LidarrArtist, trac
 			lidarrTrackMetadataDetails.MBTrackID = track.ForeignTrackID
 			lidarrTrackMetadataDetails.MBRecordingID = track.ForeignRecordingID
 			lidarrTrackMetadataDetails.TrackTitle = track.Title
+			lidarrTrackMetadataDetails.ReleaseGroup = tf.ReleaseGroup
 			found = true
 			break
 		}

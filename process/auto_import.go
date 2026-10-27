@@ -75,7 +75,7 @@ func (r *Runner) autoImportDownload(item models.DownloadItem, category models.Do
 	retry := false
 
 	library, problem := r.autoImportLibrary(category.LibraryID)
-	for _, group := range modules.GroupImportFiles(item.Path, item.Files, DownloadSourceName(item)) {
+	for _, group := range modules.WithDownloadReleaseGroup(modules.GroupImportFiles(item.Path, item.Files, DownloadSourceName(item)), DownloadSourceName(item)) {
 		if item.Groups[group.Folder] != "" {
 			continue // queued, imported, or failed once already: a person's turn now
 		}
@@ -191,14 +191,15 @@ func (r *Runner) autoImportPlan(library models.Library, item models.DownloadItem
 
 	// 4. Nothing in the library is in the way. A conflict — an upgrade, typically — is
 	// exactly the decision Replace exists for, and only a person gives that consent.
-	rows = r.PlanImport(library, release, rows)
+	rows = r.PlanImport(library, release, group.ReleaseGroup, rows)
 	if err := CheckImportPlan(rows); err != nil {
 		return ImportPlan{}, err
 	}
 	return ImportPlan{
-		Library: library,
-		Release: release,
-		Root:    item.Path,
+		Library:      library,
+		Release:      release,
+		ReleaseGroup: group.ReleaseGroup,
+		Root:         item.Path,
 		// Copied whatever the client says: an automatic import leaves the source as
 		// it found it.
 		Mode: modules.TransferCopy,

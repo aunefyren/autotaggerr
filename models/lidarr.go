@@ -18,6 +18,10 @@ type LidarrTrackFile struct {
 	Path     string `json:"path"`
 	AlbumID  int64  `json:"albumId"`
 	ArtistID int64  `json:"artistId"`
+	// ReleaseGroup is the group of the download Lidarr imported the file from, as its
+	// {Release Group} naming token renders it. A pointer: a track file cached before
+	// this field was read has none, and that is "not known", not "no group".
+	ReleaseGroup *string `json:"releaseGroup"`
 }
 
 type LidarrTrack struct {
@@ -58,6 +62,8 @@ type LidarrTrackMetadataDetails struct {
 	MBTrackID     string `json:"mb_track_id"`
 	TrackTitle    string `json:"track_title"`
 	MBReleaseID   string `json:"mb_release_id"`
+	// ReleaseGroup is the track file's (models.LidarrTrackFile.ReleaseGroup).
+	ReleaseGroup *string `json:"release_group,omitempty"`
 }
 
 // LidarrCommand is one entry in Lidarr's command queue — what a POST to

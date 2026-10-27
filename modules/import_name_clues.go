@@ -25,6 +25,10 @@ type ImportNameClues struct {
 	// Quality is bit depth and sample rate ("24-96"). Shown only: MusicBrainz has no
 	// such fact to match.
 	Quality string `json:"quality,omitempty"`
+	// ReleaseGroup is the group that put out the download (ParseReleaseGroup) — not an
+	// edition clue, but read from the same name, and what the import review prefills
+	// for the {Release Group} naming token.
+	ReleaseGroup string `json:"release_group,omitempty"`
 }
 
 var (
@@ -84,7 +88,7 @@ func ParseImportNameClues(name string) *ImportNameClues {
 		}
 	}
 
-	clues := ImportNameClues{Name: name}
+	clues := ImportNameClues{Name: name, ReleaseGroup: ParseReleaseGroup(name)}
 	seen := map[string]bool{}
 	for _, part := range parts {
 		if m := nameQuality.FindStringSubmatch(part); m != nil && clues.Quality == "" {
@@ -105,7 +109,7 @@ func ParseImportNameClues(name string) *ImportNameClues {
 			}
 		}
 	}
-	if len(clues.Words) == 0 && clues.Format == "" && clues.Country == "" && clues.Quality == "" {
+	if len(clues.Words) == 0 && clues.Format == "" && clues.Country == "" && clues.Quality == "" && clues.ReleaseGroup == "" {
 		return nil
 	}
 	return &clues
@@ -121,4 +125,51 @@ func ReadEditionClues(files []string) (*ImportEditionClues, *ImportNameClues) {
 	_, _, _, edition := tagHint(files)
 	folder := importAlbumFolder(filepath.Dir(filepath.Dir(files[0])), files[0])
 	return edition, ParseImportNameClues(filepath.Base(folder))
+}
+
+var (
+	// releaseGroupScene is a scene name's last part: "Artist-Album-WEB-2014-GRP".
+	releaseGroupScene = regexp.MustCompile(`^[^\s]+-([A-Za-z0-9]+)$`)
+	// releaseGroupAfterTags is a spaced name whose group is hyphenated onto its last
+	// bracket: "Artist - Album (2014) [FLAC]-GRP".
+	releaseGroupAfterTags = regexp.MustCompile(`[\])}]-([A-Za-z0-9]+)$`)
+	releaseGroupYear      = regexp.MustCompile(`^(?:19|20)\d{2}$`)
+)
+
+// releaseGroupNoise are the words a scene name's last part may be that are not a group:
+// what the release is, not who released it.
+var releaseGroupNoise = map[string]bool{
+	"web": true, "flac": true, "mp3": true, "cd": true, "cdda": true, "vinyl": true, "lp": true, "sacd": true,
+	"16bit": true, "24bit": true, "320": true, "v0": true, "v2": true, "aac": true, "alac": true, "hires": true,
+	"remaster": true, "remastered": true, "deluxe": true, "retail": true, "proper": true, "repack": true,
+}
+
+// ParseReleaseGroup reads the release group out of a download's or album folder's name
+// the way Lidarr's parser does for the common shapes: the last hyphenated part of a
+// scene name ("Artist-Album-WEB-FLAC-2014-GRP"), or a part hyphenated onto a spaced
+// name's last bracket ("Artist - Album (2014) [FLAC]-GRP"). It is a guess the import
+// review shows for confirmation, so it errs towards "": a scene name needs three parts
+// (so "Jay-Z" is an artist, not Jay of group Z), a spaced name's hyphen must follow a
+// bracket (so "Album - Remix" is a title), and a year or a format word is never a group.
+func ParseReleaseGroup(name string) string {
+	name = strings.TrimSpace(name)
+	var group string
+	switch {
+	case !strings.Contains(name, " "):
+		m := releaseGroupScene.FindStringSubmatch(name)
+		if m == nil || len(strings.FieldsFunc(name, func(r rune) bool { return r == '-' || r == '.' || r == '_' })) < 3 {
+			return ""
+		}
+		group = m[1]
+	default:
+		m := releaseGroupAfterTags.FindStringSubmatch(name)
+		if m == nil {
+			return ""
+		}
+		group = m[1]
+	}
+	if releaseGroupYear.MatchString(group) || releaseGroupNoise[strings.ToLower(group)] {
+		return ""
+	}
+	return group
 }

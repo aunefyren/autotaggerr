@@ -80,6 +80,51 @@ and one edition per album is what most libraries hold. Instead the import refuse
 edition in a folder that already holds one (`other_edition`, see
 [import.md](import.md#conflicts-and-what-replace-means)), naming the tokens above as the fix.
 
+## Tokens read from the file
+
+Three tokens are not MusicBrainz's. They describe the file being named, so `RenderLibraryPath`
+takes a `NamingFile` beside the release: its extension, its audio, and its release group.
+
+| Token | Renders | From |
+|---|---|---|
+| `{MediaInfo AudioCodec}` | `FLAC`, `MP3` | the file's headers (`ReadAudioProperties`): FLAC's STREAMINFO, an MP3's first frame |
+| `{MediaInfo AudioBitsPerSample}` | `16`, `24`; **empty for MP3**, which has no depth | FLAC's STREAMINFO |
+| `{Release Group}` | `GRP` | the download the file came from (`LibraryItem.ReleaseGroup`) |
+
+`{Release Group}` keeps **Lidarr's** meaning: the group that put out the download, as in
+`Artist-Album-WEB-FLAC-2014-GRP`. It is not MusicBrainz's release group, which is the album and
+is `{Album Title}`. The codec and depth are read from the file rather than told by its extension,
+so a misnamed file is named for what it is. Only the headers are read, and only when a template
+uses a MediaInfo token (`NamingUsesAudio`), so a library whose templates do not use one opens no
+file to plan an Organise.
+
+**All three belong to the track file.** One album folder can hold files that differ in each of
+them, so a folder named by one would split an album. Validation refuses them in the folder
+templates, as it does `{track}`.
+
+**Unknown is not empty.** An MP3's depth and a download with no group are known to be empty. They
+render empty, and their brackets collapse like any empty token's. A value nobody knows is
+different. Files indexed before release groups were recorded have a nil `ReleaseGroup`, and some
+files' headers cannot be read. Rendering either as empty would rename `02 Song-GRP.flac` to
+`02 Song.flac`. So a template that uses such a token fails for that file with a
+`NamingUnknownError`. Organise lists the file as skipped ("its {Release Group} is not known, so it
+is not renamed"). The item's `PATH` row shows the reason instead of a path.
+
+Where the release group comes from:
+
+- **An import** parses it from the album folder's name, or from the download's when the folder's
+  gives none (`ParseReleaseGroup`, `WithDownloadReleaseGroup`). The review shows it in an editable
+  **Release group** field, because it is a guess, and the confirmed value is what the plan renders
+  and the index records (`""` when cleared). The parser errs towards nothing. For a scene name it
+  takes the last hyphenated part, and needs three parts, so *Jay-Z* is an artist. For a spaced name
+  it takes a part hyphenated onto the last bracket (`… [FLAC]-GRP`). Years and format words such as
+  `WEB` or `FLAC` are never a group.
+- **Lidarr** reports it on each track file (`releaseGroup`). The correlation carries it, and
+  processing records it, pinned files included, since it describes where a file came from rather
+  than which track it is. A track file cached before this was read has none, which reads as
+  unknown.
+- A source that does not know the group leaves the recorded one alone. Nothing clears it.
+
 ## A token may only be used at its own level or below
 
 `{Album Title}` in the artist folder would give one artist a folder per album, and `{track}` in

@@ -437,7 +437,7 @@ func (a *API) scanDownload(c *gin.Context) {
 		c.JSON(http.StatusConflict, gin.H{"error": fmt.Sprintf("%q is %s, not ready to import", item.Name, item.State)})
 		return
 	}
-	groups := modules.GroupImportFiles(item.Path, item.Files, process.DownloadSourceName(item))
+	groups := modules.WithDownloadReleaseGroup(modules.GroupImportFiles(item.Path, item.Files, process.DownloadSourceName(item)), process.DownloadSourceName(item))
 	states := item.Groups
 	if states == nil {
 		states = map[string]string{}

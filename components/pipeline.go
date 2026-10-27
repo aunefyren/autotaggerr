@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -575,6 +576,12 @@ func recordItemTagged(db *gorm.DB, libraryID uuid.UUID, filePath string, correla
 		if item.CorrelatedAt == nil {
 			item.CorrelatedAt = &now
 		}
+	}
+	// A fact about where the file came from, not about which track it is, so a pin does
+	// not hold it back. Only ever set: a source that does not know leaves it alone.
+	if correlation.ReleaseGroup != nil {
+		group := strings.TrimSpace(*correlation.ReleaseGroup)
+		item.ReleaseGroup = &group
 	}
 
 	// Then the outcome of this attempt, which is a separate fact about a separate

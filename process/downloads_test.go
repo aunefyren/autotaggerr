@@ -262,7 +262,7 @@ func downloadWorld(t *testing.T) (importWorld, *fakeDownloadClient, models.Downl
 // and its client told.
 func TestImportFromADownload(t *testing.T) {
 	w, fake, item := downloadWorld(t)
-	rows := w.runner.ProposeImport(w.library, w.release, item.Files)
+	rows := w.runner.ProposeImport(w.library, w.release, "", item.Files)
 	ref := &ImportDownload{ItemID: item.ID, Folder: item.Path}
 
 	moving := ImportPlan{Library: w.library, Release: w.release, Root: item.Path, Mode: modules.TransferMove, Rows: rows, Download: ref}
@@ -306,7 +306,7 @@ func TestImportFromADownload(t *testing.T) {
 
 func TestImportFromADownloadRefusesAForeignFolder(t *testing.T) {
 	w, _, item := downloadWorld(t)
-	rows := w.runner.ProposeImport(w.library, w.release, item.Files)
+	rows := w.runner.ProposeImport(w.library, w.release, "", item.Files)
 	plan := ImportPlan{Library: w.library, Release: w.release, Root: item.Path, Mode: modules.TransferCopy, Rows: rows,
 		Download: &ImportDownload{ItemID: item.ID, Folder: filepath.Join(item.Path, "elsewhere")}}
 	if err := w.runner.Import(plan); err == nil || !strings.Contains(err.Error(), "not an album of") {
@@ -355,7 +355,7 @@ func TestImportedDownloadIsMovedAndRemovedAfterSeeding(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows := w.runner.ProposeImport(w.library, w.release, item.Files)
+	rows := w.runner.ProposeImport(w.library, w.release, "", item.Files)
 	plan := ImportPlan{Library: w.library, Release: w.release, Root: item.Path, Mode: modules.TransferCopy, Rows: rows,
 		Download: &ImportDownload{ItemID: item.ID, Folder: item.Path}}
 	if err := w.runner.Import(plan); err != nil {
@@ -405,7 +405,7 @@ func TestPollReadsAUsenetDownloadFromDisk(t *testing.T) {
 	if item.State != models.DownloadStateReady || len(item.Files) != 2 || item.Seeding {
 		t.Fatalf("download = %s %q files %v seeding %v", item.State, item.Reason, item.Files, item.Seeding)
 	}
-	rows := w.runner.ProposeImport(w.library, w.release, item.Files)
+	rows := w.runner.ProposeImport(w.library, w.release, "", item.Files)
 	plan := ImportPlan{Library: w.library, Release: w.release, Root: item.Path, Mode: modules.TransferMove, Rows: rows,
 		Download: &ImportDownload{ItemID: item.ID, Folder: item.Path}}
 	if err := w.runner.Import(plan); err != nil {

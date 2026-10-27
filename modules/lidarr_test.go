@@ -692,7 +692,7 @@ func TestResolveMetadataDetailsFromLidarr(t *testing.T) {
 			{ID: 2, Name: "Pink Floyd", Path: "/data/music/Pink Floyd"},
 		},
 		"/api/v1/trackfile": []models.LidarrTrackFile{
-			{ID: 100, AlbumID: 42, ArtistID: 2, Path: "/data/music/Pink Floyd/The Wall (1979)/01 In the Flesh.flac"},
+			{ID: 100, AlbumID: 42, ArtistID: 2, Path: "/data/music/Pink Floyd/The Wall (1979)/01 In the Flesh.flac", ReleaseGroup: strptr("GRP")},
 		},
 		"/api/v1/track": []models.LidarrTrack{
 			{ID: 500, Title: "In the Flesh?", ForeignTrackID: "mbtrack-1", ForeignRecordingID: "mbrec-1", TrackFileID: i64ptr(100)},
@@ -725,7 +725,13 @@ func TestResolveMetadataDetailsFromLidarr(t *testing.T) {
 	if details.TrackTitle != "In the Flesh?" {
 		t.Errorf("TrackTitle = %q, want 'In the Flesh?'", details.TrackTitle)
 	}
+	// The download's group, as Lidarr's {Release Group} renders it, rides along.
+	if details.ReleaseGroup == nil || *details.ReleaseGroup != "GRP" {
+		t.Errorf("ReleaseGroup = %v, want GRP", details.ReleaseGroup)
+	}
 }
+
+func strptr(s string) *string { return &s }
 
 func TestLidarrHealthCheck(t *testing.T) {
 	resetLidarrCaches()

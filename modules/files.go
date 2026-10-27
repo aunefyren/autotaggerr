@@ -278,6 +278,7 @@ func resolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 			correlation.MBReleaseTrackID = lidarrTrackObject.MBTrackID
 			correlation.MBRecordingID = lidarrTrackObject.MBRecordingID
 			correlation.TrackTitle = lidarrTrackObject.TrackTitle
+			correlation.ReleaseGroup = lidarrTrackObject.ReleaseGroup
 			correlation.Source = models.CorrelationSourceLidarr
 		}
 	}

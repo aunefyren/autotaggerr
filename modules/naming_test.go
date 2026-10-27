@@ -12,7 +12,7 @@ import (
 
 func renderSample(t *testing.T, templates models.NamingTemplates, sample NamingSample) string {
 	t.Helper()
-	path, err := RenderLibraryPath(templates, sample.Release, sample.TrackID, sample.Ext)
+	path, err := RenderLibraryPath(templates, sample.Release, sample.TrackID, sample.File)
 	if err != nil {
 		t.Fatalf("render %s: %v", sample.Label, err)
 	}
@@ -70,7 +70,7 @@ func TestRenderLibraryPathIgnoresVideoMedia(t *testing.T) {
 	dvd.Tracks[0].Recording.Video = true
 	release.Media = append(append([]models.MusicBrainzMedia{}, release.Media...), dvd)
 
-	path, err := RenderLibraryPath(models.NamingTemplates{}, release, sampleID("32"), ".flac")
+	path, err := RenderLibraryPath(models.NamingTemplates{}, release, sampleID("32"), NamingFile{Ext: ".flac"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestRenderLibraryPathIgnoresVideoMedia(t *testing.T) {
 
 	// The video track's own medium still counts, so a file attached to it is not
 	// put beside the audio as if it were track 1 of disc 1.
-	path, err = RenderLibraryPath(models.NamingTemplates{}, release, "video", ".mkv")
+	path, err = RenderLibraryPath(models.NamingTemplates{}, release, "video", NamingFile{Ext: ".mkv"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -103,7 +103,7 @@ func TestNamingTokenSpellings(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			path, err := RenderLibraryPath(models.NamingTemplates{ArtistFolder: tc.template}, sample.Release, sample.TrackID, sample.Ext)
+			path, err := RenderLibraryPath(models.NamingTemplates{ArtistFolder: tc.template}, sample.Release, sample.TrackID, sample.File)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -117,7 +117,7 @@ func TestNamingTokenSpellings(t *testing.T) {
 func TestNamingPrefixShownWhenValuePresent(t *testing.T) {
 	release := sampleRumours
 	release.ReleaseGroup.Disambiguation = "deluxe"
-	path, err := RenderLibraryPath(models.NamingTemplates{AlbumFolder: "{Album Title}{ [Album Disambiguation]}"}, release, sampleID("32"), ".flac")
+	path, err := RenderLibraryPath(models.NamingTemplates{AlbumFolder: "{Album Title}{ [Album Disambiguation]}"}, release, sampleID("32"), NamingFile{Ext: ".flac"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +135,7 @@ func TestNamingAlbumTokensReadTheReleaseGroup(t *testing.T) {
 	release.ArtistCredit = sampleArtist("old", "Fleetwood Mac (old credit)", "")
 	templates := models.NamingTemplates{AlbumFolder: "{Album Title} ({Release Year}) [{Edition Title}, {Edition Year}]"}
 
-	path, err := RenderLibraryPath(templates, release, sampleID("32"), ".flac")
+	path, err := RenderLibraryPath(templates, release, sampleID("32"), NamingFile{Ext: ".flac"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +183,7 @@ func TestRenderLibraryPathCapsSegmentLength(t *testing.T) {
 	release.Media = []models.MusicBrainzMedia{{Position: 1, Tracks: []models.Track{
 		sampleTrack("long", 1, strings.Repeat("ø", 200), nil), // 400 bytes
 	}}}
-	path, err := RenderLibraryPath(models.NamingTemplates{}, release, "long", ".flac")
+	path, err := RenderLibraryPath(models.NamingTemplates{}, release, "long", NamingFile{Ext: ".flac"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -199,7 +199,7 @@ func TestRenderLibraryPathCapsSegmentLength(t *testing.T) {
 }
 
 func TestRenderLibraryPathTrackNotFound(t *testing.T) {
-	_, err := RenderLibraryPath(models.NamingTemplates{}, sampleRumours, "missing", ".flac")
+	_, err := RenderLibraryPath(models.NamingTemplates{}, sampleRumours, "missing", NamingFile{Ext: ".flac"})
 	if !errors.Is(err, ErrNamingTrackNotFound) {
 		t.Errorf("got %v", err)
 	}
@@ -323,7 +323,7 @@ func TestNamingEditionTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	templates := models.NamingTemplates{AlbumFolder: "{Album Title} ({Release Year}) [{Edition Country} {Edition Format} {Edition CatalogNumber}]"}
-	path, err := RenderLibraryPath(templates, release, sampleID("32"), ".flac")
+	path, err := RenderLibraryPath(templates, release, sampleID("32"), NamingFile{Ext: ".flac"})
 	if err != nil {
 		t.Fatal(err)
 	}

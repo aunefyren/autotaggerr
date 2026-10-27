@@ -39,6 +39,11 @@ already been in the library.
    whole but for its first token. The modal shows both as *Edition tags* and *The name says*, under
    a folded list of the files by their path in the album folder, headed by the download's name.
 
+   The same name gives the download's **release group** (`ImportGroup.ReleaseGroup`, from the
+   download's own name when the album folder's has none), which the review shows in an editable
+   field and records on every imported file; see
+   [naming.md](naming.md#tokens-read-from-the-file).
+
    A group whose tags all name one release skips this step and opens on the review; Identify is
    one step back. Otherwise there are two tabs:
    - **Browse** (the default): artist → album → edition, each column narrowing the next. Artists

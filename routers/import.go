@@ -112,6 +112,9 @@ type importRequest struct {
 	// come from, when they come from the Downloads list.
 	DownloadID     *uuid.UUID `json:"download_id"`
 	DownloadFolder string     `json:"download_folder"`
+	// ReleaseGroup is the download's release group as the review has it ("" for none),
+	// for the {Release Group} naming token and the index.
+	ReleaseGroup string `json:"release_group"`
 }
 
 // importContext validates everything a preview and an import share, and loads the
@@ -187,9 +190,9 @@ func (a *API) importPreview(c *gin.Context) {
 
 	var rows []process.ImportRow
 	if len(in.Rows) > 0 {
-		rows = a.Scan.PlanImport(library, release, in.Rows)
+		rows = a.Scan.PlanImport(library, release, in.ReleaseGroup, in.Rows)
 	} else {
-		rows = a.Scan.ProposeImport(library, release, in.Sources)
+		rows = a.Scan.ProposeImport(library, release, in.ReleaseGroup, in.Sources)
 	}
 	problem := ""
 	if err := process.CheckImportPlan(rows); err != nil {
@@ -239,7 +242,9 @@ func (a *API) importFiles(c *gin.Context) {
 		Release: release,
 		Root:    root,
 		Mode:    mode,
-		Rows:    a.Scan.PlanImport(library, release, in.Rows),
+		Rows:    a.Scan.PlanImport(library, release, in.ReleaseGroup, in.Rows),
+		// Trimmed by the plan; kept as sent so the job records what was reviewed.
+		ReleaseGroup: strings.TrimSpace(in.ReleaseGroup),
 	}
 	if in.DownloadID != nil {
 		plan.Download = &process.ImportDownload{ItemID: *in.DownloadID, Folder: filepath.Clean(in.DownloadFolder)}

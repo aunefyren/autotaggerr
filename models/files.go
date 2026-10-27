@@ -11,6 +11,9 @@ type Correlation struct {
 	MBRecordingID    string `json:"mb_recording_id"`
 	TrackTitle       string `json:"track_title"`
 	Source           string `json:"source"`
+	// ReleaseGroup is the download's release group when the source knows it (Lidarr's
+	// track file); nil when it does not, which leaves what the index has alone.
+	ReleaseGroup *string `json:"release_group,omitempty"`
 }
 
 // TagDiffEntry is one tag's current-vs-desired state for the read-only diff view.

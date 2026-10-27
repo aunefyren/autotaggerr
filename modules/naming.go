@@ -69,12 +69,83 @@ func (f NamingField) template(n models.NamingTemplates) string {
 	}
 }
 
-// namingContext is what a token reads: the release, the medium the track is on, and
-// the track.
+// namingContext is what a token reads: the release, the medium the track is on, the
+// track, and the file being named.
 type namingContext struct {
 	release models.MusicBrainzReleaseResponse
 	media   models.MusicBrainzMedia
 	track   models.Track
+	file    NamingFile
+}
+
+// NamingFile is what a template reads from the file being named rather than from
+// MusicBrainz: its extension, what its audio is, and the release group of the
+// download it came from.
+//
+// "Known" is kept apart from "empty" because they lead to different answers. An MP3
+// has no bit depth and a download may have had no release group — those render empty,
+// and the brackets around them collapse. But a file whose headers could not be read,
+// or that arrived before release groups were recorded, has a value nobody knows: naming
+// it as empty would rename "Song-GRP.flac" to "Song.flac", so a template that uses such
+// a token fails for that file instead (NamingUnknownError).
+type NamingFile struct {
+	Ext        string
+	Audio      AudioProperties
+	AudioKnown bool
+	// ReleaseGroup is the group that put out the download ("GRP" in
+	// "Artist-Album-WEB-FLAC-2014-GRP"), "" for none.
+	ReleaseGroup      string
+	ReleaseGroupKnown bool
+}
+
+// NamingFileFor reads what a file's name may need to know about it: its extension and
+// its audio from the file, and the release group from wherever the caller recorded it
+// (nil: never recorded). The audio is only read when audio is true — a template that
+// uses no MediaInfo token should not cost a file open.
+func NamingFileFor(path string, readAudio bool, releaseGroup *string) NamingFile {
+	file := NamingFile{Ext: filepath.Ext(path)}
+	if readAudio {
+		if audio, err := ReadAudioProperties(path); err == nil {
+			file.Audio, file.AudioKnown = audio, true
+		}
+	}
+	if releaseGroup != nil {
+		file.ReleaseGroup, file.ReleaseGroupKnown = strings.TrimSpace(*releaseGroup), true
+	}
+	return file
+}
+
+// NamingUnknownError is a template using a token whose value is not known for this
+// file — not empty, unknown. See NamingFile.
+type NamingUnknownError struct {
+	Token string
+	Field NamingField
+}
+
+func (e *NamingUnknownError) Error() string {
+	return fmt.Sprintf("the %s template uses {%s}, which is not known for this file", e.Field.label(), e.Token)
+}
+
+// NamingUsesAudio reports whether any of the templates reads the file's audio, so a
+// caller naming many files opens them only when a token needs it.
+func NamingUsesAudio(templates models.NamingTemplates) bool {
+	return namingUses(templates, func(t NamingToken) bool { return t.audio })
+}
+
+func namingUses(templates models.NamingTemplates, match func(NamingToken) bool) bool {
+	templates = templates.WithDefaults()
+	for _, field := range namingFields {
+		parts, err := parseNamingTemplate(field.template(templates))
+		if err != nil {
+			continue
+		}
+		for _, part := range parts {
+			if part.token != nil && match(*part.token) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // albumArtist is the artist an album belongs to, which is the release-group's credit
@@ -121,6 +192,11 @@ type NamingToken struct {
 
 	text   func(namingContext) string
 	number func(namingContext) int
+	// known, when set, says whether the value can be told for this file at all; a
+	// token without it is always known (MusicBrainz's data is the input, not a guess).
+	known func(namingContext) bool
+	// audio marks the tokens read from the file's audio headers.
+	audio bool
 }
 
 func (t NamingToken) render(c namingContext, format string) string {
@@ -308,6 +384,23 @@ var namingTokens = []NamingToken{
 		text: func(c namingContext) string { return cleanTitle(c.track.Title) }},
 	{Name: "Track ArtistName", Field: NamingTrackFile, Description: "The track's own credit, featured artists included",
 		text: func(c namingContext) string { return creditString(c.track.ArtistCredit) }},
+
+	// Read from the file, not from MusicBrainz, so they belong to the track file only:
+	// the files of one album folder can differ in all three.
+	{Name: "MediaInfo AudioCodec", Field: NamingTrackFile, Description: "The file's audio codec, read from the file (\"FLAC\", \"MP3\")",
+		text:  func(c namingContext) string { return c.file.Audio.Codec },
+		known: func(c namingContext) bool { return c.file.AudioKnown }, audio: true},
+	{Name: "MediaInfo AudioBitsPerSample", Field: NamingTrackFile, Description: "The file's sample depth (\"16\", \"24\"); empty for MP3, which has none",
+		text: func(c namingContext) string {
+			if c.file.Audio.BitsPerSample <= 0 {
+				return ""
+			}
+			return strconv.Itoa(c.file.Audio.BitsPerSample)
+		},
+		known: func(c namingContext) bool { return c.file.AudioKnown }, audio: true},
+	{Name: "Release Group", Field: NamingTrackFile, Description: "The group that put out the download the file came from (\"GRP\" in Artist-Album-WEB-FLAC-2014-GRP) — not MusicBrainz's release group, which is {Album Title}",
+		text:  func(c namingContext) string { return c.file.ReleaseGroup },
+		known: func(c namingContext) bool { return c.file.ReleaseGroupKnown }},
 }
 
 // NamingTokens lists every token a template may use.
@@ -474,19 +567,28 @@ func (e *NamingEmptyError) Error() string {
 
 // RenderLibraryPath renders where one track of a release belongs, keeping the file's
 // extension. The templates are assumed valid (ValidateNamingTemplates); an invalid one
-// is still an error here rather than a panic, since a stored row predates nothing.
-func RenderLibraryPath(templates models.NamingTemplates, release models.MusicBrainzReleaseResponse, trackID, ext string) (LibraryPath, error) {
+// is still an error here rather than a panic, since a stored row predates nothing. A
+// template using a token whose value is unknown for this file is a
+// *NamingUnknownError, never a name rendered without it.
+func RenderLibraryPath(templates models.NamingTemplates, release models.MusicBrainzReleaseResponse, trackID string, file NamingFile) (LibraryPath, error) {
 	templates = templates.WithDefaults()
+	ext := file.Ext
 
 	ctx, found := namingContextFor(release, trackID)
 	if !found {
 		return LibraryPath{}, fmt.Errorf("%w: %s on %s", ErrNamingTrackNotFound, trackID, release.ID)
 	}
+	ctx.file = file
 
 	render := func(field NamingField, maxBytes int) (string, error) {
 		parts, err := parseNamingTemplate(field.template(templates))
 		if err != nil {
 			return "", fmt.Errorf("%s template %w", field.label(), err)
+		}
+		for _, part := range parts {
+			if part.token != nil && part.token.known != nil && !part.token.known(ctx) {
+				return "", &NamingUnknownError{Token: part.token.Name, Field: field}
+			}
 		}
 		segment := renderNamingParts(parts, ctx, maxBytes)
 		if segment == "" {
@@ -721,7 +823,7 @@ func ValidateNamingTemplates(templates models.NamingTemplates) NamingCheck {
 	}
 
 	for _, sample := range NamingSamples() {
-		_, err := RenderLibraryPath(templates, sample.Release, sample.TrackID, sample.Ext)
+		_, err := RenderLibraryPath(templates, sample.Release, sample.TrackID, sample.File)
 		var empty *NamingEmptyError
 		if errors.As(err, &empty) {
 			check.fail(empty.Field, fmt.Sprintf("renders empty for %s — add a token every release has", sample.Label))
@@ -732,11 +834,11 @@ func ValidateNamingTemplates(templates models.NamingTemplates) NamingCheck {
 	// uses. Rendering it for a second disc, rather than the first, is what proves it
 	// carries the number and not just a lucky "1".
 	multi := namingDiscProbe()
-	if path, err := RenderLibraryPath(templates, multi.Release, multi.TrackID, multi.Ext); err == nil {
+	if path, err := RenderLibraryPath(templates, multi.Release, multi.TrackID, multi.File); err == nil {
 		if got := discNumberFromFolderName(path.Media); got != 2 {
 			check.fail(NamingMediaFolder, fmt.Sprintf("renders %q for disc 2, which is not read back as disc 2 — start it with CD, Disc, Vinyl or another medium name followed by {medium}", path.Media))
 		}
-		stem := strings.TrimSuffix(path.File, multi.Ext)
+		stem := strings.TrimSuffix(path.File, multi.File.Ext)
 		if m := trackNumberPattern.FindStringSubmatch(stem); m == nil || strings.TrimLeft(m[2], "0") != "5" {
 			check.warn(NamingTrackFile, "doesn't start with the track number, so folder attach will pair these files by sort order rather than by number")
 		}

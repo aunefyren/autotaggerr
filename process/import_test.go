@@ -80,7 +80,7 @@ func (w importWorld) run(t *testing.T, mode modules.TransferMode, rows []ImportR
 // move emptied, and reports each file with where it came from.
 func TestImportMovesTagsAndPins(t *testing.T) {
 	w := newImportWorld(t)
-	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	rows := w.runner.ProposeImport(w.library, w.release, "", w.sources())
 	for _, row := range rows {
 		if row.MBReleaseTrackID == "" || row.Conflict != "" || row.Error != "" {
 			t.Fatalf("proposal: %+v", row)
@@ -139,7 +139,7 @@ func TestImportMovesTagsAndPins(t *testing.T) {
 
 func TestImportCopyLeavesTheSource(t *testing.T) {
 	w := newImportWorld(t)
-	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	rows := w.runner.ProposeImport(w.library, w.release, "", w.sources())
 	w.run(t, modules.TransferCopy, rows)
 	for _, row := range rows {
 		if _, err := os.Stat(row.Source); err != nil {
@@ -166,7 +166,7 @@ func TestImportReplacesOnlyWhatWasReviewed(t *testing.T) {
 		}
 	}
 
-	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	rows := w.runner.ProposeImport(w.library, w.release, "", w.sources())
 	if rows[0].Conflict != ImportConflictExists || len(rows[0].Replaces) != 2 {
 		t.Fatalf("row 1 = %+v, want a conflict replacing both copies", rows[0])
 	}
@@ -198,7 +198,7 @@ func TestImportClashBlocks(t *testing.T) {
 		{Source: w.sources()[0], MBReleaseTrackID: "trk-1", Replace: true},
 		{Source: w.sources()[1], MBReleaseTrackID: "trk-1", Replace: true},
 	}
-	planned := w.runner.PlanImport(w.library, w.release, rows)
+	planned := w.runner.PlanImport(w.library, w.release, "", rows)
 	if planned[0].Conflict != ImportConflictClash || planned[1].Conflict != ImportConflictClash {
 		t.Fatalf("planned = %+v", planned)
 	}
@@ -229,7 +229,7 @@ func TestImportRefusesToMixEditions(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	rows := w.runner.ProposeImport(w.library, w.release, "", w.sources())
 	for _, row := range rows {
 		if row.Conflict != ImportConflictOtherEdition || row.ConflictDetail != "Album (2011, GB, remaster)" {
 			t.Errorf("row = %+v, want other_edition naming the 2011 remaster", row)
@@ -254,7 +254,7 @@ func TestImportRefusesToMixEditions(t *testing.T) {
 	if err := w.db.Save(&w.library).Error; err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range w.runner.ProposeImport(w.library, w.release, w.sources()) {
+	for _, row := range w.runner.ProposeImport(w.library, w.release, "", w.sources()) {
 		if row.Conflict != "" {
 			t.Errorf("with an edition token, row = %+v, want no conflict", row)
 		}
@@ -276,7 +276,7 @@ func TestImportRefusesAFolderOfUnidentifiedFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	rows := w.runner.ProposeImport(w.library, w.release, "", w.sources())
 	for _, row := range rows {
 		if row.Conflict != ImportConflictUnidentified || row.ConflictDetail != "1 file" {
 			t.Errorf("row = %+v, want unidentified naming one file", row)
@@ -290,7 +290,7 @@ func TestImportRefusesAFolderOfUnidentifiedFiles(t *testing.T) {
 	if err := w.db.Create(&models.LibraryItem{LibraryID: w.library.ID, Path: stranger, MBReleaseID: w.release.ID, Status: models.LibraryItemStatusOK}).Error; err != nil {
 		t.Fatal(err)
 	}
-	for _, row := range w.runner.ProposeImport(w.library, w.release, w.sources()) {
+	for _, row := range w.runner.ProposeImport(w.library, w.release, "", w.sources()) {
 		if row.Conflict != "" {
 			t.Errorf("with the file identified as this edition, row = %+v", row)
 		}
@@ -305,7 +305,7 @@ func TestImportRefusesAFolderOfUnidentifiedFiles(t *testing.T) {
 	if err := os.WriteFile(at, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	rows = w2.runner.ProposeImport(w2.library, w2.release, w2.sources())
+	rows = w2.runner.ProposeImport(w2.library, w2.release, "", w2.sources())
 	if rows[0].Conflict != ImportConflictExists || rows[1].Conflict != "" {
 		t.Errorf("rows = %+v, want exists on the first and nothing on the second", rows)
 	}
@@ -334,7 +334,7 @@ func TestImportRefusesWithoutSpace(t *testing.T) {
 	t.Cleanup(func() { freeBytes = original })
 	freeBytes = func(string) (uint64, error) { return 1 << 20, nil } // 1 MB
 
-	rows := w.runner.ProposeImport(w.library, w.release, w.sources())
+	rows := w.runner.ProposeImport(w.library, w.release, "", w.sources())
 	plan := ImportPlan{Library: w.library, Release: w.release, Rows: rows, Mode: modules.TransferCopy, Root: w.root}
 	err := w.runner.Import(plan)
 	if !errors.Is(err, ErrImportNoSpace) || !strings.Contains(err.Error(), "free") {

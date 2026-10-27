@@ -67,7 +67,9 @@ func ComputeItemPath(db *gorm.DB, meta metadata.MetadataSource, item models.Libr
 	if err != nil {
 		return nil, err
 	}
-	desired, err := modules.RenderLibraryPath(TaggerForLibrary(db, library).Naming(), response, item.MBReleaseTrackID, filepath.Ext(item.Path))
+	naming := TaggerForLibrary(db, library).Naming()
+	file := modules.NamingFileFor(item.Path, modules.NamingUsesAudio(naming), item.ReleaseGroup)
+	desired, err := modules.RenderLibraryPath(naming, response, item.MBReleaseTrackID, file)
 	if err != nil {
 		return nil, err
 	}

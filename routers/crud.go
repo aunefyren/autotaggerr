@@ -543,7 +543,7 @@ func (a *API) namingPreview(c *gin.Context) {
 	samples := []namingPreviewSample{}
 	for _, sample := range modules.NamingSamples() {
 		out := namingPreviewSample{Label: sample.Label}
-		if path, err := modules.RenderLibraryPath(templates, sample.Release, sample.TrackID, sample.Ext); err != nil {
+		if path, err := modules.RenderLibraryPath(templates, sample.Release, sample.TrackID, sample.File); err != nil {
 			out.Error = err.Error()
 		} else {
 			out.Path = filepath.ToSlash(path.Rel())

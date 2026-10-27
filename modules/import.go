@@ -57,6 +57,23 @@ type ImportGroup struct {
 	// NameClues is what the album folder's name says about the edition — the
 	// download's name, for a download. Nil when it says nothing. See ImportNameClues.
 	NameClues *ImportNameClues `json:"name_clues,omitempty"`
+	// ReleaseGroup is the download's release group as the folder's name says it
+	// (ParseReleaseGroup), or the download's own name when the folder's does not. The
+	// review prefills its field from it; the person importing confirms it.
+	ReleaseGroup string `json:"release_group,omitempty"`
+}
+
+// WithDownloadReleaseGroup fills the release group of every group whose own folder name
+// gave none from the download's name — a torrent of several albums names its group
+// once, at the top.
+func WithDownloadReleaseGroup(groups []ImportGroup, downloadName string) []ImportGroup {
+	group := ParseReleaseGroup(downloadName)
+	for i := range groups {
+		if groups[i].ReleaseGroup == "" {
+			groups[i].ReleaseGroup = group
+		}
+	}
+	return groups
 }
 
 // ImportEditionClues are the tags that tell one edition of an album from another,
@@ -220,6 +237,7 @@ func importHint(group *ImportGroup, root, name string) {
 		folderName = name
 	}
 	group.NameClues = ParseImportNameClues(folderName)
+	group.ReleaseGroup = ParseReleaseGroup(folderName)
 	fArtist, fAlbum, fYear := ParseAlbumFolderName(folderName)
 	if group.Artist == "" && fArtist == "" {
 		if parent := filepath.Dir(group.Folder); parent != group.Folder && parent != filepath.Clean(root) && PathWithin(parent, root) {

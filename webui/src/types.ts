@@ -302,6 +302,8 @@ export interface ImportGroup {
   edition?: ImportEditionClues;
   /** What the album folder's (or download's) name says about the edition. */
   name_clues?: ImportNameClues;
+  /** The download's release group, parsed from its name; the review prefills it. */
+  release_group?: string;
 }
 
 /** Edition words read from a folder or download name: weak clues, marked but never picked by. */

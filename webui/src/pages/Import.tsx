@@ -694,6 +694,10 @@ function ImportModal({
   const [busy, setBusy] = useState(false);
   // A download the client still holds is copied: moving it would break the torrent.
   const [mode, setMode] = useState<"move" | "copy">(download ? "copy" : "move");
+  // Parsed from the download's or folder's name by the scan — a guess, so the review
+  // shows it to be confirmed. Sent with every plan, since {Release Group} can be in
+  // where a file goes.
+  const [releaseGroup, setReleaseGroup] = useState(group.release_group ?? "");
 
   const base = { library_id: library.id, root };
   const downloadRef = download ? { download_id: download.id, download_folder: download.folder } : {};
@@ -701,7 +705,7 @@ function ImportModal({
   const review = async (mbid: string) => {
     setLoading(true);
     try {
-      setPreview(await api.post<ImportPreview>("/import/preview", { ...base, mb_release_id: mbid, sources: group.files }));
+      setPreview(await api.post<ImportPreview>("/import/preview", { ...base, mb_release_id: mbid, release_group: releaseGroup, sources: group.files }));
       setStep("review");
     } catch (e) {
       toast("err", errMsg(e));
@@ -719,11 +723,11 @@ function ImportModal({
 
   // Every edit is planned again by the server, which owns where a file goes and what is
   // in its way — the table never computes a target or a conflict of its own.
-  const replan = async (rows: ImportRow[]) => {
+  const replan = async (rows: ImportRow[], group = releaseGroup) => {
     if (!preview) return;
     setPreview({ ...preview, rows });
     try {
-      setPreview(await api.post<ImportPreview>("/import/preview", { ...base, mb_release_id: preview.release.mb_id, rows }));
+      setPreview(await api.post<ImportPreview>("/import/preview", { ...base, mb_release_id: preview.release.mb_id, release_group: group, rows }));
     } catch (e) {
       toast("err", errMsg(e));
     }
@@ -735,7 +739,7 @@ function ImportModal({
     if (!preview) return;
     setBusy(true);
     try {
-      await api.post("/import", { ...base, ...downloadRef, mb_release_id: preview.release.mb_id, mode, rows: preview.rows });
+      await api.post("/import", { ...base, ...downloadRef, mb_release_id: preview.release.mb_id, release_group: releaseGroup, mode, rows: preview.rows });
       onQueued();
     } catch (e) {
       toast("err", errMsg(e));
@@ -782,6 +786,11 @@ function ImportModal({
             copyOnly={!!download?.seeding}
             busy={busy}
             onMode={setMode}
+            releaseGroup={releaseGroup}
+            onReleaseGroup={(value) => {
+              setReleaseGroup(value);
+              replan(preview.rows, value);
+            }}
             onEdit={editRow}
             onChangeRelease={() => setStep("identify")}
             onCancel={onClose}
@@ -1207,6 +1216,42 @@ function Browse({
   );
 }
 
+/**
+ * The download's release group, as the scan parsed it from the name, for the person
+ * importing to confirm or correct. Committed on blur or Enter rather than per keystroke:
+ * each commit plans every row again, and {Release Group} may be part of where they go.
+ */
+function ReleaseGroupField({ value, parsed, disabled, onCommit }: { value: string; parsed: string; disabled: boolean; onCommit: (value: string) => void }) {
+  const [draft, setDraft] = useState(value);
+  const commit = () => {
+    if (draft.trim() !== value) onCommit(draft.trim());
+  };
+  return (
+    <div className="field" style={{ maxWidth: 360 }}>
+      <label className="flabel" htmlFor="import-release-group">Release group</label>
+      <input
+        id="import-release-group"
+        className="input mono"
+        value={draft}
+        disabled={disabled}
+        placeholder="none"
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          }
+        }}
+      />
+      <span className="dim" style={{ fontSize: 11 }}>
+        {parsed ? "Read from the download's name — check it." : "Nothing in the download's name looked like one."} Kept with each file, and what{" "}
+        <span className="mono">{"{Release Group}"}</span> writes in a file name. Leave empty for none.
+      </span>
+    </div>
+  );
+}
+
 function Review({
   group,
   preview,
@@ -1214,6 +1259,8 @@ function Review({
   copyOnly,
   busy,
   onMode,
+  releaseGroup,
+  onReleaseGroup,
   onEdit,
   onChangeRelease,
   onCancel,
@@ -1221,6 +1268,9 @@ function Review({
 }: {
   group: ImportGroup;
   preview: ImportPreview;
+  releaseGroup: string;
+  /** A committed edit (blur or Enter), which plans the rows again. */
+  onReleaseGroup: (value: string) => void;
   mode: "move" | "copy";
   /** The files are a seeding download's, which are copied and never moved. */
   copyOnly: boolean;
@@ -1260,6 +1310,8 @@ function Review({
           <button type="button" className="btn btn-secondary btn-sm" onClick={onChangeRelease} disabled={busy}>Change release</button>
         </div>
       </div>
+
+      <ReleaseGroupField value={releaseGroup} parsed={group.release_group ?? ""} disabled={busy} onCommit={onReleaseGroup} />
 
       <div className="dim" style={{ fontSize: 12, maxWidth: "68ch" }}>
         Check every row. Set a row to <em>Skip</em> if you are not sure what it is.

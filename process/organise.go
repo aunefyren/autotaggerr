@@ -146,7 +146,17 @@ func (r *Runner) PlanOrganise(scope OrganiseScope) (OrganisePlan, error) {
 			}
 			releases[item.MBReleaseID] = release
 		}
-		path, err := modules.RenderLibraryPath(lib.naming, release, item.MBReleaseTrackID, filepath.Ext(item.Path))
+		// A file token whose value is not known for this file (a release group never
+		// recorded, audio that could not be read) fails the render rather than naming
+		// the file without it — which would strip "-GRP" from a name that carries it.
+		file := modules.NamingFileFor(item.Path, lib.readsAudio, item.ReleaseGroup)
+		path, err := modules.RenderLibraryPath(lib.naming, release, item.MBReleaseTrackID, file)
+		var unknown *modules.NamingUnknownError
+		if errors.As(err, &unknown) {
+			row.Reason = fmt.Sprintf("its {%s} is not known, so it is not renamed", unknown.Token)
+			plan.Skipped = append(plan.Skipped, row)
+			continue
+		}
 		if err != nil {
 			row.Reason = "its path could not be rendered: " + err.Error()
 			plan.Skipped = append(plan.Skipped, row)
@@ -588,6 +598,9 @@ type organiseLibrary struct {
 	library models.Library
 	naming  models.NamingTemplates
 	managed bool
+	// readsAudio is whether the naming uses a MediaInfo token, so each file's headers
+	// are opened only when a token needs them.
+	readsAudio bool
 }
 
 // organiseLibraries resolves the libraries of the files in scope, with their naming
@@ -618,7 +631,8 @@ func (r *Runner) organiseLibraries(items []models.LibraryItem, scope OrganiseSco
 		if managed && id == scope.LibraryID {
 			return nil, ErrOrganiseManaged
 		}
-		out[id] = organiseLibrary{library: lib, naming: components.TaggerForLibrary(r.db, lib).Naming(), managed: managed}
+		naming := components.TaggerForLibrary(r.db, lib).Naming()
+		out[id] = organiseLibrary{library: lib, naming: naming, managed: managed, readsAudio: modules.NamingUsesAudio(naming)}
 	}
 	return out, nil
 }
