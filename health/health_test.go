@@ -98,7 +98,7 @@ func TestCheckerRecordsProbeError(t *testing.T) {
 // The run is what turns into a no-op, without recording an event about no services.
 func TestNewCheckerWithNothingToProbe(t *testing.T) {
 	db := testDB(t)
-	c := NewChecker(db, nil)
+	c := NewChecker(db)
 	if c == nil {
 		t.Fatal("NewChecker with a database = nil, want a usable checker")
 	}
@@ -107,7 +107,7 @@ func TestNewCheckerWithNothingToProbe(t *testing.T) {
 		t.Errorf("a run with no services recorded %d events, want 0", n)
 	}
 
-	if c := NewChecker(nil, nil); c != nil {
+	if c := NewChecker(nil); c != nil {
 		t.Errorf("NewChecker without a database = %v, want nil", c)
 	}
 	// A nil checker's Run must be a safe no-op.
@@ -126,7 +126,7 @@ func TestCheckerProbesManagerRows(t *testing.T) {
 		t.Fatalf("create manager: %v", err)
 	}
 
-	c := NewChecker(db, nil)
+	c := NewChecker(db)
 	if got := c.probes(); len(got) != 1 || got[0].name != "Lidarr" || got[0].key != row.ID.String() {
 		t.Fatalf("probes = %+v, want one keyed by the manager ID", got)
 	}

@@ -77,7 +77,7 @@ func TestProcessTrackFileFromFileTags(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(testRelease("trk-1"))
 	})
 
-	set := NewAlbumRefreshSet(nil)
+	set := NewAlbumRefreshSet()
 	unchanged, written, err := ProcessTrackFile(path, nil, nil, set, root, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("ProcessTrackFile: %v", err)
@@ -123,7 +123,7 @@ func TestScanFolderRecursive(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(testRelease("trk-1", "trk-2"))
 	})
 
-	counter, unchanged, tagsWritten, errorFiles, _, err := ScanFolderRecursive(root, nil, nil, nil, 2, models.TaggerSettings{})
+	counter, unchanged, tagsWritten, errorFiles, _, err := ScanFolderRecursive(root, nil, nil, 2, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("ScanFolderRecursive: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestScanFolderRecursive(t *testing.T) {
 	}
 
 	// A second scan should find everything already tagged.
-	counter2, unchanged2, tagsWritten2, _, _, err := ScanFolderRecursive(root, nil, nil, nil, 2, models.TaggerSettings{})
+	counter2, unchanged2, tagsWritten2, _, _, err := ScanFolderRecursive(root, nil, nil, 2, models.TaggerSettings{})
 	if err != nil {
 		t.Fatalf("second ScanFolderRecursive: %v", err)
 	}

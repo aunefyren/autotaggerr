@@ -1186,17 +1186,13 @@ that crashed between stages, which genuinely has nothing to name.
 
 ## Plex refresh
 
-Changed albums are collected during a run (album name → Plex key) and `plexClient.RefreshAlbum` is
-called for each afterwards. The Plex client is only constructed when its URL + token config is
-present and may be `nil` — always nil-check.
+Changed albums are collected during a run, keyed by media server and album key, and each is sent to
+the server it was found on afterwards. The servers are rows: none, one or several, linked per
+library, each link in one section or every music section. See [media-servers.md](media-servers.md).
+A pass reads its library's links (`components.MediaServersForLibrary`) and carries one client per
+link (`modules.PlexTargets`); an empty list refreshes nothing, so there is no nil client to check.
 
 ### Which album, in which section
-
-Plex is one server for the process (**Settings → Plex**), but which of its sections holds a library —
-if any — is a fact about the library, so it lives on the library row: `PlexSectionKey` (empty: every
-music section) and `PlexSkip` (not in Plex; never refresh). `components.ProcessFile` and the re-tag
-path narrow the shared client with `PlexClient.ForLibrary`, which returns `nil` for a skipped library,
-so nothing downstream needed a new parameter.
 
 The album is found **by the file, not by its title** (`ResolveAlbumForFile`). Title searches in the
 library's sections (albums by the artist, then tracks) only nominate candidates; one is taken when
@@ -1213,35 +1209,35 @@ refresh of any same-named album Plex had, and two albums sharing a title shared 
 every section is therefore a safe default — the file check picks the album, so a wider search costs
 requests, never correctness — and naming the section only saves those requests.
 
-The answer is cached per **album folder and section scope** (`provider_cache`, source
+The answer is cached per **server, album folder and section scope** (`provider_cache`, source
 `plex_album_keys`), keyed by a hash since a path can outrun the key column; the folder and title ride
 in the payload. A found album is kept for **30 days** — it was checked against the file itself — and
 "Plex does not hold this folder" for an hour, since Plex's own scan changes it and nothing says when;
 so an album missing from Plex costs one lookup rather than one per track. A refresh Plex refuses drops
-every folder resolved to that album (`InvalidatePlexAlbum`), so a key Plex merged or deleted is looked
-up again on the next run rather than refreshed forever.
+every folder resolved to that album on that server (`InvalidatePlexAlbum`), so a key Plex merged or
+deleted is looked up again on the next run rather than refreshed forever.
 
 ### Links into Plex
 
-The album page links to the album in Plex, once per library holding its files
+The album page links to the album in Plex, once per library and linked server holding its files
 (`GET /artists/:mbid/release-groups/:rgid/plex`). It is the same lookup (`PlexAlbumForFile`, by way
 of `PlexAlbumForItem`, which reads the search names from the cached release the way tagging derives
 them), so after a run that touched the album the answer is already cached; otherwise the request asks
 Plex, which is why it is its own call and the page does not wait on it. Links go through
 `app.plex.tv/desktop/#!/server/<machine id>/details?key=…`, which reaches the server from any
 browser signed in to the account — the base URL Autotaggerr talks to is often internal. The machine
-identifier comes from `/identity`, asked once per process. The library form offers the sections through
-`GET /plex/sections`, which reports a Plex that does not answer in its body rather than failing, so
-*every section* can still be chosen.
+identifier comes from `/identity`, asked once per server per process. The library form offers each
+server's sections through `GET /media-servers/:id/sections`, which reports a server that does not
+answer in its body rather than failing, so *every section* can still be chosen.
 
 One event per run, not per album, which would flood the feed — but **one detail row per album**
 (`EventItemKindAlbum`), refreshed or failed with its reason. The stage used to report two numbers
 over nothing, so *which albums?* — the only question a Plex refresh provokes — had no answer
 anywhere in the app, and both of its counters were chips selecting an empty list. Rows are written
 in sorted order so two runs over the same set read the same way rather than reshuffling with the
-map's iteration order. The rating keys stay in `details.album_keys` rather than on the rows: a key
-is what you need when a refresh went to the wrong album, which is what the raw-details escape hatch
-is for.
+map's iteration order, and name their server once a run reached more than one. The rating keys
+stay in `details.album_keys` (per server) rather than on the rows: a key is what you need when a
+refresh went to the wrong album, which is what the raw-details escape hatch is for.
 
 ## Related
 

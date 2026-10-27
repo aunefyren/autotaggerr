@@ -45,10 +45,7 @@ type API struct {
 	// scan concurrency). May be nil: a nil *settings.Runtime saves to config.json and
 	// reports everything as needing a restart, which is the correct behaviour for a
 	// caller that owns no scheduler.
-	Settings *settings.Runtime
-	// Plex is the configured Plex server, or nil when there is none. Read only to list
-	// its music sections for the library form; refreshes go through the runner.
-	Plex       *modules.PlexClient
+	Settings   *settings.Runtime
 	SigningKey []byte
 	AppName    string
 	Version    string
@@ -158,7 +155,10 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/libraries/:id/refresh", a.refreshLibrary)
 		protected.POST("/libraries/:id/retag", a.retagLibrary)
 		protected.POST("/libraries/:id/recorrelate", a.recorrelateLibrary)
-		protected.GET("/plex/sections", a.plexSections)
+		// Media servers: listed (without tokens) and their sections read by anyone who
+		// edits a library; created, edited and deleted by an admin.
+		protected.GET("/media-servers", a.listMediaServers)
+		protected.GET("/media-servers/:id/sections", a.mediaServerSections)
 		protected.POST("/organise/preview", a.previewOrganise)
 		protected.POST("/organise", a.organise)
 
@@ -287,6 +287,12 @@ func (a *API) Register(rg *gin.RouterGroup) {
 			admin.GET("/import/folders", a.importFolders)
 			admin.POST("/import/preview", a.importPreview)
 			admin.POST("/import", a.importFiles)
+
+			admin.POST("/media-servers", a.createMediaServer)
+			admin.GET("/media-servers/:id", a.getMediaServer)
+			admin.PUT("/media-servers/:id", a.updateMediaServer)
+			admin.DELETE("/media-servers/:id", a.deleteMediaServer)
+			admin.POST("/media-servers/:id/test", a.testMediaServer)
 
 			// Download clients, and the finished downloads they offer for import.
 			admin.GET("/download-clients", a.listDownloadClients)
@@ -489,9 +495,14 @@ func (a *API) attention() gin.H {
 
 func (a *API) listLibraries(c *gin.Context) {
 	var rows []models.Library
-	if err := a.DB.Order("name").Find(&rows).Error; err != nil {
+	if err := a.DB.Preload("MediaServers").Order("name").Find(&rows).Error; err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to list libraries"})
 		return
+	}
+	for i := range rows {
+		if rows[i].MediaServers == nil {
+			rows[i].MediaServers = []models.LibraryMediaServer{}
+		}
 	}
 	c.JSON(http.StatusOK, rows)
 }

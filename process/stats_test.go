@@ -32,7 +32,7 @@ func TestEveryEventARunProducesDeclaresItsCounters(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 
@@ -63,7 +63,7 @@ func TestChangedCounterSelectsTheRowsItCounts(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 
@@ -102,7 +102,7 @@ func TestTheRunsRollupCountersSelectNothing(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 

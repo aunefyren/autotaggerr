@@ -111,7 +111,7 @@ func TestQueueSurvivesAPanickingJob(t *testing.T) {
 // entity counters rather than the scan's (stale) file counters.
 func TestStatusReadsRefreshProgressDuringAMetadataJob(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 
 	r.progTotal.Store(99)
 	r.running.Store(true)
@@ -131,7 +131,7 @@ func TestStatusReadsRefreshProgressDuringAMetadataJob(t *testing.T) {
 // erroring the endpoint the UI polls.
 func TestStatusSurvivesAFailedCount(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.LibraryItem{})
 
 	if got := r.Status().Indexed; got != 0 {
@@ -143,7 +143,7 @@ func TestStatusSurvivesAFailedCount(t *testing.T) {
 // a tagging event claiming zero files were processed.
 func TestRunAndRetagAllWithUnreadableLibraries(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.Library{})
 
 	r.runAllNow()
@@ -164,7 +164,7 @@ func TestRetagVerbsStopWhenItemsCannotBeLoaded(t *testing.T) {
 	if err := db.First(&library).Error; err != nil {
 		t.Fatalf("load library: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.LibraryItem{})
 
 	r.retagAllNow()
@@ -181,7 +181,7 @@ func TestRetagVerbsStopWhenItemsCannotBeLoaded(t *testing.T) {
 func TestScopesReportAnUnreadableIndex(t *testing.T) {
 	db := newTestDB(t)
 	seedArtistWithFile(t, db, t.TempDir())
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.LibraryItem{})
 
 	if _, err := r.ArtistScope("artist-1"); err == nil || errors.Is(err, ErrNothingToProcess) {
@@ -203,7 +203,7 @@ func TestReleaseGroupScopeTitleFallsBackToMBID(t *testing.T) {
 	if err := db.Model(&models.CollectionReleaseGroup{}).Where("mb_id = ?", "rg-1").Update("title", "").Error; err != nil {
 		t.Fatalf("clear title: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 
 	scope, err := r.ReleaseGroupScope("rg-1")
 	if err != nil {
@@ -223,7 +223,7 @@ func TestNarrowDueFallsBackOnAnUnreadableIndex(t *testing.T) {
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.LibraryItem{})
 
 	filter := newScopeFilter(Scope{Targets: []Target{{Library: lib, Roots: []string{"/m/Artist"}}}})
@@ -237,10 +237,10 @@ func TestNarrowDueFallsBackOnAnUnreadableIndex(t *testing.T) {
 // still counts it as checked — the metadata did change, whatever happened to the files.
 func TestRetagReleasesCarriesOnPastAnUnreadableRelease(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.LibraryItem{})
 
-	res := r.retagReleases([]string{"rel-1", "rel-2"}, modules.NewAlbumRefreshSet(nil), components.NewDetailCollector(0), scopeFilter{})
+	res := r.retagReleases([]string{"rel-1", "rel-2"}, modules.NewAlbumRefreshSet(), components.NewDetailCollector(0), scopeFilter{})
 	if res.checked != 2 || res.changedReleases != 2 || res.retagged != 0 {
 		t.Errorf("result = %+v, want 2 checked / 2 changed / 0 retagged", res)
 	}
@@ -254,7 +254,7 @@ func TestRetagItemsReportsAMissingLibrary(t *testing.T) {
 	if err := db.Create(&item).Error; err != nil {
 		t.Fatalf("item: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 
 	results, err := r.RetagItems([]uuid.UUID{item.ID})
 	if err != nil {
@@ -273,7 +273,7 @@ func TestRetagItemsReportsAMissingLibrary(t *testing.T) {
 // start a pass over a scope that does not exist.
 func TestRefreshVerbsSkipAnUnresolvableScope(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 
 	r.refreshArtistNow("no-such-artist", false)
 	r.refreshLibraryNow(uuid.New())
@@ -287,7 +287,7 @@ func TestRefreshVerbsSkipAnUnresolvableScope(t *testing.T) {
 // panic, and record no pass.
 func TestCollectionRefreshVerbsSurviveABrokenDatabase(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	closeDB(t, db)
 
 	r.syncDriftNow()
@@ -312,7 +312,7 @@ func TestPrepareForceRecorrelateSkipsUnreadableTargets(t *testing.T) {
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.LibraryItem{})
 
 	// Must return rather than hang or panic; nothing else is observable with the
@@ -324,7 +324,7 @@ func TestPrepareForceRecorrelateSkipsUnreadableTargets(t *testing.T) {
 // their own counters on the event.
 func TestFinishTaggingReportsRemovalsAndDrift(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	ev := events.Begin(db, models.EventTypeTagFiles, taggingActivityTitle)
 
 	errorFiles := make([]string, maxErrorFilesRecorded+5)
@@ -362,7 +362,7 @@ func TestFinishTaggingReportsRemovalsAndDrift(t *testing.T) {
 // summary so a reader sees why rather than a row of zeroes.
 func TestRecordMigrationsSummaries(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 
 	r.recordMigrations(nil, migration.Result{Applied: 1, Resolved: 2, Failed: 1, Errors: []string{"x"}}, nil)
 	r.recordMigrations(nil, migration.Result{}, errors.New("database is locked"))
@@ -394,7 +394,7 @@ func TestRecordMigrationsSummaries(t *testing.T) {
 // case where silence would hide a real problem.
 func TestApplyMigrationsRecordsADrainFailure(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.MusicbrainzMigration{})
 
 	original := files.ConfigFile
@@ -444,7 +444,7 @@ func TestRepairGhostAlbumsRecordsAnUnreachableManager(t *testing.T) {
 		t.Fatalf("manager: %v", err)
 	}
 	seedGhost(t, db, "rg-ghost", "artist-1")
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 
 	stats := r.repairGhostAlbums(nil)
 	if stats.Candidates != 1 || len(stats.Failures) != 1 {
@@ -464,7 +464,7 @@ func TestRepairGhostAlbumsRecordsAnUnreachableManager(t *testing.T) {
 // because nothing was attempted.
 func TestRepairGhostAlbumsSurvivesAnUnreadableCatalog(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	dropTable(t, db, &models.CollectionReleaseGroup{})
 
 	if stats := r.repairGhostAlbums(nil); stats.Candidates != 0 {
@@ -484,7 +484,7 @@ func TestRepairArtistAlbumsNow(t *testing.T) {
 
 	t.Run("nothing to repair", func(t *testing.T) {
 		db := newTestDB(t)
-		r := NewRunner(db, nil, models.ConfigStruct{})
+		r := NewRunner(db, models.ConfigStruct{})
 		r.repairArtistAlbumsNow("artist-1")
 
 		evs := eventsOfType(t, db, models.EventTypeMigration)
@@ -512,7 +512,7 @@ func TestRepairArtistAlbumsNow(t *testing.T) {
 			t.Fatalf("manager: %v", err)
 		}
 		seedGhost(t, db, "rg-ghost", "artist-1")
-		r := NewRunner(db, nil, models.ConfigStruct{})
+		r := NewRunner(db, models.ConfigStruct{})
 		r.RepairArtistAlbums("artist-1")
 		r.waitIdle(t)
 
@@ -530,7 +530,7 @@ func TestRepairArtistAlbumsNow(t *testing.T) {
 
 	t.Run("repair marks cannot be cleared", func(t *testing.T) {
 		db := newTestDB(t)
-		r := NewRunner(db, nil, models.ConfigStruct{})
+		r := NewRunner(db, models.ConfigStruct{})
 		dropTable(t, db, &models.MusicbrainzMigration{})
 		// The deferred clear fails with the table gone; the verb must still return.
 		r.repairArtistAlbumsNow("artist-1")
@@ -568,7 +568,7 @@ func TestPrepareForceRecorrelateClearsPinsInScope(t *testing.T) {
 	inScope := seedItem(t, db, lib, filepath.Join(root, "Artist", "Album", "01.flac"), true)
 	outOfScope := seedItem(t, db, lib, filepath.Join(root, "Other", "Album", "01.flac"), true)
 
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	r.prepareForceRecorrelate(Scope{Targets: []Target{{Library: lib, Roots: []string{filepath.Join(root, "Artist")}}}})
 
 	pinned := func(id uuid.UUID) bool {
@@ -625,7 +625,7 @@ func TestPrepareForceRecorrelateKeepsDetachedPins(t *testing.T) {
 		}
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{})
+	r := NewRunner(db, models.ConfigStruct{})
 	r.prepareForceRecorrelate(Scope{Targets: []Target{{Library: lib}}})
 
 	pinned := func(id uuid.UUID) bool {

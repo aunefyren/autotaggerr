@@ -174,34 +174,6 @@ func Sections() []Section {
 			},
 		},
 		{
-			// Plex is the one connection that is not a manager row: there is no Plex
-			// manager type and no Managers entry for it, so config.json is where it
-			// lives and main.go builds the process-level client from these at startup.
-			//
-			// It used to be listed as "managed elsewhere" alongside the lidarr_* keys,
-			// pointing at a page that has never had a Plex field on it — and under a
-			// heading promising that editing the file changes nothing, which was the
-			// opposite of true. These are ordinary settings; this is where they belong.
-			ID:          "plex",
-			Title:       "Plex",
-			Description: "The Plex server told to refresh an album after its files change. Optional — leave empty and nothing is notified.",
-			Fields: []Field{
-				{
-					Key: "plex_base_url", Label: "Base URL", Type: TypeString, Tier: TierRestart,
-					Help:        "e.g. http://192.168.1.10:32400. Both this and the token are needed before anything is sent.",
-					Placeholder: "http://plex.local:32400",
-					get:         func(c models.ConfigStruct) any { return c.PlexBaseURL },
-					set:         setString(func(c *models.ConfigStruct, v string) { c.PlexBaseURL = v }, nil),
-				},
-				{
-					Key: "plex_token", Label: "Token", Type: TypeSecret, Tier: TierRestart,
-					Help: "A Plex authentication token (X-Plex-Token).",
-					get:  func(c models.ConfigStruct) any { return c.PlexToken },
-					set:  setString(func(c *models.ConfigStruct, v string) { c.PlexToken = v }, nil),
-				},
-			},
-		},
-		{
 			// "Mirror" stays the package name, the config keys and the word the docs use
 			// for the local copy. It is not a word the UI says: every surface a user
 			// presses calls this one thing a metadata refresh, and a settings section

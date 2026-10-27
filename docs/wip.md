@@ -101,21 +101,15 @@ still open:
   than for the whole collection; a pass that resolves every album would make them instant and let a
   refresh skip the lookup, at the cost of a few Plex requests per album once a month.
 
-- If Plex is reworked/decoupled, Jellyfin support should be considered. Plex is now per library
-  (a section or none, on the library row) and matched by file path, which is the shape a second
-  media server would take: a client with `ForLibrary` and a file-verified album lookup, chosen on the
-  library. The server itself is still two keys in `config.json`; a second kind of server is the point
-  at which it becomes a component row like a manager.
+- **Jellyfin support.** Media servers are typed rows linked per library
+  ([media-servers.md](media-servers.md)), so Jellyfin is a client implementing what `PlexClient`
+  does — find the album holding a file, refresh it, list sections (libraries), scan, link — plus a
+  `type` value; `PlexTargets` would become an interface over both. No table, page or migration.
 
 - The default tagger is "Default" and you can select a default tagger in the drop down, meaning two "Default"
   - Do we need a default option?
 
 - /settings must be reworked with /frontend-design & style guide. New design must make the categories more navigable.
-
-- Plex is apparently disconnected/decoupled, but you can still only configure one?
-  - Should be moved from /settings
-  - You should be able to configure zero, one or more Plex clients
-  - Tied to library?
 
 ## Roadmap / ideas
 

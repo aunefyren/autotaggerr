@@ -41,7 +41,7 @@ func (m *catalogueMeta) SearchArtists(string) ([]models.MusicBrainzArtistSearchR
 
 func catalogueRunner(t *testing.T, meta *catalogueMeta) *Runner {
 	t.Helper()
-	r := NewRunner(newTestDB(t), nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(newTestDB(t), models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.meta = meta
 	t.Cleanup(r.Wait)
 	return r

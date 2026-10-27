@@ -63,7 +63,7 @@ func TestRunnerRunAll(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 
@@ -132,7 +132,7 @@ func TestRunnerSyncDriftEmitsRefreshEvent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.SyncDrift() // empty collection -> a clean no-op refresh
 	r.waitIdle(t)
 
@@ -157,7 +157,7 @@ func TestRunnerNoLibraries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll() // no libraries -> no-op, no panic
 	r.waitIdle(t)
 	if r.Running() {
@@ -177,7 +177,7 @@ func TestArtistScopeRefusesArtistWithoutFiles(t *testing.T) {
 	if err := db.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Nobody"}).Error; err != nil {
 		t.Fatalf("create artist: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	if _, err := r.ArtistScope("artist-1"); !errors.Is(err, ErrNothingToProcess) {
 		t.Errorf("err = %v, want ErrNothingToProcess", err)
@@ -229,7 +229,7 @@ func TestRunArtistScansOnlyTheArtistFolder(t *testing.T) {
 		t.Fatalf("create item: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	if err := r.RunArtist("artist-1"); err != nil {
 		t.Fatalf("RunArtist: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestRunAllStampsLastScan(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 
@@ -295,7 +295,7 @@ func TestRetagArtistEmitsEvent(t *testing.T) {
 	if err := db.Create(&models.CollectionArtist{MBID: "artist-1", Name: "Artist"}).Error; err != nil {
 		t.Fatalf("create artist: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RetagArtist("artist-1")
 	r.waitIdle(t)
 
@@ -332,7 +332,7 @@ func TestReleaseGroupScopeResolvesAlbumFolders(t *testing.T) {
 		t.Fatalf("create item: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	scope, err := r.ReleaseGroupScope("rg-1")
 	if err != nil {
 		t.Fatalf("ReleaseGroupScope: %v", err)
@@ -359,7 +359,7 @@ func TestReleaseGroupScopeNothingToScan(t *testing.T) {
 	if err := db.Create(&models.CollectionReleaseGroup{MBID: "rg-1", ArtistMBID: "art", Title: "Album"}).Error; err != nil {
 		t.Fatalf("create rg: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	if _, err := r.ReleaseGroupScope("rg-1"); !errors.Is(err, ErrNothingToProcess) {
 		t.Errorf("ReleaseGroupScope with no files = %v, want ErrNothingToProcess", err)
 	}

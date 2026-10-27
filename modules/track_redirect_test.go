@@ -78,7 +78,7 @@ func TestTagResolvedFileMergedRelease(t *testing.T) {
 
 	path := synthAudio(t, ".flac")
 	correlation := models.Correlation{MBReleaseID: "rel-old", MBReleaseTrackID: "old-trk", MBRecordingID: "rec-2", Source: models.CorrelationSourceLidarr}
-	if _, _, _, err := TagResolvedFile(path, correlation, nil, NewAlbumRefreshSet(nil), t.TempDir(), models.TaggerSettings{}); err != nil {
+	if _, _, _, err := TagResolvedFile(path, correlation, nil, NewAlbumRefreshSet(), t.TempDir(), models.TaggerSettings{}); err != nil {
 		t.Fatalf("TagResolvedFile: %v", err)
 	}
 
@@ -102,7 +102,7 @@ func TestTagResolvedFileMergedReleaseNoMatch(t *testing.T) {
 	})
 
 	correlation := models.Correlation{MBReleaseID: "rel-old", MBReleaseTrackID: "old-trk", MBRecordingID: "rec-old", TrackTitle: "Lucky"}
-	_, _, _, err := TagResolvedFile("/music/x.flac", correlation, nil, NewAlbumRefreshSet(nil), "/music", models.TaggerSettings{})
+	_, _, _, err := TagResolvedFile("/music/x.flac", correlation, nil, NewAlbumRefreshSet(), "/music", models.TaggerSettings{})
 	if !errors.Is(err, ErrTrackNotInRelease) {
 		t.Fatalf("error = %v, want ErrTrackNotInRelease", err)
 	}

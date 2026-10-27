@@ -37,7 +37,7 @@ func TestARunRecordsItsStages(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 
@@ -81,7 +81,7 @@ func TestTheRunItselfCarriesNoFileDetail(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 
@@ -109,7 +109,7 @@ func TestAnEmptyMigrationQueueRecordsNothing(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RunAll()
 	r.waitIdle(t)
 

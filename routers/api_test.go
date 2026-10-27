@@ -46,7 +46,7 @@ func setupAPI(t *testing.T) (*gin.Engine, *API) {
 	}
 	storeAPIKey(t, db, admin.ID, "key-123", models.APIKeyScopeWrite)
 
-	scanRunner := process.NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	scanRunner := process.NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	api := &API{
 		DB:         db,
 		Scan:       scanRunner,

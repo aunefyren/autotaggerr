@@ -428,16 +428,10 @@ type Library struct {
 	Enabled         bool       `json:"enabled"`
 	Cron            string     `json:"cron"`
 	LastScan        *time.Time `json:"last_scan"`
-	// PlexSectionKey is the Plex library section holding this library's files. Empty
-	// searches every music section, which is right for most installs: the album a
-	// refresh goes to is the one Plex lists this file in (modules.ResolveAlbumForFile),
-	// so a wider search costs requests, never a wrong album. Naming the section only
-	// saves those requests.
-	PlexSectionKey string `json:"plex_section_key"`
-	// PlexSkip turns the Plex refresh off for this library — one Plex does not scan.
-	// Phrased negatively for the same reason as Manager.LidarrSkipArtistRefresh: the
-	// zero value is the existing behaviour, and GORM drops a false default on insert.
-	PlexSkip bool `json:"plex_skip"`
+	// MediaServers are the media servers that scan this library, each with the section
+	// it is in — none, one or several. Replaced as a set by the library form; the rows
+	// go with the library or the server.
+	MediaServers []LibraryMediaServer `gorm:"foreignKey:LibraryID;constraint:OnDelete:CASCADE" json:"media_servers"`
 	// UseAcoustID opts this library in to fingerprint identification. Off by
 	// default and the third of three independent switches (a configured AcoustID
 	// data source, fpcalc on PATH, this flag) — any one of them off and the library
@@ -1723,6 +1717,8 @@ func AllDBModels() []any {
 		&DownloadItem{},
 		&CollectionPolicy{},
 		&ManagerLink{},
+		&MediaServer{},
+		&LibraryMediaServer{},
 	}
 }
 

@@ -66,25 +66,34 @@ func UnmatchedReason(err error) string {
 	return ""
 }
 
-// AlbumRefreshSet is a concurrency-safe collection of albums (album name -> Plex
-// album key) that changed during a scan and therefore need a Plex metadata
-// refresh. It replaces the previous pass-a-map-and-return-it threading so that
-// multiple files can be processed in parallel.
+// AlbumRefresh is one album a run changed, as one media server knows it.
+type AlbumRefresh struct {
+	// ServerID is the media server row; Key is that server's album key, which means
+	// nothing on another server.
+	ServerID string
+	Name     string
+	Key      string
+}
+
+// albumRefreshKey identifies an album by server and key rather than by name: two
+// albums can share a title, and one album is one refresh per server that holds it.
+type albumRefreshKey struct{ serverID, key string }
+
+// AlbumRefreshSet is a concurrency-safe collection of the albums that changed during
+// a run and therefore need a metadata refresh, per media server. It replaces the
+// previous pass-a-map-and-return-it threading so that multiple files can be
+// processed in parallel.
 type AlbumRefreshSet struct {
 	mu sync.Mutex
-	m  map[string]string
+	m  map[albumRefreshKey]string
 }
 
-// NewAlbumRefreshSet returns a set pre-seeded with the given entries (may be nil).
-func NewAlbumRefreshSet(seed map[string]string) *AlbumRefreshSet {
-	m := map[string]string{}
-	for k, v := range seed {
-		m[k] = v
-	}
-	return &AlbumRefreshSet{m: m}
+// NewAlbumRefreshSet returns an empty set.
+func NewAlbumRefreshSet() *AlbumRefreshSet {
+	return &AlbumRefreshSet{m: map[albumRefreshKey]string{}}
 }
 
-func (s *AlbumRefreshSet) Add(albumName, albumKey string) {
+func (s *AlbumRefreshSet) Add(serverID, albumName, albumKey string) {
 	// A nil set means "nobody is collecting refreshes"; drop silently rather than
 	// panicking. The Plex refresh is a non-fatal follow-up to a write that already
 	// succeeded, so a missing collector must never take down the tagging path.
@@ -92,21 +101,32 @@ func (s *AlbumRefreshSet) Add(albumName, albumKey string) {
 		return
 	}
 	s.mu.Lock()
-	s.m[albumName] = albumKey
+	s.m[albumRefreshKey{serverID, albumKey}] = albumName
 	s.mu.Unlock()
 }
 
-// Snapshot returns a copy of the current entries, safe to iterate after the scan.
-func (s *AlbumRefreshSet) Snapshot() map[string]string {
+// Snapshot returns a copy of the current entries, safe to iterate after the scan, in
+// a stable order — by album name, then server — so two runs over the same set read
+// the same way.
+func (s *AlbumRefreshSet) Snapshot() []AlbumRefresh {
 	if s == nil {
-		return map[string]string{}
+		return nil
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]string, len(s.m))
-	for k, v := range s.m {
-		out[k] = v
+	out := make([]AlbumRefresh, 0, len(s.m))
+	for k, name := range s.m {
+		out = append(out, AlbumRefresh{ServerID: k.serverID, Name: name, Key: k.key})
 	}
+	s.mu.Unlock()
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].ServerID != out[j].ServerID {
+			return out[i].ServerID < out[j].ServerID
+		}
+		return out[i].Key < out[j].Key
+	})
 	return out
 }
 
@@ -197,7 +217,7 @@ func SetFileTags(filePath string, metadata models.FileTags, tagger models.Tagger
 // ProcessTrackFile resolves a file's MusicBrainz correlation and writes tags. It
 // is kept as the low-level single-file engine (used by the CLI path and tests);
 // the component pipeline reuses ResolveCorrelation + TagResolvedFile directly.
-func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, err error) {
+func ProcessTrackFile(filePath string, lidarrClient *LidarrClient, plexClient PlexTargets, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, err error) {
 	correlation, err := ResolveCorrelation(filePath, lidarrClient, rootDir, true)
 	if err != nil {
 		return false, 0, err
@@ -316,7 +336,7 @@ func resolveCorrelation(filePath string, lidarrClient *LidarrClient, rootDir str
 // the per-file pipeline, shared by ProcessTrackFile and the component pipeline.
 // TagResolvedFile writes tags for an already-correlated file. changed is the
 // field-level diff applied, for the Activity feed's per-file detail.
-func TagResolvedFile(filePath string, correlation models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+func TagResolvedFile(filePath string, correlation models.Correlation, plexClient PlexTargets, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	return TagCorrelatedFile(filePath, &correlation, plexClient, refreshSet, rootDir, tagger)
 }
 
@@ -324,7 +344,7 @@ func TagResolvedFile(filePath string, correlation models.Correlation, plexClient
 // afterwards: when the track had to be re-matched (rematchRebuiltTrack), the
 // correlation is updated to the track the file was actually tagged as, so the index
 // stores the identity now in the file rather than the one that no longer exists.
-func TagCorrelatedFile(filePath string, correlation *models.Correlation, plexClient *PlexClient, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
+func TagCorrelatedFile(filePath string, correlation *models.Correlation, plexClient PlexTargets, refreshSet *AlbumRefreshSet, rootDir string, tagger models.TaggerSettings) (unchanged bool, tagsWritten int, changed []models.TagChange, err error) {
 	// Get MB data from API
 	response, err := GetMusicBrainzRelease(correlation.MBReleaseID)
 	if err != nil {
@@ -580,7 +600,7 @@ func clock(seconds float64) string {
 func ProcessTrackFileAfterMatch(
 	filePath string,
 	lidarrClient *LidarrClient,
-	plexClient *PlexClient,
+	plexClient PlexTargets,
 	refreshSet *AlbumRefreshSet,
 	rootDir string, tagger models.TaggerSettings,
 	track models.Track,
@@ -623,10 +643,14 @@ func ProcessTrackFileAfterMatch(
 		changeString = "changed. tags written: " + strconv.Itoa(tagsWritten)
 	}
 
-	if plexClient != nil && !unchanged && tagsWritten > 0 {
-		err = PlexRefreshForFile(refreshSet, plexClient, filePath, rootDir, response.Title, metadata.AlbumArtist, track.Title)
-		if err != nil {
-			logger.Log.Warn("failed to prepare Plex refresh for album. error: " + err.Error())
+	if !unchanged && tagsWritten > 0 {
+		// Every server the library is linked to holds its own copy of the album, so
+		// each is looked up and refreshed on its own; one that is down costs its own
+		// refresh, not the others'.
+		for _, server := range plexClient {
+			if err := PlexRefreshForFile(refreshSet, server, filePath, rootDir, response.Title, metadata.AlbumArtist, track.Title); err != nil {
+				logger.Log.Warnf("failed to prepare a refresh on %s for album. error: %s", server.DisplayName(), err.Error())
+			}
 		}
 	}
 
@@ -874,15 +898,15 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 // concurrency workers. Concurrency is a parameter rather than read from config
 // because tagging takes only the profile's settings now — how hard the walk is
 // pushed is the caller's business, not the tagger's.
-func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient *PlexClient, albumsWhoNeedMetadataRefreshSoFar map[string]string, concurrency int, tagger models.TaggerSettings) (
+func ScanFolderRecursive(root string, lidarrClient *LidarrClient, plexClient PlexTargets, concurrency int, tagger models.TaggerSettings) (
 	counter int,
 	unchangedFiles int,
 	allTagsWritten int,
 	errorFiles []string,
-	albumsWhoNeedMetadataRefresh map[string]string,
+	albumsWhoNeedMetadataRefresh []AlbumRefresh,
 	err error,
 ) {
-	refreshSet := NewAlbumRefreshSet(albumsWhoNeedMetadataRefreshSoFar)
+	refreshSet := NewAlbumRefreshSet()
 
 	counter, unchangedFiles, allTagsWritten, errorFiles, err = WalkAndProcess(root, concurrency, func(path string) (bool, int, error) {
 		return ProcessTrackFile(path, lidarrClient, plexClient, refreshSet, root, tagger)

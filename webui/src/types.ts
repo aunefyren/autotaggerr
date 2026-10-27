@@ -139,15 +139,32 @@ export interface Library {
   bpm_write: BPMWrite;
   /** Confidence a tempo needs to be written; 0 or less means the server default (0.5). */
   bpm_min_confidence: number;
-  /** The Plex section holding this library; "" searches every music section. */
-  plex_section_key: string;
-  /** Plex refresh turned off for this library. */
-  plex_skip: boolean;
+  /** The media servers that scan this library, each in one section ("" = every music section). */
+  media_servers: LibraryMediaServer[];
 }
 
-/** GET /plex/sections — the server's music sections, for the library form. */
-export interface PlexSections {
-  configured: boolean;
+export interface LibraryMediaServer {
+  library_id?: string;
+  media_server_id: string;
+  section_key: string;
+}
+
+export type MediaServerType = "plex";
+
+/** A media server told to refresh albums after their tags change. The token is write-only. */
+export interface MediaServer {
+  id: string;
+  name: string;
+  type: MediaServerType;
+  enabled: boolean;
+  base_url: string;
+  token_set: boolean;
+  /** How many libraries it scans. */
+  libraries: number;
+}
+
+/** GET /media-servers/:id/sections — one server's music sections, for the library form. */
+export interface MediaServerSections {
   sections: { key: string; title: string; locations: string[] | null }[];
   error?: string;
 }

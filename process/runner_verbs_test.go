@@ -80,7 +80,7 @@ func TestRunLibraryScansOneLibrary(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	if err := r.RunLibrary(library.ID); err != nil {
 		t.Fatalf("RunLibrary: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestRunLibraryScansOneLibrary(t *testing.T) {
 
 func TestRunLibraryUnknownID(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	if err := r.RunLibrary(uuid.New()); err == nil {
 		t.Error("RunLibrary with an unknown id should error before enqueueing")
 	}
@@ -110,7 +110,7 @@ func TestForceRecorrelateArtist(t *testing.T) {
 	db := newTestDB(t)
 	seedArtistWithFile(t, db, t.TempDir())
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	if err := r.ForceRecorrelateArtist("artist-1"); err != nil {
 		t.Fatalf("ForceRecorrelateArtist: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestForceRecorrelateArtist(t *testing.T) {
 
 func TestForceRecorrelateArtistUnknown(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	if err := r.ForceRecorrelateArtist("nope"); err == nil {
 		t.Error("unknown artist should error")
 	}
@@ -140,7 +140,7 @@ func TestForceRecorrelateReleaseGroup(t *testing.T) {
 	db := newTestDB(t)
 	seedArtistWithFile(t, db, t.TempDir())
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	if err := r.ForceRecorrelateReleaseGroup("rg-1"); err != nil {
 		t.Fatalf("ForceRecorrelateReleaseGroup: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestForceRecorrelateReleaseGroup(t *testing.T) {
 
 func TestForceRecorrelateReleaseGroupUnknown(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	if err := r.ForceRecorrelateReleaseGroup("nope"); err == nil {
 		t.Error("unknown release-group should error")
 	}
@@ -174,7 +174,7 @@ func TestForceRecorrelateLibrary(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	if err := r.ForceRecorrelateLibrary(library.ID); err != nil {
 		t.Fatalf("ForceRecorrelateLibrary: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestForceRecorrelateLibrary(t *testing.T) {
 
 func TestForceRecorrelateLibraryUnknown(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	if err := r.ForceRecorrelateLibrary(uuid.New()); err == nil {
 		t.Error("unknown library should error")
 	}
@@ -215,7 +215,7 @@ func TestRetagLibraryEmpty(t *testing.T) {
 		t.Fatalf("create library: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RetagLibrary(library.ID)
 	r.waitIdle(t)
 
@@ -246,7 +246,7 @@ func TestRetagAllCoversEveryEnabledLibrary(t *testing.T) {
 		}
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RetagAll()
 	r.waitIdle(t)
 
@@ -267,7 +267,7 @@ func TestRetagAllCoversEveryEnabledLibrary(t *testing.T) {
 // queue drains without a panic or a recorded event.
 func TestRetagLibraryUnknown(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	r.RetagLibrary(uuid.New())
 	r.waitIdle(t)
 
@@ -280,7 +280,7 @@ func TestRetagLibraryUnknown(t *testing.T) {
 
 func TestRetagItemsEmptyAndUnknown(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	if results, err := r.RetagItems(nil); err != nil || results != nil {
 		t.Errorf("RetagItems(nil) = %v, %v; want nil, nil", results, err)
@@ -343,7 +343,7 @@ func TestRetagItemsNoWriteProfileIsANoop(t *testing.T) {
 		t.Fatalf("create item: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	results, err := r.RetagItems([]uuid.UUID{item.ID})
 	if err != nil {
@@ -365,7 +365,7 @@ func TestRetagItemsNoWriteProfileIsANoop(t *testing.T) {
 // an enqueued no-op run it returns once the worker has finished it.
 func TestWaitDrainsQueue(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	r.Wait() // idle: returns immediately
 
@@ -377,7 +377,7 @@ func TestWaitDrainsQueue(t *testing.T) {
 }
 
 func TestRefresherExposesMetadataRunner(t *testing.T) {
-	r := NewRunner(newTestDB(t), nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(newTestDB(t), models.ConfigStruct{AutotaggerrVersion: "test"})
 	if r.Refresher() == nil {
 		t.Error("Refresher should expose the metadata runner")
 	}
@@ -385,7 +385,7 @@ func TestRefresherExposesMetadataRunner(t *testing.T) {
 
 func TestRefreshVerbsUnknownScope(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	r.RefreshArtist("no-such-artist", false)
 	r.waitIdle(t)
@@ -440,7 +440,7 @@ func TestScopeIsFull(t *testing.T) {
 // readings look identical while running.
 func TestForcedArtistRefreshIsNotDedupedOntoTheCheapOne(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	// Occupy the worker so the refreshes queue instead of draining as they arrive;
 	// without this there is nothing to observe.

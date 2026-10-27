@@ -43,7 +43,7 @@ func TestDiscoverArtistKeepsAMovedAlbum(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	if err := r.DiscoverArtist("artist-1"); err != nil {
 		t.Fatalf("DiscoverArtist: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestPlainScanLosesAMovedFile(t *testing.T) {
 
 func TestDiscoverRefusesAnEmptyScope(t *testing.T) {
 	db := newTestDB(t)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	if err := r.DiscoverAll(); !errors.Is(err, ErrNothingToProcess) {
 		t.Errorf("DiscoverAll with no libraries = %v, want ErrNothingToProcess", err)
 	}
@@ -125,7 +125,7 @@ func TestDiscoverAllWalksEveryEnabledLibrary(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
 	if err := r.DiscoverAll(); err != nil {
 		t.Fatalf("DiscoverAll: %v", err)
 	}

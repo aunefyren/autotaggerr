@@ -183,8 +183,6 @@ Edit the config.json, found within the config directory. If it isn't there, just
 		"dsn": "config/autotaggerr.db",
 		"type": "sqlite"
 	},
-	"plex_base_url": "https://plex.mycooldomain.com",
-	"plex_token": "XXX",
 	"private_key": "",
 	"smtp_enabled": true,
 	"smtp_from": "",
@@ -252,8 +250,6 @@ starts.
 | `smtp_username` | `-smtpusername` | `smtpusername` | string | SMTP auth username. Empty means no authentication is attempted. Default empty. |
 | `smtp_password` | `-smtppassword` | `smtppassword` | string | SMTP auth password. Default empty. |
 | `smtp_from` | `-smtpfrom` | `smtpfrom` | string | Sender address for outgoing mail. Default empty. |
-| `plex_base_url` | — | — | string | Base URL of the Plex instance to refresh. Default empty. Editable on **Settings → Plex**. |
-| `plex_token` | — | — | string | Plex auth token. Default empty. Editable on **Settings → Plex**. |
 | — | `-file` | `file` | string | Process a single file, then exit instead of running the service. Runtime-only, not stored in config. |
 | — | `-fileRoot` | `fileRoot` | string | Library root containing the artist folder for `-file`. Required with `-file`. Runtime-only. |
 | — | — | `PUID` | int | **Env only.** UID the container process runs as. Default `1000`. |

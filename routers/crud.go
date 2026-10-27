@@ -16,6 +16,8 @@ import (
 	"github.com/aunefyren/autotaggerr/modules"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"gorm.io/gorm"
+	"gorm.io/gorm/clause"
 )
 
 // idParam parses the :id path parameter as a UUID, writing a 400 on failure.
@@ -565,8 +567,16 @@ type libraryInput struct {
 	AnalyseTempo     *bool         `json:"analyse_tempo"`
 	BPMWrite         *string       `json:"bpm_write"`
 	BPMMinConfidence *float64      `json:"bpm_min_confidence"`
-	PlexSectionKey   *string       `json:"plex_section_key"`
-	PlexSkip         *bool         `json:"plex_skip"`
+	// MediaServers replaces the library's media server links as a set when present;
+	// absent leaves them alone, an empty list removes them all.
+	MediaServers *[]libraryMediaServerInput `json:"media_servers"`
+}
+
+// libraryMediaServerInput links a library to one media server, in one of its
+// sections ("" for every music section).
+type libraryMediaServerInput struct {
+	MediaServerID uuid.UUID `json:"media_server_id"`
+	SectionKey    string    `json:"section_key"`
 }
 
 // validate rejects a BPM setting the writers would not understand. The mode is an
@@ -616,12 +626,61 @@ func (in libraryInput) apply(l *models.Library) {
 	if in.BPMMinConfidence != nil {
 		l.BPMMinConfidence = *in.BPMMinConfidence
 	}
-	if in.PlexSectionKey != nil {
-		l.PlexSectionKey = strings.TrimSpace(*in.PlexSectionKey)
+}
+
+// checkLibraryMediaServers validates the links an edit asks for: each server must
+// exist, and appear once — a library is in one section of a server, or in all of them.
+// Writes a 400 and reports false, like checkLibraryDataSource.
+func (a *API) checkLibraryMediaServers(c *gin.Context, links *[]libraryMediaServerInput) bool {
+	if links == nil {
+		return true
 	}
-	if in.PlexSkip != nil {
-		l.PlexSkip = *in.PlexSkip
+	seen := map[uuid.UUID]bool{}
+	for _, link := range *links {
+		if seen[link.MediaServerID] {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "a media server can be linked to a library once"})
+			return false
+		}
+		seen[link.MediaServerID] = true
+		var count int64
+		a.DB.Model(&models.MediaServer{}).Where("id = ?", link.MediaServerID).Count(&count)
+		if count == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "media server not found"})
+			return false
+		}
 	}
+	return true
+}
+
+// replaceLibraryMediaServers makes a library's links exactly the given set. nil keeps
+// what is there.
+func replaceLibraryMediaServers(tx *gorm.DB, libraryID uuid.UUID, links *[]libraryMediaServerInput) error {
+	if links == nil {
+		return nil
+	}
+	if err := tx.Where("library_id = ?", libraryID).Delete(&models.LibraryMediaServer{}).Error; err != nil {
+		return err
+	}
+	for _, link := range *links {
+		row := models.LibraryMediaServer{LibraryID: libraryID, MediaServerID: link.MediaServerID, SectionKey: strings.TrimSpace(link.SectionKey)}
+		if err := tx.Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// loadLibraryView reads a library with its media server links, as every library
+// endpoint returns it. The links are never null, so the form can range over them.
+func loadLibraryView(db *gorm.DB, id uuid.UUID) (models.Library, error) {
+	var l models.Library
+	if err := db.Preload("MediaServers").First(&l, "id = ?", id).Error; err != nil {
+		return l, err
+	}
+	if l.MediaServers == nil {
+		l.MediaServers = []models.LibraryMediaServer{}
+	}
+	return l, nil
 }
 
 // clearableUUID is an optional reference that can also be cleared: absent leaves the
@@ -648,8 +707,44 @@ func (c *clearableUUID) UnmarshalJSON(b []byte) error {
 	return nil
 }
 
-func (a *API) getLibrary(c *gin.Context)    { getEntity[models.Library](a, c) }
-func (a *API) deleteLibrary(c *gin.Context) { deleteEntity[models.Library](a, c) }
+func (a *API) getLibrary(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	l, err := loadLibraryView(a.DB, id)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+		return
+	}
+	c.JSON(http.StatusOK, l)
+}
+
+// deleteLibrary removes a library with its media server links. Nothing on disk or on
+// the servers changes.
+func (a *API) deleteLibrary(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	var deleted int64
+	err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("library_id = ?", id).Delete(&models.LibraryMediaServer{}).Error; err != nil {
+			return err
+		}
+		res := tx.Where("id = ?", id).Delete(&models.Library{})
+		deleted = res.RowsAffected
+		return res.Error
+	})
+	switch {
+	case err != nil:
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete failed"})
+	case deleted == 0:
+		c.JSON(http.StatusNotFound, gin.H{"error": "not found"})
+	default:
+		c.Status(http.StatusNoContent)
+	}
+}
 
 // checkLibraryDataSource validates a library's chosen data source: it must exist and
 // must be a *metadata* provider. Assigning AcoustID or an artwork provider here was
@@ -689,15 +784,21 @@ func (a *API) createLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
-	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) {
+	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) || !a.checkLibraryMediaServers(c, in.MediaServers) {
 		return
 	}
 	l := models.Library{Enabled: true}
 	in.apply(&l)
-	if err := a.DB.Create(&l).Error; err != nil {
+	if err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(&l).Error; err != nil {
+			return err
+		}
+		return replaceLibraryMediaServers(tx, l.ID, in.MediaServers)
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "create failed"})
 		return
 	}
+	l, _ = loadLibraryView(a.DB, l.ID)
 	c.JSON(http.StatusCreated, l)
 }
 
@@ -720,14 +821,20 @@ func (a *API) updateLibrary(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": problem})
 		return
 	}
-	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) {
+	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) || !a.checkLibraryMediaServers(c, in.MediaServers) {
 		return
 	}
 	in.apply(&l)
-	if err := a.DB.Save(&l).Error; err != nil {
+	if err := a.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Omit(clause.Associations).Save(&l).Error; err != nil {
+			return err
+		}
+		return replaceLibraryMediaServers(tx, l.ID, in.MediaServers)
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 		return
 	}
+	l, _ = loadLibraryView(a.DB, l.ID)
 	c.JSON(http.StatusOK, l)
 }
 

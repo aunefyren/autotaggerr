@@ -440,11 +440,13 @@ func (r *Runner) organiseNow(scope OrganiseScope, reviewed []OrganiseRow, moveEx
 		for _, d := range sorted {
 			modules.RemoveEmptyDirs(d, lib.Path)
 		}
-		// Plex finds a moved file by scanning; refreshing the album it knew would only
-		// re-read files that are no longer there.
-		if client := r.plex.ForLibrary(lib); client != nil && moved > 0 {
-			if err := client.ScanSections(); err != nil {
-				logger.Log.Warnf("organise: could not ask Plex to scan %s: %s", lib.Name, err.Error())
+		// A media server finds a moved file by scanning; refreshing the album it knew
+		// would only re-read files that are no longer there.
+		if moved > 0 {
+			for _, server := range components.MediaServersForLibrary(r.db, lib) {
+				if err := server.ScanSections(); err != nil {
+					logger.Log.Warnf("organise: could not ask %s to scan %s: %s", server.DisplayName(), lib.Name, err.Error())
+				}
 			}
 		}
 	}

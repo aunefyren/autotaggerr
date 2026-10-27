@@ -54,7 +54,7 @@ func newImportWorld(t *testing.T) importWorld {
 	synthFlacAt(t, filepath.Join(root, "Band - Album", "01 song one.flac"))
 	synthFlacAt(t, filepath.Join(root, "Band - Album", "02 song two.flac"))
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	t.Cleanup(r.Wait)
 	return importWorld{db: db, runner: r, library: library, release: release, root: root}
 }

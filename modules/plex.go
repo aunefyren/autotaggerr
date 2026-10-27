@@ -35,12 +35,17 @@ var (
 )
 
 type PlexClient struct {
-	BaseURL string
-	Token   string
-	HTTP    *http.Client
+	// ServerID and Name are the media server row this client was built from
+	// (NewPlexServer). ServerID scopes everything cached about the server — an album
+	// key means nothing on another one — and is empty only for a bare client in tests.
+	ServerID string
+	Name     string
+	BaseURL  string
+	Token    string
+	HTTP     *http.Client
 	// SectionKey narrows album lookups to one library section. Empty searches every
 	// music section — the file-path check is what picks the album, so searching wide
-	// costs requests, never correctness. Set per library by ForLibrary.
+	// costs requests, never correctness. Set per library link by InSection.
 	SectionKey string
 	// identity is the server's machine identifier, fetched once and shared by every
 	// copy ForLibrary makes; links into Plex's web app are addressed by it.
@@ -52,17 +57,33 @@ type plexIdentity struct {
 	machineID string
 }
 
-// ForLibrary is the client as one library uses it: narrowed to the library's Plex
-// section, or nil when the library has Plex refresh turned off. Plex is one server
-// for the process, but which of its sections holds a library — if any — is a fact
-// about the library. A nil receiver stays nil, so callers need no extra check.
-func (p *PlexClient) ForLibrary(library models.Library) *PlexClient {
-	if p == nil || library.PlexSkip {
-		return nil
-	}
+// PlexTargets are the Plex servers one library is refreshed on, each narrowed to the
+// library's section on it. Empty — nil included — refreshes nothing. Built per
+// library from its links (components.MediaServersForLibrary).
+type PlexTargets []*PlexClient
+
+// InSection is the client narrowed to one library section; empty searches every music
+// section. The copy shares the server's identity cache.
+func (p *PlexClient) InSection(sectionKey string) *PlexClient {
 	scoped := *p
-	scoped.SectionKey = strings.TrimSpace(library.PlexSectionKey)
+	scoped.SectionKey = strings.TrimSpace(sectionKey)
 	return &scoped
+}
+
+// DisplayName is the server's name for logs and the Activity feed.
+func (p *PlexClient) DisplayName() string {
+	if p.Name != "" {
+		return p.Name
+	}
+	return "Plex"
+}
+
+// NewPlexServer builds the client for a media server row.
+func NewPlexServer(row models.MediaServer) *PlexClient {
+	client := NewPlexClient(row.BaseURL, row.Token)
+	client.ServerID = row.ID.String()
+	client.Name = row.Name
+	return client
 }
 
 func NewPlexClient(baseURL, token string) *PlexClient {
@@ -426,7 +447,7 @@ func PlexAlbumForFile(plexClient *PlexClient, filePath, rootDir, albumTitle, rel
 		return "", nil
 	}
 	folder := filepath.Dir(filePath)
-	cacheKey := plexFolderKey(plexClient.SectionKey, folder)
+	cacheKey := plexFolderKey(plexClient.ServerID, plexClient.SectionKey, folder)
 
 	plexAlbumKeyCacheMu.RLock()
 	cached, ok := plexAlbumKeyCache[cacheKey]
@@ -439,7 +460,7 @@ func PlexAlbumForFile(plexClient *PlexClient, filePath, rootDir, albumTitle, rel
 	if err != nil && !errors.Is(err, ErrPlexAlbumNotFound) {
 		return "", err
 	}
-	entry := models.PlexAlbumKeyCache{AlbumKey: resolved, Title: albumTitle, Folder: folder, Timestamp: time.Now()}
+	entry := models.PlexAlbumKeyCache{ServerID: plexClient.ServerID, AlbumKey: resolved, Title: albumTitle, Folder: folder, Timestamp: time.Now()}
 	plexAlbumKeyCacheMu.Lock()
 	plexAlbumKeyCache[cacheKey] = entry
 	plexAlbumKeyCacheMu.Unlock()
@@ -454,16 +475,17 @@ func plexAlbumTTL(albumKey string) time.Duration {
 	return plexAlbumKeyCacheDuration
 }
 
-// InvalidatePlexAlbum forgets every folder resolved to this album. Called when Plex
-// refuses a refresh of it: a month-long answer has to be dropped the moment Plex says
-// the album is not what it was — merged, re-matched or deleted — or every later run
-// would refresh the same dead key.
-func InvalidatePlexAlbum(albumKey string) {
+// InvalidatePlexAlbum forgets every folder resolved to this album on one server.
+// Called when Plex refuses a refresh of it: a month-long answer has to be dropped the
+// moment Plex says the album is not what it was — merged, re-matched or deleted — or
+// every later run would refresh the same dead key. Another server's album with the
+// same key is a different album, and is kept.
+func InvalidatePlexAlbum(serverID, albumKey string) {
 	albumKey = normalizeAlbumKey(albumKey)
 	plexAlbumKeyCacheMu.Lock()
 	var dropped []string
 	for k, v := range plexAlbumKeyCache {
-		if normalizeAlbumKey(v.AlbumKey) == albumKey {
+		if v.ServerID == serverID && normalizeAlbumKey(v.AlbumKey) == albumKey {
 			delete(plexAlbumKeyCache, k)
 			dropped = append(dropped, k)
 		}
@@ -477,6 +499,9 @@ func InvalidatePlexAlbum(albumKey string) {
 // PlexRefreshForFile queues a refresh of the Plex album holding a file whose tags
 // just changed. A file no album holds queues nothing.
 func PlexRefreshForFile(refreshSet *AlbumRefreshSet, plexClient *PlexClient, filePath, rootDir, albumTitle, releaseArtist, trackTitle string) error {
+	if plexClient == nil {
+		return nil
+	}
 	albumKey, err := PlexAlbumForFile(plexClient, filePath, rootDir, albumTitle, releaseArtist, trackTitle)
 	if err != nil {
 		// Non-fatal: the file's tags were already written; we just can't queue a Plex
@@ -487,7 +512,7 @@ func PlexRefreshForFile(refreshSet *AlbumRefreshSet, plexClient *PlexClient, fil
 		logger.Log.Debugf("no Plex album holds %s; nothing to refresh", filePath)
 		return nil
 	}
-	refreshSet.Add(albumTitle, albumKey)
+	refreshSet.Add(plexClient.ServerID, albumTitle, albumKey)
 	return nil
 }
 
@@ -512,16 +537,16 @@ func PlexAlbumForItem(plexClient *PlexClient, filePath, rootDir string, correlat
 	return key, err == nil, err
 }
 
-// plexFolderKey is the cache key for one album folder in one section scope. Hashed:
-// a path can outrun the key column, and the folder is kept in the payload for anyone
-// reading the table.
-func plexFolderKey(sectionKey, folder string) string {
-	sum := sha256.Sum256([]byte(sectionKey + "\x00" + folder))
+// plexFolderKey is the cache key for one album folder in one section scope of one
+// server. Hashed: a path can outrun the key column, and the folder is kept in the
+// payload for anyone reading the table.
+func plexFolderKey(serverID, sectionKey, folder string) string {
+	sum := sha256.Sum256([]byte(serverID + "\x00" + sectionKey + "\x00" + folder))
 	return "folder:" + hex.EncodeToString(sum[:16])
 }
 
-// ForgetPlexFolder drops what the cache knows about one album folder, in every section
-// scope — for a folder whose files have just been moved away.
+// ForgetPlexFolder drops what the cache knows about one album folder, on every server
+// and in every section scope — for a folder whose files have just been moved away.
 func ForgetPlexFolder(folder string) {
 	plexAlbumKeyCacheMu.Lock()
 	var dropped []string

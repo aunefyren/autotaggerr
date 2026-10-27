@@ -12,7 +12,8 @@ import (
 // TestAlbumRefreshSetConcurrent verifies the shared refresh collector is safe to
 // Add to from many goroutines and returns a consistent snapshot.
 func TestAlbumRefreshSetConcurrent(t *testing.T) {
-	set := NewAlbumRefreshSet(map[string]string{"seed": "seed-key"})
+	set := NewAlbumRefreshSet()
+	set.Add("server", "seed", "seed-key")
 
 	const workers = 16
 	const perWorker = 200
@@ -24,7 +25,7 @@ func TestAlbumRefreshSetConcurrent(t *testing.T) {
 			defer wg.Done()
 			for i := 0; i < perWorker; i++ {
 				name := fmt.Sprintf("album-%d-%d", w, i)
-				set.Add(name, fmt.Sprintf("key-%d-%d", w, i))
+				set.Add("server", name, fmt.Sprintf("key-%d-%d", w, i))
 			}
 		}(w)
 	}
@@ -35,8 +36,12 @@ func TestAlbumRefreshSetConcurrent(t *testing.T) {
 	if len(snap) != want {
 		t.Fatalf("snapshot has %d entries, want %d", len(snap), want)
 	}
-	if snap["seed"] != "seed-key" {
-		t.Errorf("seed entry missing or wrong: %q", snap["seed"])
+	found := false
+	for _, album := range snap {
+		found = found || (album.Name == "seed" && album.Key == "seed-key")
+	}
+	if !found {
+		t.Error("seed entry missing")
 	}
 }
 

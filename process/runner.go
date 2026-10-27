@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -110,7 +109,6 @@ type Summary struct {
 // main (cron + startup) and the API.
 type Runner struct {
 	db      *gorm.DB
-	plex    *modules.PlexClient
 	version string
 	// concurrency is atomic because the settings page can change it while the runner
 	// is alive: a scan reads it when it starts a walk, and the API writes it from a
@@ -176,8 +174,9 @@ type Runner struct {
 	progCurrent atomic.Pointer[string]
 }
 
-// NewRunner builds a runner and starts its queue worker. plex may be nil (Plex
-// refresh is then skipped).
+// NewRunner builds a runner and starts its queue worker. Media servers are not passed
+// in: they are rows, read per library as a run reaches it
+// (components.MediaServersForLibrary).
 //
 // The metadata runner is constructed here rather than passed in. It is wired with a
 // nil yieldTo: the queue serialises every background job, so a metadata pass never
@@ -185,10 +184,9 @@ type Runner struct {
 // also deadlock a scan's own inline refresh — the scan holds the running flag the
 // yield waits on. Callers that need the refresh verb directly take it back via
 // Refresher.
-func NewRunner(db *gorm.DB, plex *modules.PlexClient, cfg models.ConfigStruct) *Runner {
+func NewRunner(db *gorm.DB, cfg models.ConfigStruct) *Runner {
 	r := &Runner{
 		db:              db,
-		plex:            plex,
 		version:         cfg.AutotaggerrVersion,
 		meta:            modules.NewMetadataSource(),
 		wake:            make(chan struct{}, 1),
@@ -955,7 +953,7 @@ func (r *Runner) runScope(scope Scope) {
 	// from the Activity feed instead of by guesswork.
 	modules.MusicbrainzResetStats()
 
-	refreshSet := modules.NewAlbumRefreshSet(nil)
+	refreshSet := modules.NewAlbumRefreshSet()
 	detail := components.NewDetailCollector(r.detailRetention)
 	var processed, unchanged, tagsWritten, removed, moved int
 	var errorFiles []string
@@ -1041,7 +1039,7 @@ func (r *Runner) runScope(scope Scope) {
 		}
 		moved += carried
 
-		c, u, tw, errs, err := components.ScanLibraryRoots(ctx, r.db, library, target.Roots, r.plex, refreshSet, detail, r.version, r.Concurrency(), scope.Force, onFile)
+		c, u, tw, errs, err := components.ScanLibraryRoots(ctx, r.db, library, target.Roots, refreshSet, detail, r.version, r.Concurrency(), scope.Force, onFile)
 		if errors.Is(err, context.Canceled) {
 			// Stopped on purpose, part-way through the walk: count what was done, and
 			// prune nothing — an unfinished walk proves nothing about what is gone.
@@ -1988,7 +1986,7 @@ func (r *Runner) retagAllNow() {
 	logger.Log.Infof("re-tagging %d files across %d library(ies)", len(items), len(libraries))
 	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in every library")
-	refreshSet := modules.NewAlbumRefreshSet(nil)
+	refreshSet := modules.NewAlbumRefreshSet()
 	detail := components.NewDetailCollector(r.detailRetention)
 
 	result := releaseRefresh{}
@@ -2029,7 +2027,7 @@ func (r *Runner) retagLibraryNow(libraryID uuid.UUID) {
 	logger.Log.Infof("re-tagging %d files for library: %s", len(items), library.Name)
 	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files in "+library.Name)
-	refreshSet := modules.NewAlbumRefreshSet(nil)
+	refreshSet := modules.NewAlbumRefreshSet()
 	detail := components.NewDetailCollector(r.detailRetention)
 
 	result := releaseRefresh{}
@@ -2074,7 +2072,7 @@ func (r *Runner) retagArtistNow(artistMBID string) {
 	logger.Log.Infof("re-tagging %d files for artist: %s", len(items), artist.Name)
 	modules.MusicbrainzResetStats() // per-run figures; jobs that write files run one at a time
 	event := events.Begin(r.db, models.EventTypeTagFiles, "Tag files for "+artist.Name)
-	refreshSet := modules.NewAlbumRefreshSet(nil)
+	refreshSet := modules.NewAlbumRefreshSet()
 	detail := components.NewDetailCollector(r.detailRetention)
 
 	result := releaseRefresh{}
@@ -2186,45 +2184,64 @@ func (res *releaseRefresh) retagItems(r *Runner, items []models.LibraryItem, lib
 	}
 }
 
-// flushPlex tells Plex to refresh every album a run touched, and records the batch as
-// a single Plex refresh event. A nil client (Plex not configured) or an empty set
-// skips it — nothing happened, so no event. One event per run rather than per album
-// keeps the feed readable when a scan touches hundreds of albums.
+// flushPlex tells each media server to refresh the albums a run touched on it, and
+// records the batch as a single refresh event. An empty set skips it — nothing
+// happened, so no event. One event per run rather than per album keeps the feed
+// readable when a scan touches hundreds of albums.
+//
+// The servers are read when the flush runs, not when the album was queued: one
+// deleted or disabled in between is reported per album rather than refreshed.
 func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.Event) {
-	if r.plex == nil {
-		return
-	}
 	albums := refreshSet.Snapshot()
 	if len(albums) == 0 {
 		return
 	}
+	servers := components.MediaServerClients(r.db)
+	// The server is named on each row only when the run reached more than one: with
+	// one server the album is the whole answer, and the name would be noise.
+	distinct := map[string]bool{}
+	for _, album := range albums {
+		distinct[album.ServerID] = true
+	}
+	label := func(album modules.AlbumRefresh) string {
+		if len(distinct) < 2 {
+			return album.Name
+		}
+		if server, ok := servers[album.ServerID]; ok {
+			return album.Name + " · " + server.DisplayName()
+		}
+		return album.Name
+	}
 
 	// This stage has always had its own event — it was the only one that did, and it
-	// was not tied to the run that produced it, so a Plex refresh appeared in the feed
+	// was not tied to the run that produced it, so a refresh appeared in the feed
 	// beside a run with nothing saying they were the same work.
 	event := events.BeginChild(r.db, parent, models.EventTypePlexRefresh, "Plex refresh")
 	refreshed := 0
 	failed := make([]string, 0)
+	keys := map[string][]string{}
 
-	// One row per album, in a stable order so two runs over the same set read the
-	// same way — a map's iteration order would reshuffle the list on every run and
-	// make "did this one work last night?" a search rather than a glance.
-	names := make([]string, 0, len(albums))
-	for albumName := range albums {
-		names = append(names, albumName)
-	}
-	sort.Strings(names)
-
-	items := make([]models.EventItem, 0, len(names))
-	for _, albumName := range names {
-		albumKey := albums[albumName]
-		item := models.EventItem{Path: albumName, Kind: models.EventItemKindAlbum, Status: models.EventItemStatusRefreshed}
-		if err := r.plex.RefreshAlbum(albumKey); err != nil {
-			logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
-			// The key came from a month-long cache; whatever Plex did to the album, the
-			// next run should look it up again rather than refresh the same key.
-			modules.InvalidatePlexAlbum(albumKey)
-			failed = append(failed, albumName)
+	// One row per album and server, in the snapshot's stable order so two runs over
+	// the same set read the same way.
+	items := make([]models.EventItem, 0, len(albums))
+	for _, album := range albums {
+		name := label(album)
+		keys[album.ServerID] = append(keys[album.ServerID], album.Key)
+		item := models.EventItem{Path: name, Kind: models.EventItemKindAlbum, Status: models.EventItemStatusRefreshed}
+		server, ok := servers[album.ServerID]
+		var err error
+		if !ok {
+			err = errors.New("the media server was removed or disabled before the refresh")
+		} else {
+			err = server.RefreshAlbum(album.Key)
+		}
+		if err != nil {
+			logger.Log.Errorf("failed to refresh album %q on its media server: %s", album.Name, err.Error())
+			// The key came from a month-long cache; whatever the server did to the
+			// album, the next run should look it up again rather than refresh the
+			// same key.
+			modules.InvalidatePlexAlbum(album.ServerID, album.Key)
+			failed = append(failed, name)
 			item.Status = models.EventItemStatusError
 			item.Error = err.Error()
 			items = append(items, item)
@@ -2232,7 +2249,7 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 		}
 		refreshed++
 		items = append(items, item)
-		logger.Log.Info("triggered Plex refresh for album: " + albumName)
+		logger.Log.Infof("triggered %s refresh for album: %s", server.DisplayName(), album.Name)
 	}
 
 	status := models.EventStatusOK
@@ -2242,7 +2259,7 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 	summary := fmt.Sprintf("%d album(s) refreshed · %d failed", refreshed, len(failed))
 	// Both counters select rows now, which is the whole reason the rows exist: this
 	// stage used to report two numbers over nothing, so "which albums?" — the only
-	// question a Plex refresh provokes — had no answer anywhere in the app.
+	// question a refresh provokes — had no answer anywhere in the app.
 	event.Stats = []models.EventStat{
 		{Label: "Albums refreshed", Value: refreshed, Filter: models.EventItemStatusRefreshed},
 		{Label: "Failed", Value: len(failed), Kind: models.EventStatBad, Filter: models.EventItemStatusError},
@@ -2251,10 +2268,10 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 		"albums_refreshed": refreshed,
 		"albums_failed":    len(failed),
 		"failed_albums":    failed,
-		// The Plex rating keys, which the rows deliberately do not carry: a key is
-		// what you need when the refresh went to the wrong album, and that is what
+		// The rating keys per server, which the rows deliberately do not carry: a key
+		// is what you need when the refresh went to the wrong album, and that is what
 		// the raw-details escape hatch is for.
-		"album_keys": albums,
+		"album_keys": keys,
 	})
 	events.AddItems(r.db, event, items)
 	events.Prune(r.db, r.eventRetention)
@@ -2346,7 +2363,7 @@ func (r *Runner) retagItem(item models.LibraryItem, libraries map[uuid.UUID]mode
 	if correlation.MBReleaseID == "" {
 		return 0, nil, nil
 	}
-	unchanged, written, changes, err := modules.TagCorrelatedFile(item.Path, &correlation, r.plex.ForLibrary(library), refreshSet, library.Path, tagger.Settings())
+	unchanged, written, changes, err := modules.TagCorrelatedFile(item.Path, &correlation, components.MediaServersForLibrary(r.db, library), refreshSet, library.Path, tagger.Settings())
 	if err != nil {
 		r.recordRetagFailure(item, err)
 		return 0, nil, err
@@ -2486,7 +2503,7 @@ func (r *Runner) RetagItems(itemIDs []uuid.UUID) ([]RetagResult, error) {
 	// scan and drift-sync paths. Passing a live set (not nil) is also what keeps
 	// retagItem's Plex hand-off from dereferencing a nil pointer when a file's
 	// tags actually change and a Plex client is attached.
-	refreshSet := modules.NewAlbumRefreshSet(nil)
+	refreshSet := modules.NewAlbumRefreshSet()
 	written, unchanged, failed := 0, 0, 0
 	for _, id := range itemIDs {
 		var item models.LibraryItem

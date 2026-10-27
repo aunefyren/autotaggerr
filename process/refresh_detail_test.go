@@ -111,9 +111,9 @@ func TestRetagReleasesRecordsOnlyReleasesThatCausedAWrite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
-	refreshSet := modules.NewAlbumRefreshSet(nil)
+	refreshSet := modules.NewAlbumRefreshSet()
 	detail := components.NewDetailCollector(models.DefaultEventDetailRetention)
 
 	changed := []string{"rel-1", "rel-2"}

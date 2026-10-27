@@ -47,7 +47,6 @@ import (
 )
 
 var (
-	plexClient    *modules.PlexClient
 	db            *gorm.DB
 	scanRunner    *process.Runner
 	mirrorRunner  *mirror.Runner
@@ -179,9 +178,13 @@ func main() {
 	// components.NewManager. A client built here from files.ConfigFile would be a second
 	// copy that silently diverges the moment either side is edited alone.
 
-	// configure Plex client
-	if files.ConfigFile.PlexBaseURL != "" && files.ConfigFile.PlexToken != "" {
-		plexClient = modules.NewPlexClient(files.ConfigFile.PlexBaseURL, files.ConfigFile.PlexToken)
+	// Plex is not wired here either: media servers are rows, read per library by the
+	// pipeline and per run by the health check. An older config.json's Plex keys become
+	// a row once, and leave the file only after the row exists.
+	if err := database.MigrateLegacyPlex(db, files.LegacyPlex.BaseURL, files.LegacyPlex.Token); err != nil {
+		logger.Log.Errorf("failed to move the Plex server in config.json to a media server: %s", err.Error())
+	} else if err := files.ClearLegacyPlex(); err != nil {
+		logger.Log.Warnf("failed to remove the old Plex keys from config.json: %s", err.Error())
 	}
 
 	// load all on-disk caches into memory once; the per-file path works purely
@@ -217,7 +220,7 @@ func main() {
 
 	// Shared scan runner: the cron job, the startup run, and the API all drive
 	// library processing through this one instance (single-run guard + status).
-	scanRunner = process.NewRunner(db, plexClient, files.ConfigFile)
+	scanRunner = process.NewRunner(db, files.ConfigFile)
 
 	// The metadata-refresh runner is owned by the scan runner and already wired to
 	// yield to it: both spend the same one-request-per-second MusicBrainz budget,
@@ -249,7 +252,7 @@ func main() {
 	// then re-checks and records an event only when a connection's health changes.
 	// Managers are read from the database on every run, so this probes the same
 	// credentials the pipeline uses and picks up an edit without a restart.
-	healthChecker := health.NewChecker(db, plexClient)
+	healthChecker := health.NewChecker(db)
 	if filePath == nil {
 		go healthChecker.Run()
 		// The backlog of artists whose discography was never read — every artist, the
@@ -324,7 +327,7 @@ func main() {
 	// process file path
 	if filePath != nil && fileRootPath != nil {
 		components.SetReplacedPinPolicy(files.ConfigFile.AutotaggerrReplacedPinPolicy)
-		refreshSet := modules.NewAlbumRefreshSet(nil)
+		refreshSet := modules.NewAlbumRefreshSet()
 
 		// Resolve the owning library's manager + tagger from the DB and run the
 		// component pipeline, which also records the correlation to library_items.
@@ -340,16 +343,22 @@ func main() {
 			logger.Log.Error("failed to build pipeline for file. error: " + buildErr.Error())
 			// nil detail collector: a one-shot single-file run records no Activity event
 			// for the detail to hang off.
-		} else if _, _, err := components.ProcessFile(db, library, manager, tagger, plexClient, refreshSet, nil, *filePath, *fileRootPath, files.ConfigFile.AutotaggerrVersion); err != nil {
+		} else if _, _, err := components.ProcessFile(db, library, manager, tagger, components.MediaServersForLibrary(db, library), refreshSet, nil, *filePath, *fileRootPath, files.ConfigFile.AutotaggerrVersion); err != nil {
 			logger.Log.Error("failed to process file. error: " + err.Error())
 		}
 
-		for albumName, albumKey := range refreshSet.Snapshot() {
-			if err := plexClient.RefreshAlbum(albumKey); err != nil {
-				logger.Log.Error("failed to inform Plex to refresh album. error: " + err.Error())
-				modules.InvalidatePlexAlbum(albumKey)
+		servers := components.MediaServerClients(db)
+		for _, album := range refreshSet.Snapshot() {
+			server, ok := servers[album.ServerID]
+			if !ok {
+				continue
 			}
-			logger.Log.Debug("triggered Plex refresh for album: " + albumName)
+			if err := server.RefreshAlbum(album.Key); err != nil {
+				logger.Log.Errorf("failed to inform %s to refresh album. error: %s", server.DisplayName(), err.Error())
+				modules.InvalidatePlexAlbum(album.ServerID, album.Key)
+				continue
+			}
+			logger.Log.Debugf("triggered %s refresh for album: %s", server.DisplayName(), album.Name)
 		}
 	}
 
@@ -440,7 +449,6 @@ func initRouter(db *gorm.DB, scanRunner *process.Runner, mirrorRunner *mirror.Ru
 		Rebuilder:  collection.NewRebuilder(db),
 		Meta:       modules.NewMetadataSource(),
 		Settings:   settingsRuntime,
-		Plex:       plexClient,
 		SigningKey: files.GetPrivateKey(0),
 		AppName:    cfg.AutotaggerrName,
 		Version:    cfg.AutotaggerrVersion,

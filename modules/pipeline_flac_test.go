@@ -34,7 +34,7 @@ func TestTagResolvedFileWritesTags(t *testing.T) {
 
 	path := synthAudio(t, ".flac")
 	correlation := models.Correlation{MBReleaseID: "rel-1", MBReleaseTrackID: "trk-1", Source: models.CorrelationSourceTags}
-	refreshSet := NewAlbumRefreshSet(nil)
+	refreshSet := NewAlbumRefreshSet()
 
 	unchanged, written, changed, err := TagResolvedFile(path, correlation, nil, refreshSet, t.TempDir(), models.TaggerSettings{})
 	if err != nil {
@@ -75,7 +75,7 @@ func TestTagResolvedFileTrackNotInRelease(t *testing.T) {
 	})
 
 	correlation := models.Correlation{MBReleaseID: "rel-1", MBReleaseTrackID: "not-a-real-track"}
-	_, _, _, err := TagResolvedFile("/music/x.flac", correlation, nil, NewAlbumRefreshSet(nil), "/music", models.TaggerSettings{})
+	_, _, _, err := TagResolvedFile("/music/x.flac", correlation, nil, NewAlbumRefreshSet(), "/music", models.TaggerSettings{})
 	if err == nil {
 		t.Fatal("expected an error when the track is not in the release")
 	}
@@ -91,7 +91,7 @@ func TestTagResolvedFileFetchError(t *testing.T) {
 	})
 
 	correlation := models.Correlation{MBReleaseID: "rel-1", MBReleaseTrackID: "trk-1"}
-	_, _, _, err := TagResolvedFile("/music/x.flac", correlation, nil, NewAlbumRefreshSet(nil), "/music", models.TaggerSettings{})
+	_, _, _, err := TagResolvedFile("/music/x.flac", correlation, nil, NewAlbumRefreshSet(), "/music", models.TaggerSettings{})
 	if err == nil {
 		t.Fatal("expected an error when MusicBrainz cannot be fetched")
 	}

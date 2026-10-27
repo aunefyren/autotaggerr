@@ -481,7 +481,7 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 
 	ctx := r.jobContext()
 	libraries := map[uuid.UUID]models.Library{plan.Library.ID: plan.Library}
-	refreshSet := modules.NewAlbumRefreshSet(nil)
+	refreshSet := modules.NewAlbumRefreshSet()
 	var items []models.EventItem
 	imported, replaced, tagFailures, stopped := 0, 0, 0, false
 	var failed []string

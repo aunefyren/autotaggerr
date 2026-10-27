@@ -216,7 +216,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	}
 
 	// First scan indexes the file at version v1.
-	counter, unchanged, _, errs, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1)
+	counter, unchanged, _, errs, err := ScanLibrary(db, lib, nil, nil, "v1", 1)
 	if err != nil || counter != 1 || unchanged != 1 || len(errs) != 0 {
 		t.Fatalf("first scan: counter=%d unchanged=%d errs=%v err=%v", counter, unchanged, errs, err)
 	}
@@ -228,7 +228,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	}
 
 	// Same version + unchanged file -> skipped, sentinel untouched.
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v1", 1); err != nil {
 		t.Fatalf("second scan: %v", err)
 	}
 	var item models.LibraryItem
@@ -240,7 +240,7 @@ func TestScanLibrarySkipsUnchanged(t *testing.T) {
 	}
 
 	// Different version busts the skip -> re-processed, correlation restored.
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v2", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v2", 1); err != nil {
 		t.Fatalf("third scan: %v", err)
 	}
 	if err := db.Where("path = ?", path).First(&item).Error; err != nil {
@@ -278,7 +278,7 @@ func scanFixture(t *testing.T) (*gorm.DB, models.Library, string) {
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("create library: %v", err)
 	}
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v1", 1); err != nil {
 		t.Fatalf("seed scan: %v", err)
 	}
 	return db, lib, path
@@ -300,7 +300,7 @@ func TestScanLibraryReCorrelatesOnManagerChange(t *testing.T) {
 		t.Fatalf("simulate previous manager: %v", err)
 	}
 
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v1", 1); err != nil {
 		t.Fatalf("rescan: %v", err)
 	}
 
@@ -334,7 +334,7 @@ func TestScanLibraryKeepsPinnedOnManagerChange(t *testing.T) {
 		t.Fatalf("pin item: %v", err)
 	}
 
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v1", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v1", 1); err != nil {
 		t.Fatalf("rescan: %v", err)
 	}
 
@@ -430,7 +430,7 @@ func TestScanLibraryKeepsPinnedOnVersionChange(t *testing.T) {
 	}
 
 	// v2 busts the version gate, so the file really is re-processed.
-	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, nil, "v2", 1); err != nil {
+	if _, _, _, _, err := ScanLibrary(db, lib, nil, nil, "v2", 1); err != nil {
 		t.Fatalf("rescan: %v", err)
 	}
 

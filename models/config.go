@@ -229,12 +229,9 @@ type ConfigStruct struct {
 	SMTPUsername string `json:"smtp_username"`
 	SMTPPassword string `json:"smtp_password"`
 	SMTPFrom     string `json:"smtp_from"`
-
-	// Plex is still configured here: it is not a manager row, and the process-level
-	// client is built from these at startup (see main.go). The Lidarr equivalents used
-	// to sit beside them and are gone — they seeded the first manager on the first
-	// boot and were ignored forever after, so the manager row is the only copy of
-	// those credentials now.
-	PlexBaseURL string `json:"plex_base_url"`
-	PlexToken   string `json:"plex_token"`
 }
+
+// Plex is not configured here any more: servers are media server rows, edited on their
+// own page (docs/media-servers.md). The plex_base_url / plex_token keys an older
+// config.json carries are read once by files.LoadConfig into files.LegacyPlex, seeded
+// into a row at startup, and dropped from the file.

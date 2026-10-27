@@ -162,7 +162,7 @@ func TestPollDownloadsFindsWhatIsReady(t *testing.T) {
 		},
 	}
 	useFakeDownloadClient(t, fake)
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	t.Cleanup(r.Wait)
 
 	r.PollDownloads()
@@ -218,7 +218,7 @@ func TestPollDownloadsRecordsAFailedRead(t *testing.T) {
 	db.Create(&library)
 	row := newDownloadClientRow(t, db, library, t.TempDir())
 	useFakeDownloadClient(t, &fakeDownloadClient{finishErr: errors.New("qBittorrent didn't respond")})
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	t.Cleanup(r.Wait)
 
 	r.PollDownloads()

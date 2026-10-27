@@ -236,8 +236,8 @@ func MetaflacWarning(d *DetailCollector) string {
 // ProcessFile runs the per-file pipeline for one library: the Manager resolves
 // the correlation, the Tagger writes tags (via the shared engine), and the
 // result is recorded into the library_items index. A nil db skips indexing (used
-// by tests / DB-less callers); a nil plexClient/refreshSet skips Plex queuing, and a
-// nil detail collector skips per-file Activity detail.
+// by tests / DB-less callers); empty plex targets or a nil refreshSet skip the media
+// server refresh, and a nil detail collector skips per-file Activity detail.
 //
 // A pinned item is the exception: its correlation was chosen by hand, so it is
 // reused as-is instead of being resolved again. That governs the tags written to the
@@ -248,15 +248,12 @@ func ProcessFile(
 	library models.Library,
 	manager Manager,
 	tagger *Tagger,
-	plexClient *modules.PlexClient,
+	plex modules.PlexTargets,
 	refreshSet *modules.AlbumRefreshSet,
 	detail *DetailCollector,
 	filePath, rootDir, processedVersion string,
 ) (unchanged bool, tagsWritten int, err error) {
 	managerType := manager.Type()
-	// The shared client narrowed to this library's Plex section, or nil when the
-	// library is not refreshed in Plex.
-	plexClient = plexClient.ForLibrary(library)
 
 	item, indexed := indexedItem(db, filePath)
 	changed := bytesChanged(item, indexed, filePath)
@@ -324,7 +321,7 @@ func ProcessFile(
 		var changes []models.TagChange
 		// By pointer: a track re-matched in a rebuilt release comes back with its new
 		// IDs, and the index records those rather than the ones that no longer exist.
-		unchanged, tagsWritten, changes, err = modules.TagCorrelatedFile(filePath, &correlation, plexClient, refreshSet, rootDir, tagger.Settings())
+		unchanged, tagsWritten, changes, err = modules.TagCorrelatedFile(filePath, &correlation, plex, refreshSet, rootDir, tagger.Settings())
 		if err != nil {
 			recordItem(db, library.ID, filePath, correlation, false, processedVersion, managerType, err)
 			detail.AddError(filePath, err)
@@ -347,13 +344,12 @@ func ProcessFile(
 func ScanLibrary(
 	db *gorm.DB,
 	library models.Library,
-	plexClient *modules.PlexClient,
 	refreshSet *modules.AlbumRefreshSet,
 	detail *DetailCollector,
 	processedVersion string,
 	workers int,
 ) (counter, unchangedFiles, tagsWritten int, errorFiles []string, err error) {
-	return ScanLibraryRoots(context.Background(), db, library, nil, plexClient, refreshSet, detail, processedVersion, workers, false, nil)
+	return ScanLibraryRoots(context.Background(), db, library, nil, refreshSet, detail, processedVersion, workers, false, nil)
 }
 
 // ScanLibraryRoots is ScanLibrary narrowed to part of a library: it walks each of
@@ -385,7 +381,6 @@ func ScanLibraryRoots(
 	db *gorm.DB,
 	library models.Library,
 	roots []string,
-	plexClient *modules.PlexClient,
 	refreshSet *modules.AlbumRefreshSet,
 	detail *DetailCollector,
 	processedVersion string,
@@ -397,6 +392,8 @@ func ScanLibraryRoots(
 	if err != nil {
 		return 0, 0, 0, nil, err
 	}
+	// Read once per pass, like the manager: the servers this library is refreshed on.
+	plex := MediaServersForLibrary(db, library)
 	if len(roots) == 0 {
 		roots = []string{library.Path}
 	}
@@ -410,7 +407,7 @@ func ScanLibraryRoots(
 			if !force && shouldSkip(db, path, processedVersion, managerType, taggedWith) && !(writesTempo && tempoPending(db, path)) {
 				return true, 0, nil // counts as unchanged
 			}
-			return ProcessFile(db, library, manager, tagger, plexClient, refreshSet, detail, path, library.Path, processedVersion)
+			return ProcessFile(db, library, manager, tagger, plex, refreshSet, detail, path, library.Path, processedVersion)
 		}, onFile)
 		counter += c
 		unchangedFiles += u

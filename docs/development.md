@@ -284,8 +284,9 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
 - **Errors**: return wrapped/annotated errors up the stack; log at the point of handling with
   `logger.Log` (logrus). Use the `...f` variants (`Errorf`/`Debugf`) when formatting — plain
   `Error`/`Debug` do not interpret `%` directives (`go vet` catches this).
-- **External clients** (`modules/lidarr.go`, `modules/plex.go`) are only constructed when their
-  config is present and may be `nil`. Always nil-check before use in the pipeline.
+- **External clients** (`modules/lidarr.go`, `modules/plex.go`) are built from their rows per use
+  (manager rows; media server rows linked per library), never from `config.json`. A Lidarr client
+  may be `nil` — nil-check it; a library's Plex targets may be empty.
 - **Caching**: every cache is a database table with an in-memory front, warmed once by
   `modules.LoadAllCaches` at startup and **written through** as entries are fetched — there is no
   batched flusher and no JSON cache file. MusicBrainz releases and entities have their own tables;
@@ -343,3 +344,4 @@ Feature docs:
 - `authentication.md` — local login, scoped API keys, OIDC.
 - `mcp.md` — the MCP server for AI assistants: scoped API keys, the read and action tools, and how they share query methods and commands with the REST handlers.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.
+- `media-servers.md` — Plex servers as rows: linked per library, refreshed per server, and the upgrade from the config keys.

@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/aunefyren/autotaggerr/models"
 )
 
 // fakePlex is a Plex server with music sections, albums found by title, and the files
@@ -101,13 +99,7 @@ func TestForLibraryNarrowsOrSkips(t *testing.T) {
 		},
 	}
 	client := f.client(t)
-	if got := client.ForLibrary(models.Library{PlexSkip: true}); got != nil {
-		t.Error("a library with Plex turned off got a client")
-	}
-	if got := (*PlexClient)(nil).ForLibrary(models.Library{}); got != nil {
-		t.Error("no Plex configured produced a client")
-	}
-	scoped := client.ForLibrary(models.Library{PlexSectionKey: "2"})
+	scoped := client.InSection(" 2 ")
 	key, err := scoped.ResolveAlbumForFile(ourFile, "/music", "Artist", "Album", "Song")
 	if err != nil || key != "/library/metadata/20" {
 		t.Errorf("resolved (%q, %v) in section 2, want its album", key, err)
@@ -129,12 +121,12 @@ func TestPlexRefreshForFileCachesPerFolder(t *testing.T) {
 	}
 	client := f.client(t)
 
-	set := NewAlbumRefreshSet(nil)
+	set := NewAlbumRefreshSet()
 	if err := PlexRefreshForFile(set, client, ourFile, "/music", "Album", "Artist", "Song"); err != nil {
 		t.Fatal(err)
 	}
-	if got := set.Snapshot()["Album"]; got != "/library/metadata/10" {
-		t.Fatalf("queued %q, want the album holding the file", got)
+	if got := set.Snapshot(); len(got) != 1 || got[0].Name != "Album" || got[0].Key != "/library/metadata/10" {
+		t.Fatalf("queued %+v, want the album holding the file", got)
 	}
 	before := f.requests.Load()
 	second := filepath.Join(filepath.Dir(ourFile), "02 Other.flac")
@@ -146,7 +138,7 @@ func TestPlexRefreshForFileCachesPerFolder(t *testing.T) {
 	}
 
 	missing := "/music/Artist/Not In Plex/01 Song.flac"
-	empty := NewAlbumRefreshSet(nil)
+	empty := NewAlbumRefreshSet()
 	if err := PlexRefreshForFile(empty, client, missing, "/music", "Missing", "Artist", "Song"); err != nil {
 		t.Fatalf("an album Plex lacks is not an error: %v", err)
 	}
@@ -172,7 +164,7 @@ func TestPlexRefreshForFileReportsLookupFailures(t *testing.T) {
 	down := newPlexServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "down", http.StatusInternalServerError)
 	}))
-	set := NewAlbumRefreshSet(nil)
+	set := NewAlbumRefreshSet()
 	err := PlexRefreshForFile(set, down, ourFile, "/music", "Album", "Artist", "Song")
 	if err == nil || !strings.Contains(err.Error(), "resolve Plex album") {
 		t.Errorf("err = %v, want the lookup named", err)

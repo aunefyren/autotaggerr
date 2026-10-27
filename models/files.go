@@ -114,6 +114,9 @@ type CachedLidarrTrackFilesRelease struct {
 // files, or an empty AlbumKey for "Plex does not have these files", which is cached
 // too so an album missing from Plex is not searched for once per track.
 type PlexAlbumKeyCache struct {
+	// ServerID is the media server row the key belongs to: a rating key means nothing
+	// on another server. Empty on entries cached before there could be several.
+	ServerID  string    `json:"server_id,omitempty"`
 	AlbumKey  string    `json:"album_key"`
 	Title     string    `json:"title,omitempty"`
 	Folder    string    `json:"folder,omitempty"`

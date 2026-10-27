@@ -228,9 +228,10 @@ stops. The cost is that a fresh install starts with no manager and no library, a
 both in the UI; the gain is that there is exactly one place each of those lives, rather than two
 where one silently wins.
 
-Plex is the exception that proves the shape: it is not a manager (there is no Plex manager type), so
-`plex_base_url` and `plex_token` genuinely are config, read by `main.go` at every start, and they
-are ordinary editable fields on **Settings → Plex**.
+Plex went the same way. Its two keys were the last connection still in `config.json`; Plex servers
+are now media server rows, any number of them, linked per library
+([media-servers.md](media-servers.md)). The keys an older file carries are turned into a row once
+and then dropped.
 
 Nothing else may build a Lidarr client. `main.go` used to build one from `files.ConfigFile` for the
 health check — a second copy that diverged from the row the first time either side was edited alone,

@@ -98,7 +98,7 @@ func TestTagCorrelatedFileRematchesARebuiltRelease(t *testing.T) {
 	path := taggedFile(t, "1", "3", "Paranoid Android")
 	correlation := models.Correlation{MBReleaseID: "rel-1", MBReleaseTrackID: "trk-2", MBRecordingID: "rec-2", Source: models.CorrelationSourceTags}
 
-	if _, _, _, err := TagCorrelatedFile(path, &correlation, nil, NewAlbumRefreshSet(nil), t.TempDir(), models.TaggerSettings{}); err != nil {
+	if _, _, _, err := TagCorrelatedFile(path, &correlation, nil, NewAlbumRefreshSet(), t.TempDir(), models.TaggerSettings{}); err != nil {
 		t.Fatalf("TagCorrelatedFile: %v", err)
 	}
 	if correlation.MBReleaseTrackID != "new-2" || correlation.MBRecordingID != "rec-2-rebuilt" || correlation.Source != models.CorrelationSourceRematched {
@@ -122,7 +122,7 @@ func TestTagCorrelatedFileDoesNotRematchManagerOrManualCorrelations(t *testing.T
 	for _, source := range []string{models.CorrelationSourceLidarr, models.CorrelationSourceManual} {
 		path := taggedFile(t, "1", "3", "Paranoid Android")
 		correlation := models.Correlation{MBReleaseID: "rel-1", MBReleaseTrackID: "trk-2", MBRecordingID: "rec-1", Source: source}
-		_, _, _, err := TagCorrelatedFile(path, &correlation, nil, NewAlbumRefreshSet(nil), t.TempDir(), models.TaggerSettings{})
+		_, _, _, err := TagCorrelatedFile(path, &correlation, nil, NewAlbumRefreshSet(), t.TempDir(), models.TaggerSettings{})
 		if !errors.Is(err, ErrTrackNotInRelease) {
 			t.Errorf("%s: err = %v, want ErrTrackNotInRelease", source, err)
 		}

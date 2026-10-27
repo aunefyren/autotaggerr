@@ -80,8 +80,9 @@ index), *Refresh metadata*, *Tag files* — are named in
 3. `ProcessTrackFileAfterMatch` builds a `models.FileTags` and writes it via `SetFileTags`,
    which dispatches to `SetFlacTags` (metaflac) or `SetMP3Tags` (bogem/id3v2) by extension.
    Tag writes are diffed first — unchanged files are skipped and reported separately.
-4. Changed albums are collected into an `albumsWhoNeedMetadataRefresh` map (album name → Plex
-   key) and, after the run, `plexClient.RefreshAlbum` is called for each.
+4. Changed albums are collected into an `AlbumRefreshSet` (media server + album key → name) and,
+   after the run, each is refreshed on the server it was found on. Media servers are rows linked
+   per library, read per use — see [docs/media-servers.md](docs/media-servers.md).
 
 **Path convention:** the library layout is `<root>/<ARTIST>/<ALBUM> (<YEAR>)/[<MEDIA FOLDER>]/<TRACKS>`,
 and naming templates write it, but matching no longer depends on it: Lidarr track files are
@@ -91,9 +92,10 @@ file's tags after it; Plex albums are matched by file path too. See
 `--fileRoot` is the library root — the directory *containing* the artist folders. Path normalization is OS-specific
 (`utilities/normalize_path_{unix,darwin,windows}.go`, build-tagged).
 
-**External clients** (`modules/lidarr.go`, `modules/plex.go`) are constructed in `main` only
-when their base URL + credential config is present, and each is health-checked at startup.
-Both are passed as pointers into the pipeline and may be `nil` — always nil-check before use.
+**External clients** (`modules/lidarr.go`, `modules/plex.go`) are built from database rows per
+use — Lidarr from the library's manager row, Plex from its media server links
+(`components.MediaServersForLibrary`) — never once in `main`, so an edit applies without a restart.
+A Lidarr client may be `nil` (nil-check it); a library's Plex targets may be empty.
 
 ## Caching & rate limiting
 

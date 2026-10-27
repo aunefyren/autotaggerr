@@ -84,7 +84,7 @@ func TestNarrowDueKeepsOnlyScopeReleases(t *testing.T) {
 		}
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	filter := newScopeFilter(Scope{Targets: []Target{
 		{Library: library, Roots: []string{filepath.Join(root, "Parliament")}},
 	}})
@@ -150,11 +150,11 @@ func TestRetagReleasesHonoursScope(t *testing.T) {
 		created[path] = item
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	filter := newScopeFilter(Scope{Targets: []Target{
 		{Library: library, Roots: []string{filepath.Join(root, "Parliament")}},
 	}})
-	res := r.retagReleases([]string{"rel-1"}, modules.NewAlbumRefreshSet(nil),
+	res := r.retagReleases([]string{"rel-1"}, modules.NewAlbumRefreshSet(),
 		components.NewDetailCollector(models.DefaultEventDetailRetention), filter)
 
 	if res.retagged != 1 {

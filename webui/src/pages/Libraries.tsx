@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { BPMWrite, Library, Manager, PlexSections, TaggerProfile, TempoStatus } from "../types";
+import { BPMWrite, Library, LibraryMediaServer, Manager, MediaServer, MediaServerSections, TaggerProfile, TempoStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { OrganiseDialog } from "../components/OrganiseDialog";
@@ -287,10 +287,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
   const [bpmWrite, setBPMWrite] = useState<BPMWrite>(initial?.bpm_write ?? "");
   const [bpmFloor, setBPMFloor] = useState(initial?.bpm_min_confidence ?? 0);
-  // One select for both fields: "skip" is the opt-out, anything else a section key,
-  // "" every music section.
-  const [plex, setPlex] = useState(initial?.plex_skip ? PLEX_SKIP : initial?.plex_section_key ?? "");
-  const plexSections = useFetch<PlexSections>(() => api.get("/plex/sections"));
+  const [mediaServers, setMediaServers] = useState<LibraryMediaServer[]>(initial?.media_servers ?? []);
   const [busy, setBusy] = useState(false);
   // Only to say so when the server cannot act on the switch. The switch itself stays
   // live: a library can opt in before aubio is installed, and is picked up once it is.
@@ -303,8 +300,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
       const body: Record<string, unknown> = {
         name, path, use_acoustid: useAcoustID, analyse_tempo: analyseTempo,
         bpm_write: bpmWrite, bpm_min_confidence: bpmFloor,
-        plex_skip: plex === PLEX_SKIP,
-        plex_section_key: plex === PLEX_SKIP ? "" : plex,
+        media_servers: mediaServers.map((l) => ({ media_server_id: l.media_server_id, section_key: l.section_key })),
       };
       // Null, not absent: "No manager" and "Default" are choices, and absent would keep
       // the old one — an edit back to Default used to be silently ignored.
@@ -369,34 +365,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
           </select>
         </div>
 
-        {/* Only once Plex is configured: a select of sections from a server that is not
-            there would be a control that can only be wrong. A section saved earlier
-            stays listed even if Plex cannot be asked right now. */}
-        {plexSections.data?.configured && (
-          <div className="field">
-            <label className="flabel">Plex</label>
-            <select className="select" value={plex} onChange={(e) => setPlex(e.target.value)}>
-              <option value="">Every music section</option>
-              {plexSections.data.sections.map((s) => (
-                <option key={s.key} value={s.key}>
-                  {s.title}{s.locations?.length ? ` — ${s.locations.join(", ")}` : ""}
-                </option>
-              ))}
-              {plex !== "" && plex !== PLEX_SKIP && !plexSections.data.sections.some((s) => s.key === plex) && (
-                <option value={plex}>Section {plex}</option>
-              )}
-              <option value={PLEX_SKIP}>Not in Plex — never refresh</option>
-            </select>
-            {plexSections.data.error ? (
-              <span className="help-warn">Plex did not answer, so its sections cannot be listed: {plexSections.data.error}</span>
-            ) : (
-              <span className="dim" style={{ fontSize: 11 }}>
-                Where albums are refreshed after their tags change. Only the album Plex lists the file in
-                is refreshed, so every section is a safe default; naming one saves the search.
-              </span>
-            )}
-          </div>
-        )}
+        <MediaServerLinks links={mediaServers} onChange={setMediaServers} />
 
         <label className="row" style={{ gap: 8, cursor: "pointer" }}>
           <input type="checkbox" checked={useAcoustID} onChange={(e) => setUseAcoustID(e.target.checked)} />
@@ -474,8 +443,72 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   );
 }
 
-/** The Plex select's value for "this library is not in Plex". */
-const PLEX_SKIP = "skip";
+/**
+ * Which media servers refresh this library's albums, and in which section of each.
+ * One row per configured server, ticked to link it — the server itself is the
+ * control, rather than a mode select beside a list. Absent when there are no servers:
+ * a list of nothing to tick would only say so less clearly than the line it shows.
+ */
+function MediaServerLinks({ links, onChange }: { links: LibraryMediaServer[]; onChange: (next: LibraryMediaServer[]) => void }) {
+  const servers = useFetch<MediaServer[]>(() => api.get("/media-servers"));
+  const linked = (id: string) => links.find((l) => l.media_server_id === id);
+  const toggle = (id: string, on: boolean) =>
+    onChange(on ? [...links, { media_server_id: id, section_key: "" }] : links.filter((l) => l.media_server_id !== id));
+  const setSection = (id: string, key: string) =>
+    onChange(links.map((l) => (l.media_server_id === id ? { ...l, section_key: key } : l)));
+
+  if (!servers.data) return null;
+  return (
+    <div className="field">
+      <span className="flabel">Media servers</span>
+      {servers.data.length === 0 ? (
+        <span className="dim" style={{ fontSize: 11 }}>
+          No media server yet — add Plex under <Link to="/media-servers">Media servers</Link> to have albums refreshed after their tags change.
+        </span>
+      ) : (
+        <>
+          {servers.data.map((server) => {
+            const link = linked(server.id);
+            return (
+              <div key={server.id} className="stack" style={{ gap: 4 }}>
+                <label className="row" style={{ gap: 8, cursor: "pointer" }}>
+                  <input type="checkbox" checked={!!link} onChange={(e) => toggle(server.id, e.target.checked)} />
+                  <span>{server.name}</span>
+                  {!server.enabled && <span className="dim" style={{ fontSize: 11 }}>disabled — nothing is sent while it is</span>}
+                </label>
+                {link && <SectionSelect serverId={server.id} value={link.section_key} onChange={(key) => setSection(server.id, key)} />}
+              </div>
+            );
+          })}
+          <span className="dim" style={{ fontSize: 11 }}>
+            Only the album a server lists the file in is refreshed, so every section is a safe default; naming one saves the search.
+          </span>
+        </>
+      )}
+    </div>
+  );
+}
+
+/** One linked server's sections, asked for only once it is linked. A section saved
+ *  earlier stays listed even if the server cannot be asked right now. */
+function SectionSelect({ serverId, value, onChange }: { serverId: string; value: string; onChange: (key: string) => void }) {
+  const sections = useFetch<MediaServerSections>(() => api.get(`/media-servers/${serverId}/sections`));
+  const list = sections.data?.sections ?? [];
+  return (
+    <div className="stack" style={{ gap: 4, paddingLeft: 24 }}>
+      <select className="select" value={value} onChange={(e) => onChange(e.target.value)} aria-label="Section">
+        <option value="">Every music section</option>
+        {list.map((s) => (
+          <option key={s.key} value={s.key}>
+            {s.title}{s.locations?.length ? ` — ${s.locations.join(", ")}` : ""}
+          </option>
+        ))}
+        {value !== "" && !list.some((s) => s.key === value) && <option value={value}>Section {value}</option>}
+      </select>
+      {sections.data?.error && <span className="help-warn">The server did not answer, so its sections cannot be listed: {sections.data.error}</span>}
+    </div>
+  );
+}
 
 /** The server reads 0 or less as its default floor. */
 const DEFAULT_BPM_MIN_CONFIDENCE = 0.5;

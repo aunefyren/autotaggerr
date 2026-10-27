@@ -18,6 +18,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/files"
 	"github.com/aunefyren/autotaggerr/logger"
+	"github.com/aunefyren/autotaggerr/models"
 	"github.com/gin-gonic/gin"
 )
 
@@ -39,8 +40,9 @@ func freePort(t *testing.T) int {
 // nothing else checks that they compose into a process that starts and stops.
 //
 // The configuration is chosen to walk the branches a real deployment hits on a bad
-// day: a timezone that does not exist (removed and saved back, not fatal), a Plex
-// connection (served by httptest), and a --file that matches no library (logged, not
+// day: a timezone that does not exist (removed and saved back, not fatal), the Plex
+// keys an older config.json carries (moved to a media server row, then dropped from
+// the file), and a --file that matches no library (logged, not
 // fatal). SIGINT is what a container stop delivers.
 func TestMainBootsServesAndShutsDown(t *testing.T) {
 	dir := t.TempDir()
@@ -135,8 +137,9 @@ func TestMainBootsServesAndShutsDown(t *testing.T) {
 	if files.ConfigFile.Timezone != "" {
 		t.Errorf("invalid timezone kept as %q, want it removed", files.ConfigFile.Timezone)
 	}
-	if plexClient == nil || plexClient.BaseURL != plex.URL {
-		t.Errorf("plex client not built from config: %+v", plexClient)
+	var servers []models.MediaServer
+	if err := db.Find(&servers).Error; err != nil || len(servers) != 1 || servers[0].BaseURL != plex.URL || servers[0].Token != "token" {
+		t.Errorf("media servers = %+v (%v), want the Plex server from config.json", servers, err)
 	}
 	if gin.Mode() != gin.ReleaseMode {
 		t.Errorf("gin mode = %q outside the test environment, want release", gin.Mode())
@@ -153,6 +156,9 @@ func TestMainBootsServesAndShutsDown(t *testing.T) {
 	}
 	if back["timezone"] != "" {
 		t.Errorf("saved timezone = %v, want empty", back["timezone"])
+	}
+	if _, kept := back["plex_base_url"]; kept {
+		t.Error("plex_base_url is still in config.json after it became a media server")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "config", "autotaggerr.db")); err != nil {
 		t.Errorf("database not created under the working directory: %v", err)

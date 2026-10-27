@@ -119,10 +119,10 @@ nothing is a trap whether or not a page explains it, and explaining it is strict
 having it. `files.SaveConfig` round-trips the struct on every start, so a file written by an older
 version is cleaned of them the first time the new binary boots.
 
-`plex_base_url` and `plex_token` left the same block in the opposite direction. Plex is not a
-manager and never had a field on that page, while `main.go` reads both at every start — being told
-that editing the file "changes nothing" was the opposite of true for them. They are ordinary
-`restart`-tier fields under **Plex**.
+`plex_base_url` and `plex_token` are gone as well. For a while they were `restart`-tier fields
+under **Plex**, but a server is a connection, and connections are rows. Plex servers are on
+**Media servers** now, linked per library ([media-servers.md](media-servers.md)), and the keys an
+older file carries are turned into a row at startup and then dropped.
 
 `TestEveryConfigKeyHasAHome` (`settings/schema_test.go`) is what keeps the claim in this heading
 true: it walks `models.ConfigStruct` by reflection and fails for any JSON key that is not a field in

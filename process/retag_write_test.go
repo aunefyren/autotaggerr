@@ -103,7 +103,7 @@ func TestRetagItemWritesTags(t *testing.T) {
 		t.Fatalf("create item: %v", err)
 	}
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	results, err := r.RetagItems([]uuid.UUID{item.ID})
 	if err != nil {
 		t.Fatalf("RetagItems: %v", err)
@@ -175,7 +175,7 @@ func retagFixture(t *testing.T, mutate func(*models.LibraryItem)) (*gorm.DB, mod
 func TestRetagItemsRecordsEvent(t *testing.T) {
 	db, item := retagFixture(t, nil)
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	results, err := r.RetagItems([]uuid.UUID{item.ID})
 	if err != nil {
 		t.Fatalf("RetagItems: %v", err)
@@ -229,7 +229,7 @@ func TestRetagItemsRecordsEvent(t *testing.T) {
 func TestRetagItemsUnchangedFileRecordsNoDetail(t *testing.T) {
 	db, item := retagFixture(t, nil)
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	if _, err := r.RetagItems([]uuid.UUID{item.ID}); err != nil {
 		t.Fatalf("first RetagItems: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestRetagClearsStaleError(t *testing.T) {
 		i.LastErrorTransient = true
 	})
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	results, err := r.RetagItems([]uuid.UUID{item.ID})
 	if err != nil {
 		t.Fatalf("RetagItems: %v", err)
@@ -319,7 +319,7 @@ func TestRetagRecordsFailure(t *testing.T) {
 		i.ProcessedVersion = "test"
 	})
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "next"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "next"})
 	results, err := r.RetagItems([]uuid.UUID{item.ID})
 	if err != nil {
 		t.Fatalf("RetagItems: %v", err)
@@ -358,7 +358,7 @@ func TestRetagLeavesUnmatchedAlone(t *testing.T) {
 		i.MBReleaseTrackID = ""
 	})
 
-	r := NewRunner(db, nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 	results, err := r.RetagItems([]uuid.UUID{item.ID})
 	if err != nil {
 		t.Fatalf("RetagItems: %v", err)

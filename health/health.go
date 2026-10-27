@@ -47,7 +47,7 @@ func (s service) stateKey() string {
 // startup call to share.
 type Checker struct {
 	db       *gorm.DB
-	services []service // static probes; manager probes are read from the DB per run
+	services []service // fixed probes beside the rows; only tests set them
 
 	mu   sync.Mutex
 	last map[string]bool // service key -> healthy at last check; absent = never checked
@@ -58,20 +58,16 @@ type Checker struct {
 	seen     bool // whether any check has run this process
 }
 
-// NewChecker builds a checker for the Plex client plus whatever managers the database
-// holds. Unlike the static clients, managers are read per run (see probes), so it
-// returns a usable checker whenever there is a database to read — a manager added or
+// NewChecker builds a checker for whatever managers, download clients and media
+// servers the database holds. All of them are read per run (see probes), so it returns
+// a usable checker whenever there is a database to read — a row added or
 // re-credentialed later is picked up without a restart. Returns nil only without a DB,
 // and the nil-receiver Run makes that a no-op the caller need not special-case.
-func NewChecker(db *gorm.DB, plex *modules.PlexClient) *Checker {
+func NewChecker(db *gorm.DB) *Checker {
 	if db == nil {
 		return nil
 	}
-	var svcs []service
-	if plex != nil {
-		svcs = append(svcs, service{key: "plex", name: "Plex", check: plex.HealthCheck})
-	}
-	return &Checker{db: db, services: svcs, last: map[string]bool{}, lastWarn: map[string]string{}}
+	return &Checker{db: db, last: map[string]bool{}, lastWarn: map[string]string{}}
 }
 
 // probes lists the connections to check, rebuilt on every run.
@@ -92,7 +88,7 @@ func (c *Checker) probes() []service {
 		logger.Log.Warnf("health check could not read manager rows: %s", err.Error())
 	}
 
-	svcs := make([]service, 0, len(rows)+len(c.services))
+	svcs := make([]service, 0, len(rows))
 	for _, row := range rows {
 		manager, err := components.NewManager(row)
 		if err != nil {
@@ -109,7 +105,23 @@ func (c *Checker) probes() []service {
 		}
 		svcs = append(svcs, svc)
 	}
-	return append(append(svcs, c.downloadClientProbes()...), c.services...)
+	svcs = append(append(svcs, c.downloadClientProbes()...), c.mediaServerProbes()...)
+	return append(svcs, c.services...)
+}
+
+// mediaServerProbes lists the enabled media servers, read per run like the rest: the
+// probe uses the token a refresh will. Keyed by row so two servers keep two histories.
+func (c *Checker) mediaServerProbes() []service {
+	var rows []models.MediaServer
+	if err := c.db.Where("enabled = ? AND type = ?", true, models.MediaServerTypePlex).Order("name").Find(&rows).Error; err != nil {
+		logger.Log.Warnf("health check could not read media servers: %s", err.Error())
+		return nil
+	}
+	svcs := make([]service, 0, len(rows))
+	for _, row := range rows {
+		svcs = append(svcs, service{key: "media:" + row.ID.String(), name: row.Name, check: modules.NewPlexServer(row).HealthCheck})
+	}
+	return svcs
 }
 
 // downloadClientProbes lists the enabled download clients, read per run for the

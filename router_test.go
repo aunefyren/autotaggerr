@@ -35,7 +35,7 @@ func testRouter(t *testing.T) *gin.Engine {
 		t.Fatalf("Connect: %v", err)
 	}
 	cfg := models.ConfigStruct{AutotaggerrName: "Autotaggerr", AutotaggerrVersion: "test"}
-	scanRunner := process.NewRunner(db, nil, cfg)
+	scanRunner := process.NewRunner(db, cfg)
 	return initRouter(db, scanRunner, mirror.NewRunner(db, func() bool { return scanRunner.Status().Running }, cfg), artwork.NewRunner(db, cfg), tempo.NewRunner(db, scanRunner.WritingFiles, cfg), cfg)
 }
 

@@ -11,7 +11,7 @@ import (
 // asked, the status says it is stopping while it does, and the queue behind it still
 // runs — stopping one run is not clearing the queue.
 func TestCancelStopsTheRunningJob(t *testing.T) {
-	r := NewRunner(newTestDB(t), nil, models.ConfigStruct{AutotaggerrVersion: "test"})
+	r := NewRunner(newTestDB(t), models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	if _, ok := r.CancelCurrent(); ok {
 		t.Fatal("cancelled something with nothing running")

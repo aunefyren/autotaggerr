@@ -9,19 +9,34 @@ import (
 	"github.com/aunefyren/autotaggerr/events"
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"gorm.io/gorm"
 )
 
-// plexRefreshMock serves the one endpoint flushPlex reaches — the album refresh — and
-// counts the calls. Seeding the refresh set with album keys skips Plex's section and
-// album resolution entirely, which is what keeps this to a single route.
-func plexRefreshMock(t *testing.T, hits *int32) *modules.PlexClient {
+// plexRefreshMock is a media server row whose server serves the one endpoint
+// flushPlex reaches — the album refresh — answering status and counting the calls.
+// Seeding the refresh set with album keys skips Plex's section and album resolution
+// entirely, which is what keeps this to a single route. Returns the row's ID.
+func plexRefreshMock(t *testing.T, db *gorm.DB, name string, status int, hits *int32) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(hits, 1)
-		w.WriteHeader(http.StatusOK)
+		w.WriteHeader(status)
 	}))
 	t.Cleanup(server.Close)
-	return modules.NewPlexClient(server.URL, "token")
+	row := models.MediaServer{Name: name, Type: models.MediaServerTypePlex, Enabled: true, BaseURL: server.URL, Token: "token"}
+	if err := db.Create(&row).Error; err != nil {
+		t.Fatal(err)
+	}
+	return row.ID.String()
+}
+
+// refreshSetOf is a refresh set holding albums (name -> key) on one server.
+func refreshSetOf(serverID string, albums map[string]string) *modules.AlbumRefreshSet {
+	set := modules.NewAlbumRefreshSet()
+	for name, key := range albums {
+		set.Add(serverID, name, key)
+	}
+	return set
 }
 
 // TestFlushPlexParentsItsEvent pins where a Plex refresh sits in the feed: under the run
@@ -31,10 +46,11 @@ func plexRefreshMock(t *testing.T, hits *int32) *modules.PlexClient {
 func TestFlushPlexParentsItsEvent(t *testing.T) {
 	db := newTestDB(t)
 	var hits int32
-	r := NewRunner(db, plexRefreshMock(t, &hits), models.ConfigStruct{AutotaggerrVersion: "test"})
+	server := plexRefreshMock(t, db, "Plex", http.StatusOK, &hits)
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	parent := events.Begin(db, models.EventTypeTagFiles, "Tag 2 attached files")
-	set := modules.NewAlbumRefreshSet(map[string]string{
+	set := refreshSetOf(server, map[string]string{
 		"Album One": "/library/metadata/1",
 		"Album Two": "/library/metadata/2",
 	})
@@ -66,10 +82,11 @@ func TestFlushPlexParentsItsEvent(t *testing.T) {
 func TestFlushPlexSkipsAnEmptySet(t *testing.T) {
 	db := newTestDB(t)
 	var hits int32
-	r := NewRunner(db, plexRefreshMock(t, &hits), models.ConfigStruct{AutotaggerrVersion: "test"})
+	plexRefreshMock(t, db, "Plex", http.StatusOK, &hits)
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	parent := events.Begin(db, models.EventTypeTagFiles, "Tag 1 attached file")
-	r.flushPlex(modules.NewAlbumRefreshSet(nil), parent)
+	r.flushPlex(modules.NewAlbumRefreshSet(), parent)
 
 	if got := atomic.LoadInt32(&hits); got != 0 {
 		t.Errorf("Plex called %d time(s) for an empty set, want 0", got)
@@ -88,10 +105,11 @@ func TestFlushPlexSkipsAnEmptySet(t *testing.T) {
 func TestFlushPlexRecordsEachAlbum(t *testing.T) {
 	db := newTestDB(t)
 	var hits int32
-	r := NewRunner(db, plexRefreshMock(t, &hits), models.ConfigStruct{AutotaggerrVersion: "test"})
+	server := plexRefreshMock(t, db, "Plex", http.StatusOK, &hits)
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	parent := events.Begin(db, models.EventTypeProcess, "Processing music")
-	r.flushPlex(modules.NewAlbumRefreshSet(map[string]string{
+	r.flushPlex(refreshSetOf(server, map[string]string{
 		"Spirit of Eden": "/library/metadata/1",
 		"Laughing Stock": "/library/metadata/2",
 	}), parent)
@@ -134,14 +152,12 @@ func TestFlushPlexRecordsEachAlbum(t *testing.T) {
 // and why" was unanswerable from the UI.
 func TestFlushPlexRecordsAFailure(t *testing.T) {
 	db := newTestDB(t)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-	}))
-	t.Cleanup(server.Close)
-	r := NewRunner(db, modules.NewPlexClient(server.URL, "token"), models.ConfigStruct{AutotaggerrVersion: "test"})
+	var hits int32
+	server := plexRefreshMock(t, db, "Plex", http.StatusInternalServerError, &hits)
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
 
 	parent := events.Begin(db, models.EventTypeProcess, "Processing music")
-	r.flushPlex(modules.NewAlbumRefreshSet(map[string]string{"Spirit of Eden": "/library/metadata/1"}), parent)
+	r.flushPlex(refreshSetOf(server, map[string]string{"Spirit of Eden": "/library/metadata/1"}), parent)
 
 	var ev models.Event
 	if err := db.Where("type = ?", models.EventTypePlexRefresh).First(&ev).Error; err != nil {
@@ -156,5 +172,46 @@ func TestFlushPlexRecordsAFailure(t *testing.T) {
 	}
 	if items[0].Status != models.EventItemStatusError || items[0].Error == "" {
 		t.Errorf("failed album row = %+v, want an error status and a reason", items[0])
+	}
+}
+
+// TestFlushPlexSendsEachAlbumToItsServer: an album queued on two servers is two
+// refreshes, each to the server it was found on, and each row then names its server.
+// A server removed between the run and the flush fails its rows rather than sending
+// them anywhere else.
+func TestFlushPlexSendsEachAlbumToItsServer(t *testing.T) {
+	db := newTestDB(t)
+	var homeHits, cabinHits int32
+	home := plexRefreshMock(t, db, "Home", http.StatusOK, &homeHits)
+	cabin := plexRefreshMock(t, db, "Cabin", http.StatusOK, &cabinHits)
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
+
+	set := modules.NewAlbumRefreshSet()
+	set.Add(home, "Spirit of Eden", "/library/metadata/1")
+	set.Add(cabin, "Spirit of Eden", "/library/metadata/77")
+	set.Add("gone", "Laughing Stock", "/library/metadata/2")
+	r.flushPlex(set, events.Begin(db, models.EventTypeProcess, "Processing music"))
+
+	if atomic.LoadInt32(&homeHits) != 1 || atomic.LoadInt32(&cabinHits) != 1 {
+		t.Errorf("refreshes = home %d, cabin %d; want one each", homeHits, cabinHits)
+	}
+	var ev models.Event
+	if err := db.Where("type = ?", models.EventTypePlexRefresh).First(&ev).Error; err != nil {
+		t.Fatalf("no plex_refresh event: %v", err)
+	}
+	items, _ := events.Items(db, ev.ID)
+	got := map[string]string{}
+	for _, it := range items {
+		got[it.Path] = it.Status
+	}
+	want := map[string]string{
+		"Spirit of Eden · Home":  models.EventItemStatusRefreshed,
+		"Spirit of Eden · Cabin": models.EventItemStatusRefreshed,
+		"Laughing Stock":         models.EventItemStatusError,
+	}
+	for path, status := range want {
+		if got[path] != status {
+			t.Errorf("row %q = %q, want %q (rows: %v)", path, got[path], status, got)
+		}
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/sirupsen/logrus"
@@ -18,6 +19,24 @@ var autotaggerrVersionParameter = "{{RELEASE_TAG}}"
 var configDirectoryPath, _ = filepath.Abs("./config/")
 var configFilePath = filepath.Join(configDirectoryPath, "config.json")
 var ConfigFile = models.ConfigStruct{}
+
+// LegacyPlex is the Plex server an older config.json named, read once by LoadConfig so
+// startup can seed it as a media server row (database.MigrateLegacyPlex). SaveConfig
+// keeps writing the two keys while it is set, so a boot that fails before the seed
+// does not lose them; ClearLegacyPlex drops them once the row exists.
+var LegacyPlex struct {
+	BaseURL string
+	Token   string
+}
+
+// ClearLegacyPlex forgets the legacy Plex keys and rewrites config.json without them.
+func ClearLegacyPlex() error {
+	if LegacyPlex.BaseURL == "" && LegacyPlex.Token == "" {
+		return nil
+	}
+	LegacyPlex.BaseURL, LegacyPlex.Token = "", ""
+	return SaveConfig()
+}
 
 // SetConfigPaths points the package at a different config directory and returns a
 // function that restores the previous one. It exists as a seam for tests in other
@@ -57,6 +76,17 @@ func LoadConfig() (err error) {
 	if err != nil {
 		fmt.Println("get config file threw error trying to parse the file")
 		return err
+	}
+	LegacyPlex.BaseURL, LegacyPlex.Token = "", ""
+	if _, err := file.Seek(0, 0); err == nil {
+		var legacy struct {
+			PlexBaseURL string `json:"plex_base_url"`
+			PlexToken   string `json:"plex_token"`
+		}
+		if json.NewDecoder(file).Decode(&legacy) == nil {
+			LegacyPlex.BaseURL = strings.TrimSpace(legacy.PlexBaseURL)
+			LegacyPlex.Token = strings.TrimSpace(legacy.PlexToken)
+		}
 	}
 
 	anythingChanged := false
@@ -322,6 +352,11 @@ func SaveConfig() error {
 	var sorted map[string]any
 	if err := sorter.Decode(&sorted); err != nil {
 		return err
+	}
+	// Kept until startup has turned them into a media server row (see LegacyPlex).
+	if LegacyPlex.BaseURL != "" || LegacyPlex.Token != "" {
+		sorted["plex_base_url"] = LegacyPlex.BaseURL
+		sorted["plex_token"] = LegacyPlex.Token
 	}
 
 	file, err := os.OpenFile(configFilePath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
