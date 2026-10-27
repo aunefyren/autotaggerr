@@ -9,6 +9,7 @@ import { ItemDiffModal } from "../components/ItemDiff";
 import { AttachModal } from "../components/AttachModal";
 import { BulkAttachModal } from "../components/BulkAttachModal";
 import { MBLink } from "../components/MBLink";
+import { SetReleaseGroupModal } from "../components/ReleaseGroupEdit";
 import { FailureLine, ItemStatusPill } from "../components/ItemStatus";
 
 const PAGE = 50;
@@ -59,6 +60,7 @@ export default function Items() {
   const [attaching, setAttaching] = useState<LibraryItem | null>(null);
   const [picked, setPicked] = useState<string[]>([]);
   const [bulk, setBulk] = useState(false);
+  const [settingGroup, setSettingGroup] = useState(false);
   const [releasing, setReleasing] = useState<LibraryItem | null>(null);
   const [busy, setBusy] = useState("");
   const toast = useToast();
@@ -95,6 +97,9 @@ export default function Items() {
   const attachable = items.filter(canAttach);
   const allPicked = attachable.length > 0 && picked.length === attachable.length;
   const pickedItems = items.filter((it) => picked.includes(it.id));
+  // Selection follows attach, but a detached artist's file in a Lidarr library is
+  // attachable while its release group is still Lidarr's to record.
+  const groupBlocked = pickedItems.some((it) => !it.release_group_editable);
 
   // Keeping a held pin confirms the hand-chosen identity for the audio the file holds
   // now, and writes it — the same outcome as attaching again, without re-picking.
@@ -173,6 +178,14 @@ export default function Items() {
           <span className="dim" style={{ fontSize: 12 }}>{picked.length} selected</span>
           <div className="row">
             <button className="btn btn-ghost btn-sm" onClick={() => setPicked([])}>Clear</button>
+            <button
+              className="btn btn-secondary btn-sm"
+              disabled={groupBlocked}
+              title={groupBlocked ? "Some of these files are in a Lidarr library, which records their release group." : undefined}
+              onClick={() => setSettingGroup(true)}
+            >
+              Set release group…
+            </button>
             <button className="btn btn-primary btn-sm" onClick={() => setBulk(true)}>
               Attach {picked.length} to one release…
             </button>
@@ -206,6 +219,7 @@ export default function Items() {
                   </th>
                   <th>Path</th>
                   <th>MB release id</th>
+                  <th>Release group</th>
                   <th>Source</th>
                   <th>Status</th>
                   <th style={{ textAlign: "right" }}>Actions</th>
@@ -234,6 +248,9 @@ export default function Items() {
                         <IdChip value={it.mb_release_id} />
                         <MBLink entity="release" mbid={it.mb_release_id} />
                       </div>
+                    </td>
+                    <td className="mono dim" style={{ fontSize: 11 }} title={it.release_group == null ? "Not recorded" : undefined}>
+                      {it.release_group || "—"}
                     </td>
                     <td className="mono dim" style={{ fontSize: 11 }}>
                       {it.correlation_source || "—"}
@@ -311,7 +328,7 @@ export default function Items() {
         </>
       )}
 
-      {selected && <ItemDiffModal item={selected} onClose={() => setSelected(null)} />}
+      {selected && <ItemDiffModal item={selected} onClose={() => setSelected(null)} onChanged={page.reload} />}
 
       {releasing && (
         <ConfirmDialog
@@ -338,6 +355,14 @@ export default function Items() {
           item={attaching}
           onClose={() => setAttaching(null)}
           onAttached={() => { setAttaching(null); page.reload(); }}
+        />
+      )}
+
+      {settingGroup && pickedItems.length > 0 && (
+        <SetReleaseGroupModal
+          items={pickedItems}
+          onClose={() => setSettingGroup(false)}
+          onSaved={() => { setSettingGroup(false); page.reload(); }}
         />
       )}
 

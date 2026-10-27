@@ -126,7 +126,16 @@ Where the release group comes from:
   processing records it, pinned files included, since it describes where a file came from rather
   than which track it is. A track file cached before this was read has none, which reads as
   unknown.
-- A source that does not know the group leaves the recorded one alone. Nothing clears it.
+- **By hand**, on the Items page: the item detail shows it as a row under the file's path, editable
+  in place, and a selection of files takes one value through **Set release group…** — an album
+  usually came from one download (`PUT /item-release-group`, `{item_ids, release_group}`; trimmed,
+  at most 64 characters, empty records none). Saving re-reads the path row, so the new name shows
+  before anything is organised. The Items table has a column for it, so the files with none stand out.
+  **Refused (409) in a Lidarr library**, and the listing's `release_group_editable` disables the
+  controls first: processing records Lidarr's group on every run, so a hand-set value would be
+  replaced, and a Lidarr library is never organised anyway. Detach does not lift this as it lifts
+  attach — a detached artist's files are still read from Lidarr, group included.
+- A source that does not know the group leaves the recorded one alone. Only a hand edit clears it.
 
 ## A token may only be used at its own level or below
 

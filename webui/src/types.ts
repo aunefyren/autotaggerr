@@ -219,6 +219,13 @@ export interface LibraryItem {
    * a release of an artist detached from Lidarr. Set only while some artist is detached.
    */
   attach_if_detached?: boolean;
+  /**
+   * The group of the download the file came from ("GRP"), what {Release Group} renders.
+   * Absent when never recorded; "" when recorded as none.
+   */
+  release_group?: string | null;
+  /** False in a Lidarr library, which records the release group itself. */
+  release_group_editable: boolean;
 }
 
 /** One hit from the MusicBrainz release search used by manual attach. */

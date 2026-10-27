@@ -2,13 +2,14 @@ import { api } from "../api";
 import { useFetch } from "../hooks";
 import { ItemTags, ItemTempo, LibraryItem, PathDiff } from "../types";
 import { Modal, StatusPill } from "./ui";
+import { ReleaseGroupRow } from "./ReleaseGroupEdit";
 
 // ItemDiffModal is the signature view: one monospace row per tag, showing the
 // current on-disk value vs what Autotaggerr would write (git-style old → new).
-export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: () => void }) {
+export function ItemDiffModal({ item, onClose, onChanged }: { item: LibraryItem; onClose: () => void; onChanged?: () => void }) {
   return (
     <Modal title="File tags" onClose={onClose} wide>
-      <ItemDiffBody item={item} />
+      <ItemDiffBody item={item} onChanged={onChanged} />
     </Modal>
   );
 }
@@ -16,10 +17,11 @@ export function ItemDiffModal({ item, onClose }: { item: LibraryItem; onClose: (
 /**
  * The tag diff without its modal: the Items page opens it as one, the Items modal
  * opens it in a row disclosure under the file — never as a second modal on top.
- * `showPath` is off where the row above already shows the path.
+ * `showPath` is off where the row above already shows the path. `onChanged` hears of an
+ * edit made here (the release group), for a list that shows it.
  */
-export function ItemDiffBody({ item, showPath = true }: { item: LibraryItem; showPath?: boolean }) {
-  const { data, err, loading } = useFetch<ItemTags>(() => api.get(`/library-items/${item.id}/tags`), [item.id]);
+export function ItemDiffBody({ item, showPath = true, onChanged }: { item: LibraryItem; showPath?: boolean; onChanged?: () => void }) {
+  const { data, err, loading, reload } = useFetch<ItemTags>(() => api.get(`/library-items/${item.id}/tags`), [item.id]);
   const changed = data?.tags.filter((t) => t.changed).length ?? 0;
 
   return (
@@ -39,7 +41,18 @@ export function ItemDiffBody({ item, showPath = true }: { item: LibraryItem; sho
       {loading && <div className="muted">Loading…</div>}
       {err && <div className="help-err">{err}</div>}
 
-      {data && (data.path || data.path_error) && <PathRow path={data.path} error={data.path_error} />}
+      {/* The release group sits under the path it helps name, and saving it re-reads
+          the diff so the path row shows where the file would go now. */}
+      <div className="diff" style={{ marginBottom: 14 }}>
+        {data && (data.path || data.path_error) && <PathRow path={data.path} error={data.path_error} />}
+        <ReleaseGroupRow
+          item={item}
+          onSaved={() => {
+            reload();
+            onChanged?.();
+          }}
+        />
+      </div>
 
       {data && (
         <div className="scroll diff">
@@ -71,22 +84,20 @@ export function ItemDiffBody({ item, showPath = true }: { item: LibraryItem; sho
  */
 function PathRow({ path, error }: { path?: PathDiff; error?: string }) {
   return (
-    <div className="diff" style={{ marginBottom: 14 }}>
-      <div className="diffrow">
-        <span className="diffkey">Path</span>
-        <div className="diffvals">
-          {!path ? (
-            <span className="diffv none">{error}</span>
-          ) : path.changed ? (
-            <>
-              <span className="diffv rem">{path.current}</span>
-              <span className="diffv add">{path.desired}</span>
-            </>
-          ) : (
-            <span className="diffv same">{path.current}</span>
-          )}
-          {path?.note && <span className="dim" style={{ fontFamily: "var(--font-sans)", fontSize: 11 }}>{path.note}</span>}
-        </div>
+    <div className="diffrow">
+      <span className="diffkey">Path</span>
+      <div className="diffvals">
+        {!path ? (
+          <span className="diffv none">{error}</span>
+        ) : path.changed ? (
+          <>
+            <span className="diffv rem">{path.current}</span>
+            <span className="diffv add">{path.desired}</span>
+          </>
+        ) : (
+          <span className="diffv same">{path.current}</span>
+        )}
+        {path?.note && <span className="dim" style={{ fontFamily: "var(--font-sans)", fontSize: 11 }}>{path.note}</span>}
       </div>
     </div>
   );

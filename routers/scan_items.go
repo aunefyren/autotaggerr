@@ -508,10 +508,17 @@ func (a *API) libraryItems(f itemFilter) (itemPage, error) {
 	if err != nil {
 		logger.Log.Warnf("list items: failed to read whether any artist is detached: %s", err.Error())
 	}
+	// Whether the download's release group may be set by hand: the library's answer
+	// alone, failing closed like the identity flag.
+	groupEditable, err := a.librariesReleaseGroupEditable(items)
+	if err != nil {
+		logger.Log.Warnf("list items: failed to resolve who records these files' release group: %s", err.Error())
+	}
 	views := make([]libraryItemView, 0, len(items))
 	for _, item := range items {
 		views = append(views, libraryItemView{LibraryItem: item, IdentityEditable: editable[item.ID],
-			AttachIfDetached: anyDetached && !editable[item.ID] && item.MBReleaseID == ""})
+			AttachIfDetached:     anyDetached && !editable[item.ID] && item.MBReleaseID == "",
+			ReleaseGroupEditable: groupEditable[item.LibraryID]})
 	}
 	return itemPage{Total: total, Limit: limit, Offset: offset, Items: views}, nil
 }
@@ -526,6 +533,9 @@ type libraryItemView struct {
 	// Lidarr library — but has no identity yet, so it may be attached to a release of
 	// an artist detached from Lidarr. The UI offers the attach and says so.
 	AttachIfDetached bool `json:"attach_if_detached,omitempty"`
+	// ReleaseGroupEditable: the download's release group may be set by hand
+	// (PUT /item-release-group) — false in a Lidarr library, which records it.
+	ReleaseGroupEditable bool `json:"release_group_editable"`
 }
 
 // itemTags returns the current-vs-desired tag diff for one indexed file.

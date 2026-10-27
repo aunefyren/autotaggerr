@@ -186,6 +186,10 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// What the selected files say about their edition, to mark in the release search.
 		protected.POST("/attach/clues", a.attachClues)
 
+		// The download's release group ({Release Group}), set by hand on one file or
+		// many. Its own prefix for the same reason as bulk attach.
+		protected.PUT("/item-release-group", a.setReleaseGroup)
+
 		// AcoustID: suggests what an unmatched file is. Suggestion only — it never
 		// writes a correlation, so it feeds the attach picker above.
 		protected.GET("/identify", a.identifyAvailability)
