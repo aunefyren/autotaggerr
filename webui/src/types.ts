@@ -73,6 +73,8 @@ export interface TaggerProfile {
   custom_artist_delimiter: string;
   max_genres: number;
   mp3_multi_value_tags: boolean;
+  /** Write only the first record label MusicBrainz lists — Plex shows one. */
+  single_record_label: boolean;
   /** Naming templates; empty means the default (see NamingInfo.defaults). */
   naming_artist_folder: string;
   naming_album_folder: string;

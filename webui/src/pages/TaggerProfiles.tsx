@@ -124,6 +124,7 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
         custom_artist_delimiter: p.custom_artist_delimiter,
         max_genres: p.max_genres,
         mp3_multi_value_tags: p.mp3_multi_value_tags,
+        single_record_label: p.single_record_label,
         naming_artist_folder: stored("artist_folder"),
         naming_album_folder: stored("album_folder"),
         naming_media_folder: stored("media_folder"),
@@ -178,6 +179,19 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
             Uses ID3v2.4's own multi-value form, which Picard, MusicBee, foobar2000 and Navidrome read
             natively. Plex reads tags through ffmpeg, which only sees the first value — so leave this
             off if Plex is your player. FLAC always uses the multi-value form; it costs nothing there.
+          </p>
+        </div>
+        <div className="field">
+          <Check
+            label="Write only one record label"
+            checked={p.single_record_label}
+            onChange={(v) => set({ single_record_label: v })}
+          />
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            Plex shows one record label and runs several together as one it cannot group by
+            (<span className="mono">APESHIT;EMPIRE;Mass Appeal</span>). On, files get only the first label
+            MusicBrainz lists — the order its editors entered them in, which usually leads with the label the
+            release is known by. Applies to FLAC and MP3; catalogue numbers are kept in full.
           </p>
         </div>
         {naming.err && <ErrorNote message={naming.err} />}

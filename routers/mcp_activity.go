@@ -182,6 +182,7 @@ type mcpTaggerProfileRow struct {
 	WriteTags          bool   `json:"write_tags"`
 	MaxGenres          int    `json:"max_genres"`
 	MP3MultiValueTags  bool   `json:"mp3_multi_value_tags"`
+	SingleRecordLabel  bool   `json:"single_record_label"`
 	NamingArtistFolder string `json:"naming_artist_folder,omitempty"`
 	NamingAlbumFolder  string `json:"naming_album_folder,omitempty"`
 	NamingMediaFolder  string `json:"naming_media_folder,omitempty"`
@@ -318,7 +319,7 @@ func (a *API) mcpGetConfiguration(_ context.Context, _ *mcp.CallToolRequest, _ m
 	out.TaggerProfiles = make([]mcpTaggerProfileRow, 0, len(profiles))
 	for _, p := range profiles {
 		out.TaggerProfiles = append(out.TaggerProfiles, mcpTaggerProfileRow{
-			ID: p.ID.String(), Name: p.Name, WriteTags: p.WriteTags, MaxGenres: p.MaxGenres, MP3MultiValueTags: p.MP3MultiValueTags,
+			ID: p.ID.String(), Name: p.Name, WriteTags: p.WriteTags, MaxGenres: p.MaxGenres, MP3MultiValueTags: p.MP3MultiValueTags, SingleRecordLabel: p.SingleRecordLabel,
 			NamingArtistFolder: p.NamingArtistFolder, NamingAlbumFolder: p.NamingAlbumFolder,
 			NamingMediaFolder: p.NamingMediaFolder, NamingTrackFile: p.NamingTrackFile,
 		})

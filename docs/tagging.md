@@ -250,6 +250,30 @@ even though the format could carry more.
 Before `ALBUMARTISTS` existed the names disagreed with `MUSICBRAINZ_ALBUMARTISTID`, which has
 always listed every credited artist's MBID.
 
+## Record labels
+
+`LABEL` (FLAC) and `TPUB` (MP3) carry every label MusicBrainz lists for the release, **in
+MusicBrainz's order**, which is the order its editors entered them. It is not alphabetical:
+*Oxnard*'s CD lists Aftermath Entertainment, 12Tone Music, OBE. Catalogue numbers go to
+`CATALOGNUMBER` the same way, collected separately so an entry with only one of the two never
+shifts the other list.
+
+**Plex has room for one.** Its Record Label is a single value, and given several labels ffmpeg
+hands it the joined string, `APESHIT;EMPIRE;Mass Appeal`. Plex shows that as one label, and groups
+by it as one label that no other album shares. Genres do not suffer this, because Plex splits a
+joined genre string itself; it does not split a label. That is the `ALBUMARTIST` situation, and the
+answer is the same shape. The tagger profile's `single_record_label` writes only the first label,
+on FLAC and MP3 alike. That is the first one *named*: an entry with a catalogue number and no label
+is skipped, not written as an empty tag. Catalogue numbers stay in full, since Plex does not show
+them. It is off by default, because the full list is what every other reader wants and is what
+MusicBrainz says.
+
+`SingleRecordLabel` is `omitempty` in `TaggerSettings`, and the reason is the fingerprint.
+`Tagger.Fingerprint` hashes the settings as JSON, so a new field present while off would have
+changed every profile's fingerprint and re-processed the whole library for a setting nobody had
+turned on. Switching it on changes the fingerprint, and files re-tag once. Tests:
+`TestSingleRecordLabel`, `TestSingleRecordLabelIsNotInTheFingerprintWhileOff`.
+
 ## Diff before write
 
 `modules.BuildFileTags` computes the desired tags and `DiffFileTags` compares them with what is on

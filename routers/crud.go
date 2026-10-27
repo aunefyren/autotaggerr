@@ -392,6 +392,7 @@ type taggerProfileInput struct {
 	IgnoreRedundantContributingArtists *bool   `json:"ignore_redundant_contributing_artists"`
 	MaxGenres                          *int    `json:"max_genres"`
 	MP3MultiValueTags                  *bool   `json:"mp3_multi_value_tags"`
+	SingleRecordLabel                  *bool   `json:"single_record_label"`
 	NamingArtistFolder                 *string `json:"naming_artist_folder"`
 	NamingAlbumFolder                  *string `json:"naming_album_folder"`
 	NamingMediaFolder                  *string `json:"naming_media_folder"`
@@ -428,6 +429,9 @@ func (in taggerProfileInput) apply(p *models.TaggerProfile) {
 	}
 	if in.MP3MultiValueTags != nil {
 		p.MP3MultiValueTags = *in.MP3MultiValueTags
+	}
+	if in.SingleRecordLabel != nil {
+		p.SingleRecordLabel = *in.SingleRecordLabel
 	}
 	if in.NamingArtistFolder != nil {
 		p.NamingArtistFolder = strings.TrimSpace(*in.NamingArtistFolder)

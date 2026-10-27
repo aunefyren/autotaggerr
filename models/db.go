@@ -343,6 +343,9 @@ type TaggerProfile struct {
 	// Off by default; see TaggerSettings.MP3MultiValueTags for why it is a choice at
 	// all rather than simply correct.
 	MP3MultiValueTags bool `json:"mp3_multi_value_tags"`
+	// SingleRecordLabel writes only the first of a release's labels; see
+	// TaggerSettings.SingleRecordLabel.
+	SingleRecordLabel bool `json:"single_record_label"`
 	// The naming templates: where a file belongs under its library root, one template
 	// per path level. Empty means the default (see NamingTemplates), so a profile row
 	// predating the columns names files the way the layout convention always has.
@@ -393,6 +396,18 @@ type TaggerSettings struct {
 	// joins repeated Vorbis comments on read, so the spec-correct form costs nothing
 	// there and is unconditional (see docs/tagging.md).
 	MP3MultiValueTags bool
+	// SingleRecordLabel writes only the first label MusicBrainz lists for a release,
+	// in FLAC and MP3 alike. Off (the default) writes every label.
+	//
+	// Plex's Record Label is one value: given several, ffmpeg hands it a joined string
+	// ("APESHIT;EMPIRE;Mass Appeal") that it shows, and groups by, as one label no other
+	// album shares. "First" is MusicBrainz's order, which is the order editors entered
+	// the labels in — not alphabetical, and usually the label the release is known by.
+	// Catalogue numbers stay multi-valued: Plex does not show them.
+	//
+	// omitempty keeps it out of Tagger.Fingerprint while off, so adding the field did
+	// not change every existing profile's fingerprint and re-process every file.
+	SingleRecordLabel bool `json:",omitempty"`
 	// BPMWrite and BPMMinConfidence govern the BPM tag. They come from the library,
 	// not the profile (Library.BPMWrite); components.Tagger merges them in.
 	BPMWrite         string
@@ -410,6 +425,7 @@ func (t TaggerProfile) Settings() TaggerSettings {
 		IgnoreRedundantContributingArtists: t.IgnoreRedundantContributingArtists,
 		MaxGenres:                          t.MaxGenres,
 		MP3MultiValueTags:                  t.MP3MultiValueTags,
+		SingleRecordLabel:                  t.SingleRecordLabel,
 	}
 }
 

@@ -743,6 +743,13 @@ func BuildFileTags(
 		labelNames = append(labelNames, recordLabel.Label.Name)
 		catalogNumbers = append(catalogNumbers, recordLabel.CatalogNumber)
 	}
+	labelNames = utilities.NormalizeTagValues(labelNames)
+	// Plex shows one record label (see TaggerSettings.SingleRecordLabel). The first
+	// is MusicBrainz's first, after blanks are dropped, so an entry with only a
+	// catalogue number never leaves the tag empty.
+	if tagger.SingleRecordLabel && len(labelNames) > 1 {
+		labelNames = labelNames[:1]
+	}
 
 	metadata := models.FileTags{
 		Artist:                trackArtist,
