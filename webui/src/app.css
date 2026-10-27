@@ -262,3 +262,109 @@
 .note-ok strong { color: var(--success-text); }
 .note-warn { background: var(--warning-bg); border-left-color: var(--warning); }
 .note-warn strong { color: var(--warning-text); }
+
+/* Settings: an index of pages beside one page at a time (pages/settings). The index is
+   a second-level nav, so it borrows the sidebar's selection treatment at a smaller size;
+   below 760px it is replaced by a select above the page. */
+.settings-find { width: 240px; }
+.settings-layout { display: grid; grid-template-columns: 188px minmax(0, 1fr); gap: var(--space-8); align-items: start; }
+.settings-index { position: sticky; top: var(--space-6); display: flex; flex-direction: column; gap: var(--space-6); }
+.settings-index-group { display: flex; flex-direction: column; gap: 1px; }
+.settings-index-item {
+  position: relative; display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  height: 30px; padding: 0 10px; border-radius: var(--radius);
+  color: var(--text-muted); font-size: 13px;
+}
+.settings-index-item:hover { background: var(--surface-2); color: var(--text); text-decoration: none; }
+.settings-index-item.active { background: var(--accent-subtle); color: var(--accent-text); }
+.settings-index-item.active::before {
+  content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 2px;
+  background: var(--accent); border-radius: 2px;
+}
+/* Unsaved edits on that page: the count the save bar totals, placed where they are. */
+.settings-index-dirty {
+  min-width: 18px; height: 18px; padding: 0 5px; border-radius: var(--radius-pill);
+  background: var(--accent); color: var(--on-accent);
+  font-family: var(--font-mono); font-size: 11px; line-height: 18px; text-align: center;
+}
+.settings-index-select { display: none; }
+.settings-page-title { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+.settings-page-intro { margin: 4px 0 0; font-size: 13px; max-width: 72ch; }
+.settings-section-intro { margin: 4px 0 0; font-size: 12px; max-width: 76ch; }
+.settings-section { scroll-margin-top: var(--space-6); }
+/* A page of one section has no card heading, so its first row has nothing to rule off. */
+.settings-section > .setting-row:first-child { border-top: 0; padding-top: 0; }
+@media (max-width: 760px) {
+  .settings-layout { grid-template-columns: 1fr; gap: var(--space-5); }
+  .settings-index { display: none; }
+  .settings-index-select { display: block; }
+  .settings-find { width: 100%; }
+}
+
+/* A schedule's reading under its input: the sentence, then the next runs. */
+.cron-reading { display: flex; flex-direction: column; gap: 1px; }
+.cron-summary { font-size: 12px; color: var(--text); }
+.cron-next { font-size: 11px; color: var(--text-dim); }
+
+/* The day strip (Settings → Background jobs): every schedule on one 24-hour clock.
+   A lane per job; a point per time of day it fires, tagged with the weekday when it is
+   not daily; a hatched band for a job too frequent to draw as points — the stripes are
+   the runs. Lanes of a switched-off job draw hollow. The dashed line is the server's now. */
+.daystrip { display: flex; flex-direction: column; gap: var(--space-5); }
+.daystrip-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.daystrip-body { display: grid; grid-template-columns: 148px minmax(0, 1fr); gap: var(--space-5); }
+.daystrip-labels { display: flex; flex-direction: column; }
+.daystrip-label {
+  display: block; height: 30px; line-height: 30px; padding: 0;
+  background: none; border: 0; color: var(--text-muted); font: inherit; font-size: 12px;
+  text-align: left; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.daystrip-label:hover { color: var(--text); }
+.daystrip-label:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: var(--radius-sm); }
+.daystrip-label.is-off { color: var(--text-dim); }
+.daystrip-off { margin-left: 6px; font-size: 11px; color: var(--text-dim); }
+.daystrip-axis-spacer { height: 18px; }
+.daystrip-lanes { position: relative; }
+.daystrip-lane {
+  position: relative; height: 30px;
+  /* A gridline every three hours, matching the axis ticks. */
+  background: repeating-linear-gradient(to right, var(--border) 0 1px, transparent 1px 12.5%);
+}
+.daystrip-lane::before {
+  content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 1px; background: var(--surface-3);
+}
+.daystrip-lane.is-dirty { box-shadow: -2px 0 0 var(--accent); }
+.daystrip-mark {
+  position: absolute; top: 50%; width: 10px; height: 10px; margin: -5px 0 0 -5px;
+  border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+.daystrip-lane.is-off .daystrip-mark { background: var(--surface-1); border: 1.5px solid var(--text-dim); box-shadow: none; }
+.daystrip-tag {
+  position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
+  font-size: 11px; color: var(--text); white-space: nowrap; pointer-events: none;
+}
+.daystrip-tag.tag-left { left: auto; right: 14px; }
+.daystrip-lane.is-off .daystrip-tag { color: var(--text-dim); }
+.daystrip-band {
+  position: absolute; left: 0; right: 0; top: 8px; bottom: 8px; border-radius: var(--radius-sm);
+  background: repeating-linear-gradient(to right, var(--accent-subtle) 0 3px, transparent 3px 7px);
+  display: flex; align-items: center; justify-content: center;
+}
+.daystrip-band span {
+  font-size: 11px; color: var(--text-muted); background: var(--surface-1);
+  padding: 0 6px; border-radius: var(--radius-sm);
+}
+.daystrip-lane.is-off .daystrip-band { background: repeating-linear-gradient(to right, var(--surface-2) 0 3px, transparent 3px 7px); }
+.daystrip-note { position: absolute; left: 0; top: 50%; transform: translateY(-50%); font-size: 11px; color: var(--danger-text); }
+.daystrip-axis { position: relative; height: 18px; }
+.daystrip-axis span {
+  position: absolute; top: 4px; transform: translateX(-50%);
+  font-family: var(--font-mono); font-size: 10px; color: var(--text-dim);
+}
+.daystrip-axis span:first-child { transform: none; }
+.daystrip-axis span:last-child { transform: translateX(-100%); }
+.daystrip-now { position: absolute; top: 0; bottom: 18px; border-left: 1px dashed var(--text-muted); pointer-events: none; }
+@media (max-width: 760px) {
+  .daystrip-body { grid-template-columns: 92px minmax(0, 1fr); gap: var(--space-4); }
+  .daystrip-tag { display: none; }
+}

@@ -18,7 +18,7 @@ that acts on it sensibly.
 
 The endpoint is **`/api/v1/mcp`** (Streamable HTTP). It takes the same API keys as the REST API.
 
-1. **Settings → AI assistants (MCP) → Create key**: a name, and *Read only* or *Read & write*. The key
+1. **Account → API keys → Create key**: a name, and *Read only* or *Read & write*. The key
    is shown once, there, with ready-to-paste client config.
 2. Give the client the URL and the key. Claude Code:
    ```bash

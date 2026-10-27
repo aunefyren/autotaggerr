@@ -58,6 +58,9 @@ type Field struct {
 	Tier        string   `json:"tier"`
 	Options     []string `json:"options,omitempty"`
 	Placeholder string   `json:"placeholder,omitempty"`
+	// EnabledBy names the bool field that switches a schedule's job on, for a cron
+	// field that has one, so the page can show a schedule that will not run as off.
+	EnabledBy string `json:"enabled_by,omitempty"`
 
 	// get reads the field's current value in the shape the UI wants.
 	get func(models.ConfigStruct) any
@@ -69,12 +72,40 @@ type Field struct {
 
 // Section groups fields by what they do, which is the only grouping a reader of the
 // page can act on. The order of sections and of fields within them is the order the
-// page renders.
+// page renders. Page is the Pages() entry the section is shown on.
 type Section struct {
 	ID          string  `json:"id"`
+	Page        string  `json:"page"`
 	Title       string  `json:"title"`
 	Description string  `json:"description,omitempty"`
 	Fields      []Field `json:"fields"`
+}
+
+// Page is one screen of the settings page, reached from its index: a route of its own,
+// so fourteen sections are not one scroll. Group is the index heading it sits under.
+// A page is named for what a visitor comes to do — Background jobs gathers every
+// schedule, because "when does X run" is asked across the jobs, not of one of them.
+type Page struct {
+	ID          string `json:"id"`
+	Group       string `json:"group"`
+	Title       string `json:"title"`
+	Description string `json:"description,omitempty"`
+}
+
+// Pages returns the settings pages in index order. Every section names one, and every
+// page has a section (TestEverySectionHasAPage).
+func Pages() []Page {
+	return []Page{
+		{ID: "instance", Group: "General", Title: "Instance"},
+		{ID: "jobs", Group: "General", Title: "Background jobs",
+			Description: "Everything that runs on its own: when, and how hard. Schedules are six-field cron, starting with seconds, in the server's timezone."},
+		{ID: "logs", Group: "General", Title: "Logs & Activity"},
+		{ID: "storage", Group: "General", Title: "Storage"},
+		{ID: "migrations", Group: "Review & safety", Title: "Metadata migrations"},
+		{ID: "pins", Group: "Review & safety", Title: "Manual identifications"},
+		{ID: "mcp", Group: "Connections", Title: "AI assistants"},
+		{ID: "email", Group: "Connections", Title: "Email"},
+	}
 }
 
 // Sections returns the full settings surface. It is a function rather than a package
@@ -83,6 +114,7 @@ func Sections() []Section {
 	return []Section{
 		{
 			ID:          "identity",
+			Page:        "instance",
 			Title:       "Identity",
 			Description: "What this instance calls itself and where it lives.",
 			Fields: []Field{
@@ -125,9 +157,13 @@ func Sections() []Section {
 			},
 		},
 		{
-			ID:          "scanning",
-			Title:       "Scanning",
-			Description: "When libraries are walked and how hard the walk is pushed.",
+			// One card per recurring job on the Background jobs page, each holding its own switch,
+			// schedule and load. The page reads them as a set: its day strip draws every TypeCron
+			// field, hollow where the field's EnabledBy switch is off.
+			ID:          "scan",
+			Page:        "jobs",
+			Title:       "Scan",
+			Description: "Walking each library for new and changed files, identifying them and writing their tags.",
 			Fields: []Field{
 				{
 					Key: "autotaggerr_process_cron_schedule", Label: "Scan schedule", Type: TypeCron, Tier: TierLive,
@@ -142,35 +178,6 @@ func Sections() []Section {
 					get:  func(c models.ConfigStruct) any { return c.AutotaggerrProcessConcurrency },
 					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrProcessConcurrency = v }, intRange(1, 64)),
 				},
-				{
-					Key: "autotaggerr_health_cron_schedule", Label: "Health-check schedule", Type: TypeCron, Tier: TierLive,
-					Help:        "How often the Lidarr/Plex connections are probed. Only a change in health is recorded.",
-					Placeholder: "0 */5 * * * *",
-					get:         func(c models.ConfigStruct) any { return c.AutotaggerrHealthCronSchedule },
-					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrHealthCronSchedule = v }, validCron),
-				},
-				{
-					// Stored as "disabled", shown as "enabled" — the same inversion, for the
-					// same reason, as the metadata refresh switch.
-					Key: "autotaggerr_lidarr_follow_enabled", Label: "Follow Lidarr's changes", Type: TypeBool, Tier: TierLive,
-					Help: "Reads each Lidarr manager's history for files it imported, upgraded, deleted or renamed, and processes those artists again. Off leaves them to the scheduled scan.",
-					get:  func(c models.ConfigStruct) any { return !c.AutotaggerrLidarrFollowDisabled },
-					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrLidarrFollowDisabled = !v }),
-				},
-				{
-					Key: "autotaggerr_lidarr_follow_cron_schedule", Label: "Lidarr follow schedule", Type: TypeCron, Tier: TierLive,
-					Help:        "How often Lidarr's history is read. A pass that finds nothing records nothing.",
-					Placeholder: models.DefaultLidarrFollowCronSchedule,
-					get:         func(c models.ConfigStruct) any { return c.AutotaggerrLidarrFollowCronSchedule },
-					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrLidarrFollowCronSchedule = v }, validCron),
-				},
-				{
-					Key: "autotaggerr_download_poll_cron_schedule", Label: "Download client schedule", Type: TypeCron, Tier: TierLive,
-					Help:        "How often download clients are checked for finished downloads to offer on the Import page. Nothing is imported without a review.",
-					Placeholder: models.DefaultDownloadPollCronSchedule,
-					get:         func(c models.ConfigStruct) any { return c.AutotaggerrDownloadPollCronSchedule },
-					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrDownloadPollCronSchedule = v }, validCron),
-				},
 			},
 		},
 		{
@@ -179,6 +186,7 @@ func Sections() []Section {
 			// presses calls this one thing a metadata refresh, and a settings section
 			// named after the implementation is how a second name gets learned.
 			ID:          "mirror",
+			Page:        "jobs",
 			Title:       "Metadata refresh",
 			Description: "Keeping the local copy of your metadata sources current, so browsing reads it instead of their rate-limited APIs.",
 			Fields: []Field{
@@ -194,6 +202,7 @@ func Sections() []Section {
 				},
 				{
 					Key: "autotaggerr_mirror_cron_schedule", Label: "Refresh schedule", Type: TypeCron, Tier: TierLive,
+					EnabledBy:   "autotaggerr_mirror_enabled",
 					Help:        "Default is nightly at 03:00, away from the weekly scan.",
 					Placeholder: "0 0 3 * * *",
 					get:         func(c models.ConfigStruct) any { return c.AutotaggerrMirrorCronSchedule },
@@ -207,6 +216,7 @@ func Sections() []Section {
 			// budget the metadata refresh never touches. Folding the two schedules into
 			// one section would imply a relationship the code deliberately does not have.
 			ID:          "artwork",
+			Page:        "jobs",
 			Title:       "Artwork refresh",
 			Description: "Fetching album covers and artist images ahead of the pages that show them, so a discography paints from disk instead of downloading a hundred thumbnails while you wait.",
 			Fields: []Field{
@@ -220,6 +230,7 @@ func Sections() []Section {
 				},
 				{
 					Key: "autotaggerr_artwork_cron_schedule", Label: "Fetch schedule", Type: TypeCron, Tier: TierLive,
+					EnabledBy:   "autotaggerr_artwork_enabled",
 					Help:        "Default is nightly at 05:00. New artists and albums fetch their own artwork as they arrive, so this is a backstop rather than the main path.",
 					Placeholder: "0 0 5 * * *",
 					get:         func(c models.ConfigStruct) any { return c.AutotaggerrArtworkCronSchedule },
@@ -232,6 +243,7 @@ func Sections() []Section {
 			// library (Libraries → edit), so the switch lives there. With nothing opted
 			// in, the scheduled pass finds nothing to do and records nothing.
 			ID:          "tempo",
+			Page:        "jobs",
 			Title:       "Tempo analysis",
 			Description: "Detecting each file's BPM from the audio, for the libraries that opt in on the Libraries page. The result is stored, not written: the next processing run or Tag files puts it into the files, as the tagger profile says.",
 			Fields: []Field{
@@ -253,6 +265,7 @@ func Sections() []Section {
 		{
 			// Like tempo: no on/off switch, a library opts in on the Libraries page.
 			ID:          "loudness",
+			Page:        "jobs",
 			Title:       "Loudness analysis",
 			Description: "Measuring ReplayGain (track and album gain) with rsgain, for the libraries that opt in on the Libraries page. The result is stored, not written: the next processing run or Tag files puts it into the files, as the library says.",
 			Fields: []Field{
@@ -266,6 +279,136 @@ func Sections() []Section {
 			},
 		},
 		{
+			ID:          "follow",
+			Page:        "jobs",
+			Title:       "Following Lidarr",
+			Description: "Noticing what Lidarr imported, upgraded, deleted or renamed between scans, and processing those artists again.",
+			Fields: []Field{
+				{
+					// Stored as "disabled", shown as "enabled" — the same inversion, for the
+					// same reason, as the metadata refresh switch.
+					Key: "autotaggerr_lidarr_follow_enabled", Label: "Follow Lidarr's changes", Type: TypeBool, Tier: TierLive,
+					Help: "Reads each Lidarr manager's history for files it imported, upgraded, deleted or renamed, and processes those artists again. Off leaves them to the scheduled scan.",
+					get:  func(c models.ConfigStruct) any { return !c.AutotaggerrLidarrFollowDisabled },
+					set:  setBool(func(c *models.ConfigStruct, v bool) { c.AutotaggerrLidarrFollowDisabled = !v }),
+				},
+				{
+					Key: "autotaggerr_lidarr_follow_cron_schedule", Label: "Lidarr follow schedule", Type: TypeCron, Tier: TierLive,
+					EnabledBy:   "autotaggerr_lidarr_follow_enabled",
+					Help:        "How often Lidarr's history is read. A pass that finds nothing records nothing.",
+					Placeholder: models.DefaultLidarrFollowCronSchedule,
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrLidarrFollowCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrLidarrFollowCronSchedule = v }, validCron),
+				},
+			},
+		},
+		{
+			ID:          "downloads",
+			Page:        "jobs",
+			Title:       "Download clients",
+			Description: "Checking download clients for finished downloads to offer on the Import page.",
+			Fields: []Field{
+				{
+					Key: "autotaggerr_download_poll_cron_schedule", Label: "Download client schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "How often download clients are checked for finished downloads to offer on the Import page. Nothing is imported without a review.",
+					Placeholder: models.DefaultDownloadPollCronSchedule,
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrDownloadPollCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrDownloadPollCronSchedule = v }, validCron),
+				},
+			},
+		},
+		{
+			ID:          "health",
+			Page:        "jobs",
+			Title:       "Health checks",
+			Description: "Probing the connections to managers and media servers.",
+			Fields: []Field{
+				{
+					Key: "autotaggerr_health_cron_schedule", Label: "Health-check schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "How often the Lidarr/Plex connections are probed. Only a change in health is recorded.",
+					Placeholder: "0 */5 * * * *",
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrHealthCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrHealthCronSchedule = v }, validCron),
+				},
+			},
+		},
+		{
+			ID:          "logging",
+			Page:        "logs",
+			Title:       "Logging",
+			Description: "How much the service says about what it is doing.",
+			Fields: []Field{
+				{
+					Key: "autotaggerr_log_level", Label: "Log level", Type: TypeSelect, Tier: TierLive,
+					Options: logLevels(),
+					Help:    "trace and debug are loud enough to matter on a large scan.",
+					get:     func(c models.ConfigStruct) any { return c.AutotaggerrLogLevel },
+					set:     setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrLogLevel = v }, validLogLevel),
+				},
+				{
+					Key: "autotaggerr_environment", Label: "Environment", Type: TypeSelect, Tier: TierRestart,
+					Options: []string{"prod", "test"},
+					Help:    "test keeps Gin in debug mode; prod is what you want in normal use.",
+					get:     func(c models.ConfigStruct) any { return c.AutotaggerrEnvironment },
+					set:     setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrEnvironment = v }, oneOf("prod", "test")),
+				},
+			},
+		},
+		{
+			ID:          "activity",
+			Page:        "logs",
+			Title:       "Activity history",
+			Description: "How much of the Activity feed is kept, and in how much detail.",
+			Fields: []Field{
+				// Both are TierRestart because the two runners resolve retention once, when
+				// they are built. That is deliberate rather than a limitation: a pass that
+				// reports "showing 500 of 3120" counted those rows against the cap it
+				// started with, and moving it underneath a running job would make the pair
+				// a lie.
+				{
+					Key: "autotaggerr_event_retention", Label: "Activity runs kept", Type: TypeInt, Tier: TierRestart,
+					Help: "How far back the Activity feed goes. Counted in runs, so a run's stages are never pruned out from under it.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventRetention },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventRetention = v }, intRange(1, 10000)),
+				},
+				{
+					Key: "autotaggerr_event_retention_days", Label: "Keep Activity for (days)", Type: TypeInt, Tier: TierRestart,
+					Help: "Keep runs by age instead of by count: everything from the last this-many days stays, older runs go, and the count above is ignored. 0 keeps the count.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventRetentionDays },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventRetentionDays = v }, intRange(0, 3650)),
+				},
+				{
+					Key: "autotaggerr_event_detail_retention", Label: "Detail rows per activity", Type: TypeInt, Tier: TierRestart,
+					Help: "Per-file detail kept for one activity. Rows past the cap are still counted, so the total stays honest — but this is what dominates database size on a large library.",
+					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventDetailRetention },
+					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventDetailRetention = v }, intRange(1, 100000)),
+				},
+			},
+		},
+		{
+			ID:    "storage",
+			Page:  "storage",
+			Title: "Storage",
+			Description: "Bootstrap configuration: it is read before anything else, so the running process " +
+				"cannot change it underneath itself. Edit config.json and restart.",
+			Fields: []Field{
+				{
+					Key: "database.type", Label: "Database type", Type: TypeString, Tier: TierReadOnly,
+					get: func(c models.ConfigStruct) any { return c.Database.Type },
+				},
+				{
+					Key: "database.dsn", Label: "Database DSN", Type: TypeString, Tier: TierReadOnly,
+					Help: "A file path for sqlite; a connection string otherwise.",
+					get:  func(c models.ConfigStruct) any { return c.Database.DSN },
+				},
+				{
+					Key: "private_key", Label: "Session signing key", Type: TypeSecret, Tier: TierReadOnly,
+					Help: "Signs session tokens. Generated on first run; replacing it signs everyone out.",
+					get:  func(c models.ConfigStruct) any { return c.PrivateKey },
+				},
+			},
+		},
+		{
 			// Named for what the setting governs, not for who supplies the data. A
 			// metadata source is a component you configure zero, one or several of, and
 			// only MusicBrainz is implemented today — but *whether an identity change
@@ -274,6 +417,7 @@ func Sections() []Section {
 			// would have to be undone by the second, and would read as absent to anyone
 			// running none.
 			ID:    "migrations",
+			Page:  "migrations",
 			Title: "Metadata migrations",
 			Description: "Metadata sources merge and delete entities. Each switch holds that kind of change " +
 				"for your approval instead of applying it; off means it is applied as it is found.",
@@ -305,6 +449,7 @@ func Sections() []Section {
 			// Not a migration: nothing upstream changed. The file under a pin did, and the
 			// question is what a hand-made identity means for audio it was not made for.
 			ID:    "pins",
+			Page:  "pins",
 			Title: "Manual identifications",
 			Description: "Files you attached by hand keep that identity. When one's audio is replaced — an " +
 				"upgrade, a re-encode — the pin was chosen for the old audio, and this decides what happens to it.",
@@ -322,6 +467,7 @@ func Sections() []Section {
 		},
 		{
 			ID:          "mcp",
+			Page:        "mcp",
 			Title:       "AI assistants (MCP)",
 			Description: "A Model Context Protocol endpoint at /api/v1/mcp that AI assistants connect to with an API key. A read-only key lets an assistant answer questions; a read & write key also lets it start runs, change wants and identify files.",
 			Fields: []Field{
@@ -337,6 +483,7 @@ func Sections() []Section {
 		},
 		{
 			ID:          "email",
+			Page:        "email",
 			Title:       "Email",
 			Description: "The SMTP server Autotaggerr sends mail through.",
 			Fields: []Field{
@@ -388,72 +535,6 @@ func Sections() []Section {
 				},
 			},
 		},
-		{
-			ID:          "diagnostics",
-			Title:       "Diagnostics",
-			Description: "How much the service says about what it is doing.",
-			Fields: []Field{
-				{
-					Key: "autotaggerr_log_level", Label: "Log level", Type: TypeSelect, Tier: TierLive,
-					Options: logLevels(),
-					Help:    "trace and debug are loud enough to matter on a large scan.",
-					get:     func(c models.ConfigStruct) any { return c.AutotaggerrLogLevel },
-					set:     setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrLogLevel = v }, validLogLevel),
-				},
-				{
-					Key: "autotaggerr_environment", Label: "Environment", Type: TypeSelect, Tier: TierRestart,
-					Options: []string{"prod", "test"},
-					Help:    "test keeps Gin in debug mode; prod is what you want in normal use.",
-					get:     func(c models.ConfigStruct) any { return c.AutotaggerrEnvironment },
-					set:     setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrEnvironment = v }, oneOf("prod", "test")),
-				},
-				// Both are TierRestart because the two runners resolve retention once, when
-				// they are built. That is deliberate rather than a limitation: a pass that
-				// reports "showing 500 of 3120" counted those rows against the cap it
-				// started with, and moving it underneath a running job would make the pair
-				// a lie.
-				{
-					Key: "autotaggerr_event_retention", Label: "Activity runs kept", Type: TypeInt, Tier: TierRestart,
-					Help: "How far back the Activity feed goes. Counted in runs, so a run's stages are never pruned out from under it.",
-					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventRetention },
-					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventRetention = v }, intRange(1, 10000)),
-				},
-				{
-					Key: "autotaggerr_event_retention_days", Label: "Keep Activity for (days)", Type: TypeInt, Tier: TierRestart,
-					Help: "Keep runs by age instead of by count: everything from the last this-many days stays, older runs go, and the count above is ignored. 0 keeps the count.",
-					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventRetentionDays },
-					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventRetentionDays = v }, intRange(0, 3650)),
-				},
-				{
-					Key: "autotaggerr_event_detail_retention", Label: "Detail rows per activity", Type: TypeInt, Tier: TierRestart,
-					Help: "Per-file detail kept for one activity. Rows past the cap are still counted, so the total stays honest — but this is what dominates database size on a large library.",
-					get:  func(c models.ConfigStruct) any { return c.AutotaggerrEventDetailRetention },
-					set:  setInt(func(c *models.ConfigStruct, v int) { c.AutotaggerrEventDetailRetention = v }, intRange(1, 100000)),
-				},
-			},
-		},
-		{
-			ID:    "storage",
-			Title: "Storage",
-			Description: "Bootstrap configuration: it is read before anything else, so the running process " +
-				"cannot change it underneath itself. Edit config.json and restart.",
-			Fields: []Field{
-				{
-					Key: "database.type", Label: "Database type", Type: TypeString, Tier: TierReadOnly,
-					get: func(c models.ConfigStruct) any { return c.Database.Type },
-				},
-				{
-					Key: "database.dsn", Label: "Database DSN", Type: TypeString, Tier: TierReadOnly,
-					Help: "A file path for sqlite; a connection string otherwise.",
-					get:  func(c models.ConfigStruct) any { return c.Database.DSN },
-				},
-				{
-					Key: "private_key", Label: "Session signing key", Type: TypeSecret, Tier: TierReadOnly,
-					Help: "Signs session tokens. Generated on first run; replacing it signs everyone out.",
-					get:  func(c models.ConfigStruct) any { return c.PrivateKey },
-				},
-			},
-		},
 	}
 }
 
@@ -466,11 +547,31 @@ func Sections() []Section {
 // file now, so there is nothing left to explain away: every key config.json holds is
 // a field below.
 type View struct {
+	Pages    []Page        `json:"pages"`
 	Sections []ViewSection `json:"sections"`
+	// Clock is the server's time when the view was read: the schedules are on it, so
+	// the page draws "now" from it rather than from the browser's clock.
+	Clock Clock `json:"clock"`
+}
+
+// Clock is a moment on the server's clock, as the schedule strip needs it.
+type Clock struct {
+	Minute int    `json:"minute"` // minutes after midnight
+	Label  string `json:"label"`  // "09:14"
+	Zone   string `json:"zone"`   // "Europe/Oslo", or the abbreviation when the zone has no name
+}
+
+func clockAt(now time.Time) Clock {
+	zone := now.Location().String()
+	if zone == "Local" || zone == "" {
+		zone = now.Format("MST")
+	}
+	return Clock{Minute: now.Hour()*60 + now.Minute(), Label: now.Format("15:04"), Zone: zone}
 }
 
 type ViewSection struct {
 	ID          string      `json:"id"`
+	Page        string      `json:"page"`
 	Title       string      `json:"title"`
 	Description string      `json:"description,omitempty"`
 	Fields      []ViewField `json:"fields"`
@@ -484,16 +585,24 @@ type ViewField struct {
 	Value     any  `json:"value,omitempty"`
 	SecretSet bool `json:"secret_set,omitempty"`
 	Editable  bool `json:"editable"`
+	// Schedule is a cron field's value made readable (DescribeSchedule).
+	Schedule *Schedule `json:"schedule,omitempty"`
 }
 
-// Describe resolves the whole surface against a config.
+// Describe resolves the whole surface against a config, with schedules read against
+// the current time on the server's clock.
 func Describe(cfg models.ConfigStruct) View {
+	return describeAt(cfg, time.Now())
+}
+
+func describeAt(cfg models.ConfigStruct, now time.Time) View {
 	sections := Sections()
-	out := View{Sections: make([]ViewSection, 0, len(sections))}
+	out := View{Pages: Pages(), Sections: make([]ViewSection, 0, len(sections)), Clock: clockAt(now)}
 
 	for _, section := range sections {
 		viewSection := ViewSection{
 			ID:          section.ID,
+			Page:        section.Page,
 			Title:       section.Title,
 			Description: section.Description,
 			Fields:      make([]ViewField, 0, len(section.Fields)),
@@ -505,6 +614,11 @@ func Describe(cfg models.ConfigStruct) View {
 				viewField.SecretSet = strings.TrimSpace(secret) != ""
 			} else {
 				viewField.Value = field.get(cfg)
+			}
+			if field.Type == TypeCron {
+				expression, _ := viewField.Value.(string)
+				schedule := DescribeSchedule(expression, now)
+				viewField.Schedule = &schedule
 			}
 			viewSection.Fields = append(viewSection.Fields, viewField)
 		}

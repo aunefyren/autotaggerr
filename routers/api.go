@@ -291,6 +291,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 			admin.GET("/settings", a.getSettings)
 			admin.PUT("/settings", a.updateSettings)
 			admin.GET("/settings/secrets/:key", a.revealSecret)
+			admin.POST("/settings/cron/preview", a.previewCron)
 			admin.POST("/settings/email/test", a.sendTestEmail)
 
 			// File import reads, moves and deletes files at a path the request names,

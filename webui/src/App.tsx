@@ -15,7 +15,8 @@ import Collection from "./pages/Collection";
 import Activity from "./pages/Activity";
 import Migrations from "./pages/Migrations";
 import Mirror from "./pages/Mirror";
-import Settings from "./pages/Settings";
+import Settings from "./pages/settings/Settings";
+import Account from "./pages/Account";
 import Import from "./pages/Import";
 import DownloadClients from "./pages/DownloadClients";
 import MediaServers from "./pages/MediaServers";
@@ -64,9 +65,10 @@ export default function App() {
         {/* Settings is admin-only server-side; a non-admin who types the URL is sent
             home rather than shown a page that can only 403. */}
         <Route
-          path="/settings"
+          path="/settings/:page?"
           element={user.role === "admin" ? <Settings /> : <Navigate to="/" replace />}
         />
+        <Route path="/account" element={<Account />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

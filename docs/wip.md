@@ -105,8 +105,6 @@ and a measured account of what Jellyfin reads
   does — find the album holding a file, refresh it, list sections (libraries), scan, link — plus a
   `type` value; `PlexTargets` would become an interface over both. No table, page or migration.
 
-- /settings must be reworked with /frontend-design & style guide. New design must make the categories more navigable.
-
 ## Roadmap / ideas
 
 - **MCP server — what is left** ([mcp.md](mcp.md)). Reading, scoped keys and the core actions have
@@ -120,9 +118,6 @@ and a measured account of what Jellyfin reads
     repair albums, the Lidarr sync, bulk attach and AcoustID identify, the mirror / artwork / tempo
     passes, and everything admin-only (settings, import, download clients). Each is one command
     extraction plus a tool; none was needed to answer or act on the common questions.
-  - **Non-admins cannot manage their keys in the UI**: the panel lives on the admin-only Settings
-    page. The routes are open to any signed-in user, so this only matters once there is a second
-    role — see *Multi user support* below.
   - **Resources and prompts.** Resources (`autotaggerr://artist/{mbid}`) would duplicate the tools for
     clients that browse them poorly; a "library health report" prompt that walks overview → missing →
     failures → suggested actions is the natural first prompt.
@@ -133,7 +128,7 @@ and a measured account of what Jellyfin reads
     include half-time default on — `target/2 ± tolerance/2`, minimum confidence, optional max
     track count), not `config.json` keys — they describe a collection, not the process.
   - *Match by file path only*, through a `plex_path_mappings` key (Autotaggerr prefix → Plex
-    prefix) on **Settings → Plex**. `/library/sections/:id/all?type=10` carries each track's
+    prefix) on the media server's row (**Media servers**). `/library/sections/:id/all?type=10` carries each track's
     `Media/Part@file` and `viewCount`. The existing client matches by *names*
     (`ResolveAlbumKeyInSection`), and Plex does not reliably expose recording MBIDs, so there is no
     fallback — an unmatched track is listed in Activity rather than guessed.
@@ -189,7 +184,7 @@ and a measured account of what Jellyfin reads
     only worth it if someone asks for it.
 - **Multi user support?** Any need?
 - **Password reset over email.** The mailer now exists and is proven by the *Send test message*
-  button on Settings → Email (see [settings.md](settings.md#email-and-the-one-action-on-this-page)),
+  button on Settings → Email (see [settings.md](settings.md#email-and-the-test-message)),
   but nothing sends mail on its own. A reset flow is the obvious first real consumer: a signed,
   single-use, expiring token mailed to the address on the account — which means `User.Email` has to
   start being populated and verified, since today it is stored and never used.

@@ -109,7 +109,7 @@ export function TempoAnalysis({ version }: { version: number }) {
         )}
       </div>
       <span className="dim" style={{ fontSize: 11 }}>
-        Runs on its own schedule (Settings → Tempo analysis) and pauses while files are being written.
+        Runs on its own schedule (Settings → Background jobs) and pauses while files are being written.
         Half- and double-time readings are stored as measured, not corrected.
       </span>
     </section>

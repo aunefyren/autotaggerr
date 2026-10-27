@@ -20,7 +20,7 @@ differences all follow from one fact. Album gain is a property of an album's fil
   It is off by default, because analysis decodes every file.
 - **Writing is a separate choice** on the same form: *Write ReplayGain* (`replaygain_write`). It has
   the BPM setting's three modes: don't write (store only), only where the file has none, or always.
-- **Settings → Loudness analysis** holds the schedule (`autotaggerr_loudness_cron_schedule`, nightly
+- **Settings → Background jobs → Loudness analysis** holds the schedule (`autotaggerr_loudness_cron_schedule`, nightly
   at 02:00). There is no global switch; with no library opted in the pass does nothing.
 
 ## Albums, and when one is measured again

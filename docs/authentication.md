@@ -43,7 +43,7 @@ that lets a bad credential through.
 ## API keys
 
 A user holds any number of named keys, each **read** or **read & write**, stored only as a SHA-256
-hash. A key is shown once, when it is made: under **Settings → AI assistants (MCP)**, or
+hash. A key is shown once, when it is made: on **Account** (open to every user), or
 `POST /api/v1/auth/me/api-keys`. Listing returns names, scopes, a six-character prefix and when each
 was last used; revoking is immediate. These routes take a signed-in session only — a key cannot mint
 or revoke keys. The first admin of a new install gets one write key, printed once to the first-boot

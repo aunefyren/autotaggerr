@@ -608,7 +608,7 @@ finish, so a long run would have deleted its own earlier stages out from under i
 
 Two config keys size it: `autotaggerr_event_retention` (runs kept, default 200) and
 `autotaggerr_event_detail_retention` (detail rows per event, default 500), both on **Settings →
-Diagnostics**. They trade history against database size, which is why they are two knobs and not one
+Logs & Activity**. They trade history against database size, which is why they are two knobs and not one
 — the run count is what a longer audit trail needs, the detail cap is what dominates the table's
 size on a busy library. Both are `restart`-tier: see below for why that is deliberate.
 

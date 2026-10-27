@@ -3,6 +3,7 @@ package routers
 import (
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/files"
@@ -47,6 +48,21 @@ func (a *API) updateSettings(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, result)
+}
+
+// previewCron describes a schedule the user is typing, before it is saved: in words,
+// its next runs and where it lands in a day, on the server's clock — the same reading
+// GET /settings gives a stored one. A rejected expression is a 200 carrying the reason,
+// not a 400: an incomplete value is the normal state of a field being typed into.
+func (a *API) previewCron(c *gin.Context) {
+	var body struct {
+		Expression string `json:"expression"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid body"})
+		return
+	}
+	c.JSON(http.StatusOK, settings.DescribeSchedule(body.Expression, time.Now()))
 }
 
 // revealSecret returns one secret's stored value. It is logged with the requesting

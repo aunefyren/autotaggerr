@@ -50,7 +50,7 @@ a login, watched categories and path mappings.
 ## The poller
 
 `process.Runner.PollDownloads` runs on its own schedule
-(`autotaggerr_download_poll_cron_schedule`, default every two minutes, on **Settings → Scanning**),
+(`autotaggerr_download_poll_cron_schedule`, default every two minutes, on **Settings → Background jobs**),
 and once more whenever someone presses **Check now**. Like the Lidarr follower, it runs on the cron
 goroutine rather than the job queue. A poll is a few small requests and a few rows; only the imports
 it leads to are queued jobs. A `TryLock` skips a poll that would overlap the previous one.

@@ -99,7 +99,7 @@ export function LoudnessAnalysis({ version }: { version: number }) {
         )}
       </div>
       <span className="dim" style={{ fontSize: 11 }}>
-        Runs on its own schedule (Settings → Loudness analysis) and pauses while files are being written. An
+        Runs on its own schedule (Settings → Background jobs) and pauses while files are being written. An
         album is measured again when a track's audio changes or a track is added or removed.
       </span>
     </section>

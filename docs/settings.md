@@ -15,6 +15,59 @@ It is closures rather than struct tags over `ConfigStruct` for two reasons. Tags
 labels, help, options and validation anyway, and a field that is *deliberately* absent from the UI
 has to be a decision someone wrote down rather than an omission nobody notices.
 
+## Pages: an index, not one scroll
+
+The page was fourteen cards in one scroll, in schema order; finding "when does the loudness pass
+run" meant scrolling past SMTP. It is now an **index and one page at a time**, at
+`/settings/:page`, so a page can be linked to and Back works. `Pages()` in `schema.go` lists them —
+each with the index heading (`Group`) it sits under — and every section names its page, so the
+grouping is part of the one description rather than a second copy in TypeScript.
+`TestEverySectionHasAPage` holds both directions: no section on a page that does not exist, no page
+without a section.
+
+| Group | Pages |
+|---|---|
+| General | Instance · Background jobs · Logs & Activity · Storage |
+| Review & safety | Metadata migrations · Manual identifications |
+| Connections | AI assistants · Email |
+
+A page is named for what someone comes to do, not for the module behind it. **Background jobs**
+gathers every schedule — scan, metadata refresh, artwork, tempo, loudness, following Lidarr, download
+clients, health checks — as one card per job, each holding the job's switch, schedule and load,
+because "when does X run" is asked *across* the jobs ("does the scan land on the refresh?"), never
+of one alone. Concurrency stays on its job's card for the same reason.
+
+**Edits outlive the page they were made on.** The shell holds them, and one save writes them all,
+all-or-nothing as below. So the index shows a count on each page with unsaved edits, and the save bar
+names the pages ("3 unsaved changes in Background jobs and Email") with links back to them — a change
+made two pages ago and forgotten is otherwise the one that saves along with the one meant.
+
+**Find a setting** filters every field by label, config key and help, across pages; results are
+grouped by section, since two jobs both have a *Files in parallel*. Below 760px the index is a
+select above the page.
+
+## Schedules are read, not only stored
+
+A six-field cron expression is an identifier, not an answer. Every cron field in `GET /settings`
+carries a `schedule` (`settings.DescribeSchedule`, `settings/cron.go`): the expression in words
+(*Sundays at 18:00*), its next three runs, and where the coming week's runs land on a 24-hour clock.
+`POST /settings/cron/preview` gives the same reading for a value being typed, so a schedule says what
+it means — or what is wrong with it — before it is saved; an invalid one is a 200 carrying the reason,
+since that is the normal state of a field mid-edit.
+
+- **Times are formatted on the server, in its zone** — the clock the scheduler reads. A browser in
+  another zone formatting the instants itself would show the scan at a time it never runs. The view
+  carries the server's `clock` (minute, label, zone) for the same reason.
+- **The words are deliberately narrow.** `summarizeCron` knows the shapes the defaults and a hand
+  edit take (every day, given weekdays, every N minutes/hours, monthly) and returns nothing for the
+  rest; the next runs always say what an expression does. A wrong sentence would be worse than none.
+- **The day strip** on Background jobs draws every schedule on one 24-hour axis, a lane per job, with
+  a dashed line at the server's now. A weekly run is placed at its time of day and tagged with the
+  day, so the Sunday scan is on the strip rather than off the edge of today (the runs are walked for
+  a week, not a day). A job firing more than every half hour is a hatched band. A schedule whose
+  switch is off — `Field.EnabledBy` names it — is drawn hollow and labelled off, and its field says
+  it is not running. Edits redraw the strip before they are saved.
+
 ## Sections are named for what they govern, not who supplies the data
 
 A setting on this page is **tenant-wide policy**. It holds whether you have configured zero, one or
@@ -174,22 +227,31 @@ nothing to act on.
 
 ## AI assistants (MCP)
 
-The **AI assistants (MCP)** section holds the *Allow AI assistants* switch (stored inverted, as
-`autotaggerr_mcp_disabled`, for the reason the mirror switch is) and the page's other action: the
-signed-in user's **API keys** — a table with Revoke (behind a confirmation), and a create row taking a
-name and *Read only* / *Read & write*, which shows the new key once with ready-to-paste client config.
-The switch is live without a restart because the MCP route reads it on every request. See
-[mcp.md](mcp.md).
+The **AI assistants** page holds the *Allow AI assistants* switch (stored inverted, as
+`autotaggerr_mcp_disabled`, for the reason the mirror switch is). The switch is live without a
+restart because the MCP route reads it on every request. See [mcp.md](mcp.md).
+
+**API keys are not here.** A key is personal, and Settings is admin-only, so the keys panel used to
+leave every other user unable to make one although the routes (`/auth/me/api-keys`) were always open
+to them. It is on **Account** (`/account`, every signed-in user): a table with Revoke (behind a
+confirmation), and a create row taking a name and *Read only* / *Read & write*, which shows the new key
+once with ready-to-paste client config. The AI assistants page links there.
 
 ## Tests
 
 - `settings/schema_test.go` — the surface (no secret values, no read-only field claiming to be
   editable, unique keys) and validation, including the all-or-nothing property and the
   `autotaggerr_mirror_disabled` and `autotaggerr_mcp_disabled` inversions.
+- `settings/cron_test.go` — the schedule reading: the sentences (and the shapes left without one),
+  next runs past the week for a weekly job, the weekday on a strip point, the dense band, an
+  invalid expression; that every cron field in the view carries a schedule and every `EnabledBy`
+  names a switch; and that every section is on a page in `Pages()`, in page order.
 - `settings/apply_test.go` — scheduling, rescheduling, cancelling a disabled job, the live effects,
   and the full save path against a temp `config.json` (`files.SetConfigPaths` is the seam).
-- `routers/settings_test.go` — the admin gate from both sides, 401 vs 403, that the response never
-  contains a secret, and that a test email on a half-configured instance names what is missing.
+- `routers/settings_test.go` — the admin gate from both sides (the cron preview included), 401 vs
+  403, that the response never contains a secret, the cron preview's reading and its 200-with-reason
+  for an incomplete expression, and that a test email on a half-configured instance names what is
+  missing.
 - `mail/mail_test.go` — the config checks, the message format (CRLF, a Date header, no header
   injection through the subject), the test-environment redirect (including that the override is
   ignored and that a missing sink refuses the send) and how `smtp_tls` resolves against the port,

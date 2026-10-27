@@ -63,6 +63,7 @@ func TestSettingsRequireAdmin(t *testing.T) {
 		{"GET", "/api/v1/settings"},
 		{"PUT", "/api/v1/settings"},
 		{"GET", "/api/v1/settings/secrets/smtp_password"},
+		{"POST", "/api/v1/settings/cron/preview"},
 	} {
 		w := do(r, call.method, call.path, viewer, map[string]any{"values": map[string]any{"autotaggerr_port": 9000}})
 		if w.Code != http.StatusForbidden {
@@ -249,5 +250,26 @@ func TestSendTestEmailRefusesOnATestInstanceWithNoSink(t *testing.T) {
 	}
 	if strings.Contains(w.Body.String(), "could not reach") {
 		t.Error("the send was attempted on a test instance with no test recipient")
+	}
+}
+
+// TestSettingsCronPreview: a schedule being typed is described before it is saved — in
+// words, with its next runs — and an incomplete one comes back as a 200 carrying the
+// reason, since that is the normal state of a field mid-edit.
+func TestSettingsCronPreview(t *testing.T) {
+	settingsFixture(t)
+	r, _ := setupAPI(t)
+	tok := loginToken(t, r)
+
+	got := decodeJSON[settings.Schedule](t, r, "POST", "/api/v1/settings/cron/preview", tok, map[string]any{"expression": "0 0 18 * * 7"})
+	if got.Summary != "Sundays at 18:00" || len(got.Next) != 3 || got.Error != "" {
+		t.Errorf("preview = %+v", got)
+	}
+	got = decodeJSON[settings.Schedule](t, r, "POST", "/api/v1/settings/cron/preview", tok, map[string]any{"expression": "0 0 18"})
+	if got.Error == "" || len(got.Next) != 0 {
+		t.Errorf("incomplete preview = %+v, want the reason", got)
+	}
+	if w := do(r, "POST", "/api/v1/settings/cron/preview", tok, "nope"); w.Code != http.StatusBadRequest {
+		t.Errorf("bad body = %d, want 400", w.Code)
 	}
 }

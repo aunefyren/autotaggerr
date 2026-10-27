@@ -528,7 +528,31 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   the edited-setting bar's shape) and a skipped row `tr.row-skipped` (dimmed), so every review table
   marks them the same way. Conflicts are recomputed as rows are skipped — skipping one side of a
   clash frees the other — and the server checks again on commit.
-- **Setting row** (`.setting-row`, `Settings.tsx`) — a settings page is a list of *definitions*, not
+- **Settings index** (`.settings-index`, `pages/settings/Settings.tsx`) — for a surface too long for
+  one scroll: an index of pages beside one page at a time, each page its own route. Grouped under
+  the sidebar's sentence-case group headings; items take the sidebar's selection treatment
+  (`--accent-subtle` fill, `--accent-text`, 2px `--accent` leading marker) at 30px. **Unsaved edits
+  are counted on their page** (`.settings-index-dirty`, an `--accent` pill with a mono count), and
+  the save bar names those pages as links — when edits span pages, *where* they are is part of
+  *what* will be saved. A page of one section drops the card heading (it would repeat the page
+  title) and its first row's rule. Below 760px the index becomes a select above the page.
+- **Schedule reading** (`.cron-reading`) — a cron input is never left as an identifier: under it,
+  the expression in words in `--text` (*Sundays at 18:00*), then its next runs in `--text-dim`, both
+  12/11px, read on the server's clock and updated as it is typed. An invalid value takes the input's
+  error treatment with the parser's reason. A schedule whose job is switched off says so in
+  `.help-warn` ("Not running — Keep artwork fetched is off.") rather than greying the input: it is
+  still editable, it just will not run.
+- **Day strip** (`.daystrip`, `DayStrip.tsx`) — every recurring job on one 24-hour axis, for the
+  question no single schedule answers: what else runs then. A lane per job (30px, label column
+  148px, the label scrolls to the job's card), gridlines every three hours under a mono `--text-dim`
+  axis, and a dashed `--text-muted` line at the server's now. A run is a 10px `--accent` dot with a
+  3px `--accent-subtle` halo, tagged in mono with its time and, when not daily, its weekday in
+  `--text-dim`; tags flip left after 18:00 so none overruns the strip, and a lane of more than six
+  points drops its tags for titles. A job more frequent than half-hourly is a hatched band — the
+  stripes are the runs — with its frequency in words on a `--surface-1` chip. A switched-off job is
+  hollow (`--text-dim` ring) and labelled *off*; an edited lane carries the 2px `--accent` dirty
+  bar. Tags hide below 760px.
+- **Setting row** (`.setting-row`, `pages/settings/fields.tsx`) — a settings page is a list of *definitions*, not
   a form filled top to bottom, so each row is two columns: name + config key + help on the left, the
   control on the right at a fixed width, so a column of inputs reads as a column. The config key is
   shown as a mono chip (`.setting-key`) because it is the identifier the docs, the environment

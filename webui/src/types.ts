@@ -1143,17 +1143,48 @@ export interface SettingsField {
   value?: string | number | boolean | string[];
   secret_set?: boolean;
   editable: boolean;
+  /** For a schedule: the bool setting that switches its job on. */
+  enabled_by?: string;
+  /** For a schedule: the stored expression made readable, on the server's clock. */
+  schedule?: CronSchedule;
+}
+
+/** A cron expression made readable — GET /settings, and POST /settings/cron/preview. */
+export interface CronSchedule {
+  /** In words; absent when the expression does not reduce to a sentence. */
+  summary?: string;
+  /** The next few runs, formatted on the server's clock. */
+  next: string[];
+  /** Where the coming week's runs land on a 24-hour clock; empty when dense. */
+  day: { minute: number; label: string; days?: string }[];
+  /** Too frequent to draw as points: a band. */
+  dense?: boolean;
+  /** Why the expression was rejected. */
+  error?: string;
 }
 
 export interface SettingsSection {
   id: string;
+  /** The SettingsPage this section is shown on. */
+  page: string;
   title: string;
   description?: string;
   fields: SettingsField[];
 }
 
+/** One screen of the settings page, listed in its index under `group`. */
+export interface SettingsPage {
+  id: string;
+  group: string;
+  title: string;
+  description?: string;
+}
+
 export interface SettingsView {
+  pages: SettingsPage[];
   sections: SettingsSection[];
+  /** The server's clock when the view was read — the clock the schedules run on. */
+  clock: { minute: number; label: string; zone: string };
 }
 
 /** What a save did: what moved, what took effect now, what waits for a restart. */

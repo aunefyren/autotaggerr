@@ -45,7 +45,7 @@ Writing the result into files is a third, separate decision, on the same form: t
 `bpm_write` (off by default) and `bpm_min_confidence` — see
 [tagging.md](tagging.md#tempo-is-the-one-tag-musicbrainz-does-not-supply).
 
-**Settings → Tempo analysis** holds the schedule (`autotaggerr_tempo_cron_schedule`, nightly at
+**Settings → Background jobs → Tempo analysis** holds the schedule (`autotaggerr_tempo_cron_schedule`, nightly at
 01:00) and the worker count (`autotaggerr_tempo_concurrency`, 2). There is no global on/off: with
 no library opted in, the scheduled pass finds nothing and records nothing.
 
@@ -176,7 +176,7 @@ with the reason rather than recorded.
   written as 105`, or why there is none: not analysed, nothing measured, or not written and by which
   rule. The BPM row in the diff itself appears only when a write would carry one. Served by
   `GET /api/v1/library-items/:id/tempo`.
-- **Settings → Tempo analysis** renders from the schema like every other section.
+- **Settings → Background jobs → Tempo analysis** renders from the schema like every other section.
 
 ## API
 
