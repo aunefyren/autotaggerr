@@ -449,8 +449,9 @@ Constraints, all of which are the point rather than caution for its own sake:
   newly discovered ghost on an already-asked artist ignores the cooldown, since the refresh covers
   the whole artist anyway.
 - **Full runs only** *for the unattended pass*. A one-artist button must not set the whole collection
-  refreshing in Lidarr. Approving a blocked album is the one scoped entry point — see
-  [Approving a blocked album](#approving-a-blocked-album).
+  refreshing in Lidarr. A run over one whole library asks only the Lidarr governing it, and a library
+  with no Lidarr asks none (see [scanning.md](scanning.md#the-collection-stage)). Approving a blocked
+  album is the one scoped entry point — see [Approving a blocked album](#approving-a-blocked-album).
 - **Opt-out per manager** (`Manager.LidarrSkipArtistRefresh`), for a deliberately read-only API key
   or where something else owns refresh scheduling. Phrased negatively so the zero value is "allowed"
   — see the field comment for why a `default:true` tag would not have worked. When every enabled

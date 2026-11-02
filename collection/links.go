@@ -14,6 +14,50 @@ import (
 // artist and album (models.ManagerLink); this file writes those rows and turns them
 // back into URLs.
 
+// splitManagers divides the enabled managers into the ones a pass reads and the ones
+// it leaves out. No IDs means every manager is in scope and none is left out — the
+// unscoped pass, unchanged.
+func splitManagers(enabled []models.Manager, ids []uuid.UUID) (in, out []models.Manager) {
+	if len(ids) == 0 {
+		return enabled, nil
+	}
+	want := make(map[uuid.UUID]bool, len(ids))
+	for _, id := range ids {
+		want[id] = true
+	}
+	for _, m := range enabled {
+		if want[m.ID] {
+			in = append(in, m)
+		} else {
+			out = append(out, m)
+		}
+	}
+	return in, out
+}
+
+// artistsLinkedTo is the set of artists the given managers were last seen holding,
+// read from the links their most recent listing wrote. Empty for no managers.
+func artistsLinkedTo(db *gorm.DB, managers []models.Manager) (map[string]bool, error) {
+	if len(managers) == 0 {
+		return nil, nil
+	}
+	ids := make([]uuid.UUID, 0, len(managers))
+	for _, m := range managers {
+		ids = append(ids, m.ID)
+	}
+	var mbids []string
+	if err := db.Model(&models.ManagerLink{}).
+		Where("manager_id IN ? AND entity_type = ?", ids, models.ManagerLinkArtist).
+		Pluck("mb_id", &mbids).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]bool, len(mbids))
+	for _, id := range mbids {
+		out[id] = true
+	}
+	return out, nil
+}
+
 // recordArtistLinks replaces one manager's artist links with what its artist list
 // just said, for the artists the collection holds. Best-effort: a failed write costs
 // a link, never the sync.
