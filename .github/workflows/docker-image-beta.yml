@@ -1,18 +1,104 @@
-name: Docker Image for Pushes
+name: Docker Image for Beta
 
+# Publishes the `beta` image at most once an hour, and only for a `main` commit
+# that changed something that matters and has a green go.yml run.
+# See docs/development.md, "Beta images".
 on:
-  push:
-    branches: [main]
-  
-jobs:
-  build:
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
 
+# Runs never overlap and are never cancelled: a queued run waits for the build in progress.
+concurrency:
+  group: beta-image
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  actions: read
+
+env:
+  IMAGE: ghcr.io/aunefyren/autotaggerr:beta
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.decide.outputs.build }}
+      sha: ${{ steps.decide.outputs.sha }}
+      short: ${{ steps.decide.outputs.short }}
     steps:
     - uses: actions/checkout@v7
+      with:
+        ref: main
+        fetch-depth: 0
+    - name: Decide whether to build
+      id: decide
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ github.repository }}
+      run: |
+        set -uo pipefail
+
+        head=$(git rev-parse HEAD)
+        {
+          echo "sha=$head"
+          echo "short=${head:0:7}"
+        } >> "$GITHUB_OUTPUT"
+
+        finish() { # finish <true|false> <reason>
+          echo "build=$1" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Beta image: $([ "$1" = true ] && echo build || echo skip)"
+            echo ""
+            echo "$2 (main at \`${head:0:7}\`)"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$2"
+          exit 0
+        }
+
+        # Revision label of the published beta. The inspect output is either the image
+        # config itself or a map of platform -> image config; handle both.
+        last=$(docker buildx imagetools inspect "$IMAGE" --format '{{json .Image}}' 2>/dev/null \
+          | jq -r '(if has("linux/amd64") then .["linux/amd64"] else . end)
+                   | .config.Labels["org.opencontainers.image.revision"] // empty' 2>/dev/null) || last=""
+
+        # Why main needs a new beta; every path that would build still has to pass the
+        # green check below.
+        if [ -z "$last" ]; then
+          reason="no revision label on the published beta (missing or unreadable)"
+        elif [ "$last" = "$head" ]; then
+          finish false "Skipped: beta is already published for this commit (unchanged)."
+        elif ! git cat-file -e "$last^{commit}" 2>/dev/null; then
+          reason="published revision \`${last:0:7}\` is not in history"
+        else
+          # Skip when only docs, Markdown files or issue templates changed.
+          relevant=$(git diff --name-only "$last" "$head" \
+            | grep -v -E '^docs/|\.md$|^\.github/ISSUE_TEMPLATE/' || true)
+          if [ -z "$relevant" ]; then
+            finish false "Skipped: only docs, Markdown or issue templates changed since \`${last:0:7}\`."
+          fi
+          reason="main moved from \`${last:0:7}\`"
+        fi
+
+        # Wait for green: go.yml must have a successful push run for this exact commit.
+        ok=$(gh api "repos/$REPOSITORY/actions/workflows/go.yml/runs?head_sha=$head&event=push&per_page=100" \
+          --jq '[.workflow_runs[] | select(.conclusion == "success")] | length') || ok=0
+        if [ "${ok:-0}" -lt 1 ]; then
+          finish false "Skipped: go.yml has no successful push run for this commit yet (still running, failed or missing). Re-checked next hour."
+        fi
+
+        finish true "Building: $reason, and go.yml is green."
+
+  build:
+    needs: gate
+    if: needs.gate.outputs.build == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        ref: ${{ needs.gate.outputs.sha }}
     - name: Set up Docker metadata
       id: meta
       uses: docker/metadata-action@v6
@@ -20,9 +106,14 @@ jobs:
         images: |
           ghcr.io/${{ github.repository }}
         tags: |
-          type-raw,value=beta
+          type=raw,value=beta
+          type=raw,value=beta-${{ needs.gate.outputs.short }}
         flavor: |
           latest=false
+        # The action defaults the revision label to the triggering sha; pin it to the gated one.
+        labels: |
+          org.opencontainers.image.revision=${{ needs.gate.outputs.sha }}
+    # Only the runtime stage's RUN steps need emulation; the Go and web stages run natively.
     - name: Set up QEMU
       uses: docker/setup-qemu-action@v4
     - name: Set up Docker Buildx
@@ -34,10 +125,10 @@ jobs:
         registry: ghcr.io
         username: ${{ github.repository_owner }}
         password: ${{ secrets.GIT_HUB_TOKEN }}
-    - name: Hash commit ID
-      run: echo "GITHUB_SHA_SHORT=$(echo $GITHUB_SHA | cut -c 1-7)" >> $GITHUB_ENV
     - name: Replace version variable
-      run:  sed -i 's/{{RELEASE_TAG}}/beta-${{ env.GITHUB_SHA_SHORT }}/g' files/config.go # Replace release variable with the name of this release
+      env:
+        SHA: ${{ needs.gate.outputs.sha }}
+      run: sed -i "s/{{RELEASE_TAG}}/beta-${SHA:0:7}/g" files/config.go # Replace release variable with the name of this release
     - name: Build and push
       uses: docker/build-push-action@v7
       with:
@@ -47,3 +138,4 @@ jobs:
         push: true
         context: .
         tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}

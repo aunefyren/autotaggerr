@@ -1413,7 +1413,7 @@ const (
 // sparse and human-entered while ownership is derived and rebuilt on every scan —
 // mixing the two is what let a scan silently wipe the Lidarr mirror in M5.
 //
-// One row expresses all five wanted-cases (see docs/wip.md, M6 desire model):
+// One row expresses all five wanted-cases (see docs/collection.md, "The desire model"):
 //
 //	release_mb_id empty  -> any release of the group will do (the default)
 //	release_mb_id set    -> only that edition satisfies it

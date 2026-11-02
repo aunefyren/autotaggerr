@@ -29,7 +29,7 @@ The endpoint is **`/api/v1/mcp`** (Streamable HTTP). It takes the same API keys 
 
 The key can be sent as `Authorization: Bearer <key>` or `X-Api-Key: <key>`; a UI session token also
 works, with write scope. Hosted clients that insist on OAuth (claude.ai connectors) cannot connect yet
-— see [wip.md](wip.md#roadmap--ideas).
+— see [#29](https://github.com/aunefyren/autotaggerr/issues/29).
 
 **Turning it off**: the *Allow AI assistants* switch on the same page (`autotaggerr_mcp_disabled`).
 Off, the endpoint answers 404 before authenticating. It is read on every request, so the switch

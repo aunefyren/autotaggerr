@@ -165,8 +165,8 @@ func assertSecondWriteIsNoOp(
 
 // TestDesiredTagsCarryTrueMultiValue separates the two halves of the multi-value
 // work: the builders already describe a field as the several values it has, while
-// the renderers decide what reaches the file. Step 2 in wip.md flips the FLAC
-// renderer; nothing above it has to move again.
+// the renderers decide what reaches the file, so a renderer change never has to
+// move anything above it.
 func TestDesiredTagsCarryTrueMultiValue(t *testing.T) {
 	meta := multiValueFileTags()
 

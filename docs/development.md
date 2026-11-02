@@ -1,12 +1,12 @@
 # Development
 
 Conventions and instructions for working in this repository. Read this alongside `CLAUDE.md`
-(architecture), `docs/media-manager.md` (how the components fit together) and `wip.md` (what is
-still open) before making changes.
+(architecture), `docs/media-manager.md` (how the components fit together) and the open GitHub
+issues (what is still open) before making changes.
 
 ## Local setup
 
-- Go 1.26 (the `go.mod` toolchain target). Older toolchains cannot build the module.
+- Go 1.26.10 or newer (the `go.mod` minimum). Older toolchains cannot build the module.
 - Node `^20.19.0 || >=22.12.0` — vite 8's engine requirement, and a hard one: npm refuses the
   install on anything older. CI and the Docker `web` stage both run Node 22. `make check` reports a
   version that will not work rather than letting npm say it in passing.
@@ -312,11 +312,37 @@ only; never run `git add`/`commit`/`push`/`branch` or otherwise mutate version-c
   archive are listed in `release.yaml`'s `extra_files` — update it if you add a top-level
   package directory.
 
+### Multi-arch image builds
+
+Both build stages of the `Dockerfile` are `FROM --platform=$BUILDPLATFORM`: the SPA and the Go
+binary are built natively on the runner, and Go cross-compiles for each target from
+`TARGETOS`/`TARGETARCH` (`GOARM` from `TARGETVARIANT`, so `linux/arm/v7` builds with `GOARM=7`).
+Only the Alpine runtime stage (`apk add`, `chmod`) runs under QEMU, which is why the image
+workflows still set up QEMU. Building the image needs BuildKit (`docker buildx` or
+`docker compose build`); the legacy `docker build` leaves `$BUILDPLATFORM` empty and fails.
+
+### Beta images
+
+`docker-image-beta.yml` does not run on every push to `main`. It runs every hour at :17 and on
+manual dispatch, never two at once (`concurrency: beta-image`, no cancelling). A cheap **gate**
+job compares `main`'s HEAD with the `org.opencontainers.image.revision` label of
+`ghcr.io/aunefyren/autotaggerr:beta`, and the build runs only if all of these hold:
+
+- the label is missing or unreadable, or differs from HEAD (equal: skip);
+- something besides `docs/**`, `*.md` and `.github/ISSUE_TEMPLATE/**` changed since then (a
+  published revision that is not in history means build);
+- `go.yml` has a successful push run for HEAD. A running or red `main` holds the beta back and is
+  re-checked next hour; it never falls back to an older green commit.
+
+The reason lands in the run's step summary, and a skipped hour ends green. The build checks out
+exactly the gated commit and pushes two tags: `beta` (moves) and the immutable `beta-<short sha>`,
+the same string as the in-app version. To roll back, pin `ghcr.io/aunefyren/autotaggerr:beta-<sha>`.
+
 ## Documentation layout (`docs/`)
 
-- `wip.md` — **only what is not done yet**: roadmap, ideas, known issues, in-flight work. When
-  something ships, move what is worth keeping into its feature doc and delete the rest from `wip.md`
-  — it is not a changelog, and git already remembers the history.
+- Open work (roadmap, ideas, known issues) is tracked as [GitHub issues](https://github.com/aunefyren/autotaggerr/issues), not in `docs/`.
+  When something ships, move what is worth keeping into its feature doc — docs are reference, not a
+  changelog, and git already remembers the history.
 - `development.md` — this file.
 - `style-guide.md` — the design system every UI change consults (see above).
 - One `*.md` per feature as features grow. Keep feature docs focused and written as *reference*
