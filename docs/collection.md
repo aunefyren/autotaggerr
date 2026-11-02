@@ -773,7 +773,7 @@ every row would carry the same word. Then:
   MCP `add_artist` shares it) and the button is disabled with the reason. Disabled rather than
   absent, because adding a native library turns it on; a disabled native library counts, and an
   install with no library yet is let through. Adding the artist to *Lidarr* is the
-  [separate question](wip.md) of whether the mirror may introduce one.
+  [separate question](https://github.com/aunefyren/autotaggerr/issues/17) of whether the mirror may introduce one.
 - `/collection` gains a **Libraries** column and a library select in the table toolbar (`library` in
   the URL, options only for libraries some artist is in). Filtering also **counts in that library**:
   the page asks `GET /artists?library=<id>`, and owned, complete, partial, missing, mismatch and

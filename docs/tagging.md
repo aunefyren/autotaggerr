@@ -10,7 +10,7 @@ Dispatched by extension in `SetFileTags`:
 - **MP3** — ID3v2.4 via `github.com/bogem/id3v2`, in-process.
 
 `metaflac` is the only binary required at runtime (bundled in the Docker image, otherwise on
-`PATH`). Other formats are not supported yet — see [wip.md](wip.md).
+`PATH`). Other formats are not supported yet — see [#23](https://github.com/aunefyren/autotaggerr/issues/23).
 
 **Without `metaflac`, FLAC writes fail on purpose.** Reading needs nothing external, so an unchanged
 FLAC is unaffected; one whose tags need changing fails with `modules.ErrMetaflacMissing`. It is

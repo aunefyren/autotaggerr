@@ -184,13 +184,10 @@ job stops between files, never inside a transfer.
 ## Known limits
 
 - **Extra files are not imported.** Covers, cue sheets and logs stay in the source folder (which is
-  why it is then not removed). Lidarr's *import extra files* is the model if this is wanted.
+  why it is then not removed). Lidarr's *import extra files* is the model ([#18](https://github.com/aunefyren/autotaggerr/issues/18)).
 - **Plex learns of a new album by its own scan.** The Plex hand-off refreshes albums Plex already
-  has; a brand-new album needs Plex's library scan (or its folder watcher) to appear.
-- **No AcoustID suggestion yet.** Identification is the release in the tags, or the search.
-- **Edition lists cached before labels were fetched** carry no label or catalog number; the
-  `expire_edition_lists` data migration made them all due once, so each refetches on its next read
-  (the old payload stays as the stale fallback while MusicBrainz is down).
+  has; a brand-new album needs Plex's library scan (or its folder watcher) to appear ([#19](https://github.com/aunefyren/autotaggerr/issues/19)).
+- **No AcoustID suggestion yet.** Identification is the release in the tags, or the search ([#20](https://github.com/aunefyren/autotaggerr/issues/20)).
 
 ## Tests
 

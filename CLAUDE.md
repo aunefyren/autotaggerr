@@ -5,14 +5,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Read on startup
 
 At the start of every session, read these before doing work:
-- **`docs/wip.md`** — what is *not done yet*: roadmap, known issues, ideas, in-flight work.
+- **Open GitHub issues** (`gh issue list`) — what is *not done yet*: roadmap, known issues, ideas.
 - **`docs/development.md`** — code conventions, CI gates, and dev instructions to follow.
 - **`docs/style-guide.md`** — style guide for ANY UI work. Must be either followed or adapted.
 
 `docs/` holds all project documentation, one `*.md` per feature — start with
 **`docs/media-manager.md`** for how the components fit together; `docs/development.md` indexes the
-rest. Keep `wip.md` current as work starts, and when something ships move what is worth keeping
-into its feature doc and delete it from `wip.md` (it is a backlog, not a changelog).
+rest. Open work lives in GitHub issues, not in `docs/`; when something ships, document what is worth
+keeping in its feature doc and the maintainer closes the issue.
 
 ## What this is
 

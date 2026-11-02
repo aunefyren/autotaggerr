@@ -250,4 +250,4 @@ record. A refused key is a 200 with `status: false`, reported as the key.
 
 - [import.md](import.md): the identification, review and job this feeds.
 - [scanning.md](scanning.md#following-lidarr): the Lidarr follower, the same shape of poller.
-- [wip.md](wip.md): what is left.
+- [Open issues](https://github.com/aunefyren/autotaggerr/issues?q=is%3Aopen+label%3Adownloads): what is left.

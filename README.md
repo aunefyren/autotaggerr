@@ -279,11 +279,9 @@ starts.
 
 ---
 
-## 🧠 Roadmap Ideas
+## 🧠 Roadmap
 
-Support for other formats (OGG, M4A, etc)
-
-More metadata
+Planned work and ideas are tracked as [GitHub issues](https://github.com/aunefyren/autotaggerr/issues).
 
 ---
 

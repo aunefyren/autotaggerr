@@ -22,9 +22,13 @@ COPY webui/ ./
 RUN npm run build
 
 # ---------- Build ----------
-FROM golang:1.26.0-alpine AS builder
+# Pinned to the build platform like the web stage: Go cross-compiles for the target, so a
+# multi-arch build never runs the compiler (or `go mod download`) under QEMU. Only the
+# runtime stage's RUN steps are emulated per platform. Needs BuildKit (buildx).
+FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
+ARG TARGETVARIANT
 WORKDIR /app
 
 # faster caching
@@ -38,7 +42,9 @@ COPY . .
 # missing one fails the build loudly rather than shipping an old UI quietly.
 COPY --from=web /src/web/dist ./web/dist
 
-RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+# GOARM comes from the variant (linux/arm/v7 -> 7) and only applies to GOARCH=arm.
+RUN if [ "${TARGETARCH}" = "arm" ]; then export GOARM="${TARGETVARIANT#v}"; fi && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     go build -trimpath -ldflags="-s -w" -o /app/autotaggerr .
 
 # ---------- Runtime ----------
