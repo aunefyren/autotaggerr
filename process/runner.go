@@ -440,6 +440,11 @@ type Scope struct {
 	// whole point is to pull a changed Lidarr release selection down onto files whose
 	// bytes never moved.
 	Force bool
+	// All marks the run over every enabled library — the scheduled job, the startup
+	// run and the "process all" button. It is the only run that carries the whole
+	// collection's drift and reaches every manager; any other scope, a whole library
+	// included, touches only what it names. See scopeFilter and lidarrManagersInScope.
+	All bool
 }
 
 // ErrNothingToProcess reports a scope that resolved to no folders on disk. It is a
@@ -608,7 +613,9 @@ func (r *Runner) runAllNow() {
 		logger.Log.Info("no enabled libraries configured; nothing to scan")
 		return
 	}
-	r.runScope(LibraryScope(libraries))
+	scope := LibraryScope(libraries)
+	scope.All = true
+	r.runScope(scope)
 }
 
 // RunLibrary queues a scan of one library by ID. It returns an error only when the
@@ -867,20 +874,16 @@ type scopeFilter struct {
 	roots map[uuid.UUID][]string
 }
 
-// newScopeFilter builds the filter for a scope. A scope where no target names any
-// roots — a full scan, or a whole-library one — admits everything, which leaves the
-// scheduled run behaving exactly as before: it is the pass that is *supposed* to
-// carry the collection's drift, and narrowing it would leave releases nothing ever
-// refreshed.
+// newScopeFilter builds the filter for a scope. Only the run over every library
+// (Scope.All) admits everything: it is the pass that is *supposed* to carry the
+// collection's drift, and narrowing it would leave releases nothing ever refreshed.
+//
+// Every other scope is narrowed to its own libraries — a whole-library one included.
+// That one used to count as unnarrowed because it names no folders, so pressing
+// Process on one library refreshed the whole cache and re-tagged drifted files in
+// every other library (issue #14).
 func newScopeFilter(scope Scope) scopeFilter {
-	narrowed := false
-	for _, target := range scope.Targets {
-		if !target.full() {
-			narrowed = true
-			break
-		}
-	}
-	if !narrowed {
+	if scope.All {
 		return scopeFilter{}
 	}
 
@@ -892,7 +895,7 @@ func newScopeFilter(scope Scope) scopeFilter {
 }
 
 // all reports whether the filter admits every file, which lets callers skip the
-// index queries entirely.
+// index queries entirely. A narrowed filter with no libraries admits nothing.
 func (f scopeFilter) all() bool { return f.roots == nil }
 
 // admits reports whether one indexed file is inside the scope. A file in a library
@@ -983,18 +986,39 @@ func (r *Runner) narrowDue(due []string, filter scopeFilter) []string {
 	return kept
 }
 
-// scopeIsFull reports whether a run covered at least one library in its entirety,
-// which is what earns the end-of-run manager mirror (see syncManagers). It reuses
-// Target.full, the same predicate that decides whether a library may claim it was
-// scanned — a run narrow enough not to update a library's scan time is narrow enough
-// not to be worth a whole-collection mirror either.
-func scopeIsFull(scope Scope) bool {
+// lidarrManagersInScope decides whether a run's manager stages (the ghost-album repair
+// and the end-of-run mirror) run, and which Lidarr managers they may reach.
+//
+// The run over every library reaches every manager (nil IDs, ok). Any other run
+// reaches only the enabled Lidarr managers governing a library it covered in full:
+// processing a library Lidarr does not govern sets no Lidarr refreshing and mirrors
+// nothing, and one governed by a second Lidarr leaves the first alone. A narrower run
+// (an artist, a release-group) reaches none — it is too narrow to be worth a mirror,
+// which is the same predicate (Target.full) that decides whether a library may claim
+// it was scanned.
+func (r *Runner) lidarrManagersInScope(scope Scope) (ids []uuid.UUID, ok bool) {
+	if scope.All {
+		return nil, true
+	}
+	if r.db == nil {
+		return nil, false
+	}
+	seen := map[uuid.UUID]bool{}
 	for _, target := range scope.Targets {
-		if target.full() {
-			return true
+		if !target.full() || target.Library.ManagerID == nil || seen[*target.Library.ManagerID] {
+			continue
+		}
+		id := *target.Library.ManagerID
+		seen[id] = true
+		var m models.Manager
+		if err := r.db.First(&m, "id = ?", id).Error; err != nil {
+			continue
+		}
+		if m.Type == models.ManagerTypeLidarr && m.Enabled {
+			ids = append(ids, id)
 		}
 	}
-	return false
+	return ids, len(ids) > 0
 }
 
 // runScope executes a scan of a scope. It is only ever called by the queue worker,
@@ -1068,7 +1092,7 @@ func (r *Runner) runScope(scope Scope) {
 	ctx := r.jobContext()
 	refreshResult := r.refresh.RunStage(ctx, mirror.DueScope(due), event)
 
-	fullScan := scopeIsFull(scope)
+	managerIDs, reachManagers := r.lidarrManagersInScope(scope)
 
 	// The tagging stage: everything this run writes to disk, under one event. The walk
 	// below finds files changed on disk; the drift pass after it rewrites files whose
@@ -1244,15 +1268,16 @@ func (r *Runner) runScope(scope Scope) {
 	// Repair before the queue is drained, never after. A release-group deletion is
 	// held for review until the manager has been asked about it, so this stage is what
 	// unblocks the drain below — and running it the other way round would retire albums
-	// the refresh was about to correct. Full runs only: a one-artist button should not
-	// set the whole collection refreshing in Lidarr.
+	// the refresh was about to correct. Only the managers this run covers: a one-artist
+	// button should not set the whole collection refreshing in Lidarr, and processing a
+	// library should not set refreshing a Lidarr that does not govern it.
 	// A stopped run skips the stages after the walk that call out to a manager or
 	// rewrite identities: they are minutes of work nobody asked to wait for. The
 	// rebuild below still runs — it is a database pass, and it keeps the collection
 	// in step with the files the walk did reach.
 	stopped = stopped || ctx.Err() != nil
-	if scopeIsFull(scope) && !stopped {
-		r.repairGhostAlbums(event)
+	if reachManagers && !stopped {
+		r.repairGhostAlbumsWith(event, collection.RepairOptions{ManagerIDs: managerIDs})
 	}
 
 	// A scan fetches releases just as a sync does, so it detects redirects and
@@ -1272,8 +1297,8 @@ func (r *Runner) runScope(scope Scope) {
 	r.setPhase(PhaseCollection)
 	rebuild := r.rebuildCollection(event)
 	mirrored := map[string]any{}
-	if fullScan && !stopped {
-		syncedArtists, syncedAlbums := r.syncManagers(event)
+	if reachManagers && !stopped {
+		syncedArtists, syncedAlbums := r.syncManagers(event, managerIDs)
 		mirrored["artists"] = syncedArtists
 		mirrored["albums"] = syncedAlbums
 	}
@@ -1600,14 +1625,16 @@ func (r *Runner) rebuildCollection(parent *models.Event) collection.RebuildStats
 // artists that are already collection rows, so an artist discovered by this run's
 // rebuild is only in the mirror's scope once that rebuild has committed.
 //
-// Only full-library scans do this. A per-artist or per-release-group scan is an
-// interactive action, and making a one-album button wait on a mirror pass would be a
-// poor trade. The nightly scan covers it, and a user who wants one artist re-mirrored
-// now has the scoped verb for it (POST /artists/:mbid/sync-lidarr) rather than having
-// to trigger a whole-collection pass.
-func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
+// Only full-library scans do this, and only against the Lidarr managers they cover
+// (managerIDs; nil is every manager, for the run over every library — see
+// lidarrManagersInScope). A per-artist or per-release-group scan is an interactive
+// action, and making a one-album button wait on a mirror pass would be a poor trade.
+// The nightly scan covers it, and a user who wants one artist re-mirrored now has the
+// scoped verb for it (POST /artists/:mbid/sync-lidarr) rather than having to trigger a
+// whole-collection pass.
+func (r *Runner) syncManagers(parent *models.Event, managerIDs []uuid.UUID) (artists, albums int) {
 	ev := events.BeginChild(r.db, parent, models.EventTypeLidarrSync, "Sync from Lidarr")
-	stats, err := collection.SyncLidarr(r.db)
+	stats, err := collection.SyncLidarrWith(r.db, collection.SyncOptions{ManagerIDs: managerIDs})
 	artists, albums = stats.ArtistsSynced, stats.Groups
 
 	status := models.EventStatusOK
@@ -1620,8 +1647,8 @@ func (r *Runner) syncManagers(parent *models.Event) (artists, albums int) {
 	} else if artists > 0 {
 		logger.Log.Infof("mirrored %d album(s) for %d manager-owned artist(s)", albums, artists)
 	}
-	// This stage runs on every full library run, so on a native-only install it is a
-	// zero in the feed nightly. Saying which input was missing is what stops that
+	// This stage runs on every run over all libraries, so on a native-only install it
+	// is a zero in the feed nightly. Saying which input was missing is what stops that
 	// reading as a broken Lidarr rather than as a Lidarr nobody uses.
 	if stats.EmptyReason != "" {
 		summary += " — " + stats.EmptyReason

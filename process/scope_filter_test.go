@@ -11,9 +11,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// TestScopeFilterAdmits: a run that walks no narrowed folders admits every file (the
-// scheduled scan, which is what carries the collection's drift), while a narrowed one
-// admits only what sits under its roots — in the libraries it actually covers.
+// TestScopeFilterAdmits: only the run over every library admits every file (the
+// scheduled scan, which is what carries the collection's drift). Any other scope —
+// one whole library included — admits only what sits in the libraries it covers, and
+// within a narrowed one only what sits under its roots.
 func TestScopeFilterAdmits(t *testing.T) {
 	root := "/music"
 	library := models.Library{Base: models.Base{ID: uuid.New()}, Name: "Main", Path: root}
@@ -22,12 +23,34 @@ func TestScopeFilterAdmits(t *testing.T) {
 	parliament := filepath.Join(root, "Parliament", "Mothership Connection (1975)", "01 track.flac")
 	jayZ := filepath.Join(root, "Jay-Z & Chic", "Album (1998)", "01 track.flac")
 
-	full := newScopeFilter(LibraryScope([]models.Library{library}))
-	if !full.all() {
-		t.Fatal("a whole-library scope must not narrow anything")
+	everything := LibraryScope([]models.Library{library, other})
+	everything.All = true
+	all := newScopeFilter(everything)
+	if !all.all() {
+		t.Fatal("the run over every library must not narrow anything")
 	}
-	if !full.admits(models.LibraryItem{LibraryID: other.ID, Path: jayZ}) {
-		t.Error("an unnarrowed filter must admit everything, including other libraries")
+	if !all.admits(models.LibraryItem{LibraryID: other.ID, Path: jayZ}) {
+		t.Error("an unnarrowed filter must admit everything")
+	}
+
+	// Issue #14: processing one library re-tagged drifted files in another, because a
+	// scope naming no folders counted as unnarrowed.
+	one := newScopeFilter(LibraryScope([]models.Library{library}))
+	if one.all() {
+		t.Fatal("a one-library scope must narrow to that library")
+	}
+	if !one.admits(models.LibraryItem{LibraryID: library.ID, Path: jayZ}) {
+		t.Error("a one-library scope must admit every file in that library")
+	}
+	if one.admits(models.LibraryItem{LibraryID: other.ID, Path: "/other/anyone/album/01.flac"}) {
+		t.Error("a one-library scope must not admit another library's files")
+	}
+
+	// Every library named, but not as the run over all of them, is still narrowed —
+	// to exactly those libraries, which here is everything indexed.
+	both := newScopeFilter(LibraryScope([]models.Library{library, other}))
+	if both.all() || !both.admits(models.LibraryItem{LibraryID: other.ID, Path: "/other/a/b/01.flac"}) {
+		t.Error("a scope naming two whole libraries must admit both, through the filter")
 	}
 
 	narrow := newScopeFilter(Scope{Targets: []Target{
@@ -95,6 +118,23 @@ func TestNarrowDueKeepsOnlyScopeReleases(t *testing.T) {
 	sort.Strings(got)
 	if len(got) != 1 || got[0] != "rel-parliament" {
 		t.Errorf("narrowDue = %v, want [rel-parliament]", got)
+	}
+
+	// A whole-library scope keeps what that library's files point at, and nothing a
+	// different library or the browse cache holds (issue #14).
+	other := models.Library{Name: "Other", Path: t.TempDir(), Enabled: true}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatalf("create library: %v", err)
+	}
+	if err := db.Create(&models.LibraryItem{LibraryID: other.ID, Path: filepath.Join(other.Path, "A", "B", "01.flac"),
+		MBReleaseID: "rel-other", Status: models.LibraryItemStatusOK}).Error; err != nil {
+		t.Fatalf("create item: %v", err)
+	}
+	whole := r.narrowDue([]string{"rel-parliament", "rel-jayz", "rel-other", "rel-unowned"},
+		newScopeFilter(LibraryScope([]models.Library{library})))
+	sort.Strings(whole)
+	if len(whole) != 2 || whole[0] != "rel-jayz" || whole[1] != "rel-parliament" {
+		t.Errorf("narrowDue for one library = %v, want [rel-jayz rel-parliament]", whole)
 	}
 
 	// The unnarrowed case is left exactly as it was: a full scan still refreshes
@@ -184,5 +224,65 @@ func TestRetagReleasesHonoursScope(t *testing.T) {
 	}
 	if got := reload(outOfScope).ProcessedVersion; got != "" {
 		t.Errorf("the out-of-scope file was processed (version %q); it must not be touched at all", got)
+	}
+}
+
+// TestRetagReleasesHonoursLibraryScope is issue #14 as reported: processing one whole
+// library re-tagged files in another, because a scope naming no folders counted as
+// unnarrowed. The same release is held in both libraries and both copies are
+// byte-identical, so only the library separates them.
+func TestRetagReleasesHonoursLibraryScope(t *testing.T) {
+	requireAudioTools(t)
+
+	surroundRoot, musicRoot := t.TempDir(), t.TempDir()
+	inScope := synthFlacAt(t, filepath.Join(surroundRoot, "Artist", "Album (2020)", "01 track.flac"))
+	outOfScope := synthFlacAt(t, filepath.Join(musicRoot, "Artist", "Album (2020)", "01 track.flac"))
+
+	db := newTestDB(t)
+	seedReleaseCache(t, db, models.MusicBrainzReleaseResponse{
+		ID: "rel-1", Title: "Album",
+		ArtistCredit: []models.ArtistCredit{{Name: "Band", Artist: models.Artist{ID: "art-1", Name: "Band"}}},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-1", Title: "Album", PrimaryType: "Album"},
+		Media: []models.MusicBrainzMedia{{
+			Position: 1,
+			Tracks:   []models.Track{{ID: "trk-1", Title: "Song", Position: 1, Number: "1"}},
+		}},
+	})
+	profile := models.TaggerProfile{Name: "Write", WriteTags: true}
+	if err := db.Create(&profile).Error; err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	surround := models.Library{Name: "Surround", Path: surroundRoot, Enabled: true, TaggerProfileID: &profile.ID}
+	music := models.Library{Name: "Music", Path: musicRoot, Enabled: true, TaggerProfileID: &profile.ID}
+	for _, lib := range []*models.Library{&surround, &music} {
+		if err := db.Create(lib).Error; err != nil {
+			t.Fatalf("create library: %v", err)
+		}
+	}
+	items := map[string]models.LibraryItem{}
+	for path, lib := range map[string]uuid.UUID{inScope: surround.ID, outOfScope: music.ID} {
+		item := models.LibraryItem{LibraryID: lib, Path: path,
+			MBReleaseID: "rel-1", MBReleaseTrackID: "trk-1", MBRecordingID: "rec-1",
+			Status: models.LibraryItemStatusOK}
+		if err := db.Create(&item).Error; err != nil {
+			t.Fatalf("create item: %v", err)
+		}
+		items[path] = item
+	}
+
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
+	res := r.retagReleases([]string{"rel-1"}, modules.NewAlbumRefreshSet(),
+		components.NewDetailCollector(models.DefaultEventDetailRetention),
+		newScopeFilter(LibraryScope([]models.Library{surround})))
+
+	if res.retagged != 1 {
+		t.Errorf("re-tagged %d file(s), want 1 — only the processed library's copy", res.retagged)
+	}
+	var untouched models.LibraryItem
+	if err := db.First(&untouched, "id = ?", items[outOfScope].ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if untouched.ProcessedVersion != "" {
+		t.Errorf("the other library's file was processed (version %q); it must not be touched", untouched.ProcessedVersion)
 	}
 }

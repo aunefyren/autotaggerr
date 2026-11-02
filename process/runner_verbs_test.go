@@ -400,33 +400,54 @@ func TestRefreshVerbsUnknownScope(t *testing.T) {
 	}
 }
 
-// TestScopeIsFull: the end-of-run manager mirror is earned by covering a whole
-// library. A per-artist or per-release-group run is an interactive action, and
-// SyncLidarr has no scope narrower than "every Lidarr artist in the collection" — so a
-// one-album button must not wait on a whole-collection mirror.
-func TestScopeIsFull(t *testing.T) {
-	lib := models.Library{Name: "L", Path: "/m"}
+// TestLidarrManagersInScope: the repair and mirror stages are earned by covering a
+// whole library, and reach only the Lidarr managers governing what was covered. A
+// per-artist or per-release-group run is an interactive action that must not wait on
+// a mirror; a library with no Lidarr must not set one refreshing (issue #14); and only
+// the run over every library reaches every manager.
+func TestLidarrManagersInScope(t *testing.T) {
+	db := newTestDB(t)
+	r := NewRunner(db, models.ConfigStruct{})
 
+	mk := func(m models.Manager) uuid.UUID {
+		t.Helper()
+		if err := db.Create(&m).Error; err != nil {
+			t.Fatalf("manager: %v", err)
+		}
+		return m.ID
+	}
+	first := mk(models.Manager{Name: "First", Type: models.ManagerTypeLidarr, Enabled: true})
+	second := mk(models.Manager{Name: "Second", Type: models.ManagerTypeLidarr, Enabled: true})
+	off := mk(models.Manager{Name: "Off", Type: models.ManagerTypeLidarr, Enabled: false})
+	native := mk(models.Manager{Name: "Native", Type: models.ManagerTypeAutotaggerr, Enabled: true})
+
+	lib := func(id *uuid.UUID) models.Library { return models.Library{Name: "L", Path: "/m", ManagerID: id} }
 	cases := []struct {
-		name  string
-		scope Scope
-		want  bool
+		name   string
+		scope  Scope
+		want   []uuid.UUID
+		wantOK bool
 	}{
-		{"whole library", Scope{Targets: []Target{{Library: lib}}}, true},
-		{"one artist folder", Scope{Targets: []Target{{Library: lib, Roots: []string{"/m/Artist"}}}}, false},
-		{"nothing to scan", Scope{}, false},
+		{"every library", Scope{All: true, Targets: []Target{{Library: lib(nil)}}}, nil, true},
+		{"whole Lidarr library", Scope{Targets: []Target{{Library: lib(&first)}}}, []uuid.UUID{first}, true},
+		{"whole library with no manager", Scope{Targets: []Target{{Library: lib(nil)}}}, nil, false},
+		{"whole native library", Scope{Targets: []Target{{Library: lib(&native)}}}, nil, false},
+		{"whole library, Lidarr disabled", Scope{Targets: []Target{{Library: lib(&off)}}}, nil, false},
+		{"one artist folder", Scope{Targets: []Target{{Library: lib(&first), Roots: []string{"/m/Artist"}}}}, nil, false},
+		{"nothing to scan", Scope{}, nil, false},
 		{
 			name: "one full library among narrowed ones",
 			scope: Scope{Targets: []Target{
-				{Library: lib, Roots: []string{"/m/Artist"}},
-				{Library: lib},
+				{Library: lib(&first), Roots: []string{"/m/Artist"}},
+				{Library: lib(&second)},
 			}},
-			want: true,
+			want: []uuid.UUID{second}, wantOK: true,
 		},
 	}
 	for _, c := range cases {
-		if got := scopeIsFull(c.scope); got != c.want {
-			t.Errorf("%s: scopeIsFull = %v, want %v", c.name, got, c.want)
+		got, ok := r.lidarrManagersInScope(c.scope)
+		if ok != c.wantOK || len(got) != len(c.want) || (len(got) == 1 && got[0] != c.want[0]) {
+			t.Errorf("%s: lidarrManagersInScope = %v, %v; want %v, %v", c.name, got, ok, c.want, c.wantOK)
 		}
 	}
 }

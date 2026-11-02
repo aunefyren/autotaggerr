@@ -1867,6 +1867,15 @@ type SyncOptions struct {
 	// after that list was cached cannot be matched until it expires. Hence an option
 	// rather than the default: it is repair, not part of mirroring.
 	IgnoreCache bool
+	// ManagerIDs limits the pass to these Lidarr managers. Empty reads every enabled
+	// one. A processing run of one library passes that library's manager, so pressing
+	// Process on a library Lidarr does not govern never reaches into a Lidarr, and one
+	// governed by a second Lidarr leaves the first alone.
+	//
+	// A pass that leaves an enabled Lidarr out cannot draw the conclusions that need
+	// every listing: it retires nothing for an artist an out-of-scope manager holds,
+	// and reports no artist as unknown. See SyncLidarrWith.
+	ManagerIDs []uuid.UUID
 }
 
 // SyncStats is what one mirror pass did, and — when it did nothing — why.
@@ -2100,13 +2109,22 @@ func SyncLidarr(db *gorm.DB) (SyncStats, error) {
 func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 	var stats SyncStats
 
-	var managers []models.Manager
-	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).Find(&managers).Error; err != nil {
+	var enabled []models.Manager
+	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).Find(&enabled).Error; err != nil {
 		return stats, err
 	}
+	managers, others := splitManagers(enabled, opts.ManagerIDs)
 	if len(managers) == 0 {
 		stats.EmptyReason = SyncEmptyNoManager
 		return stats, nil
+	}
+	// A pass that leaves an enabled Lidarr unread sees only part of the listing. What
+	// that Lidarr was last seen holding is what this pass must not judge: an album
+	// only it lists is not gone, and an artist only it lists is not unknown.
+	partial := len(others) > 0
+	foreign, err := artistsLinkedTo(db, others)
+	if err != nil {
+		return stats, err
 	}
 
 	q := db.Where("managed_by IN ?", []string{models.ManagedByLidarr, models.ManagedByMixed})
@@ -2246,7 +2264,7 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 			continue
 		}
 		albums := mergeListings(l.albums)
-		retire := complete && !l.partial
+		retire := complete && !l.partial && !foreign[artistMBID]
 
 		// Drop the previous catalog view for this artist so albums removed from
 		// Lidarr stop being listed. It leaves the disk columns intact.
@@ -2295,7 +2313,11 @@ func SyncLidarrWith(db *gorm.DB, opts SyncOptions) (SyncStats, error) {
 	// missing from a list that was never fetched is not missing, it is unlooked-at,
 	// and reporting the whole collection as unknown because Lidarr was restarting
 	// would be the most alarming way possible to say "try again".
-	if len(stats.Failures) == 0 {
+	//
+	// Suppressed on a partial pass for the same reason: an artist the managers in
+	// scope do not list may be in one this pass never asked, including one added there
+	// since that manager was last read. The next pass over every manager decides.
+	if len(stats.Failures) == 0 && !partial {
 		for mbid := range want {
 			if !seen[mbid] {
 				stats.Unknown = append(stats.Unknown, mbid)

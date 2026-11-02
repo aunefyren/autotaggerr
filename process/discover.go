@@ -33,6 +33,7 @@ func (r *Runner) DiscoverAll() error {
 	}
 	scope := LibraryScope(libraries)
 	scope.Title = "Scan with disk walk"
+	scope.All = true
 	r.enqueue(job{jobDiscoverAll, "discover_all", "Scan with disk walk", func() {
 		r.discoverNow(scope, collection.RebuildScope{}, "Collection scan")
 	}})

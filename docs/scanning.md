@@ -234,12 +234,19 @@ about.
 
 `scan.scopeFilter` is what both now go through:
 
-- A scope where **no target names any roots** — a full run, or a whole-library one — admits
-  everything, exactly as before. That run is the one that is *supposed* to carry the collection's
-  drift; narrowing it would leave releases nothing ever refreshed.
-- A **narrowed** scope admits a file only in a library the run covers, and within it only under the
-  walked roots (`pathInScope`, the same predicate the prune and force-recorrelate paths use). A
-  library named with no roots is in scope in its entirety, so a mixed scope behaves per library.
+- Only the **run over every library** (`Scope.All`: the scheduled run, the startup run, *Process
+  all*, and the disk-walking *Scan* of every library) admits everything. That run is the one that is
+  *supposed* to carry the collection's drift; narrowing it would leave releases nothing ever refreshed.
+- **Every other scope is narrowed**, a whole-library one included: it admits a file only in a library
+  the run covers, and within it only under the walked roots (`pathInScope`, the same predicate the
+  prune and force-recorrelate paths use). A library named with no roots is in scope in its entirety,
+  so a mixed scope behaves per library.
+
+A whole-library scope names no roots, and for a while that alone made it count as unnarrowed — so
+pressing *Process* on one library refreshed every expired release in the cache and re-tagged drifted
+files in every *other* library ([#14](https://github.com/aunefyren/autotaggerr/issues/14)). The flag is
+explicit rather than inferred from "every enabled library is named" because the set of enabled
+libraries can change between enqueueing a job and running it.
 
 The refresh stage narrows by resolving the scope's own releases from `library_items` and
 intersecting them with the due list (`narrowDue`). That is the cost half of the fix: on a cold
@@ -489,11 +496,26 @@ was stale by default: every disk/catalog comparison on an artist page was agains
 last pressed a button, and `CatalogChecked` had never been true for an artist nobody had synced by
 hand.
 
-**Only full-library runs mirror.** `scopeIsFull` reuses `Target.full`, the same predicate that
-decides whether a library may claim it was scanned — a run too narrow to update a library's processed time
-is too narrow to be worth a whole-collection mirror. `SyncLidarr` has no scope narrower than "every
-Lidarr artist in the collection", so a per-artist or per-release-group button would otherwise wait on
-one. The nightly run and the manual button both still cover it.
+**Only full-library runs mirror, and only against their own managers.** `lidarrManagersInScope`
+decides both the mirror and the ghost-album repair before it. It reuses `Target.full`, the same
+predicate that decides whether a library may claim it was scanned: a run too narrow to update a
+library's processed time is too narrow to be worth a mirror, so a per-artist or per-release-group
+button never waits on one. Of the libraries a run covered in full, only the enabled Lidarr managers
+governing them are reached (`SyncOptions.ManagerIDs`, `RepairOptions.ManagerIDs`). Processing a library
+with no Lidarr therefore sets no Lidarr refreshing and mirrors nothing, and a library governed by a
+second Lidarr leaves the first alone. The run over every library reaches every manager.
+
+A pass that leaves an enabled Lidarr out sees only part of the listing, so it holds back the
+conclusions that need all of it:
+
+- It **retires nothing** for an artist an out-of-scope manager was last seen holding (its
+  `ManagerLink` rows), because an album only that manager lists is not gone.
+- It **reports no artist as unknown** and runs no artist re-key pairing. An artist the in-scope
+  managers do not list may be in the one never asked, including one added there since it was last
+  read. The next pass over every manager decides.
+
+Naming every enabled manager is the same as naming none. The repair's own re-sync after a refresh
+carries the same manager list.
 
 ## Drift sync
 
@@ -565,7 +587,7 @@ Each stage records **its own event**, linked to the run by `Event.ParentID`:
 | Plex | `plex_refresh` | when an album was touched and Plex is configured |
 | identity changes | `mb_migration` | **only when something was found** |
 | collection scan | `collection_scan` | always |
-| manager mirror | `lidarr_sync` | full-library runs only |
+| manager mirror | `lidarr_sync` | full-library runs covering a Lidarr-governed library, or every library |
 
 The run's own row keeps what only it knows — the scope, what narrowed it, the roll-up summary and
 the overall outcome — and **carries no detail rows at all**. Every row belongs to the activity that

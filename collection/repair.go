@@ -78,6 +78,11 @@ type RepairOptions struct {
 	// pressing approve is not an unattended pass, and telling them to come back in
 	// seven days would be refusing the one signal worth acting on.
 	IgnoreCooldown bool
+
+	// ManagerIDs limits the pass to these Lidarr managers, and the re-sync after each
+	// refresh with it. Empty asks every enabled one. A processing run of one library
+	// passes that library's manager, so it never sets another Lidarr refreshing.
+	ManagerIDs []uuid.UUID
 }
 
 // RepairGhostReleaseGroups asks each manager to refresh the artists holding albums
@@ -127,11 +132,12 @@ func RepairGhostReleaseGroupsWith(db *gorm.DB, opts RepairOptions) (RepairStats,
 		return stats, nil
 	}
 
-	var managers []models.Manager
+	var enabled []models.Manager
 	if err := db.Where("type = ? AND enabled = ?", models.ManagerTypeLidarr, true).
-		Find(&managers).Error; err != nil {
+		Find(&enabled).Error; err != nil {
 		return stats, err
 	}
+	managers, _ := splitManagers(enabled, opts.ManagerIDs)
 
 	for _, m := range managers {
 		if m.LidarrSkipArtistRefresh {
@@ -165,7 +171,7 @@ func RepairGhostReleaseGroupsWith(db *gorm.DB, opts RepairOptions) (RepairStats,
 				stats.Skipped++
 				continue
 			}
-			if err := refreshAndResync(db, client, la, artistMBID); err != nil {
+			if err := refreshAndResync(db, client, la, artistMBID, opts.ManagerIDs); err != nil {
 				stats.Failures = append(stats.Failures, fmt.Sprintf("%s: %s", la.Name, err.Error()))
 				// The attempt is still stamped: a manager that errors on every pass must
 				// not turn into a refresh on every pass.
@@ -273,7 +279,7 @@ func RefreshTurnedOffIn(db *gorm.DB, libraries []uuid.UUID) ([]string, error) {
 }
 
 // refreshAndResync performs the ordered part: ask, wait, re-mirror.
-func refreshAndResync(db *gorm.DB, client *modules.LidarrClient, la models.LidarrArtist, artistMBID string) error {
+func refreshAndResync(db *gorm.DB, client *modules.LidarrClient, la models.LidarrArtist, artistMBID string, managerIDs []uuid.UUID) error {
 	logger.Log.Infof("asking Lidarr to refresh %q, which holds albums whose MusicBrainz IDs do not resolve", la.Name)
 
 	commandID, err := client.RefreshArtist(la.ID)
@@ -295,7 +301,7 @@ func refreshAndResync(db *gorm.DB, client *modules.LidarrClient, la models.Lidar
 	// Scoped to the artist just refreshed, and with the cached Lidarr responses dropped
 	// — the whole point is to read what the refresh changed, and an hour-old cached
 	// album list is exactly what must not be believed here.
-	if _, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: artistMBID, IgnoreCache: true}); err != nil {
+	if _, err := SyncLidarrWith(db, SyncOptions{ArtistMBID: artistMBID, IgnoreCache: true, ManagerIDs: managerIDs}); err != nil {
 		return fmt.Errorf("re-syncing after refresh: %w", err)
 	}
 	return nil
