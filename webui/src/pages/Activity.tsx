@@ -128,6 +128,7 @@ const JOB_KIND_LABELS: Record<string, string> = {
   refresh_library: "Metadata refresh",
   discover_all: "Scan with disk walk",
   discover_artist: "Scan with disk walk",
+  discover_library: "Scan with disk walk",
   discography: "Discographies",
 };
 

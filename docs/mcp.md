@@ -89,7 +89,7 @@ pages — and lists each album once, under the first artist that wants it.
 |---|---|---|---|
 | `search_artists` / `search_releases` / `browse_artist_albums` | find the MBIDs an action needs; browse lists any artist's albums, in the collection or not | — | yes |
 | `process` | queue the full pipeline — everything, one library or one artist | yes | yes |
-| `scan` | re-derive the collection from the index, inline; `walk_disk` walks the folders first (queued) | no | no |
+| `scan` | re-derive the collection from the index, inline — everything, one library or one artist; `walk_disk` walks the folders first (queued) | no | no |
 | `refresh_metadata` | queue a MusicBrainz refresh; `force` at artist scope only | no | yes |
 | `tag_files` | queue rewriting tags from stored identities | yes | no |
 | `cancel_job` | ask the running job to stop between files | no | no |

@@ -68,7 +68,7 @@ func TestRecordScanStatesWhyItWasEmpty(t *testing.T) {
 // distinguishes the artist with no files from the collection with none.
 func TestScanEmptyReasonCases(t *testing.T) {
 	db := testDB(t)
-	artist := bounds{artist: "art-1"}
+	artist := bounds{artists: map[string]bool{"art-1": true}}
 	all := bounds{all: true}
 
 	if got := scanEmptyReason(db, all, 3, 3); got != "" {

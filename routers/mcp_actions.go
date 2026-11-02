@@ -254,8 +254,8 @@ type mcpRefreshInput struct {
 }
 
 type mcpScanInput struct {
-	ArtistMBID string `json:"artist_mbid,omitempty" jsonschema:"only this artist; omit for the whole collection"`
-	WalkDisk   bool   `json:"walk_disk,omitempty" jsonschema:"walk the folders first to find files that moved or arrived; queued instead of inline"`
+	mcpVerbInput
+	WalkDisk bool `json:"walk_disk,omitempty" jsonschema:"walk the folders first to find files that moved or arrived; queued instead of inline"`
 }
 
 type mcpQueued struct {
@@ -276,6 +276,7 @@ func newMCPQueued(res verbResult) mcpQueued {
 type mcpScanResult struct {
 	Queued        bool   `json:"queued"`
 	Artist        string `json:"artist,omitempty"`
+	Library       string `json:"library,omitempty"`
 	Artists       int    `json:"artists,omitempty"`
 	OwnedAlbums   int    `json:"owned_albums,omitempty"`
 	CreditChanges int    `json:"credit_changes,omitempty"`
@@ -300,8 +301,9 @@ func (a *API) addMCPVerbTools(server *mcp.Server) {
 
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "scan",
-		Description: "Re-derive the collection (owned albums) from the files already indexed, for everything or one " +
-			"artist. Inline and cheap; drops index rows whose file is gone. walk_disk walks the folders first (queued). " +
+		Description: "Re-derive the collection (owned albums) from the files already indexed, for everything, one " +
+			"library or one artist. Inline and cheap; drops index rows whose file is gone (at library scope, only that " +
+			"library's). walk_disk walks the folders first (queued). " +
 			"Writes no audio file.",
 		Annotations: actionTool("Scan", false, true, false),
 	}, a.mcpScan)
@@ -367,15 +369,19 @@ func (a *API) mcpTag(_ context.Context, _ *mcp.CallToolRequest, in mcpVerbInput)
 }
 
 func (a *API) mcpScan(_ context.Context, _ *mcp.CallToolRequest, in mcpScanInput) (*mcp.CallToolResult, mcpScanResult, error) {
-	res, err := a.runScan(verbTarget{ArtistMBID: strings.TrimSpace(in.ArtistMBID)}, in.WalkDisk)
+	t, err := in.target()
+	if err != nil {
+		return nil, mcpScanResult{}, err
+	}
+	res, err := a.runScan(t, in.WalkDisk)
 	if err != nil {
 		return nil, mcpScanResult{}, mcpToolError(err)
 	}
 	if res.Queued {
-		return nil, mcpScanResult{Queued: true, Artist: res.Artist, Follow: mcpFollowJob}, nil
+		return nil, mcpScanResult{Queued: true, Artist: res.Artist, Library: res.Library, Follow: mcpFollowJob}, nil
 	}
 	return nil, mcpScanResult{
-		Artist: res.Artist, Artists: res.Stats.Artists, OwnedAlbums: res.Stats.Owned,
+		Artist: res.Artist, Library: res.Library, Artists: res.Stats.Artists, OwnedAlbums: res.Stats.Owned,
 		CreditChanges: res.Stats.CreditChanges, FilesRemoved: res.Stats.FilesRemoved,
 		EmptyReason: res.Stats.EmptyReason, Completed: true,
 	}, nil

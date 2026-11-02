@@ -76,6 +76,7 @@ func TestJobKindClassification(t *testing.T) {
 		// Discovery writes the index, not audio, but is ordered like file work.
 		{jobDiscoverAll, false, true, false},
 		{jobDiscoverArtist, false, true, false},
+		{jobDiscoverLibrary, false, true, false},
 	}
 	for _, c := range cases {
 		if got := c.kind.fileWriting(); got != c.writes {

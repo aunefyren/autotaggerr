@@ -59,20 +59,25 @@ func Rebuild(db *gorm.DB) (RebuildStats, error) {
 
 // RebuildScope narrows a rebuild to part of the collection. The zero value is the
 // whole collection, which is what a process run and the collection-wide button ask
-// for.
+// for. At most one of the fields is set.
 //
-// **There is no library scope.** `owned` is a flag on the release-group, not a fact
-// per library: an album with files in two libraries is one row. A pass narrowed to
-// one library would have to read the other libraries' files anyway to avoid clearing
-// a shared album's disk view — at which point it is the whole-collection pass with
-// extra steps. An artist, by contrast, owns their release-groups outright.
+// A library scope is **not** a pass over one library's files alone. `owned` is a flag
+// on the release-group, not a fact per library — an album with files in two libraries
+// is one row — and an artist's "managed by" is read off every library they have files
+// in. So a library pass re-derives every artist with a file in the library, reading
+// all of their files wherever they sit, exactly as an artist pass does for one. What
+// the library narrows is the expensive and the conclusive part: only its own files are
+// stat'd, so only its own rows can be proven gone. See docs/collection.md.
 type RebuildScope struct {
 	// ArtistMBID limits the pass to one artist's albums: the release-groups already
 	// credited to them, plus any their files turn out to belong to.
 	ArtistMBID string
+	// LibraryID limits the pass to the artists with a file in this library, and the
+	// existence check to this library's files.
+	LibraryID *uuid.UUID
 }
 
-func (s RebuildScope) all() bool { return s.ArtistMBID == "" }
+func (s RebuildScope) all() bool { return s.ArtistMBID == "" && s.LibraryID == nil }
 
 // RebuildScoped is Rebuild narrowed by a scope. A scoped pass reads the whole index
 // exactly as a full one does — it is the *writes* that are confined, which is the
@@ -170,6 +175,12 @@ func isBusyError(err error) bool {
 // scope — what the artist page offers beside Process, Refresh metadata and Tag files.
 func RebuildArtist(db *gorm.DB, artistMBID string) (RebuildStats, error) {
 	return RebuildScoped(db, RebuildScope{ArtistMBID: artistMBID})
+}
+
+// RebuildLibrary re-derives the artists one library holds files for, proving only
+// that library's files still exist. It is the *Scan* verb at library scope.
+func RebuildLibrary(db *gorm.DB, libraryID uuid.UUID) (RebuildStats, error) {
+	return RebuildScoped(db, RebuildScope{LibraryID: &libraryID})
 }
 
 // RecordScan runs a Scan and records it as a top-level Activity event.
@@ -297,10 +308,21 @@ func ScanStats(stats RebuildStats) []models.EventStat {
 // *current* state at the start of the pass; anything the pass then discovers is
 // written and lands in `keep`, so it needs no place here.
 type bounds struct {
-	all      bool
-	artist   string
+	all bool
+	// artists are the artists the pass re-derives: one for an artist scope, every
+	// artist with a file in the library for a library scope.
+	artists  map[string]bool
 	groups   map[string]bool
 	releases map[string]bool
+	// proveLibrary, when set, confines the existence check to one library's files.
+	// Rows from other libraries are still aggregated — they are part of the albums
+	// in scope — but nothing is concluded about whether they are still on disk.
+	proveLibrary *uuid.UUID
+}
+
+// proves reports whether the pass may stat this row and drop it when it is gone.
+func (b bounds) proves(row itemRow) bool {
+	return b.proveLibrary == nil || row.LibraryID == *b.proveLibrary
 }
 
 // covers reports whether a release-group's rows are this pass's to rewrite.
@@ -340,38 +362,159 @@ func resolveBounds(db *gorm.DB, scope RebuildScope) (bounds, error) {
 	}
 
 	b := bounds{
-		artist:   scope.ArtistMBID,
+		artists:  map[string]bool{},
 		groups:   map[string]bool{},
 		releases: map[string]bool{},
 	}
 
-	groups, err := ReleaseGroupMBIDsForArtist(db, scope.ArtistMBID)
-	if err != nil {
-		return b, err
+	artists := []string{scope.ArtistMBID}
+	if scope.LibraryID != nil {
+		b.proveLibrary = scope.LibraryID
+		var err error
+		if artists, err = libraryArtists(db, *scope.LibraryID, b); err != nil {
+			return b, err
+		}
 	}
-	for _, id := range groups {
-		b.groups[id] = true
+	for _, id := range artists {
+		if id != "" {
+			b.artists[id] = true
+		}
 	}
-	// The primary-credit column is a claim in its own right — a row written before
-	// the link table existed has one without a link — so it is unioned in, exactly as
-	// ReleaseGroupsForArtist does.
-	var owned []string
-	if err := db.Model(&models.CollectionReleaseGroup{}).
-		Where("artist_mb_id = ?", scope.ArtistMBID).Pluck("mb_id", &owned).Error; err != nil {
-		return b, err
+	if len(b.artists) == 0 {
+		return b, nil
 	}
-	for _, id := range owned {
-		b.groups[id] = true
-	}
+	ids := keys(b.artists)
 
-	releases, err := ArtistReleaseMBIDs(db, scope.ArtistMBID)
-	if err != nil {
-		return b, err
+	for _, chunk := range chunked(ids) {
+		var groups []string
+		if err := db.Model(&models.CollectionReleaseGroupArtist{}).
+			Where("artist_mb_id IN ?", chunk).Pluck("release_group_mb_id", &groups).Error; err != nil {
+			return b, err
+		}
+		for _, id := range groups {
+			b.groups[id] = true
+		}
+		// The primary-credit column is a claim in its own right — a row written before
+		// the link table existed has one without a link — so it is unioned in, exactly
+		// as ReleaseGroupsForArtist does.
+		var owned []string
+		if err := db.Model(&models.CollectionReleaseGroup{}).
+			Where("artist_mb_id IN ?", chunk).Pluck("mb_id", &owned).Error; err != nil {
+			return b, err
+		}
+		for _, id := range owned {
+			b.groups[id] = true
+		}
+		var releases []string
+		if err := db.Model(&models.CollectionRelease{}).
+			Where("artist_mb_id IN ?", chunk).Pluck("mb_id", &releases).Error; err != nil {
+			return b, err
+		}
+		for _, id := range releases {
+			b.releases[id] = true
+		}
 	}
-	for _, id := range releases {
-		b.releases[id] = true
+	// Every edition of a release-group in scope, as ArtistReleaseMBIDs reads it.
+	for _, chunk := range chunked(keys(b.groups)) {
+		var releases []string
+		if err := db.Model(&models.CollectionRelease{}).
+			Where("release_group_mb_id IN ?", chunk).Pluck("mb_id", &releases).Error; err != nil {
+			return b, err
+		}
+		for _, id := range releases {
+			b.releases[id] = true
+		}
 	}
 	return b, nil
+}
+
+// libraryArtists lists every artist with a file in the library: the album artists the
+// cached releases credit, and whoever the collection already files those editions and
+// their release-groups under. Read before the pass prunes anything, so an artist whose
+// files in the library have all gone is still re-derived — and loses the albums.
+//
+// The library's own editions are admitted to the bounds directly as well, so a file
+// whose release names no artist the collection knows is still in scope.
+func libraryArtists(db *gorm.DB, libraryID uuid.UUID, b bounds) ([]string, error) {
+	var releaseIDs []string
+	if err := db.Model(&models.LibraryItem{}).
+		Where("library_id = ? AND mb_release_id <> ''", libraryID).
+		Distinct().Pluck("mb_release_id", &releaseIDs).Error; err != nil {
+		return nil, err
+	}
+
+	artists := map[string]bool{}
+	groups := map[string]bool{}
+	for _, relID := range releaseIDs {
+		b.releases[relID] = true
+		release, ok := modules.CachedRelease(relID)
+		if !ok {
+			continue
+		}
+		if release.ReleaseGroup.ID != "" {
+			groups[release.ReleaseGroup.ID] = true
+		}
+		for _, credit := range albumArtistCredit(release) {
+			if credit.Artist.ID != "" {
+				artists[credit.Artist.ID] = true
+			}
+		}
+	}
+
+	for _, chunk := range chunked(releaseIDs) {
+		var editions []models.CollectionRelease
+		if err := db.Select("artist_mb_id", "release_group_mb_id").
+			Where("mb_id IN ?", chunk).Find(&editions).Error; err != nil {
+			return nil, err
+		}
+		for _, e := range editions {
+			if e.ArtistMBID != "" {
+				artists[e.ArtistMBID] = true
+			}
+			if e.ReleaseGroupMBID != "" {
+				groups[e.ReleaseGroupMBID] = true
+			}
+		}
+	}
+	for _, chunk := range chunked(keys(groups)) {
+		b.addGroups(chunk)
+		var linked []string
+		if err := db.Model(&models.CollectionReleaseGroupArtist{}).
+			Where("release_group_mb_id IN ?", chunk).Pluck("artist_mb_id", &linked).Error; err != nil {
+			return nil, err
+		}
+		var primary []string
+		if err := db.Model(&models.CollectionReleaseGroup{}).
+			Where("mb_id IN ?", chunk).Pluck("artist_mb_id", &primary).Error; err != nil {
+			return nil, err
+		}
+		for _, id := range append(linked, primary...) {
+			if id != "" {
+				artists[id] = true
+			}
+		}
+	}
+	return keys(artists), nil
+}
+
+func (b bounds) addGroups(ids []string) {
+	for _, id := range ids {
+		b.groups[id] = true
+	}
+}
+
+// boundsChunk bounds the id list per IN clause, well under SQLite's variable limit: a
+// library scope can name every release a large library holds.
+const boundsChunk = 500
+
+// chunked splits ids into IN-clause-sized slices.
+func chunked(ids []string) [][]string {
+	var out [][]string
+	for start := 0; start < len(ids); start += boundsChunk {
+		end := min(start+boundsChunk, len(ids))
+		out = append(out, ids[start:end])
+	}
+	return out
 }
 
 // inScope reports whether one indexed file belongs to this pass.
@@ -393,7 +536,7 @@ func (b bounds) inScope(row itemRow) bool {
 		return false
 	}
 	for _, credit := range albumArtistCredit(release) {
-		if credit.Artist.ID == b.artist {
+		if b.artists[credit.Artist.ID] {
 			return true
 		}
 	}
@@ -502,6 +645,8 @@ const (
 	ScanEmptyNothingMatched = "files are indexed but none is matched to a release yet — check Items for what failed"
 	// ScanEmptyArtistNoFiles is the artist-scoped version of the same thing.
 	ScanEmptyArtistNoFiles = "no matched files for this artist"
+	// ScanEmptyLibraryNoFiles is the library-scoped version.
+	ScanEmptyLibraryNoFiles = "no matched files in this library — run Process on it first"
 )
 
 // scanEmptyReason works out why a pass re-derived nothing. It runs only when the pass
@@ -520,7 +665,7 @@ func scanEmptyReason(db *gorm.DB, scope bounds, all, scoped int) string {
 	}
 	if all > 0 {
 		if !scope.all {
-			return ScanEmptyArtistNoFiles
+			return scope.scopedEmptyReason()
 		}
 		// Unreachable in practice — an unscoped pass covers every matched row — but
 		// falling through to "nothing is matched" here would be a lie.
@@ -537,6 +682,14 @@ func scanEmptyReason(db *gorm.DB, scope bounds, all, scoped int) string {
 	}
 	if scope.all {
 		return ScanEmptyNothingMatched
+	}
+	return scope.scopedEmptyReason()
+}
+
+// scopedEmptyReason names the empty answer in the scope's own terms.
+func (b bounds) scopedEmptyReason() string {
+	if b.proveLibrary != nil {
+		return ScanEmptyLibraryNoFiles
 	}
 	return ScanEmptyArtistNoFiles
 }
@@ -705,10 +858,25 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 	// before anything is aggregated from these rows, prove which of them are still
 	// there. Only the rows in scope: an artist-scoped pass must conclude nothing
 	// about files it was not asked about. See pruneGoneFiles.
-	rows, removedIDs, filesRemoved, err := pruneGoneFiles(db, rows)
+	//
+	// A library pass narrows that further, to its own library's files: it aggregates
+	// the other libraries' copies of its albums but proves nothing about them.
+	toProve, unproven := rows, []itemRow(nil)
+	if scope.proveLibrary != nil {
+		toProve = make([]itemRow, 0, len(rows))
+		for _, r := range rows {
+			if scope.proves(r) {
+				toProve = append(toProve, r)
+			} else {
+				unproven = append(unproven, r)
+			}
+		}
+	}
+	rows, removedIDs, filesRemoved, err := pruneGoneFiles(db, toProve)
 	if err != nil {
 		return RebuildStats{}, err
 	}
+	rows = append(rows, unproven...)
 	if len(removedIDs) > 0 {
 		kept := make([]itemRow, 0, len(all))
 		for _, r := range all {
@@ -945,7 +1113,7 @@ func snapshotCollection(db *gorm.DB, scope bounds) (collectionSnapshot, error) {
 
 	artistQ := db.Model(&models.CollectionArtist{})
 	if !scope.all {
-		artistQ = artistQ.Where("mb_id = ?", scope.artist)
+		artistQ = artistQ.Where("mb_id IN ?", keys(scope.artists))
 	}
 	var artistIDs []string
 	if err := artistQ.Pluck("mb_id", &artistIDs).Error; err != nil {
