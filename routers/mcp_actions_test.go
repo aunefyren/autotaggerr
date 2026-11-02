@@ -44,6 +44,18 @@ func TestMCPVerbTools(t *testing.T) {
 	if scan.Queued || !scan.Completed {
 		t.Errorf("scan = %+v, want an inline result", scan)
 	}
+
+	// And at library scope, which takes the same library_id/artist_mbid pair.
+	expectMCPError(t, session, "scan", map[string]any{"library_id": "0190a1b2-0000-7000-8000-000000000000", "artist_mbid": "art-1"}, "not both")
+	expectMCPError(t, session, "scan", map[string]any{"library_id": "0190a1b2-0000-7000-8000-000000000000"}, "library not found")
+	lib := models.Library{Name: "Scanned", Path: t.TempDir(), Enabled: true}
+	if err := api.DB.Create(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	libScan := callMCP[mcpScanResult](t, session, "scan", map[string]any{"library_id": lib.ID.String()})
+	if libScan.Library != "Scanned" || !libScan.Completed {
+		t.Errorf("library scan = %+v", libScan)
+	}
 }
 
 func TestMCPTagFilesQueues(t *testing.T) {

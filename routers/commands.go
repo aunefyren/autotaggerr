@@ -212,18 +212,21 @@ func (a *API) queueTag(t verbTarget) (verbResult, error) {
 // scanResult is what Scan reports: either the stats of the inline pass, or — when the
 // disk is walked first — that it was queued.
 type scanResult struct {
-	Queued bool
-	Artist string
-	Stats  collection.RebuildStats
+	Queued  bool
+	Artist  string
+	Library string
+	Stats   collection.RebuildStats
 }
 
 // runScan is the Scan verb: re-derive the collection from the index, inline (a
 // database pass), or — walkDisk — queued behind a walk of the folders, which finds
-// files that moved or arrived. No audio file is written either way. There is no
-// library scope: the collection is per artist, not per folder.
+// files that moved or arrived. No audio file is written either way.
+//
+// At library scope it re-derives the artists the library holds files for and proves
+// only that library's files still exist (see collection.RebuildScope).
 func (a *API) runScan(t verbTarget, walkDisk bool) (scanResult, error) {
 	if t.LibraryID != nil {
-		return scanResult{}, failWith(http.StatusBadRequest, "scan runs for the whole collection or one artist, not a library")
+		return a.runLibraryScan(*t.LibraryID, walkDisk)
 	}
 	var artist models.CollectionArtist
 	if t.ArtistMBID != "" {
@@ -277,6 +280,32 @@ func (a *API) runScan(t verbTarget, walkDisk bool) (scanResult, error) {
 		return scanResult{}, failWith(http.StatusInternalServerError, "failed to scan the library")
 	}
 	return scanResult{Stats: stats}, nil
+}
+
+// runLibraryScan is runScan at library scope.
+func (a *API) runLibraryScan(id uuid.UUID, walkDisk bool) (scanResult, error) {
+	lib, err := a.targetLibrary(id)
+	if err != nil {
+		return scanResult{}, err
+	}
+	if walkDisk {
+		if a.Scan == nil {
+			return scanResult{}, errProcessorUnavailable
+		}
+		if err := a.Scan.DiscoverLibrary(lib.ID); err != nil {
+			logger.Log.Error("failed to queue a disk-walking library scan. error: " + err.Error())
+			return scanResult{}, failWith(http.StatusInternalServerError, "failed to queue the scan")
+		}
+		return scanResult{Queued: true, Library: lib.Name}, nil
+	}
+	stats, err := collection.RecordScan(a.DB, "Collection scan for "+lib.Name,
+		collection.RebuildScope{LibraryID: &lib.ID},
+		map[string]any{"library": lib.Name, "library_id": lib.ID.String()})
+	if err != nil {
+		logger.Log.Error("failed to scan library. error: " + err.Error())
+		return scanResult{}, failWith(http.StatusInternalServerError, "failed to scan this library")
+	}
+	return scanResult{Library: lib.Name, Stats: stats}, nil
 }
 
 // followUpdate is a change to how an artist is followed; nil leaves a field alone.

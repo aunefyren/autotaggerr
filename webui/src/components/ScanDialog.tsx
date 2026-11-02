@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Modal } from "./ui";
 
 /**
- * The options dialog both Scan buttons open — collection-wide and per-artist. Same
+ * The options dialog every Scan button opens — collection, library and artist. Same
  * shape as the Lidarr sync dialog, for the same reason: the option is not guessable from
  * a label, and it changes what the press costs.
  *

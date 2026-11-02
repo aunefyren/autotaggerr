@@ -6,6 +6,7 @@ import { BPMWrite, Library, LibraryMediaServer, LoudnessStatus, Manager, MediaSe
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { OrganiseDialog } from "../components/OrganiseDialog";
+import { ScanDialog } from "../components/ScanDialog";
 import { TempoAnalysis } from "../components/TempoAnalysis";
 import { LoudnessAnalysis } from "../components/LoudnessAnalysis";
 import { useToast } from "../toast";
@@ -27,6 +28,7 @@ export default function Libraries() {
   const [editing, setEditing] = useState<Library | null>(null);
   const [recorrelating, setRecorrelating] = useState<Library | null>(null);
   const [organising, setOrganising] = useState<Library | null>(null);
+  const [scanAsk, setScanAsk] = useState<Library | null>(null);
   const [busy, setBusy] = useState(false);
   // Bumped whenever a library changes, so the tempo card re-reads how many libraries
   // opt in rather than contradicting the table above it.
@@ -68,7 +70,41 @@ export default function Libraries() {
     return m.name;
   };
 
-  // The same three verbs the artist page offers, aimed at one library. None of
+  // Scan at library scope. It re-derives every artist with a file here and drops this
+  // library's rows whose file is gone, inline — another library's files are read but
+  // never proven gone. With the disk walk ticked it is queued, like the Collection
+  // page's Scan, and reports through Activity.
+  const scan = async (walkDisk: boolean) => {
+    const l = scanAsk;
+    if (!l) return;
+    setBusy(true);
+    try {
+      if (walkDisk) {
+        await api.post(`/libraries/${l.id}/scan`, { walk_disk: true });
+        toast("info", `Scan with disk walk started for ${l.name} — see Activity`);
+        return;
+      }
+      const r = await api.post<{
+        artists: number;
+        owned_release_groups: number;
+        files_removed: number;
+        empty_reason?: string;
+      }>(`/libraries/${l.id}/scan`);
+      if (r.empty_reason) {
+        toast("info", `Nothing to scan in ${l.name} — ${r.empty_reason}`);
+      } else {
+        const removed = r.files_removed > 0 ? ` — ${r.files_removed} file(s) gone from disk` : "";
+        toast("ok", `Scanned ${l.name} — ${r.artists} artists, ${r.owned_release_groups} albums${removed}`);
+      }
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+      setScanAsk(null);
+    }
+  };
+
+  // The same four verbs the artist page offers, aimed at one library. None of
   // them cascades into another: each does what its label says and stops.
   const action = (l: Library, verb: string, started: string) => async () => {
     try {
@@ -198,6 +234,13 @@ export default function Libraries() {
                       </button>
                       <button
                         className="btn btn-ghost btn-sm"
+                        onClick={() => setScanAsk(l)}
+                        title="Re-derive what you own for the artists in this library from the files already indexed, dropping this library's files that are no longer on disk. No MusicBrainz, no file writes. Optionally walks the library first to find new and moved files."
+                      >
+                        Scan
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-sm"
                         onClick={action(l, "refresh", "Metadata refresh started")}
                         title="Re-read MusicBrainz for everything this library's files point at, ignoring the cache. Reads only: no files are written. Anything that changed is reported, and Tag files (or the next Process) applies it."
                       >
@@ -247,6 +290,15 @@ export default function Libraries() {
 
       {organising && (
         <OrganiseDialog scope={{ library_id: organising.id }} title={organising.name} onClose={() => setOrganising(null)} />
+      )}
+
+      {scanAsk && (
+        <ScanDialog
+          scope={`the artists with files in ${scanAsk.name}`}
+          busy={busy}
+          onConfirm={scan}
+          onCancel={() => setScanAsk(null)}
+        />
       )}
 
       {recorrelating && (

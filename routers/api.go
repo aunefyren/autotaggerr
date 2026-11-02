@@ -164,6 +164,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.PUT("/libraries/:id", a.updateLibrary)
 		protected.DELETE("/libraries/:id", a.deleteLibrary)
 		protected.POST("/libraries/:id/process", a.processLibrary)
+		protected.POST("/libraries/:id/scan", a.scanLibrary)
 		protected.POST("/libraries/:id/refresh", a.refreshLibrary)
 		protected.POST("/libraries/:id/retag", a.retagLibrary)
 		protected.POST("/libraries/:id/recorrelate", a.recorrelateLibrary)

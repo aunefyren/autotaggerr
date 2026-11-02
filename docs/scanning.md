@@ -32,15 +32,19 @@ database pass.
 | | artist | library | everything |
 | --- | --- | --- | --- |
 | Process | `POST /artists/:mbid/process` | `POST /libraries/:id/process` | `POST /process` |
-| Scan | `POST /artists/:mbid/scan` | — | `POST /scan` |
+| Scan | `POST /artists/:mbid/scan` | `POST /libraries/:id/scan` | `POST /scan` |
 | Refresh metadata | `POST /artists/:mbid/refresh` | `POST /libraries/:id/refresh` | `POST /refresh` |
 | Tag files | `POST /artists/:mbid/retag` | `POST /libraries/:id/retag` | `POST /retag` |
 
-**Scan has no library scope**, and cannot have a useful one: `owned` is a flag on the
-release-group, not a fact per library, so an album held in two libraries is one row. A pass
-narrowed to one library would have to read the other libraries' files anyway to avoid clearing a
-shared album's disk view — at which point it is the collection-wide pass with extra steps. An
-artist owns their release-groups outright, which is why that scope does work. See
+**Scan at library scope is the artists, not the folder.** `owned` is a flag on the release-group,
+not a fact per library, so an album held in two libraries is one row, and an artist's *managed by*
+is read off every library they have files in. A library Scan therefore re-derives **every artist
+with a file in the library**, reading all of their files wherever they sit — the artist scope,
+taken for each of them at once. What the library narrows is the part that costs and the part that
+concludes: only the library's own files are stat'd, so only its own rows can be proven gone, and
+nothing is rewritten for an artist with no file in it. This was documented as impossible until
+[#15](https://github.com/aunefyren/autotaggerr/issues/15); the objection assumed a pass reads only
+what it writes, and a scoped rebuild has always read the whole index. See
 [the scoped rebuild](collection.md#scoping-a-rebuild).
 
 Only the file-writing verbs are gated on a running job (`409`). A metadata refresh is not: it
@@ -72,13 +76,14 @@ Scan deleted twenty rows for files that were intact one folder over. Every later
 left to look at, and a Lidarr sync does not walk either, so the album stayed empty until something
 ran Process over the artist.
 
-Both Scan buttons therefore open a dialog (`ScanDialog.tsx`) with one option, **Look for new and
+Every Scan button therefore opens a dialog (`ScanDialog.tsx`) with one option, **Look for new and
 moved files on disk**, unticked by default. Ticked, the request carries `{"walk_disk": true}` and
-the pass is queued (`process.DiscoverAll` / `DiscoverArtist`, `202`) instead of answered inline. It
-records a `discover_files` event, with the ordinary collection scan as its child stage:
+the pass is queued (`process.DiscoverAll` / `DiscoverLibrary` / `DiscoverArtist`, `202`) instead of
+answered inline. It records a `discover_files` event, with the ordinary collection scan as its child
+stage:
 
-1. **Walk** the scope — every enabled library, or the artist's folders as derived for an artist
-   Process (`collection.ArtistTargets`).
+1. **Walk** the scope — every enabled library, one library (enabled or not, as Process on it is),
+   or the artist's folders as derived for an artist Process (`collection.ArtistTargets`).
 2. **Carry moved rows.** An indexed row whose file is gone and an unindexed file that share a
    size and modification second are the same bytes at a new path, and the row moves whole —
    identity, pin and processed version included — without asking anyone. A move that rewrote the
@@ -100,6 +105,11 @@ records a `discover_files` event, with the ordinary collection scan as its child
 4. **Scan**, as it always does, on what the walk recorded. Its prune now only deletes rows that
    really are gone. The order is the point: run the other way round, the prune deletes a moved
    file's row before the walk can carry it.
+
+A **library** walk carries moves within that library only. A file moved into a *different*
+library is a gone row on one side and an unindexed file on the other, and only the walk over every
+library sees both; the library walk resolves the new file through its manager instead, and leaves
+the old row for that library's own Scan.
 
 It **writes no audio file**, which is what keeps it Scan rather than a second Process. A file it
 resolves is recorded with a blank `processed_version`, so the next Process will not skip it as
@@ -160,8 +170,7 @@ appear:
 - **Artist** — all four, narrowed to that artist, plus *Re-correlate*.
 - **Release-group** — *Re-correlate* only. The four verbs have no album scope; the repair does,
   because one album is the unit that drifts.
-- **Libraries** — Process, Refresh metadata, Tag files per library (Scan has no library scope), plus
-  *Re-correlate*.
+- **Libraries** — all four per library, plus *Organise* and *Re-correlate*.
 - **Activity** — *Process all libraries* only. Activity reports work; it is not where work is
   chosen. The one exception earns its place because "nothing has happened yet" is a state that
   page has to answer for.
@@ -192,6 +201,7 @@ were split. Some identifiers inside it still carry the older word (`components.S
 |----------|---------|
 | `POST /process` | process every enabled library |
 | `POST /libraries/:id/process` | one library |
+| `POST /libraries/:id/scan` | re-derive the artists with files in one library; `walk_disk` walks it first |
 | `GET /process/status` | the job queue plus the current/last run summary |
 | `POST /refresh` | drift sync (below) |
 | `POST /retag` | re-tag every indexed file |
@@ -466,7 +476,9 @@ is just every one of that artist's files individually proving gone — there is 
 
 Scoping matches the rebuild it runs inside: only rows `bounds.inScope` admits are checked, so an
 artist-scoped Scan proves nothing about a different artist's files, the same rule
-[`RebuildScoped`](collection.md#scoping-a-rebuild) already holds for every write it makes. A pinned
+[`RebuildScoped`](collection.md#scoping-a-rebuild) already holds for every write it makes. A
+library-scoped Scan narrows it once more (`bounds.proves`): its artists' files in *other* libraries
+are aggregated but not stat'd, so it proves nothing about a library it was not pressed on. A pinned
 row still goes — the pin identifies a file that is no longer there — logged separately from the
 plain count for the same reason as above.
 

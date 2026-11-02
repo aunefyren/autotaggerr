@@ -36,6 +36,7 @@ const (
 	jobRepairArtist     jobKind = "repair_artist"
 	jobDiscoverAll      jobKind = "discover_all"
 	jobDiscoverArtist   jobKind = "discover_artist"
+	jobDiscoverLibrary  jobKind = "discover_library"
 	jobImport           jobKind = "import"
 	jobOrganise         jobKind = "organise"
 	jobDiscography      jobKind = "discography"
@@ -57,7 +58,7 @@ func (k jobKind) fileWriting() bool {
 // it is what someone presses when an album has gone missing, and leaving it behind an
 // hours-long refresh would be the same wait the ordering exists to prevent.
 func (k jobKind) aheadOfMetadata() bool {
-	return k.fileWriting() || k == jobDiscoverAll || k == jobDiscoverArtist
+	return k.fileWriting() || k == jobDiscoverAll || k == jobDiscoverArtist || k == jobDiscoverLibrary
 }
 
 // metadataRefresh reports whether a kind is a metadata pass. Those count entities on

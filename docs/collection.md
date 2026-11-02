@@ -92,7 +92,8 @@ real decision is already committed.
 
 `Rebuild` is the **Scan** verb (see [scanning.md](scanning.md#the-four-verbs-and-why-none-of-them-cascades)),
 and `RebuildScoped` narrows it. The zero scope is the whole collection — what a processing run and
-the collection-wide button ask for; `RebuildArtist` is the artist page's button.
+the collection-wide button ask for; `RebuildArtist` is the artist page's button and
+`RebuildLibrary` the Libraries page's.
 
 Narrowing is about *writes*, not reads. A scoped pass reads the whole index exactly as a full one
 does, because that is the only way to answer the question the button is actually pressed for: an
@@ -117,10 +118,22 @@ prune — so it can only ever widen what gets written, never what got wiped. `pr
 stays unscoped deliberately: it asks whether anything anywhere still credits an artist, which is a
 global fact and true regardless of which pass noticed.
 
-**There is no library scope**, and the schema is why: `owned` is a flag on the release-group, not
-a fact per library. An album with files in two libraries is one row, so a per-library pass would
-have to read the other libraries' files to avoid clearing a shared album — at which point it is
-the collection-wide pass with extra steps.
+**A library scope is a set of artists.** `owned` is a flag on the release-group, not a fact per
+library, and an artist's `ManagedBy` is derived from every library they have files in — so a pass
+bounded to one library's albums would shrink a shared album to that library's share and demote a
+mixed artist to whichever manager the library has. `resolveBounds` instead takes every artist with
+a file in the library (`libraryArtists`: the album artists the cached releases credit, and whoever
+the collection already files those editions and release-groups under) and bounds the pass to all
+of their release-groups, exactly as the artist scope does for one. That set is read **before** the
+prune, so an artist whose files in the library have all gone is still in scope and loses the albums.
+
+The library narrows the existence check, not the aggregation: `bounds.proveLibrary` limits
+`pruneGoneFiles` to the library's own rows, and the other libraries' copies are counted without
+being stat'd. An artist with no file in the library is not touched at all. Resolving the bounds
+queries in chunks of 500 ids (`boundsChunk`), since a large library names thousands of releases;
+the writes after it still pass the release-group set as one IN list, as the artist scope always
+has. That holds below SQLite's 32,766-variable limit, which a library of over 32,000 albums would
+reach — the collection-wide Scan, which uses no IN list, is the answer there.
 
 
 ## Entities

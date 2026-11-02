@@ -9,6 +9,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/google/uuid"
 )
 
 // The production incident, end to end: a manager renamed an album folder after a tag
@@ -145,5 +146,83 @@ func TestDiscoverAllWalksEveryEnabledLibrary(t *testing.T) {
 	}
 	if paths := indexedPaths(t, db, library); len(paths) != 1 {
 		t.Errorf("index = %v, want the walked file recorded", paths)
+	}
+}
+
+// A disk-walking Scan of one library carries a moved file within that library, and its
+// Scan stage proves nothing about another library: a gone row there is left for that
+// library's own Scan, where the walk over every library would have pruned it.
+func TestDiscoverLibraryIsScopedToTheLibrary(t *testing.T) {
+	db := newTestDB(t)
+	root := t.TempDir()
+	library, oldPath := seedArtistWithFile(t, db, root)
+
+	fi, err := os.Stat(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mtime := fi.ModTime().Truncate(time.Second)
+	if err := os.Chtimes(oldPath, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&models.LibraryItem{}).Where("path = ?", oldPath).
+		Updates(map[string]any{"size": fi.Size(), "mod_time": mtime}).Error; err != nil {
+		t.Fatal(err)
+	}
+	newPath := filepath.Join(root, "Artist", "Album (2021)", filepath.Base(oldPath))
+	if err := os.MkdirAll(filepath.Dir(newPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same artist in a second library, whose file is gone.
+	other := models.Library{Name: "Other", Path: t.TempDir(), Enabled: true}
+	if err := db.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	gone := filepath.Join(other.Path, "gone.flac")
+	if err := db.Create(&models.LibraryItem{LibraryID: other.ID, Path: gone, MBReleaseID: "rel-1", Status: models.LibraryItemStatusOK}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrProcessConcurrency: 2, AutotaggerrVersion: "test"})
+	if err := r.DiscoverLibrary(library.ID); err != nil {
+		t.Fatalf("DiscoverLibrary: %v", err)
+	}
+	r.waitIdle(t)
+
+	if paths := indexedPaths(t, db, library); !paths[newPath] || paths[oldPath] {
+		t.Fatalf("index = %v, want the row carried to %q", paths, newPath)
+	}
+	if paths := indexedPaths(t, db, other); !paths[gone] {
+		t.Error("a library's disk walk must not prune another library's row")
+	}
+
+	var ev models.Event
+	if err := db.Where("type = ?", models.EventTypeDiscoverFiles).First(&ev).Error; err != nil {
+		t.Fatalf("discovery event not recorded: %v", err)
+	}
+	if ev.Title != "Scan with disk walk of L" {
+		t.Errorf("title = %q", ev.Title)
+	}
+	if ev.Details["library_id"] != library.ID.String() {
+		t.Errorf("library_id = %v, want %s", ev.Details["library_id"], library.ID)
+	}
+	var scan models.Event
+	if err := db.Where("type = ? AND parent_id = ?", models.EventTypeCollectionScan, ev.ID).First(&scan).Error; err != nil {
+		t.Fatalf("the collection scan should run as a stage of the discovery: %v", err)
+	}
+	if scan.Title != "Collection scan for L" {
+		t.Errorf("scan title = %q", scan.Title)
+	}
+}
+
+func TestDiscoverLibraryRejectsAnUnknownLibrary(t *testing.T) {
+	db := newTestDB(t)
+	r := NewRunner(db, models.ConfigStruct{AutotaggerrVersion: "test"})
+	if err := r.DiscoverLibrary(uuid.New()); err == nil {
+		t.Error("DiscoverLibrary of an unknown library should fail")
 	}
 }

@@ -509,3 +509,47 @@ func TestScanWithDiskWalkQueues(t *testing.T) {
 		t.Errorf("scan without the walk = %d, want 200: %s", w.Code, w.Body.String())
 	}
 }
+
+// TestLibraryScan: the Scan verb at library scope (#15). Unticked it answers inline
+// and drops only that library's gone rows; ticked it queues a walk of the library.
+func TestLibraryScan(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	if w := do(r, "POST", "/api/v1/libraries/"+uuid.New().String()+"/scan", token, nil); w.Code != http.StatusNotFound {
+		t.Errorf("unknown library = %d, want 404: %s", w.Code, w.Body.String())
+	}
+
+	// The seeded file was never written, so it is gone — and the library root exists.
+	seedArtistWithFile(t, api, t.TempDir())
+	var lib models.Library
+	if err := api.DB.Where("name = ?", "L").First(&lib).Error; err != nil {
+		t.Fatal(err)
+	}
+	other := models.Library{Name: "Other", Path: t.TempDir(), Enabled: true}
+	if err := api.DB.Create(&other).Error; err != nil {
+		t.Fatal(err)
+	}
+	otherGone := filepath.Join(other.Path, "gone.flac")
+	if err := api.DB.Create(&models.LibraryItem{LibraryID: other.ID, Path: otherGone, MBReleaseID: "rel-1", Status: models.LibraryItemStatusOK}).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	out := decodeJSON[map[string]any](t, r, "POST", "/api/v1/libraries/"+lib.ID.String()+"/scan", token, nil)
+	if out["library"] != "L" {
+		t.Errorf("library = %v, want L", out["library"])
+	}
+	if removed, _ := out["files_removed"].(float64); removed != 1 {
+		t.Errorf("files_removed = %v, want 1", out["files_removed"])
+	}
+	var n int64
+	api.DB.Model(&models.LibraryItem{}).Where("path = ?", otherGone).Count(&n)
+	if n != 1 {
+		t.Error("a library Scan must not prune another library's row")
+	}
+
+	walk := map[string]any{"walk_disk": true}
+	if w := do(r, "POST", "/api/v1/libraries/"+lib.ID.String()+"/scan", token, walk); w.Code != http.StatusAccepted {
+		t.Errorf("library walk = %d, want 202: %s", w.Code, w.Body.String())
+	}
+}

@@ -60,6 +60,35 @@ func (a *API) processLibrary(c *gin.Context) {
 	c.JSON(http.StatusAccepted, gin.H{"status": res.Status})
 }
 
+// scanLibrary is the *Scan* verb at library scope: it re-derives every artist with a
+// file in the library from the index, and drops the library's rows whose file is gone.
+// Other libraries' copies of those artists' albums are read but not stat'd, so nothing
+// is concluded about them. Inline like the other Scans; with walk_disk set it is
+// queued behind a walk of the library (process.DiscoverLibrary).
+func (a *API) scanLibrary(c *gin.Context) {
+	id, ok := a.idParam(c)
+	if !ok {
+		return
+	}
+	res, err := a.runScan(verbTarget{LibraryID: &id}, walkDiskRequested(c))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	if res.Queued {
+		c.JSON(http.StatusAccepted, gin.H{"status": "scan queued", "library": res.Library})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"library":              res.Library,
+		"artists":              res.Stats.Artists,
+		"owned_release_groups": res.Stats.Owned,
+		"credit_changes":       res.Stats.CreditChanges,
+		"files_removed":        res.Stats.FilesRemoved,
+		"empty_reason":         res.Stats.EmptyReason,
+	})
+}
+
 // refreshAll re-reads the MusicBrainz metadata that is due, for the whole
 // collection. Writes no files: what changed upstream is reported, and the next
 // process run (or Tag files) applies it.

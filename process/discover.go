@@ -40,6 +40,29 @@ func (r *Runner) DiscoverAll() error {
 	return nil
 }
 
+// DiscoverLibrary queues a disk-walking Scan of one library. Like Process on a library
+// it is not the run over every library (Scope.All stays false), and its Scan stage is
+// the library-scoped one: it re-derives the artists the library holds files for and
+// proves only this library's files gone. A file moved into a *different* library is
+// not carried — only the walk over every library sees both sides of that move.
+//
+// A disabled library is walked all the same, as Process on it is: pressing the button
+// on one library is asking for that library.
+func (r *Runner) DiscoverLibrary(id uuid.UUID) error {
+	var library models.Library
+	if err := r.db.First(&library, "id = ?", id).Error; err != nil {
+		return err
+	}
+	scope := LibraryScope([]models.Library{library})
+	scope.Title = "Scan with disk walk of " + library.Name
+	scope.Detail = map[string]any{"library": library.Name, "library_id": library.ID.String()}
+	libraryID := library.ID
+	r.enqueue(job{jobDiscoverLibrary, "discover_library:" + id.String(), "Scan with disk walk", func() {
+		r.discoverNow(scope, collection.RebuildScope{LibraryID: &libraryID}, "Collection scan for "+library.Name)
+	}})
+	return nil
+}
+
 // DiscoverArtist queues a disk-walking Scan of one artist's folders, derived from where
 // their indexed files sit — the same folders an artist Process walks. It returns
 // ErrNothingToProcess when the artist has no indexed files to locate a folder from.
