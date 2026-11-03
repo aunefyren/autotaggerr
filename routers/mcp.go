@@ -122,6 +122,7 @@ func (a *API) newMCPServer(key mcpServerKey) *mcp.Server {
 	a.addMCPCollectionTools(server)
 	a.addMCPFileTools(server)
 	a.addMCPActivityTools(server)
+	a.addMCPOrganiseTools(server, key.write)
 	if key.write {
 		a.addMCPSearchTools(server)
 		a.addMCPVerbTools(server)

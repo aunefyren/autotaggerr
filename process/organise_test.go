@@ -9,6 +9,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/google/uuid"
 )
 
 // organisedWorld is the import world with its album imported into the library, then the
@@ -72,15 +73,23 @@ func TestOrganiseMovesWhatWasReviewed(t *testing.T) {
 		t.Error("a skipped move was made")
 	}
 
-	// The rest, in a second pass: the old album folder is left empty and removed.
+	// The rest, in a second pass: the album now moves whole, so its cover follows,
+	// and the old album folder is left empty and removed.
+	cover := filepath.Join(filepath.Dir(m.From), "cover.jpg")
+	if err := os.WriteFile(cover, []byte("jpg"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	again, _ := w.runner.PlanOrganise(scope)
-	if len(again.Moves) != 1 || again.InPlace != 1 {
+	if len(again.Moves) != 1 || again.InPlace != 1 || len(again.Extras) != 1 {
 		t.Fatalf("second plan = %+v", again)
 	}
 	if err := w.runner.Organise(scope, again.Moves, true); err != nil {
 		t.Fatal(err)
 	}
 	w.runner.waitIdle(t)
+	if _, err := os.Stat(filepath.Join(filepath.Dir(m.To), "cover.jpg")); err != nil {
+		t.Errorf("the cover did not follow its album: %v", err)
+	}
 	if _, err := os.Stat(filepath.Dir(m.From)); !os.IsNotExist(err) {
 		t.Errorf("the emptied folder %s is still there: %v", filepath.Dir(m.From), err)
 	}
@@ -159,5 +168,66 @@ func TestOrganiseRefusesALidarrLibrary(t *testing.T) {
 	}
 	if _, err := w.runner.PlanOrganise(OrganiseScope{}); err == nil {
 		t.Error("an empty scope planned")
+	}
+}
+
+// TestOrganiseExtrasMoveWithAWholeAlbum: covers and cue sheets go with an album that
+// moves whole to one place — including one in disc folders, read from the folder above
+// them — and stay with an album that leaves a track behind. Hidden files never move,
+// and a target already taken is reported, not overwritten.
+func TestOrganiseExtrasMoveWithAWholeAlbum(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel string) string {
+		p := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	lib := uuid.New()
+	roots := map[uuid.UUID]string{lib: root}
+	move := func(from, to string) OrganiseRow {
+		return OrganiseRow{LibraryID: lib, From: filepath.Join(root, filepath.FromSlash(from)), To: filepath.Join(root, filepath.FromSlash(to))}
+	}
+
+	// A whole two-disc album, moving: its cover follows, its hidden file does not.
+	write("A/Old/CD1/01.flac")
+	write("A/Old/CD2/01.flac")
+	write("A/Old/cover.jpg")
+	write("A/Old/.hidden")
+	// An album leaving one track behind keeps its cover.
+	write("B/Old/01.flac")
+	write("B/Old/02.flac")
+	write("B/Old/cover.jpg")
+	// An album whose target already holds a cue sheet.
+	write("C/Old/01.flac")
+	write("C/Old/album.cue")
+	write("C/New/album.cue")
+
+	extras := organiseExtras([]OrganiseRow{
+		move("A/Old/CD1/01.flac", "A/New/CD1/01.flac"),
+		move("A/Old/CD2/01.flac", "A/New/CD2/01.flac"),
+		move("B/Old/01.flac", "B/New/01.flac"),
+		move("C/Old/01.flac", "C/New/01.flac"),
+	}, roots)
+
+	got := map[string]OrganiseExtra{}
+	for _, x := range extras {
+		got[x.FromRel] = x
+	}
+	if x, ok := got["A/Old/cover.jpg"]; !ok || x.ToRel != "A/New/cover.jpg" || x.Exists {
+		t.Errorf("A's cover = %+v, want it moved with the album", x)
+	}
+	if _, ok := got["A/Old/.hidden"]; ok {
+		t.Error("a hidden file was moved")
+	}
+	if _, ok := got["B/Old/cover.jpg"]; ok {
+		t.Error("the cover of an album leaving a track behind was moved")
+	}
+	if x, ok := got["C/Old/album.cue"]; !ok || !x.Exists {
+		t.Errorf("C's cue sheet = %+v, want it reported as already there", x)
 	}
 }

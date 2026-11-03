@@ -254,6 +254,24 @@ cover or cue sheet), the Plex folder cache forgets them, and Plex is asked to **
 section — a moved file is found by a scan; refreshing the album it left would only re-read files no
 longer there.
 
+**An album's other files follow it** — covers, cue sheets, rip logs, anything in the album folder
+that is not a track (`organiseExtras`) — when the album moves *whole* to one place: every audio file
+under its old folder is among the moves, and all of them land in one new album folder. The album
+folder is a file's folder, or the one above when that is a disc folder (`CD1`, `Disc 2`), read the
+same way on both sides. Anything less leaves it unclear where a cover belongs, so it stays. Only the
+album folder's own files are taken, not those inside a disc folder, and never hidden ones; a target
+already taken is reported in Activity and left alone. The review lists them under a switch, on by
+default (`move_extras`), and the job works them out again from the moves it actually made, so a
+skipped or failed track keeps its album's cover with it. A cue sheet names its tracks' files, so one
+whose tracks were renamed needs editing — the move does not rewrite it.
+
+**Over MCP**, `preview_organise` is the dry run and `organise_files` the commit, behind the write
+scope. The commit takes the scope and the item IDs to skip, never a list of moves: it plans again and
+moves only what Autotaggerr proposes itself, which is the guarantee the review table gives in the UI.
+
+**It is never automatic** — not on a schedule, not after an import. A move nobody reviewed is the one
+thing the review step exists to prevent, and an import already names its files by the profile.
+
 **A Lidarr library is never organised.** Lidarr tracks its files by path, so a file moved under it
 is a file Lidarr has lost: the dry run of such a library is refused (409), and an artist or album
 with files in one lists those files as not movable. The buttons are disabled where they could only
