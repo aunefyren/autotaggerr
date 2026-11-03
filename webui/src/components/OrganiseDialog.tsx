@@ -33,6 +33,8 @@ export function OrganiseDialog({
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [showSkipped, setShowSkipped] = useState(false);
+  const [moveExtras, setMoveExtras] = useState(true);
+  const [showExtras, setShowExtras] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -74,7 +76,7 @@ export function OrganiseDialog({
   const commit = async () => {
     setBusy(true);
     try {
-      await api.post("/organise", { ...scope, rows, move_extras: true });
+      await api.post("/organise", { ...scope, rows, move_extras: moveExtras });
       toast("info", `Organising ${moving.length} file${moving.length === 1 ? "" : "s"} — see Activity`);
       onClose();
     } catch (e) {
@@ -170,6 +172,31 @@ export function OrganiseDialog({
                     {plan.skipped.map((s) => (
                       <div key={s.item_id} style={{ fontSize: 11 }}>
                         <span className="path">{s.from_rel}</span> <span className="dim">— {s.reason}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {plan.extras.length > 0 && (
+              <div className="stack" style={{ gap: 6 }}>
+                <label className="row" style={{ gap: 8, cursor: "pointer", fontSize: 12 }}>
+                  <input type="checkbox" checked={moveExtras} disabled={busy} onChange={(e) => setMoveExtras(e.target.checked)} />
+                  <span>
+                    Move {plan.extras.length} other file{plan.extras.length === 1 ? "" : "s"} with {plan.extras.length === 1 ? "its" : "their"} album
+                    <span className="dim"> — covers, cue sheets, logs; only for albums moving whole, and never onto a file already there</span>
+                  </span>
+                  <button type="button" className="btn btn-ghost btn-sm" onClick={() => setShowExtras((v) => !v)}>
+                    {showExtras ? "Hide" : "Show"}
+                  </button>
+                </label>
+                {showExtras && (
+                  <div className="stack" style={{ gap: 2, maxHeight: "25vh", overflow: "auto" }}>
+                    {plan.extras.map((x) => (
+                      <div key={x.from} style={{ fontSize: 11 }}>
+                        <span className="path">{x.from_rel}</span> <span className="dim">→</span> <span className="path">{x.to_rel}</span>
+                        {x.exists && <span className="dim"> — already exists there, left where it is</span>}
                       </div>
                     ))}
                   </div>

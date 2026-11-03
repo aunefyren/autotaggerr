@@ -99,6 +99,7 @@ var mcpPhaseOneTools = []string{
 	"list_artists", "get_artist", "list_missing", "get_album", "get_release_tracks",
 	"list_files", "get_file",
 	"list_activity", "get_activity", "list_migrations",
+	"preview_organise",
 }
 
 var mcpWriteTools = []string{
@@ -106,6 +107,7 @@ var mcpWriteTools = []string{
 	"process", "scan", "refresh_metadata", "tag_files", "cancel_job",
 	"add_artist", "follow_artist", "want_album", "unwant_album",
 	"attach_file", "release_pin", "confirm_pin", "approve_migration", "dismiss_migration",
+	"organise_files",
 }
 
 // listMCPTools returns the tools a server shows, by name.
@@ -173,7 +175,7 @@ func TestMCPOpenWorldMarksMusicBrainzReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
-	openWorld := map[string]bool{"get_album": true, "get_release_tracks": true, "get_file": true}
+	openWorld := map[string]bool{"get_album": true, "get_release_tracks": true, "get_file": true, "preview_organise": true}
 	for _, tool := range res.Tools {
 		got := tool.Annotations.OpenWorldHint != nil && *tool.Annotations.OpenWorldHint
 		if got != openWorld[tool.Name] {

@@ -76,6 +76,7 @@ minutes per key, off the request path: authentication must not wait on a write l
 | `list_activity` | the Activity feed: filter by type, status, title, one run (`parent_id`), runs only | no |
 | `get_activity` | one event with its per-file rows (capped by `item_limit`) and its stages | no |
 | `list_migrations` | MusicBrainz merges / re-keys / deletions, with what is wrong and what approving would do; `status=open` is the queue | no |
+| `preview_organise` | the [Organise](naming.md#organise) dry run for a library, artist or album: the proposed moves (first 100, with the total), conflicts, files in place, files that cannot be moved and why, and how many album files would follow. Moves nothing | cache-first |
 
 `list_missing` is the one query the REST API does not have. The UI answers it per artist, so an
 assistant would otherwise call `get_artist` once per artist to assemble it. It applies the artist
@@ -93,6 +94,7 @@ pages — and lists each album once, under the first artist that wants it.
 | `refresh_metadata` | queue a MusicBrainz refresh; `force` at artist scope only | no | yes |
 | `tag_files` | queue rewriting tags from stored identities | yes | no |
 | `cancel_job` | ask the running job to stop between files | no | no |
+| `organise_files` | queue the moves `preview_organise` proposed for the same scope, minus the item IDs in `skip`. It plans again and never takes a move list from the assistant, so what moves is what Autotaggerr proposed; refused while an unskipped move has a conflict. `move_album_files` (default true) moves whole albums' covers and cue sheets with them | yes (moves files; deletes nothing) | cache-first |
 | `add_artist` | add an artist by MBID (name looked up when omitted); idempotent. Refused when Lidarr manages every library ([collection.md](collection.md#in-the-ui)) | no | when unnamed |
 | `follow_artist` | follow on/off, types, secondary types, year cutoff — then re-sync the discography; `library` names the native library to follow into or stop following in — following can want into several with one set of settings | no | yes |
 | `want_album` / `unwant_album` | an explicit want, of an album, one edition, or some songs; and removing one. `library` (name or ID) names the native library the want is for | no | for an album the collection has not seen |
