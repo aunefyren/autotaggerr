@@ -20,7 +20,9 @@ jobs:
       - name: Setup Go
         uses: actions/setup-go@v7
         with:
-          go-version: '1.26.x'
+          # The exact version go.mod requires. A '1.26.x' pattern was satisfied by the
+          # runner image's older 1.26, and GOTOOLCHAIN=local then refused to build.
+          go-version-file: go.mod
           cache: true
 
       # metaflac (flac) is a runtime dependency and the FLAC tests exercise the real

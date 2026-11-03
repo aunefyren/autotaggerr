@@ -2396,6 +2396,26 @@ func (r *Runner) flushPlex(refreshSet *modules.AlbumRefreshSet, parent *models.E
 	events.Prune(r.db, r.eventRetention)
 }
 
+// scanMediaServers asks each media server linked to a library to scan the library's
+// section on it — every music section for a link without one. A refresh only reaches
+// albums a server already holds, and re-reads the files it knew: a file at a path the
+// server has never seen, moved there by Organise or placed by an import, is found by
+// a scan and nothing else. The whole section is asked rather than the album folder
+// because the server may mount the library at another path than Autotaggerr does,
+// and Plex scans only folders that changed, so the wide request is cheap. Returns a
+// sentence per server that could not be asked; the caller decides where it goes.
+func (r *Runner) scanMediaServers(library models.Library) []string {
+	var warnings []string
+	for _, server := range components.MediaServersForLibrary(r.db, library) {
+		if err := server.ScanSections(); err != nil {
+			warnings = append(warnings, fmt.Sprintf("could not ask %s to scan %s: %s", server.DisplayName(), library.Name, err.Error()))
+			continue
+		}
+		logger.Log.Infof("asked %s to scan %s", server.DisplayName(), library.Name)
+	}
+	return warnings
+}
+
 // finishRefresh records the Activity event shared by every re-tagging run, with
 // `extra` carrying whatever narrowed it.
 func (r *Runner) finishRefresh(event *models.Event, summary string, res releaseRefresh, detail *components.DetailCollector, extra map[string]any) {

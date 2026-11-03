@@ -493,6 +493,7 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 	imported, replaced, tagFailures, stopped := 0, 0, 0, false
 	var failed []string
 	sourceDirs := map[string]bool{}
+	targetDirs := map[string]bool{}
 
 	for _, row := range todo {
 		if ctx.Err() != nil {
@@ -524,6 +525,7 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 		if plan.Mode == modules.TransferMove {
 			sourceDirs[filepath.Dir(row.Source)] = true
 		}
+		targetDirs[filepath.Dir(row.Target)] = true
 		replaced += r.removeReplaced(row)
 
 		track, _ := modules.FindReleaseTrack(plan.Release, row.MBReleaseTrackID)
@@ -563,11 +565,21 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 		artistMBID = plan.Release.ArtistCredit[0].Artist.ID
 	}
 	var scanErr error
+	var serverWarnings []string
 	if imported > 0 {
 		r.setPhase(PhaseCollection)
 		_, scanErr = collection.RecordScanUnder(r.db, event, "Collection scan for "+plan.Release.Title, collection.RebuildScope{ArtistMBID: artistMBID}, nil)
 		r.setPhase(PhasePlex)
 		r.flushPlex(refreshSet, event)
+		// Every imported file is at a path its media servers have not seen — a new
+		// album, or new tracks of one they hold — and the refresh above reaches neither.
+		// The tags are written by now, so the scan reads the finished files.
+		serverWarnings = r.scanMediaServers(plan.Library)
+		// "Not in Plex" is believed for an hour; the scan just made it stale, and the
+		// album page would otherwise go without its link until then.
+		for folder := range targetDirs {
+			modules.ForgetPlexFolder(folder)
+		}
 	}
 
 	status := models.EventStatusOK
@@ -605,6 +617,11 @@ func (r *Runner) importNow(plan ImportPlan, title string) {
 	}
 	if scanErr != nil {
 		addWarnings(details, "The files were imported, but the collection could not be updated: "+scanErr.Error())
+	}
+	// A media server that could not be asked to scan is a warning, not a failed import:
+	// the files are in place, and the server's own scan finds them in time.
+	for _, warning := range serverWarnings {
+		addWarnings(details, "The files were imported, but "+warning+" — its own library scan will find them")
 	}
 	if plan.Download != nil {
 		// An album that failed in part is offered again: what failed is still in the

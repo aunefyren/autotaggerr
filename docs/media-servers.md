@@ -50,7 +50,9 @@ A rating key means nothing on another server, and the same number there is a dif
 Entries cached before servers were rows carry no server and simply age out.
 
 Organise asks each linked server to scan its sections after moving files
-([naming.md](naming.md#organise)). The album page links into each server holding the album, one
+([naming.md](naming.md#organise)), and so does a file import after placing them
+([import.md](import.md#the-job)): a refresh reaches only albums a server already holds, so a file at
+a new path — a moved one, or a brand-new album — is found by a scan. The album page links into each server holding the album, one
 link per library and server, named by server once there is more than one.
 
 **Where a link opens** is the server's **Link address** (`WebURL`), like a Lidarr manager's. With
