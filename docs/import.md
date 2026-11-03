@@ -177,6 +177,17 @@ left alone, which is what keeps this from deleting what the import did not take.
 re-derived for the album's artist (the release-group's credit, the same authority the naming uses)
 and the albums whose tags changed go to Plex.
 
+**Media servers then scan.** A refresh reaches only albums a server already holds, and re-reads the
+files it knew; every imported file is at a path its servers have never seen — a brand-new album, or
+new tracks of one they hold. So after the refresh, each media server linked to the library is asked
+to **scan** the library's section (`Runner.scanMediaServers`, the same call Organise makes), once
+per import, after the tags are written so the scan reads finished files. The section is asked rather
+than the album folder because a server may mount the library at another path than Autotaggerr does,
+and Plex scans only folders that changed, so the wide request is cheap. The Plex folder cache then
+forgets the folders the import wrote into: "not in Plex" is believed for an hour, and the scan has
+just made it stale. A server that will not scan is a warning on the event, not a failed import — the
+files are in place, and the server's own scan finds them in time.
+
 The **Activity event** is `file_import`. Each row's `path` is where the file now is and `from`
 (`EventItem.From`) where it came from; counters are files imported, replaced and failed. A stopped
 job stops between files, never inside a transfer.
@@ -185,8 +196,6 @@ job stops between files, never inside a transfer.
 
 - **Extra files are not imported.** Covers, cue sheets and logs stay in the source folder (which is
   why it is then not removed). Lidarr's *import extra files* is the model ([#18](https://github.com/aunefyren/autotaggerr/issues/18)).
-- **Plex learns of a new album by its own scan.** The Plex hand-off refreshes albums Plex already
-  has; a brand-new album needs Plex's library scan (or its folder watcher) to appear ([#19](https://github.com/aunefyren/autotaggerr/issues/19)).
 - **No AcoustID suggestion yet.** Identification is the release in the tags, or the search ([#20](https://github.com/aunefyren/autotaggerr/issues/20)).
 
 ## Tests
@@ -194,7 +203,8 @@ job stops between files, never inside a transfer.
 `modules/import_test.go` (grouping, the agreed release ID against real tagged FLACs, transfer and
 its atomic replace, empty-folder cleanup, `PathWithin`), `process/import_test.go` (move, tag, pin
 and event end to end; copy; replace only with consent, re-using the target's row; clash; the
-unreviewed-replacement guard), `routers/import_test.go` (admin gate, source validation, the Lidarr
+unreviewed-replacement guard), `process/import_plex_test.go` (the section scan after an import,
+and a refused scan as a warning), `routers/import_test.go` (admin gate, source validation, the Lidarr
 refusal, preview and the 400s).
 
 ## Related

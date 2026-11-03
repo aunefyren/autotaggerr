@@ -450,10 +450,8 @@ func (r *Runner) organiseNow(scope OrganiseScope, reviewed []OrganiseRow, moveEx
 		// A media server finds a moved file by scanning; refreshing the album it knew
 		// would only re-read files that are no longer there.
 		if moved > 0 {
-			for _, server := range components.MediaServersForLibrary(r.db, lib) {
-				if err := server.ScanSections(); err != nil {
-					logger.Log.Warnf("organise: could not ask %s to scan %s: %s", server.DisplayName(), lib.Name, err.Error())
-				}
+			for _, warning := range r.scanMediaServers(lib) {
+				logger.Log.Warnf("organise: %s", warning)
 			}
 		}
 	}
