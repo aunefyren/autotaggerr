@@ -46,7 +46,7 @@ func endlessRelease(audio, video int) models.MusicBrainzReleaseResponse {
 func ownFiles(t *testing.T, db *gorm.DB, releaseID string, trackIDs ...string) models.Library {
 	t.Helper()
 	root := t.TempDir()
-	lib := models.Library{Name: "L", Path: root}
+	lib := models.Library{Name: "L", Path: root, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

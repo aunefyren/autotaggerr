@@ -147,7 +147,7 @@ func TestRebuildPresent(t *testing.T) {
 		t.Fatalf("load cache: %v", err)
 	}
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -535,7 +535,7 @@ func TestRebuildReportsUnknownProvenance(t *testing.T) {
 	}
 
 	dangling := uuid.New() // no Manager row with this ID
-	lib := models.Library{Name: "L", Path: "/m", ManagerID: &dangling}
+	lib := models.Library{Name: "L", Path: "/m", ManagerID: &dangling, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -618,7 +618,7 @@ func TestRebuildCreditsEveryArtist(t *testing.T) {
 		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}}}},
 	})
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -824,7 +824,7 @@ func TestRebuildRollsBackOnFailure(t *testing.T) {
 	if err := modules.MusicbrainzLoadCache(); err != nil {
 		t.Fatalf("load cache: %v", err)
 	}
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -939,7 +939,7 @@ func TestRebuildCreditsTheReleaseGroup(t *testing.T) {
 		Media: []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}, {ID: "t2"}}}},
 	})
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -1014,7 +1014,7 @@ func TestRebuildFallsBackToTheReleaseCredit(t *testing.T) {
 		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t1"}}}},
 	})
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -1060,7 +1060,7 @@ func seedThreeTrackRelease(t *testing.T, db *gorm.DB) models.Library {
 		t.Fatalf("load cache: %v", err)
 	}
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

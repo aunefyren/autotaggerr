@@ -140,7 +140,16 @@ export default function Items() {
       <div className="row" style={{ flexWrap: "wrap", gap: 8 }}>
         <select className="select" style={{ width: 200 }} value={libraryId} onChange={(e) => resetAnd(() => setLibraryId(e.target.value))}>
           <option value="">All libraries</option>
-          {libs.data?.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+          {/* A disabled library's files are not listed under "All libraries", so it is
+              not offered either; one already in the URL stays, saying why it is odd. */}
+          {libs.data
+            ?.filter((l) => l.enabled || l.id === libraryId)
+            .map((l) => (
+              <option key={l.id} value={l.id}>
+                {l.name}
+                {l.enabled ? "" : " — disabled"}
+              </option>
+            ))}
         </select>
         <select className="select" style={{ width: 190 }} value={status} onChange={(e) => resetAnd(() => setStatus(e.target.value))}>
           <option value="">Any status</option>

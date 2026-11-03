@@ -13,16 +13,11 @@ import (
 // Authority per library: an artist Lidarr governs in one library is still the
 // user's to want and follow in a native one.
 
-// enabledLibraries is twoLibraries with both switched on, which is what makes the
-// native one a place an unnamed want can go.
+// enabledLibraries is twoLibraries, named for what these tests rely on: both are
+// switched on, which is what makes the native one a place an unnamed want can go.
 func enabledLibraries(t *testing.T, db *gorm.DB) (lidarrLib, nativeLib models.Library) {
 	t.Helper()
-	lidarrLib, nativeLib = twoLibraries(t, db)
-	if err := db.Model(&models.Library{}).Where("id IN ?", []uuid.UUID{lidarrLib.ID, nativeLib.ID}).
-		Update("enabled", true).Error; err != nil {
-		t.Fatalf("enable: %v", err)
-	}
-	return lidarrLib, nativeLib
+	return twoLibraries(t, db)
 }
 
 func TestWantTargetFollowsTheLibrarysAuthority(t *testing.T) {

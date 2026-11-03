@@ -51,16 +51,17 @@ func ownTracks(t *testing.T, db *gorm.DB, lib models.Library, relID string, n in
 	}
 }
 
-// twoLibraries is a Lidarr library and a native one. Their paths do not exist, so
-// the rebuild's existence check presumes every file present.
+// twoLibraries is a Lidarr library and a native one, both enabled — a disabled
+// library's files are not part of the collection. Their paths do not exist, so the
+// rebuild's existence check presumes every file present.
 func twoLibraries(t *testing.T, db *gorm.DB) (lidarrLib, nativeLib models.Library) {
 	t.Helper()
 	mgr := models.Manager{Name: "Lidarr", Type: models.ManagerTypeLidarr, Enabled: true}
 	if err := db.Create(&mgr).Error; err != nil {
 		t.Fatalf("manager: %v", err)
 	}
-	lidarrLib = models.Library{Name: "Music", Path: "/nonexistent/music", ManagerID: &mgr.ID}
-	nativeLib = models.Library{Name: "Music Sandbox", Path: "/nonexistent/sandbox"}
+	lidarrLib = models.Library{Name: "Music", Path: "/nonexistent/music", ManagerID: &mgr.ID, Enabled: true}
+	nativeLib = models.Library{Name: "Music Sandbox", Path: "/nonexistent/sandbox", Enabled: true}
 	for _, l := range []*models.Library{&lidarrLib, &nativeLib} {
 		if err := db.Create(l).Error; err != nil {
 			t.Fatalf("library: %v", err)

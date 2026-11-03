@@ -81,6 +81,10 @@ func ArtistReleaseMBIDs(db *gorm.DB, artistMBID string) ([]string, error) {
 // models.TaggableItems carries the rule, so this and the library-scoped re-tags cannot
 // disagree about what a file being "one of these" means: it needs an identity, and one
 // the manager has not withdrawn.
+//
+// Files in a disabled library are not the artist's here (models.InEnabledLibrary): the
+// artist page does not list that library, so a verb run on every library must not
+// reach into it either.
 func ArtistItems(db *gorm.DB, artistMBID string) ([]models.LibraryItem, error) {
 	releases, err := ArtistReleaseMBIDs(db, artistMBID)
 	if err != nil || len(releases) == 0 {
@@ -88,7 +92,7 @@ func ArtistItems(db *gorm.DB, artistMBID string) ([]models.LibraryItem, error) {
 	}
 
 	var items []models.LibraryItem
-	err = db.Where("mb_release_id IN ?", releases).Scopes(models.TaggableItems).
+	err = db.Where("mb_release_id IN ?", releases).Scopes(models.TaggableItems, models.InEnabledLibrary).
 		Order("path").Find(&items).Error
 	return items, err
 }
@@ -147,7 +151,7 @@ func ReleaseGroupItems(db *gorm.DB, releaseGroupMBID string) ([]models.LibraryIt
 		return nil, err
 	}
 	var items []models.LibraryItem
-	err = db.Where("mb_release_id IN ?", releases).Scopes(models.TaggableItems).
+	err = db.Where("mb_release_id IN ?", releases).Scopes(models.TaggableItems, models.InEnabledLibrary).
 		Order("path").Find(&items).Error
 	return items, err
 }
@@ -167,7 +171,7 @@ func ReleaseGroupItems(db *gorm.DB, releaseGroupMBID string) ([]models.LibraryIt
 func disownedItems(db *gorm.DB) ([]models.LibraryItem, error) {
 	var items []models.LibraryItem
 	err := db.Where("status = ? AND mb_release_id <> ''", models.LibraryItemStatusUnmatched).
-		Order("path").Find(&items).Error
+		Scopes(models.InEnabledLibrary).Order("path").Find(&items).Error
 	return items, err
 }
 

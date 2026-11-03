@@ -45,7 +45,7 @@ func TestScanPrunesFilesGoneFromDisk(t *testing.T) {
 	seedCachedRelease(t, db, pruneTestRelease("rel-1", "rg-1", "art-1", "The Band"))
 
 	root := t.TempDir()
-	lib := models.Library{Name: "L", Path: root}
+	lib := models.Library{Name: "L", Path: root, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestScanLeavesFilesAloneWhenLibraryUnavailable(t *testing.T) {
 	seedCachedRelease(t, db, pruneTestRelease("rel-1", "rg-1", "art-1", "The Band"))
 
 	root := filepath.Join(t.TempDir(), "not-mounted")
-	lib := models.Library{Name: "L", Path: root}
+	lib := models.Library{Name: "L", Path: root, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestScanPruneIsScopedToTheArtist(t *testing.T) {
 	seedCachedRelease(t, db, pruneTestRelease("rel-b", "rg-b", "art-b", "Artist B"))
 
 	root := t.TempDir()
-	lib := models.Library{Name: "L", Path: root}
+	lib := models.Library{Name: "L", Path: root, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

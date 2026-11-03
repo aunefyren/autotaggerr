@@ -947,6 +947,7 @@ func (a *API) updateLibrary(c *gin.Context) {
 		!a.checkLibraryTaggerProfile(c, in.TaggerProfileID) {
 		return
 	}
+	wasEnabled := l.Enabled
 	in.apply(&l)
 	if err := a.DB.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Omit(clause.Associations).Save(&l).Error; err != nil {
@@ -956,6 +957,12 @@ func (a *API) updateLibrary(c *gin.Context) {
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
 		return
+	}
+	// The collection counts only enabled libraries' files (models.InEnabledLibrary),
+	// so switching one changes what it owns: re-derive it rather than leave the
+	// library's albums standing until the next scan.
+	if l.Enabled != wasEnabled {
+		a.Rebuilder.Request()
 	}
 	l, _ = loadLibraryView(a.DB, l.ID)
 	c.JSON(http.StatusOK, l)
