@@ -405,7 +405,7 @@ func TestDeriveArtistManager(t *testing.T) {
 func TestDetachManagerArtistsScope(t *testing.T) {
 	db, manager := managedCollection(t)
 
-	other := models.Library{Name: "Other", Path: "/o"}
+	other := models.Library{Name: "Other", Path: "/o", Enabled: true}
 	if err := db.Create(&other).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

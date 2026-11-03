@@ -464,8 +464,12 @@ type itemPage struct {
 func (a *API) libraryItems(f itemFilter) (itemPage, error) {
 	q := a.DB.Model(&models.LibraryItem{})
 
+	// Every library means every enabled one: a disabled library's index is kept, not
+	// shown. Naming one still lists it, so its files stay reachable on purpose.
 	if f.LibraryID != nil {
 		q = q.Where("library_id = ?", *f.LibraryID)
+	} else {
+		q = q.Scopes(models.InEnabledLibrary)
 	}
 	if f.Status != "" {
 		q = q.Where("status = ?", f.Status)

@@ -40,7 +40,7 @@ func soundtrack(groupCredit ...models.ArtistCredit) models.MusicBrainzReleaseRes
 // seedOwnedSoundtrack wires a library with one owned file of the soundtrack.
 func seedOwnedSoundtrack(t *testing.T, db *gorm.DB) {
 	t.Helper()
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

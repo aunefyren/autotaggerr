@@ -324,9 +324,13 @@ type itemRow struct {
 // on the strength of an answer that has been withdrawn — once the manager has said so
 // twice. A single miss on a file it knew is held for one more attempt (see
 // models.InDiskView).
+//
+// A disabled library's files are left out (models.InEnabledLibrary): switching a
+// library off takes its albums out of the collection, and updateLibrary requests the
+// rebuild that does it.
 func ownedItemRows(db *gorm.DB) ([]itemRow, error) {
 	var rows []itemRow
-	err := db.Model(&models.LibraryItem{}).Scopes(models.InDiskView).
+	err := db.Model(&models.LibraryItem{}).Scopes(models.InDiskView, models.InEnabledLibrary).
 		Find(&rows).Error
 	if err != nil {
 		return nil, fmt.Errorf("failed to read the library index: %w", err)

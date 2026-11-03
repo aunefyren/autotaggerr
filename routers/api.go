@@ -469,11 +469,20 @@ func (a *API) health(c *gin.Context) {
 			"managers":        count(&models.Manager{}),
 			"data_sources":    count(&models.DataSource{}),
 			"tagger_profiles": count(&models.TaggerProfile{}),
-			"library_items":   count(&models.LibraryItem{}),
+			"library_items":   a.indexedFiles(),
 		},
 		"attention": a.attention(),
 		"setup":     a.setupState(),
 	})
+}
+
+// indexedFiles counts the files the Items page lists with no filter: every indexed
+// file outside a disabled library. The overview's count links there, so it says the
+// same number.
+func (a *API) indexedFiles() int64 {
+	var n int64
+	a.DB.Model(&models.LibraryItem{}).Scopes(models.InEnabledLibrary).Count(&n)
+	return n
 }
 
 // setupState is what the sidebar's setup steps and the overview's Get started card
@@ -515,7 +524,7 @@ func (a *API) setupState() gin.H {
 func (a *API) attention() gin.H {
 	count := func(where string, args ...any) int64 {
 		var n int64
-		a.DB.Model(&models.LibraryItem{}).Where(where, args...).Count(&n)
+		a.DB.Model(&models.LibraryItem{}).Where(where, args...).Scopes(models.InEnabledLibrary).Count(&n)
 		return n
 	}
 	return gin.H{

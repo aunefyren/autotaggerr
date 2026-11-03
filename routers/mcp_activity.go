@@ -249,7 +249,7 @@ func (a *API) mcpGetOverview(_ context.Context, _ *mcp.CallToolRequest, _ mcpNoI
 	out.Counts.Managers = count(&models.Manager{})
 	out.Counts.DataSources = count(&models.DataSource{})
 	out.Counts.TaggerProfiles = count(&models.TaggerProfile{})
-	out.Counts.Files = count(&models.LibraryItem{})
+	out.Counts.Files = a.indexedFiles()
 	out.Counts.Artists = count(&models.CollectionArtist{})
 	if pending, err := migration.PendingCount(a.DB); err == nil {
 		out.PendingMigrations = pending

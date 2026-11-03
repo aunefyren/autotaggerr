@@ -34,7 +34,7 @@ func twoArtistCollection(t *testing.T) *gorm.DB {
 	modules.SetDB(db)
 	t.Cleanup(func() { modules.SetDB(nil) })
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

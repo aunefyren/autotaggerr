@@ -22,7 +22,7 @@ func TestRefreshTurnedOffAsksTheArtistsManager(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	lib := models.Library{Name: "Music", Path: "/music", ManagerID: &off.ID}
+	lib := models.Library{Name: "Music", Path: "/music", ManagerID: &off.ID, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -46,7 +46,7 @@ func TestRefreshTurnedOffAsksTheArtistsManager(t *testing.T) {
 	}
 	// The same rule for a caller holding the files: a native library leaves every
 	// manager in the running.
-	native := models.Library{Name: "Native", Path: "/native"}
+	native := models.Library{Name: "Native", Path: "/native", Enabled: true}
 	if err := db.Create(&native).Error; err != nil {
 		t.Fatal(err)
 	}

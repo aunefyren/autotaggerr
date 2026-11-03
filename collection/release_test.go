@@ -57,7 +57,7 @@ func editionFixtures(t *testing.T) *gorm.DB {
 	modules.SetDB(db)
 	t.Cleanup(func() { modules.SetDB(nil) })
 
-	if err := db.Create(&models.Library{Name: "L", Path: "/m"}).Error; err != nil {
+	if err := db.Create(&models.Library{Name: "L", Path: "/m", Enabled: true}).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
 	// The 1977 original (11 tracks) and the 2017 remaster (17).

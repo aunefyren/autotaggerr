@@ -253,7 +253,7 @@ func TestRebuildMarksLibraryOrigin(t *testing.T) {
 		t.Fatalf("load cache: %v", err)
 	}
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

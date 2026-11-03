@@ -45,7 +45,7 @@ func managedCollection(t *testing.T) (*gorm.DB, models.Manager) {
 	if err := db.Create(&manager).Error; err != nil {
 		t.Fatalf("manager: %v", err)
 	}
-	lib := models.Library{Name: "L", Path: "/m", ManagerID: &manager.ID}
+	lib := models.Library{Name: "L", Path: "/m", ManagerID: &manager.ID, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

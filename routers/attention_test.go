@@ -14,7 +14,7 @@ import (
 // second answer from its manager, a held pin, and a healthy file.
 func seedFailures(t *testing.T, api *API) {
 	t.Helper()
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := api.DB.Create(&lib).Error; err != nil {
 		t.Fatal(err)
 	}

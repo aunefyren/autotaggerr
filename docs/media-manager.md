@@ -153,6 +153,31 @@ Guarded by `TestResolveManagerRowRejectsDisabled`, `…RejectsDanglingManager`,
 `…NoManagerIsNoManager`, `TestPinFallbackManagerRunsOnce`, `…WithoutManagers`,
 `TestLibraryManagerCanBeCleared`, and the warning assertion in `TestRunnerRunAll`.
 
+### A disabled library is switched off, not forgotten
+
+Disabling a library keeps its rows: its files stay in `library_items`, its pins and links stay, and
+enabling it again needs no re-walk. While it is off, nothing that answers "what is in my libraries"
+counts it. One scope, `models.InEnabledLibrary`, carries the rule so the readers cannot disagree:
+
+- **The collection.** `collection.ownedItemRows` skips its files, so an album held only there is no
+  longer owned, its copies leave the library tags, and an artist held only there drops out of the
+  collection list and the discography. The derived rows only change when the collection is
+  re-derived, so `PUT /libraries/:id` requests a rebuild (`API.Rebuilder`) whenever `enabled` flips.
+  The collection list's memo includes the `libraries` table in its fingerprint for the same reason.
+- **Items.** `GET /library-items` (and MCP `list_files`) with no library leaves it out, and so do the
+  overview's *Indexed files* card and its attention counts, which link to that list. Naming the
+  library still lists its files, so they can be looked at deliberately. The SPA's library pickers
+  (`useLibraries`, the Items select) offer enabled libraries only, which also means one enabled
+  library beside a disabled one reads as a single-library install: no library tags, no tabs.
+- **Artist and album verbs on every library** (`collection.ArtistItems`, `ReleaseGroupItems`, and
+  the disowned files the targets add) skip it, so *Tag files* or *Organise* on an artist cannot write
+  into a library the artist page no longer lists.
+
+What it does not change: a verb run on the library itself (Process, Tag files on that library) still
+works, as it did before, and setup's *Process it* step still counts its files. Guarded by
+`TestRebuildLeavesADisabledLibraryOut`, `TestItemsLeaveOutDisabledLibraries` and
+`TestTogglingALibraryRebuildsTheCollection`.
+
 ## Pipeline
 
 `ProcessTrackFile` is split into two halves, which is what let managers become pluggable:

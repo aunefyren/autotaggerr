@@ -653,6 +653,18 @@ func InDiskView(db *gorm.DB) *gorm.DB {
 		LibraryItemStatusUnmatched, true)
 }
 
+// InEnabledLibrary is a GORM scope narrowing a LibraryItem query to files outside a
+// disabled library. Disabling a library switches it off without forgetting it: its
+// index is kept, so enabling it again costs no re-walk, but nothing that reads "what
+// is in my libraries" — the collection, the Items list, the attention counts, an
+// artist's verbs — counts its files meanwhile.
+//
+// Written as NOT IN the disabled ones rather than IN the enabled ones, so a file whose
+// library no longer exists keeps the treatment it had (counted as an unknown library).
+func InEnabledLibrary(db *gorm.DB) *gorm.DB {
+	return db.Where("library_items.library_id NOT IN (SELECT id FROM libraries WHERE enabled = ?)", false)
+}
+
 // MusicbrainzReleaseCache replaces config/mb_releases.json. Its primary key is the
 // MusicBrainz release ID (not a generated UUID). Payload is the raw release JSON;
 // ExpiresAt keeps the jittered-TTL behavior and MBVersion enables upstream-drift

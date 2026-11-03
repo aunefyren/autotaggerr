@@ -18,7 +18,7 @@ import (
 // diskLibrary creates a library whose root exists, so the existence check runs.
 func diskLibrary(t *testing.T, db *gorm.DB, name string, managerID *uuid.UUID) models.Library {
 	t.Helper()
-	lib := models.Library{Name: name, Path: t.TempDir(), ManagerID: managerID}
+	lib := models.Library{Name: name, Path: t.TempDir(), ManagerID: managerID, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestLibraryScanLeavesAnUnavailableLibraryAlone(t *testing.T) {
 	defer modules.SetDB(nil)
 	seedCachedRelease(t, db, pruneTestRelease("rel-1", "rg-1", "art-1", "The Band"))
 
-	lib := models.Library{Name: "A", Path: filepath.Join(t.TempDir(), "not-mounted")}
+	lib := models.Library{Name: "A", Path: filepath.Join(t.TempDir(), "not-mounted"), Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

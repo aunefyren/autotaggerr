@@ -56,7 +56,7 @@ func TestReconcileAutoDesiresPromotesAnyToOwnedEdition(t *testing.T) {
 		t.Fatalf("load cache: %v", err)
 	}
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestReconcileAutoDesiresRepointsOnReplacedFiles(t *testing.T) {
 		t.Fatalf("load cache: %v", err)
 	}
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -113,7 +113,7 @@ func TestReconcileAutoDesiresLeavesManualEdition(t *testing.T) {
 		t.Fatalf("load cache: %v", err)
 	}
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestReconcileAutoDesiresSkipsLidarrArtist(t *testing.T) {
 	if err := db.Create(&mgr).Error; err != nil {
 		t.Fatalf("manager: %v", err)
 	}
-	lib := models.Library{Name: "L", Path: "/m", ManagerID: &mgr.ID}
+	lib := models.Library{Name: "L", Path: "/m", ManagerID: &mgr.ID, Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestReconcileAutoDesiresMultipleOwnedEditions(t *testing.T) {
 		t.Fatalf("load cache: %v", err)
 	}
 
-	lib := models.Library{Name: "L", Path: "/m"}
+	lib := models.Library{Name: "L", Path: "/m", Enabled: true}
 	if err := db.Create(&lib).Error; err != nil {
 		t.Fatalf("library: %v", err)
 	}

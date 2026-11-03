@@ -391,7 +391,7 @@ type artistListCache struct {
 	lists map[uuid.UUID][]artistSummary
 }
 
-// collectionFingerprint names the state of the five tables the collection list is
+// collectionFingerprint names the state of the six tables the collection list is
 // computed from: each one's row count and newest updated_at. An insert or an update
 // moves the newest stamp, a delete moves the count, so any write the list could show
 // changes it — four aggregate queries instead of loading every row of all four.
@@ -403,7 +403,10 @@ type artistListCache struct {
 func collectionFingerprint(db *gorm.DB) (string, error) {
 	var parts []string
 	for _, model := range []any{&models.CollectionArtist{}, &models.CollectionReleaseGroup{},
-		&models.CollectionDesire{}, &models.CollectionReleaseGroupArtist{}, &models.CollectionReleaseCopy{}} {
+		&models.CollectionDesire{}, &models.CollectionReleaseGroupArtist{}, &models.CollectionReleaseCopy{},
+		// Libraries too: a library's name, manager and enabled flag decide which views
+		// exist and who has authority in them, without any collection row changing.
+		&models.Library{}} {
 		// Newest as `any`: an aggregate over a time column comes back as text from
 		// SQLite and as a timestamp elsewhere, and all the fingerprint needs is that the
 		// same state prints the same way twice.

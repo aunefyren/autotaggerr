@@ -4,13 +4,16 @@ import { ArtistLibrary, Authority, CollectionArtist, Library, LibraryCopy } from
 import { Browse } from "./browse";
 
 /**
- * The configured libraries, and whether there is more than one. Library names are
- * only shown when there is: on a single-library install every row would carry the
- * same word, which says nothing.
+ * The enabled libraries, and whether there is more than one. Library names are only
+ * shown when there is: on a single-library install every row would carry the same
+ * word, which says nothing. A disabled library is left out of both — the collection
+ * and the Items list do not count its files, so a tag, tab or filter naming it would
+ * point at nothing, and one enabled library beside a disabled one is a single-library
+ * install for every page that reads this.
  */
 export function useLibraries() {
   const libs = useFetch<Library[]>(() => api.get("/libraries"));
-  const list = libs.data ?? [];
+  const list = (libs.data ?? []).filter((l) => l.enabled);
   return { list, multi: list.length > 1 };
 }
 
