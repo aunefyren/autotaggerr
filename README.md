@@ -1,144 +1,122 @@
-# 🎵 Autotaggerr 🎵
+# Autotaggerr
 
 [![CI](https://img.shields.io/github/actions/workflow/status/aunefyren/autotaggerr/go.yml?branch=main&style=for-the-badge&label=CI)](https://github.com/aunefyren/autotaggerr/actions/workflows/go.yml)
 [![Coverage](https://img.shields.io/endpoint?url=https://gist.githubusercontent.com/aunefyren/111899f93369f8f73ab6a4296d23da9a/raw/autotaggerr-coverage.json&style=for-the-badge)](https://github.com/aunefyren/autotaggerr/actions/workflows/go.yml)
 
-**Autotaggerr** is an automated music tagging utility that enriches your Lidarr managed audio library with detailed metadata from [MusicBrainz](https://musicbrainz.org/). It identifies tracks based on their MusicBrainz Release ID (used by tools like [Lidarr](https://lidarr.audio/)), or by talking to Lidarr through API. it then fills in missing metadata, including: track artists, release date, genre, track numbers, and more. It can automatically refresh the metadata in Plex afterward.
+Autotaggerr is a self-hosted music library manager that tags your files with the full
+[MusicBrainz](https://musicbrainz.org/) metadata and keeps them that way. It runs as a server with a
+web UI, works through your library on a schedule, and follows MusicBrainz as the data changes.
+
+If you have used [Picard](https://picard.musicbrainz.org/), think of it as Picard running on your
+server instead of your desktop. If you have used [Lidarr](https://lidarr.audio/), think of it as a
+library manager that writes proper metadata into your files, and leaves downloading to you.
 
 > [!WARNING]
-> There is currently no official release of this software, it is in beta and has not been advertised. Get in contact with me if you are interested in it.
-
----
-
-## Context
-
-This tool is for a specific niche, but feel free to use it if it fits your use case. I use PlexAmp as a music player, and Lidarr as a music catalog tool. Lidarr its job well for the most part, except for the metadata. They do not tag all the data available from Musicbrainz, and based on my dialogue with them, they have no intention of fixing this. Solution: I'll tag the files myself.
-
-PlexAmp/Plex is a lot smoother with good metadata attached. Lidarr already selected a Musicbrainz release when it imported the music, I just need to apply all the data from that source. Here is the desired result within PlexAmp, notice the featuring artists:
+> There is currently no official release of this software. It is in beta and has not been
+> advertised. Get in contact with me if you are interested in it.
 
 ![Demo video](https://raw.githubusercontent.com/aunefyren/autotaggerr/refs/heads/main/.github/assets/demo.gif)
 
-There are other solutions that try to fix this, like a Beets plugin that can run on top of Lidarr. I found this solution very confusing to set up, and it seemed to rely on auto-matching track titles, which I did not like. I already know the Musicbrainz release chosen.
+*Featuring artists, credited the way MusicBrainz credits them, as they show up in Plexamp.*
 
 ---
 
-## 🚀 Features
+## Why it exists
 
-- 📂 **Recursive Library Scanning**  
-  Traverse your music directories and find FLAC and MP3 files automatically.
+**Picard** is the best tagger there is, but it is a desktop application. You open it, load a batch,
+check the matches and save. A library on a server keeps changing: new albums arrive, MusicBrainz
+editors fix credits, releases get merged. Keeping that tagged means going back to Picard again and
+again. Autotaggerr writes the same fields Picard does, using Picard's tag mapping, but does it
+unattended and keeps doing it.
 
-- 🧠 **MusicBrainz Integration**  
-  Uses the MusicBrainz API to fetch detailed metadata using release IDs already embedded in your files (via Lidarr, etc).
+**Lidarr** is good at keeping a music library organised, but the tags it writes are thin. Featured
+artists, multiple album artists, composers, producers and performers are left out, and MP3s get no
+MusicBrainz IDs at all. Autotaggerr has its own library manager, so you can follow artists, see what
+you are missing, import new music and keep files named consistently, with complete tags on every
+file.
 
-- 🏷️ **FLAC + MP3 Tagging**  
-  Updates:
-  - FLAC via [`metaflac`](https://xiph.org/flac/)
-  - MP3 natively, no external tool required
+**Already running Lidarr?** Autotaggerr can also sit next to it. Lidarr keeps deciding which release
+a file is, and Autotaggerr writes the tags. See [Using it with Lidarr](#using-it-with-lidarr).
 
-- 🖼️ **Album & Artist Artwork**  
-  Covers come from the [Cover Art Archive](https://coverartarchive.org) with no setup at all. For
-  artist portraits and backdrops, add a **fanart.tv** data source with your own free API key — MusicBrainz
-  has no artist images, so that is the only source for them. Without a key, artists simply show
-  monogram tiles. All artwork is proxied and cached by Autotaggerr, so nothing is hot-linked and your
-  key never reaches the browser.
+### Compared
 
-- 🥁 **Tempo (BPM) Detection** *(optional)*  
-  Opt a library in under **Libraries → edit** and Autotaggerr measures each file's BPM from the
-  audio with [aubio](https://aubio.org), on its own schedule, and stores it with a confidence.
-  Files are only ever analysed once — a tag write, or a move, does not count as new audio. The
-  same form decides whether the result is written (`BPM` on FLAC, `TBPM` on MP3), only where a
-  file has none or always, and above which confidence. See [docs/tempo.md](docs/tempo.md).
+| | Picard | Lidarr | Autotaggerr |
+|---|---|---|---|
+| Runs on a server, on a schedule | No | Yes | Yes |
+| Full MusicBrainz tags (credits, relationships, sort names) | Yes | No | Yes |
+| MusicBrainz IDs in MP3s | Yes | No | Yes |
+| Re-tags when MusicBrainz data changes | No | No | Yes |
+| Follow artists, track wanted albums | No | Yes | Yes |
+| Rename and move files by template | Yes | Yes | Yes |
+| Imports finished downloads from a download client | No | Yes | Yes |
+| Searches indexers and starts downloads | No | Yes | No |
 
-- 🤖 **AI Assistant Access (MCP)**  
-  A [Model Context Protocol](https://modelcontextprotocol.io) endpoint at `/api/v1/mcp`, so an
-  assistant such as Claude can answer "what am I missing?" or "which files failed?" from your
-  collection — and, with a read & write key, follow artists, want albums, identify files and start
-  runs. Create a key under **Settings → AI assistants (MCP)**. See [docs/mcp.md](docs/mcp.md).
-
-- 🧠 **Rate-Limited & Cached API Calls**  
-  Avoid API abuse and repeated lookups with built-in caching and configurable request throttling.
-
-- 🐳 **Containerized (Docker-ready)**  
-  Small, clean and minimal Docker image with `metaflac` included.
+Downloading is out of scope on purpose. Autotaggerr can watch a download client for finished
+downloads, but it never searches for or grabs anything.
 
 ---
 
-## 🛠️ How It Works
+## Features
 
-1. Scans your music library (recursively).
-2. Extracts the MusicBrainz Release ID from FLAC/MP3 files. Can fall back to Lidarr API.
-3. Queries MusicBrainz to retrieve release data.
-4. Writes metadata tags to files:
-   - FLAC → via `metaflac`
-   - MP3 → natively
-5. Optionally logs and caches results to avoid re-fetching metadata.
-6. Optionally informs Plex to refresh the metadata
+### Tagging
 
----
+- **Complete MusicBrainz metadata.** Artists and album artists with their join phrases (`feat.`,
+  `&`, `x`), sort names, release dates and original dates, labels, catalogue numbers, release type,
+  genres, ISRCs, disc subtitles and all MusicBrainz IDs.
+- **Credits from relationships.** Composer, lyricist, writer, arranger, conductor, producer,
+  engineer, mixer, remixer and performers with their instruments, read from the release, recording
+  and work relationships. This is Picard with "Use track and release relationships" turned on.
+- **FLAC and MP3.** FLAC through `metaflac`, MP3 (ID3v2.4) in-process with nothing to install.
+- **Diff before write.** Files whose tags are already correct are not touched, and every change is
+  listed per file in the Activity feed.
+- **Tagger profiles.** Per-library settings for how tags are written, including adjustments for
+  what Plex and Jellyfin can actually read. See [docs/tagging.md](docs/tagging.md).
+- **Tempo and loudness** *(optional)*. BPM from the audio with [aubio](https://aubio.org) and
+  ReplayGain 2.0 with [rsgain](https://github.com/complexlogic/rsgain), opted into per library.
 
-## 🛠️ Caveats
+### Identifying files
 
-1. Plex does not support multi-artist albums, and renders a joined string as one artist literally named `A; B`. So `ALBUMARTIST` gets the primary artist only; the full credit is written alongside it as `ALBUMARTISTS`, which players that understand it (Navidrome, Picard) read instead. The same applies to genres on MP3: Plex reads tags through ffmpeg, which sees only the first value of a proper multi-value tag, so MP3s join them with `; ` unless the tagger profile's `mp3_multi_value_tags` is on. FLAC always uses the multi-value form — ffmpeg joins those back together on its own, so nothing is lost either way. Plex's Record Label holds one value too, so several labels show as one joined name (`APESHIT;EMPIRE;Mass Appeal`); the tagger profile's `single_record_label` writes only the first label MusicBrainz lists. Plex and Jellyfin take an album's year from `DATE`, which is the edition's — turn on `original_date_as_date` to show a remaster under the year the album first came out. On Jellyfin, enable the library's *Prefer non-standard artists tag* option to read the full `ALBUMARTISTS` / `ARTISTS` credits rather than the single `ALBUMARTIST`.
-2. Autotaggerr can at times utilize the path of the file to determine what metadata is correct. Therefore, you must use this structure `/music-library-root/[ARTIST]/[ALBUM] ([YEAR])/[OPTIONAL MEDIA FOLDER]/[TRACKS])`
-3. Autotaggerr will first look for the Musicbrainz release/track ID within the file tags. If none are found, a Lidarr client must be configured for fallback. This is necessary for MP3 files as Lidarr does not tag these IDs on MP3s
-4.  Lidarr writes tags too, and with the wrong setting it rewrites files Autotaggerr has already tagged. Go to Lidarr -> Settings -> Metadata:
-    - Set `Tag Audio Files with Metadata` to `For new downloads only` (recommended): Lidarr tags a file once when it imports it, and Autotaggerr owns it from then on. `All files` and `Sync` rewrite existing files, so the two take turns — the health check and the manager's **Test** button warn about either.
-    - Set `Scrub Existing Tags` to unchecked
-5. Plex must be set up to respect local metadata:
-    - Library -> Manage library -> Edit -> Advanced -> Check `Prefer local metadata`
-6. Jellyfin identifies artists by name, not by MusicBrainz ID (which Autotaggerr does tag). If an online provider (e.g. TheAudioDB) spells an artist differently than MusicBrainz — such as a straight `'` vs a curly `’` apostrophe — Jellyfin can show duplicate artists and even bake both spellings into `album.nfo`. It may therefore be wise to disable the `Nfo` metadata reader (and/or TheAudioDB) for your music library so Jellyfin trusts the embedded tags Autotaggerr writes:
-    - Dashboard -> Libraries -> your music library -> uncheck `Nfo` under the metadata readers/downloaders
+- **From the tags already there.** A library tagged by Picard (or anything else that writes
+  MusicBrainz IDs) is identified straight away.
+- **By hand, once.** Search MusicBrainz for the release, pick the track, and the file is tagged and
+  pinned. Since the file now carries its IDs, it identifies itself from then on.
+- **By fingerprint** *(optional)*. [AcoustID](https://acoustid.org) suggests matches for untagged
+  files. It never tags on its own; you confirm the track.
+- **From Lidarr**, when a library is managed by it.
 
----
+### Managing the library
 
-## 📦 Dependencies
+- **Collection view.** Artists, albums and editions you own, and which ones you are missing.
+- **Follow artists** and track the albums you want, computed from MusicBrainz.
+- **Import.** Point it at a folder, or let it watch qBittorrent, Transmission or SABnzbd for
+  finished downloads. Each album is identified and reviewed before it is moved into the library.
+- **Naming templates and Organise.** Lidarr-style tokens for artist, album, disc and track names.
+  Organise shows a dry run of every move before anything is renamed. See
+  [docs/naming.md](docs/naming.md).
+- **A local MusicBrainz mirror.** Everything your collection refers to is cached in the database and
+  refreshed nightly, so browsing and re-tagging do not hit the network. Merged and deleted
+  MusicBrainz entities are detected and repaired. You can also point it at your own MusicBrainz
+  mirror and lift the 1 request per second limit.
+- **Artwork.** Covers from the [Cover Art Archive](https://coverartarchive.org) with no setup.
+  Artist images from fanart.tv if you add your own free API key. Everything is proxied and cached
+  locally.
 
-One binary, and only **if you're not using Docker**:
+### Running as a server
 
-### 🔧 [FLAC / Metaflac](https://xiph.org/flac/download.html)
-
-Used to read/write Vorbis comments in `.flac` files.
-
-- **Windows (choco)**  
-  `choco install flac`
-- **Ubuntu/Debian**  
-  `sudo apt install flac`
-
-MP3 tagging needs nothing installed — ID3 frames are read and written in-process.
-[`fpcalc`](https://acoustid.org/chromaprint) is optional, for AcoustID fingerprinting.
-
-### 🥁 [aubio](https://aubio.org) *(optional, for tempo detection)*
-
-Provides `aubiotrack`, which tempo analysis runs over each file. Without it the feature reports
-itself as unavailable and nothing else changes. The Docker image includes it.
-
-- **Ubuntu/Debian**  
-  `sudo apt install aubio-tools`
-- **Alpine**  
-  `apk add aubio`
-- **macOS (Homebrew)**  
-  `brew install aubio`
-
-Only `aubiotrack` is used — not the Python `aubio` command, so no Python is needed.
-
-### 🔊 [rsgain](https://github.com/complexlogic/rsgain) *(optional, for ReplayGain)*
-
-Measures each album's loudness for the optional ReplayGain analysis (opt in per library). It only
-scans: Autotaggerr writes the `REPLAYGAIN_*` tags itself. Without it the feature reports itself as
-unavailable. The Docker image includes it.
-
-- **Ubuntu/Debian**  
-  `sudo apt install rsgain`
-- **Alpine**  
-  `apk add rsgain`
-- **macOS (Homebrew)**  
-  `brew install rsgain`
+- Web UI with users, password and OIDC login, and API keys.
+- A serial job queue, scheduled runs, and an Activity feed showing what each run changed.
+- Tells Plex to refresh only the albums that changed, on one or more servers.
+- An [MCP](https://modelcontextprotocol.io) endpoint at `/api/v1/mcp`, so an AI assistant can query
+  your collection, and with a read and write key follow artists, identify files or start runs. See
+  [docs/mcp.md](docs/mcp.md).
+- Storage overview of your libraries and disks.
+- Single Docker image with every optional tool included.
 
 ---
 
-## 🐳 Docker Compose Example
+## Getting started
 
-Autotaggerr runs well as a background service. Here's how to set it up with Docker Compose:
+### Docker Compose
 
 ```yaml
 services:
@@ -147,7 +125,7 @@ services:
     image: ghcr.io/aunefyren/autotaggerr:beta
     restart: unless-stopped
     volumes:
-      - ./data/:/app/config/:rw               # Config and cache
+      - ./data/:/app/config/:rw               # Config, database and caches
       - /media/library/music/:/music/:rw      # Your music library
     environment:
       # These override config.json settings
@@ -157,10 +135,100 @@ services:
       PGID: 1000
 ```
 
+Open the web UI on port 8080. Libraries, managers, data sources, media servers and tagger profiles
+are all set up there.
+
+### Without Docker
+
+Autotaggerr is a single Go binary. One external tool is required:
+
+- [`metaflac`](https://xiph.org/flac/download.html), for writing FLAC tags.
+  `sudo apt install flac` on Debian/Ubuntu, `choco install flac` on Windows.
+
+Optional tools turn on optional features. Without them the feature reports itself as unavailable
+and nothing else changes.
+
+| Tool | Feature | Debian/Ubuntu | Alpine | macOS |
+|---|---|---|---|---|
+| `fpcalc` ([chromaprint](https://acoustid.org/chromaprint)) | AcoustID fingerprinting | `apt install libchromaprint-tools` | `apk add chromaprint` | `brew install chromaprint` |
+| `aubiotrack` ([aubio](https://aubio.org)) | Tempo (BPM) | `apt install aubio-tools` | `apk add aubio` | `brew install aubio` |
+| [`rsgain`](https://github.com/complexlogic/rsgain) | ReplayGain | `apt install rsgain` | `apk add rsgain` | `brew install rsgain` |
+
+To process a single file and exit:
+
+```bash
+autotaggerr --file "/music/Artist/Album (2020)/01 Track.flac" --fileRoot "/music"
+```
+
+### Library layout
+
+New files are placed by the library's naming templates, which default to
+`<root>/<Artist>/<Album> (<Year>)/[CD 01]/<01 Track>`. Identifying a file does not depend on that
+layout, so an existing library does not need to be moved first. `--fileRoot` and a library's path
+are the folder that contains the artist folders.
+
 ---
 
-## 🐳 Configuring Autotaggerr
-Edit the config.json, found within the config directory. If it isn't there, just start the application first. The keys are written in alphabetical order, and any key this version does not know is dropped the first time it saves the file. Example:
+## Using it with Lidarr
+
+Lidarr can be added as a **manager** for a library. Lidarr then decides which MusicBrainz release
+each file belongs to, which matters for MP3s since Lidarr does not write those IDs into them.
+Autotaggerr follows Lidarr's history, so new imports and upgrades are tagged within minutes, and
+mirrors Lidarr's wanted list into the collection view.
+
+Lidarr writes tags too. With the wrong settings the two will keep overwriting each other. In Lidarr,
+go to **Settings → Metadata**:
+
+- Set *Tag Audio Files with Metadata* to *For new downloads only*. Lidarr tags a file once on
+  import, and Autotaggerr owns it after that. *All files* and *Sync* rewrite existing files; the
+  health check and the manager's **Test** button warn about both.
+- Uncheck *Scrub Existing Tags*.
+
+Libraries without a manager, or with the native one, do not need Lidarr at all.
+
+---
+
+## Media server notes
+
+**Plex**
+
+- Enable *Prefer local metadata*: Library → Manage library → Edit → Advanced.
+- Plex shows one album artist, and renders a joined value as one artist literally named `A; B`.
+  `ALBUMARTIST` therefore holds the primary artist, and the full credit goes in `ALBUMARTISTS`, which
+  Navidrome and Picard read.
+- Plex reads MP3 tags through ffmpeg, which only sees the first value of a multi-value tag. MP3
+  genres are joined with `; ` unless the tagger profile's `mp3_multi_value_tags` is on. FLAC always
+  uses proper multi-value tags.
+- Record Label holds one value. `single_record_label` writes only the first label.
+- The album year comes from `DATE`, which is the edition's. Turn on `original_date_as_date` to show
+  a remaster under the year the album first came out (this applies to Jellyfin too).
+
+**Jellyfin**
+
+- Enable the library's *Prefer non-standard artists tag* option to read the full `ALBUMARTISTS` and
+  `ARTISTS` credits.
+- Jellyfin identifies artists by name. If an online provider such as TheAudioDB spells a name
+  differently from MusicBrainz (a straight `'` against a curly `’`), you can end up with duplicate
+  artists, sometimes saved into `album.nfo`. Disabling the `Nfo` metadata reader (and possibly
+  TheAudioDB) for the music library makes Jellyfin trust the embedded tags: Dashboard → Libraries →
+  your music library.
+
+---
+
+## Configuration
+
+Most things are configured in the web UI. Libraries, managers, data sources, download clients, media
+servers and tagger profiles are stored in the database, not in a config file. Server settings live
+in `config/config.json`, which is created on first start and can be edited from **Settings** as an
+admin. Schedules, log level, concurrency and the mirror switch apply immediately; the rest apply at
+the next start. See [docs/settings.md](docs/settings.md).
+
+A setting can be overridden with a startup flag or environment variable. Precedence is
+**startup flag → environment variable → config file**, and a flag or variable only overrides when
+it is set.
+
+<details>
+<summary>Example <code>config.json</code></summary>
 
 ```json
 {
@@ -209,20 +277,13 @@ Edit the config.json, found within the config directory. If it isn't there, just
 }
 ```
 
-### 🔧 Configuration reference
+Keys are written in alphabetical order, and a key this version does not know is dropped the first
+time the file is saved.
 
-Every setting can be defined in `config.json`. A subset can also be overridden at runtime with a startup flag or an environment variable (the container `entrypoint.sh` maps env vars onto the flags). Precedence is: **startup flag → environment variable → config file value**. A flag/env only overrides the config when it is explicitly provided.
+</details>
 
-**You do not have to edit this file by hand.** Signed in as an admin, the **Settings** page edits
-every key below from the web UI: schedules, log level, processing concurrency and the mirror switch
-take effect immediately, and the rest are saved and picked up at the next start (the page says which
-is which). See [docs/settings.md](docs/settings.md).
-
-Music libraries, metadata managers, data sources and tag-writing settings are **not** in this file —
-they are database rows, added and edited on the Libraries, Managers, Data sources and Tagger
-profiles pages. `config.json` used to carry keys that seeded them on the first boot and were ignored
-on every boot after; those are gone, and an old file is cleaned of them the first time this version
-starts.
+<details>
+<summary>Configuration reference</summary>
 
 | Config file entry | Startup flag | Environment variable | Type | Description |
 |---|---|---|---|---|
@@ -244,9 +305,9 @@ starts.
 | `autotaggerr_download_poll_cron_schedule` | — | — | string | 6-field cron for checking download clients for finished downloads to offer on Import. Default `0 */2 * * * *` (every two minutes). Nothing is imported without a review. |
 | `autotaggerr_mirror_disabled` | — | — | bool | Turn the scheduled MusicBrainz mirror refresh off entirely. Default `false` (the mirror runs). |
 | `autotaggerr_mirror_cron_schedule` | — | — | string | 6-field cron for the mirror refresh. Default `0 0 3 * * *` (nightly 03:00). |
-| `autotaggerr_artwork_disabled` | — | — | bool | Turn the scheduled artwork fetch — and the automatic one for newly added artists and albums — off entirely. Images are still fetched on demand when a page asks. Default `false` (artwork is fetched ahead). |
+| `autotaggerr_artwork_disabled` | — | — | bool | Turn the scheduled artwork fetch, and the automatic one for newly added artists and albums, off entirely. Images are still fetched on demand when a page asks. Default `false` (artwork is fetched ahead). |
 | `autotaggerr_artwork_cron_schedule` | — | — | string | 6-field cron for the artwork fetch. Default `0 0 5 * * *` (nightly 05:00). New rows fetch their own artwork as they arrive, so this is a backstop for expiry. |
-| `autotaggerr_mcp_disabled` | — | — | bool | Turn off the MCP endpoint (`/api/v1/mcp`) that AI assistants connect to; it then answers 404. Default `false` (on — it takes the same API keys as the REST API, and a read-only key sees only the read tools). Editable on **Settings → AI assistants (MCP)**, applies without a restart. See [docs/mcp.md](docs/mcp.md). |
+| `autotaggerr_mcp_disabled` | — | — | bool | Turn off the MCP endpoint (`/api/v1/mcp`) that AI assistants connect to; it then answers 404. Default `false` (on; it takes the same API keys as the REST API, and a read-only key sees only the read tools). Editable on **Settings → AI assistants (MCP)**, applies without a restart. See [docs/mcp.md](docs/mcp.md). |
 | `autotaggerr_tempo_cron_schedule` | — | — | string | 6-field cron for tempo analysis. Default `0 0 1 * * *` (nightly 01:00). Which libraries are analysed is set per library (**Libraries → edit**); with none opted in the pass does nothing. Editable on **Settings → Tempo analysis**. |
 | `autotaggerr_loudness_cron_schedule` | — | — | string | 6-field cron for loudness (ReplayGain) analysis with rsgain. Default `0 0 2 * * *` (nightly 02:00). Which libraries are analysed is set per library (**Libraries → edit**); with none opted in the pass does nothing. Editable on **Settings → Loudness analysis**. |
 | `autotaggerr_tempo_concurrency` | — | — | int | Files analysed in parallel. Default `2`. Analysis is CPU-bound, and a pass pauses while files are being written regardless. Editable on **Settings → Tempo analysis**. |
@@ -254,14 +315,14 @@ starts.
 | `autotaggerr_migration_review_artists` | — | — | bool | Hold merged **artists** for manual approval. Default `false` (apply). |
 | `autotaggerr_migration_review_pinned` | — | — | bool | Hold any migration that would rewrite a **manually attached** file's MB ID, whatever its type. Default `false` (apply). |
 | `autotaggerr_migration_review_deletions` | — | — | bool | Hold **deleted** entities for manual approval. Applying one marks the affected files unmatched. Default `false` (apply). |
-| `autotaggerr_replaced_pin_policy` | — | — | string | What happens when a file attached by hand has its audio replaced: `review` (default — held under **Items → Pin needs review**), `keep` (keep the pin and tag the new audio with it), or `release` (drop the pin; the library's manager identifies the file). Applies to pins already held, from the next run. Editable on **Settings → Manual identifications**. |
+| `autotaggerr_replaced_pin_policy` | — | — | string | What happens when a file attached by hand has its audio replaced: `review` (default, held under **Items → Pin needs review**), `keep` (keep the pin and tag the new audio with it), or `release` (drop the pin; the library's manager identifies the file). Applies to pins already held, from the next run. Editable on **Settings → Manual identifications**. |
 | `autotaggerr_event_retention` | — | — | int | How many runs the **Activity** feed keeps. Counted in runs, not rows, so a run's stages are never pruned out from under it. Default `200`; `0` or less means the default. |
 | `autotaggerr_event_retention_days` | — | — | int | Keep **Activity** runs by age instead of by count: runs from the last this-many days are kept, older ones are deleted, and `autotaggerr_event_retention` is ignored. Default `0` (keep by count). |
 | `autotaggerr_event_detail_retention` | — | — | int | How many per-file (or per-entity) detail rows one Activity event stores. Rows past the cap are counted but not kept, so the event still reports "showing 500 of 3120". Raising it on a busy library grows the database noticeably. Default `500`; `0` or less means the default. |
 | `smtp_enabled` | `-disablesmtp` | `disablesmtp` | bool | Enable SMTP mail. The flag/env is inverted: pass `true` to **disable**. Default enabled. Used by the *Send test message* button on **Settings → Email**; nothing else sends mail yet. |
 | `smtp_host` | `-smtphost` | `smtphost` | string | SMTP server hostname. Default empty. |
 | `smtp_port` | `-smtpport` | `smtpport` | int | SMTP server port. Default `0`. |
-| `smtp_tls` | — | — | string | How the connection is encrypted: `auto` (default — implicit TLS on port 465, STARTTLS elsewhere when offered), `none`, `starttls` (refuse to send if not offered), `implicit`. |
+| `smtp_tls` | — | — | string | How the connection is encrypted: `auto` (default; implicit TLS on port 465, STARTTLS elsewhere when offered), `none`, `starttls` (refuse to send if not offered), `implicit`. |
 | `smtp_username` | `-smtpusername` | `smtpusername` | string | SMTP auth username. Empty means no authentication is attempted. Default empty. |
 | `smtp_password` | `-smtppassword` | `smtppassword` | string | SMTP auth password. Default empty. |
 | `smtp_from` | `-smtpfrom` | `smtpfrom` | string | Sender address for outgoing mail. Default empty. |
@@ -270,24 +331,23 @@ starts.
 | — | — | `PUID` | int | **Env only.** UID the container process runs as. Default `1000`. |
 | — | — | `PGID` | int | **Env only.** GID the container process runs as. Default `1000`. |
 
-> **Lidarr is not configured here.** It used to be, through three `lidarr_*` keys that were copied
-> into the Lidarr **manager** record on the first run and never read again. Those keys are gone: a
-> Lidarr connection is created and edited under **Managers** in the web UI, which is the only place
-> the credentials live. A stale copy left in an old `config.json` is ignored and can be deleted.
-> The *Test* button there probes the connection with exactly the credentials a scan would use; an
-> auth-proxy cookie expires on its own schedule, and that button is how you find out it has.
+Lidarr is not configured in this file. A Lidarr connection is created under **Managers** in the web
+UI, and older `lidarr_*` keys left in a `config.json` are ignored.
+
+</details>
 
 ---
 
-## 🧠 Roadmap
+## Documentation
+
+Each feature has its own page under [`docs/`](docs/). Start with
+[docs/media-manager.md](docs/media-manager.md) for how the parts fit together, and
+[docs/development.md](docs/development.md) for building and contributing.
+
+## Roadmap
 
 Planned work and ideas are tracked as [GitHub issues](https://github.com/aunefyren/autotaggerr/issues).
 
----
+## Contributing
 
-## 👋 Contributing
-
-Pull requests, suggestions, and issue reports are welcome!
-Feel free to fork.
-
----
+Pull requests, suggestions and issue reports are welcome.
