@@ -316,3 +316,42 @@ func TestPinFallbackTaggerProfile(t *testing.T) {
 		}
 	}
 }
+
+// TestWriteRedundantArtist: every profile stops dropping a redundant ARTIST, once —
+// a profile turned back on afterwards keeps the choice on the next start.
+func TestWriteRedundantArtist(t *testing.T) {
+	db := testDB(t)
+	on := models.TaggerProfile{Name: "On", WriteTags: true, IgnoreRedundantContributingArtists: true}
+	off := models.TaggerProfile{Name: "Off", WriteTags: true}
+	for _, p := range []*models.TaggerProfile{&on, &off} {
+		if err := db.Create(p).Error; err != nil {
+			t.Fatalf("profile: %v", err)
+		}
+	}
+	ignores := func(id uuid.UUID) bool {
+		t.Helper()
+		var p models.TaggerProfile
+		if err := db.First(&p, "id = ?", id).Error; err != nil {
+			t.Fatal(err)
+		}
+		return p.IgnoreRedundantContributingArtists
+	}
+
+	if err := ApplyDataMigrations(db); err != nil {
+		t.Fatalf("ApplyDataMigrations: %v", err)
+	}
+	if ignores(on.ID) || ignores(off.ID) {
+		t.Fatalf("a profile still ignores redundant artists: on=%v off=%v", ignores(on.ID), ignores(off.ID))
+	}
+
+	if err := db.Model(&models.TaggerProfile{}).Where("id = ?", on.ID).
+		Update("ignore_redundant_contributing_artists", true).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyDataMigrations(db); err != nil {
+		t.Fatalf("second ApplyDataMigrations: %v", err)
+	}
+	if !ignores(on.ID) {
+		t.Error("the migration ran again and undid a profile's choice")
+	}
+}

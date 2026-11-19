@@ -103,6 +103,43 @@ func TestFlacIdempotentWrite(t *testing.T) {
 	}
 }
 
+// TestFlacClearsBlankComment: a blank ARTIST= left by an older writer is removed
+// even though the profile leaves ARTIST empty and does not remove values — Plex reads
+// a blank as "no track artist" and fills in its own — and the file then settles.
+func TestFlacClearsBlankComment(t *testing.T) {
+	requireTool(t, "metaflac")
+	path := synthAudio(t, ".flac")
+	meta := models.FileTags{Album: "Doggystyle", Title: "G Funk Intro", Track: "2"}
+	if _, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{}); err != nil {
+		t.Fatalf("first SetFlacTags: %v", err)
+	}
+	if out, err := exec.Command("metaflac", "--set-tag=ARTIST=", path).CombinedOutput(); err != nil {
+		t.Fatalf("metaflac: %v\n%s", err, out)
+	}
+	if tags, _ := getFlacTagsMap(path); !slices.Equal(tags["ARTIST"], []string{""}) {
+		t.Fatalf("fixture: ARTIST = %q, want one blank comment", tags["ARTIST"])
+	}
+
+	unchanged, _, changed, err := SetFlacTags(path, meta, models.TaggerSettings{})
+	if err != nil {
+		t.Fatalf("SetFlacTags: %v", err)
+	}
+	if unchanged {
+		t.Fatal("a blank ARTIST was left in place")
+	}
+	if tags, _ := getFlacTagsMap(path); tags["ARTIST"] != nil {
+		t.Errorf("ARTIST = %q after the write, want no comment", tags["ARTIST"])
+	}
+	want := models.TagChange{Field: "ARTIST", Old: `[""]`, New: ""}
+	if !slices.Contains(changed, want) {
+		t.Errorf("changes = %+v, want %+v among them", changed, want)
+	}
+
+	if unchanged, _, _, err := SetFlacTags(path, meta, models.TaggerSettings{}); err != nil || !unchanged {
+		t.Errorf("second write: unchanged=%v err=%v, want a no-op", unchanged, err)
+	}
+}
+
 func TestExtractFLACTag(t *testing.T) {
 	requireTool(t, "metaflac")
 	path := synthAudio(t, ".flac")

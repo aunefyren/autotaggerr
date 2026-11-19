@@ -926,11 +926,12 @@ func DiffFileTags(filePath string, metadata models.FileTags, tagger models.Tagge
 		// sides hold the same values in the same shape, and the list form would only put
 		// brackets around every multi-value tag the file already agrees about. This view
 		// renders every tag, not just the changed ones, so that is most of the page.
-		render := utilities.JoinTagValues
+		render, renderCurrent := utilities.JoinTagValues, utilities.JoinTagValues
 		if isChanged {
-			render = utilities.DescribeTagValues
+			// The file's side keeps its blanks, so a removed empty comment shows as one.
+			render, renderCurrent = utilities.DescribeTagValues, utilities.DescribeOnDiskTagValues
 		}
-		current := render(existing[up])
+		current := renderCurrent(existing[up])
 		want := render(desired[k])
 		if current == "" && want == "" {
 			continue // nothing to show for an empty-on-both tag

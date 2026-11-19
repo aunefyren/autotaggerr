@@ -291,18 +291,55 @@ func DiffFlacTags(existing map[string][]string, desired map[string][]string, tag
 		key := strings.ToUpper(k)
 		wantValues := cleanTagValues(want)
 
+		// An empty comment on disk is always a change, whatever is wanted: it carries
+		// nothing, and players do not read it as absent — Plex takes a blank ARTIST= as
+		// "no track artist" and fills in its own. The comparison below cannot see one
+		// (both sides are cleaned), so it is checked first.
+		blank := HasBlankTagValue(existing[key])
+
 		// An empty desired value means "Autotaggerr has nothing to say about this
-		// tag", not "clear it" — unless the tagger profile says otherwise.
+		// tag", not "clear it" — unless the tagger profile says otherwise. A blank is
+		// still dropped then, and any real value beside it is kept.
 		if len(wantValues) == 0 && !tagger.RemoveValues {
+			if blank {
+				changes[key] = NormalizeTagValues(existing[key])
+				hasChanges = true
+			}
 			continue
 		}
 
-		if !sameTagValues(existing[key], wantValues) {
+		if blank || !sameTagValues(existing[key], wantValues) {
 			changes[key] = wantValues
 			hasChanges = true
 		}
 	}
 	return changes, hasChanges
+}
+
+// HasBlankTagValue reports whether any of a field's values on disk is empty — a
+// Vorbis comment written as "KEY=" with nothing after it.
+func HasBlankTagValue(values []string) bool {
+	for _, value := range values {
+		if NormalizeTagValue(value) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// DescribeOnDiskTagValues is DescribeTagValues for the values read off a file, which
+// may include blanks. DescribeTagValues drops them, so removing a blank comment would
+// read as "" becoming "" (or "A" becoming "A"); here a field holding a blank is shown
+// as its raw quoted list, e.g. [""] or ["A", ""].
+func DescribeOnDiskTagValues(values []string) string {
+	if !HasBlankTagValue(values) {
+		return DescribeTagValues(values)
+	}
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		quoted = append(quoted, strconv.Quote(NormalizeTagValue(value)))
+	}
+	return "[" + strings.Join(quoted, ", ") + "]"
 }
 
 // cleanTagValues is NormalizeTagValues plus a case-insensitive dedup that keeps the

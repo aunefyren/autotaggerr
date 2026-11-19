@@ -295,7 +295,7 @@ func SetFlacTags(filePath string, metadata models.FileTags, tagger models.Tagger
 		// identically (see utilities.DescribeTagValues).
 		changed = append(changed, models.TagChange{
 			Field: key,
-			Old:   utilities.DescribeTagValues(existing[key]),
+			Old:   utilities.DescribeOnDiskTagValues(existing[key]),
 			New:   utilities.DescribeTagValues(values),
 		})
 	}

@@ -122,6 +122,7 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
         use_current_artist_name: p.use_current_artist_name,
         use_custom_artist_delimiter: p.use_custom_artist_delimiter,
         custom_artist_delimiter: p.custom_artist_delimiter,
+        ignore_redundant_contributing_artists: p.ignore_redundant_contributing_artists,
         max_genres: p.max_genres,
         mp3_multi_value_tags: p.mp3_multi_value_tags,
         single_record_label: p.single_record_label,
@@ -157,6 +158,22 @@ function EditProfile({ profile, onClose, onSaved }: { profile: TaggerProfile; on
             <input className="input mono" value={p.custom_artist_delimiter} onChange={(e) => set({ custom_artist_delimiter: e.target.value })} placeholder=" & " />
           </div>
         )}
+        <div className="field">
+          <Check
+            label="Leave out a track artist that repeats the album artist"
+            checked={p.ignore_redundant_contributing_artists}
+            onChange={(v) => set({ ignore_redundant_contributing_artists: v })}
+          />
+          <p className="muted" style={{ margin: "4px 0 0", fontSize: 12 }}>
+            On, a track credited only to the album artist gets no <span className="mono">ARTIST</span> or{" "}
+            <span className="mono">ARTISTSORT</span> tag. <span className="mono">ARTISTS</span> is always written, and
+            a track with a guest (<span className="mono">Snoop Dogg &amp; Daz Dillinger</span>) always keeps its{" "}
+            <span className="mono">ARTIST</span>. Leave it off for Plex and Jellyfin, which read the track artist from{" "}
+            <span className="mono">ARTIST</span> only: without it, Plex shows a name from its own data, often an old
+            one (<span className="mono">Snoop Doggy Dogg</span>), and Jellyfin shows none. Plex already hides a track
+            artist that matches the album artist.
+          </p>
+        </div>
         <div className="field">
           <label className="flabel">Maximum genres</label>
           <input

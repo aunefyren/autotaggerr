@@ -343,9 +343,10 @@ and its API read back:
 
 - **Track artist.** With no `ARTIST`, a track's own artist list is empty (`Artists: []`). It is
   still listed under its album artist: Jellyfin's artist filter matches album artists too. With
-  *ignore redundant contributing artists* on (the default profile), single-artist albums have no
-  track artist, and only the track row's artist column shows it. Turn the option off if that
-  matters on Jellyfin; Plex falls back to the album artist.
+  *ignore redundant contributing artists* on, single-artist albums have no track artist, and only
+  the track row's artist column shows it. The option is off by default; Plex does not fall back to
+  the album artist either (see
+  [artist-credit-tagging.md](artist-credit-tagging.md#whether-it-is-written-at-all)).
 - **Multiple artists.** Only `ALBUMARTIST` and `ARTIST` are read, so a joint `ARTIST` becomes one
   artist named `A & B`. With the library option *Prefer non-standard artists tag* on, `ALBUMARTISTS`
   and `ARTISTS` are read as separate artists, for both fields.
@@ -465,6 +466,17 @@ Both `DiffFlacTags` and `DiffID3Tags` therefore skip empty values unless the tag
 `remove_values` is on; with it on, the empty value becomes a change and the tag is removed
 (`metaflac --remove-tag`, or deleting the ID3 frame). The two engines are deliberately kept in
 step — the profile is one promise, and it used to hold on FLAC while ID3 quietly ignored it.
+
+**A blank comment on disk is always removed**, whatever `remove_values` says. A Vorbis comment
+written as `ARTIST=` with nothing after it holds no value, but players do not read it as absent: Plex
+takes it as "no track artist" and fills in its own name. The diff cleans both sides before comparing,
+so it could not see one; `DiffFlacTags` now checks for blanks first (`utilities.HasBlankTagValue`).
+A blank on a key the profile leaves empty is dropped and any real value beside it is kept; a blank
+on a key with a wanted value is rewritten with that value. Only keys Autotaggerr writes are touched;
+a blank `COMMENT=` from another tagger is not. The change report and the preview show the file's side
+as a quoted list (`[""]`, `["A", ""]`, from `DescribeOnDiskTagValues`), since dropping the blank
+would make the row read "" → "". ID3 needs none of this: `GetMP3Tags` never reads a blank frame
+value. Regression test: `TestFlacClearsBlankComment`.
 
 **Every key in the change set must be written.** The MP3 writer's reported diff is derived from the
 change set rather than from what it did, so a key that is reported but skipped is reported as
