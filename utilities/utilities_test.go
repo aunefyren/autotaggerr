@@ -234,6 +234,42 @@ func TestDiffFlacTags(t *testing.T) {
 		}
 	})
 
+	t.Run("a blank comment is cleared even with RemoveValues off", func(t *testing.T) {
+		existing := map[string][]string{"ARTIST": {""}}
+		desired := map[string][]string{"artist": nil}
+		changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{})
+		if !has || !reflect.DeepEqual(changes, map[string][]string{"ARTIST": nil}) {
+			t.Errorf("changes = %v (has=%v), want {ARTIST:nil}", changes, has)
+		}
+	})
+
+	t.Run("a blank beside a real value drops only the blank", func(t *testing.T) {
+		existing := map[string][]string{"COMMENT": {"kept", " "}}
+		desired := map[string][]string{"comment": nil}
+		changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{})
+		if !has || !reflect.DeepEqual(changes, map[string][]string{"COMMENT": {"kept"}}) {
+			t.Errorf("changes = %v (has=%v), want {COMMENT:[kept]}", changes, has)
+		}
+	})
+
+	t.Run("a blank beside the wanted value is rewritten", func(t *testing.T) {
+		existing := map[string][]string{"ARTIST": {"Snoop Dogg", ""}}
+		desired := map[string][]string{"artist": {"Snoop Dogg"}}
+		changes, has := DiffFlacTags(existing, desired, models.TaggerSettings{})
+		if !has || !reflect.DeepEqual(changes, map[string][]string{"ARTIST": {"Snoop Dogg"}}) {
+			t.Errorf("changes = %v (has=%v), want {ARTIST:[Snoop Dogg]}", changes, has)
+		}
+	})
+
+	t.Run("a key nobody wants and nobody blanked is left alone", func(t *testing.T) {
+		existing := map[string][]string{"COMMENT": {""}}
+		desired := map[string][]string{"title": {"Song"}}
+		changes, _ := DiffFlacTags(existing, desired, models.TaggerSettings{})
+		if _, ok := changes["COMMENT"]; ok {
+			t.Errorf("a tag Autotaggerr does not write was touched: %v", changes)
+		}
+	})
+
 	t.Run("empty desired removes value when RemoveValues is on", func(t *testing.T) {
 		existing := map[string][]string{"COMMENT": {"present"}}
 		desired := map[string][]string{"comment": nil}
@@ -446,5 +482,21 @@ func TestPathBaseHelpersReadWindowsPaths(t *testing.T) {
 	}
 	if got := BaseOfPathAny(`\\nas\music\Artist\`); got != "Artist" {
 		t.Errorf("BaseOfPathAny(UNC folder) = %q, want Artist", got)
+	}
+}
+
+func TestDescribeOnDiskTagValues(t *testing.T) {
+	for _, c := range []struct {
+		in   []string
+		want string
+	}{
+		{[]string{"A"}, "A"},
+		{[]string{""}, `[""]`},
+		{[]string{"A", ""}, `["A", ""]`},
+		{nil, ""},
+	} {
+		if got := DescribeOnDiskTagValues(c.in); got != c.want {
+			t.Errorf("DescribeOnDiskTagValues(%q) = %q, want %q", c.in, got, c.want)
+		}
 	}
 }

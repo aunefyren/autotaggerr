@@ -77,6 +77,8 @@ export interface TaggerProfile {
   use_current_artist_name: boolean;
   use_custom_artist_delimiter: boolean;
   custom_artist_delimiter: string;
+  /** Drop ARTIST when it equals the album artist. Off by default: Plex fills the gap with its own name. */
+  ignore_redundant_contributing_artists: boolean;
   max_genres: number;
   mp3_multi_value_tags: boolean;
   /** Write only the first record label MusicBrainz lists — Plex shows one. */

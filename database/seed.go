@@ -117,7 +117,7 @@ func seedDefaultTaggerProfile(db *gorm.DB) error {
 		UseCustomArtistDelimiter:           true,
 		CustomArtistDelimiter:              " & ",
 		CustomArtistDelimiterCommas:        true,
-		IgnoreRedundantContributingArtists: true,
+		IgnoreRedundantContributingArtists: false,
 		MaxGenres:                          models.DefaultMaxGenres,
 		MP3MultiValueTags:                  false,
 	}).Error

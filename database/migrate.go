@@ -29,6 +29,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"follow_library_sets", followLibrarySets},
 		{"expire_edition_lists", expireEditionLists},
 		{"pin_fallback_tagger_profile", pinFallbackTaggerProfile},
+		{"write_redundant_artist", writeRedundantArtist},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -101,6 +102,26 @@ func pinFallbackTaggerProfile(db *gorm.DB) error {
 	}
 	if res.RowsAffected > 0 {
 		logger.Log.Infof("assigned tagger profile %q to %d library(ies) that named none and were already tagged by it", first.Name, res.RowsAffected)
+	}
+	return nil
+}
+
+// writeRedundantArtist turns ignore_redundant_contributing_artists off on every
+// profile, once. It was on by default and the form never showed it, so no profile
+// holds it by choice — and it broke Plex: a track with no ARTIST (or a blank one) is
+// not shown under its album artist, Plex fills it with its own credited name, so a
+// single-artist track on Doggystyle read "Snoop Doggy Dogg" under a profile set to
+// current names. Writing ARTIST always fixes that; Plex hides a track artist equal
+// to the album artist anyway. A profile turned back on afterwards is a choice the
+// form now offers, and this never runs again to undo it.
+func writeRedundantArtist(db *gorm.DB) error {
+	res := db.Model(&models.TaggerProfile{}).Where("ignore_redundant_contributing_artists = ?", true).
+		Update("ignore_redundant_contributing_artists", false)
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected > 0 {
+		logger.Log.Infof("turned off ignore redundant contributing artists on %d tagger profile(s); the next tag run writes ARTIST on single-artist tracks", res.RowsAffected)
 	}
 	return nil
 }
