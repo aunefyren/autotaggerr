@@ -298,6 +298,11 @@ export default function Collection() {
 
   const onlyMismatched = browse.flag("mismatch") === "1";
   const mismatchedCount = artists.filter((ar) => (ar.mismatch_count ?? 0) > 0).length;
+  // Gated on hasWanted like the Missing column, which reads "—" for an artist nothing
+  // decides the wants of — such an artist has nothing missing, not an unknown amount.
+  const onlyMissing = browse.flag("missing") === "1";
+  const hasMissing = (ar: CollectionArtist) => hasWanted(ar) && (ar.missing_count ?? 0) > 0;
+  const missingCount = artists.filter(hasMissing).length;
 
   // Which library an artist lives in is a filter only once there is a choice to make.
   const libraryFilter = libraries.multi ? browse.flag("library") : null;
@@ -309,6 +314,7 @@ export default function Collection() {
   const filtered = artists.filter(
     (ar) =>
       matches(browse.query, ar.name) &&
+      (!onlyMissing || hasMissing(ar)) &&
       (!onlyMismatched || (ar.mismatch_count ?? 0) > 0) &&
       (!libraryFilter || (ar.library_ids ?? []).includes(libraryFilter))
   );
@@ -480,6 +486,15 @@ export default function Collection() {
                   : `${shown.length} of ${artists.length}`
             }
           >
+            {!first && (
+              <FilterChip
+                on={onlyMissing}
+                count={missingCount}
+                label="Missing"
+                title="Only artists with wanted albums that have nothing on disk yet"
+                onClick={() => browse.setFlag("missing", onlyMissing ? null : "1")}
+              />
+            )}
             {!first && (
               <FilterChip
                 on={onlyMismatched}
