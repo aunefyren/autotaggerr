@@ -1,9 +1,9 @@
 # Feature: insights
 
-The **Insights** page (Music → Insights) answers questions about the library as a whole. It has two
-tabs today, **Duplicates** and **Stats**. A collaboration graph is planned as a third (#46).
+The **Insights** page (Music → Insights) answers questions about the library as a whole, in three
+tabs: **Duplicates**, **Stats** and **Graph**.
 
-**It reads; it does not write.** Both tabs come from the file index (`library_items`), the
+**It reads; it does not write.** All three tabs come from the file index (`library_items`), the
 collection tables and the release cache, with no MusicBrainz call and no file opened, so they
 answer inline. Only one thing reads audio: checking whether two copies are the same audio. That is
 a queued job, and it writes only to the index. The code lives in the `insights` package; the routes
@@ -97,3 +97,78 @@ page says so instead of showing smaller numbers as if they were complete.
 
 Bitrate, sample rate and bit depth are not stored anywhere, so they are not broken down. Adding them
 would mean reading every file's headers at index time.
+
+## Graph
+
+Who works with whom. Artists are nodes; two are connected when **the same recording credits
+both**, and the edge's weight is how many recordings in scope do. A node's size is how many
+recordings in scope credit that artist.
+
+### Where the credits come from
+
+`insight_credits` holds one row per release, recording, artist and role, derived from the cached
+release by `insights.ReleaseCredits`:
+
+| Role | Read from |
+|---|---|
+| `credit` | the track's artist credit (the recording's, when the track has none) |
+| `performer` | instrument, vocal and performer relationships, orchestras, conductors |
+| `production` | producer, engineer, mixer, remixer, DJ-mixer |
+| `writing` | composer, lyricist, writer, arranger, through the recording's works |
+
+These are the same relationships `modules.TrackCredits` writes to a file. `modules.CreditGroup`
+maps a relationship type to its group from `creditRelTypes`, so the graph and the tags cannot
+disagree about what a credit is. Release-level relationships (a producer for the whole album)
+apply to every track. Artists are keyed by MBID and named by their own name, not the
+credited-as name, so one artist is one node. Video tracks are left out.
+
+**Keeping it current** (`insights.SyncCredits`): credits are read for every release a file is on
+that has none yet, or whose cache entry was fetched after they were read
+(`insight_credit_releases.cached_at`), and dropped for releases no file is on any more. A pass where
+nothing changed reads two short lists and writes nothing. It runs:
+
+- after every collection rebuild, which means every Scan (`collection.RebuildScoped`). It runs
+  after the transaction, never inside it: failing to derive credits must not undo a rebuild.
+- once at startup, in the background, which fills the table after an upgrade.
+
+It reads the cache only, never the network. A release that is not cached has no credits, and the
+page counts those releases (`unsynced`). A release that leaves the cache keeps the credits it had.
+
+### Assembling a graph
+
+`GET /insights/graph` (`insights.Graph`) joins `insight_credits` to `library_items` on release and
+recording, so the library filter is exact. It counts **distinct recordings**: a recording held on
+two releases, or in two libraries, or crediting one artist in two roles, counts once.
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `roles` | `credit` | which credits connect artists |
+| `min_weight` | 1 | fewest shared recordings per edge |
+| `min_tracks` | 1 | fewest recordings per artist |
+| `special` | off | let Various Artists and placeholders (`[unknown]`, `[traditional]`, …) in |
+| `artist`, `hops` | — | centre on one artist: their collaborators (1) or theirs too (2) |
+| `limit` | 150 (max 500) | node cap |
+
+- **Various Artists is out by default.** It is credited on every compilation track and would
+  connect everything.
+- **The node cap is what keeps the graph readable.** Uncentred, it keeps the artists with the
+  heaviest connections. Centred, it keeps the nearest ring first and the strongest within each ring.
+  `truncated` says the cap cut some artists.
+- **Only connected artists are drawn.** An artist sharing no recording with anyone is not part of a
+  graph of who works with whom.
+
+**Adding a filter** is a field on `insights.GraphOptions`, a line in `routers/insights.go`, and an
+entry in `GRAPH_FILTERS` (`webui/src/pages/Insights.tsx`).
+
+### Drawing
+
+`d3-force` lays the graph out, and only that: the drawing is plain SVG styled from the theme
+(`CollabGraph.tsx`). The layout runs a fixed number of ticks per answer instead of animating, so
+the same answer always draws the same picture. A centred graph pins its artist in the middle with
+each hop on its own ring. Drag pans, the wheel zooms about the cursor, and hovering or selecting an
+artist lights up their connections.
+
+The side panel lists the same data: the strongest pairs, or the centred artist's collaborators, and
+for a selected artist their connections, *Centre on this artist*, and a link to their collection
+page when they have one. It is also the non-visual way in. Every artist the picture shows can be
+reached from the list, and the SVG's label says so.

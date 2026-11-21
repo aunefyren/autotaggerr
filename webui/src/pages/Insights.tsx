@@ -6,7 +6,8 @@ import { useToast } from "../toast";
 import { useLibraries } from "../components/Libraries";
 import { formatBytes } from "../components/storage";
 import { EmptyState, ErrorNote, IdChip, Skeleton } from "../components/ui";
-import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, LibraryStats, ScanStatus, StatsBucket } from "../types";
+import { ArtistLink, CollabGraph, CollaboratorRow } from "../components/CollabGraph";
+import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, GraphNode, GraphReport, LibraryStats, ScanStatus, StatsBucket } from "../types";
 
 /**
  * Insights: questions about the library as a whole. Duplicates and Stats read the
@@ -16,7 +17,8 @@ import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, Librar
  */
 export default function Insights() {
   const [params, setParams] = useSearchParams();
-  const tab = params.get("tab") === "stats" ? "stats" : "duplicates";
+  const tabParam = params.get("tab");
+  const tab = tabParam === "stats" || tabParam === "graph" ? tabParam : "duplicates";
   const library = params.get("library") ?? "";
   const libraries = useLibraries();
 
@@ -45,12 +47,11 @@ export default function Insights() {
       <div className="tabs" role="tablist" aria-label="Insight">
         <button type="button" role="tab" className="tab" aria-selected={tab === "duplicates"} onClick={() => set({ tab: null })}>Duplicates</button>
         <button type="button" role="tab" className="tab" aria-selected={tab === "stats"} onClick={() => set({ tab: "stats" })}>Stats</button>
+        <button type="button" role="tab" className="tab" aria-selected={tab === "graph"} onClick={() => set({ tab: "graph" })}>Graph</button>
       </div>
-      {tab === "duplicates" ? (
-        <Duplicates library={library} multi={libraries.multi} params={params} set={set} />
-      ) : (
-        <Stats library={library} />
-      )}
+      {tab === "duplicates" && <Duplicates library={library} multi={libraries.multi} params={params} set={set} />}
+      {tab === "stats" && <Stats library={library} />}
+      {tab === "graph" && <Graph library={library} params={params} set={set} />}
     </div>
   );
 }
@@ -485,4 +486,283 @@ function formatDuration(ms: number): string {
   const hours = Math.floor((minutes % 1440) / 60);
   if (days > 0) return `${days}d ${hours}h`;
   return `${hours}h ${minutes % 60}m`;
+}
+
+/** The credits that can connect two artists (models.InsightRole*). */
+const GRAPH_ROLES: { key: string; label: string }[] = [
+  { key: "credit", label: "Credited artists" },
+  { key: "performer", label: "Performers" },
+  { key: "production", label: "Production" },
+  { key: "writing", label: "Writing" },
+];
+
+/**
+ * The graph's filters, one entry each. Every key is the query parameter the API reads
+ * (routers/insights.go) and the page's own URL parameter, so a filter is added by adding
+ * an entry here and a field on insights.GraphOptions — no plumbing in between.
+ */
+type GraphFilter =
+  | { kind: "select"; key: string; label: string; options: { value: string; label: string }[]; fallback: string }
+  | { kind: "check"; key: string; label: string };
+
+const GRAPH_FILTERS: GraphFilter[] = [
+  {
+    kind: "select",
+    key: "min_weight",
+    label: "Shared recordings",
+    fallback: "1",
+    options: ["1", "2", "3", "5", "10"].map((v) => ({ value: v, label: `${v}+` })),
+  },
+  {
+    kind: "select",
+    key: "min_tracks",
+    label: "Artist recordings",
+    fallback: "1",
+    options: ["1", "2", "5", "10", "25"].map((v) => ({ value: v, label: `${v}+` })),
+  },
+  {
+    kind: "select",
+    key: "limit",
+    label: "Artists shown",
+    fallback: "150",
+    options: ["50", "150", "300", "500"].map((v) => ({ value: v, label: v })),
+  },
+  { kind: "check", key: "special", label: "Include Various Artists" },
+];
+
+function Graph({
+  library,
+  params,
+  set,
+}: {
+  library: string;
+  params: URLSearchParams;
+  set: (updates: Record<string, string | null>) => void;
+}) {
+  const roles = (params.get("roles") ?? "credit").split(",").filter(Boolean);
+  const artist = params.get("artist") ?? "";
+  const hops = params.get("hops") === "2" ? "2" : "1";
+  const [selected, setSelected] = useState<string | null>(null);
+
+  const query = new URLSearchParams();
+  if (library) query.set("library", library);
+  query.set("roles", roles.join(","));
+  for (const f of GRAPH_FILTERS) {
+    const v = params.get(f.key);
+    if (v) query.set(f.key, v);
+  }
+  if (artist) {
+    query.set("artist", artist);
+    query.set("hops", hops);
+  }
+  const qs = query.toString();
+  const graph = useFetch<GraphReport>(() => api.get(`/insights/graph?${qs}`), [qs]);
+  useEffect(() => setSelected(null), [qs]);
+
+  const toggleRole = (key: string, on: boolean) => {
+    const next = on ? [...roles, key] : roles.filter((r) => r !== key);
+    // Never none: no role connects nobody, which would read as an empty library.
+    if (next.length === 0) return;
+    set({ roles: next.join(",") === "credit" ? null : GRAPH_ROLES.map((r) => r.key).filter((k) => next.includes(k)).join(",") });
+  };
+  const centre = (mbid: string | null) => set({ artist: mbid, hops: null });
+
+  const data = graph.data;
+  const nodes = useMemo(() => new Map((data?.nodes ?? []).map((n) => [n.mb_id, n])), [data]);
+  const picked = selected ? nodes.get(selected) : undefined;
+
+  return (
+    <div className="stack">
+      <p className="muted" style={{ margin: 0, maxWidth: "68ch", lineHeight: 1.55 }}>
+        Who works with whom in your library. Two artists are connected when the same recording credits both; the
+        line is thicker the more recordings they share. Credits come from MusicBrainz, read from the releases
+        already cached.
+      </p>
+
+      <div className="table-toolbar">
+        {GRAPH_ROLES.map((r) => (
+          <label key={r.key} className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12 }}>
+            <input type="checkbox" checked={roles.includes(r.key)} onChange={(e) => toggleRole(r.key, e.target.checked)} />
+            <span>{r.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="table-toolbar">
+        {GRAPH_FILTERS.map((f) =>
+          f.kind === "select" ? (
+            <label key={f.key} className="row" style={{ gap: 6, fontSize: 12 }}>
+              <span className="muted">{f.label}</span>
+              <select
+                className="input"
+                style={{ width: "auto" }}
+                value={params.get(f.key) ?? f.fallback}
+                onChange={(e) => set({ [f.key]: e.target.value === f.fallback ? null : e.target.value })}
+              >
+                {f.options.map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+            </label>
+          ) : (
+            <label key={f.key} className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12 }}>
+              <input type="checkbox" checked={params.get(f.key) === "1"} onChange={(e) => set({ [f.key]: e.target.checked ? "1" : null })} />
+              <span>{f.label}</span>
+            </label>
+          ),
+        )}
+        {data && (
+          <span className="toolbar-count dim mono">
+            {data.nodes.length} of {data.connected} artists · {data.edges.length} connections
+          </span>
+        )}
+      </div>
+
+      {data?.center && (
+        <div className="selected-bar row" style={{ gap: 10, flexWrap: "wrap" }}>
+          <span>
+            Centred on <strong>{data.center.name}</strong>
+          </span>
+          <div className="tabs" role="tablist" aria-label="Distance" style={{ borderBottom: "none" }}>
+            <button type="button" role="tab" className="tab" aria-selected={hops === "1"} onClick={() => set({ hops: null })}>Collaborators</button>
+            <button type="button" role="tab" className="tab" aria-selected={hops === "2"} onClick={() => set({ hops: "2" })}>And theirs</button>
+          </div>
+          <button type="button" className="btn btn-secondary btn-sm" style={{ marginLeft: "auto" }} onClick={() => centre(null)}>
+            Show everyone
+          </button>
+        </div>
+      )}
+
+      {graph.err && <ErrorNote message={graph.err} />}
+      {!data && !graph.err && (
+        <div className="graph-split">
+          <div className="graph-canvas"><Skeleton w="100%" h={520} /></div>
+          <div className="card stack" style={{ gap: 10 }}>
+            <Skeleton w="60%" />
+            <Skeleton w="80%" />
+            <Skeleton w="70%" />
+          </div>
+        </div>
+      )}
+
+      {data && data.nodes.length === 0 && (
+        <EmptyState
+          icon="◔"
+          message={
+            artist && !data.center
+              ? "That artist has no credits in scope."
+              : data.unsynced > 0 && data.connected === 0
+                ? "No credits read yet. They come from cached releases, which the next Scan or metadata refresh fills in."
+                : "No two artists share a recording with these filters."
+          }
+        />
+      )}
+
+      {data && data.nodes.length > 0 && (
+        <div className="graph-split">
+          <CollabGraph report={data} selected={selected} onSelect={setSelected} />
+          <div className="card stack" style={{ gap: 12, alignSelf: "start" }}>
+            {picked ? (
+              <SelectedArtist node={picked} report={data} nodes={nodes} onSelect={setSelected} onCentre={centre} centred={artist === picked.mb_id} />
+            ) : (
+              <>
+                <div className="eyebrow">{data.center ? `${data.center.name}'s collaborators` : "Strongest collaborations"}</div>
+                {data.collaborators.length === 0 ? (
+                  <div className="dim" style={{ fontSize: 12 }}>None with these filters.</div>
+                ) : (
+                  <div className="stack" style={{ gap: 2 }}>
+                    {data.collaborators.map((c) =>
+                      data.center ? (
+                        <CollaboratorRow key={c.b.mb_id} node={c.b} weight={c.weight} onFocus={setSelected} />
+                      ) : (
+                        <PairRow key={`${c.a.mb_id}-${c.b.mb_id}`} a={c.a} b={c.b} weight={c.weight} onFocus={setSelected} />
+                      ),
+                    )}
+                  </div>
+                )}
+                <div className="dim" style={{ fontSize: 11 }}>Select an artist in the graph or the list; drag to pan, scroll to zoom.</div>
+              </>
+            )}
+            {data.truncated && (
+              <div className="dim" style={{ fontSize: 11 }}>
+                Showing the {data.nodes.length} most connected of {data.connected}. Raise the floors or centre on an artist to see the rest.
+              </div>
+            )}
+            {data.unsynced > 0 && (
+              <div className="dim" style={{ fontSize: 11 }}>
+                {data.unsynced} {data.unsynced === 1 ? "release has" : "releases have"} no credits read yet, because{" "}
+                {data.unsynced === 1 ? "it is" : "they are"} not cached.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PairRow({ a, b, weight, onFocus }: { a: GraphNode; b: GraphNode; weight: number; onFocus: (mbid: string) => void }) {
+  return (
+    <div className="collab-row">
+      <span className="collab-pair">
+        <button type="button" className="collab-name" onClick={() => onFocus(a.mb_id)}>{a.name}</button>
+        <span className="dim"> × </span>
+        <button type="button" className="collab-name" onClick={() => onFocus(b.mb_id)}>{b.name}</button>
+      </span>
+      <span className="mono tabnum dim">{weight}</span>
+    </div>
+  );
+}
+
+function SelectedArtist({
+  node,
+  report,
+  nodes,
+  onSelect,
+  onCentre,
+  centred,
+}: {
+  node: GraphNode;
+  report: GraphReport;
+  nodes: Map<string, GraphNode>;
+  onSelect: (mbid: string | null) => void;
+  onCentre: (mbid: string) => void;
+  centred: boolean;
+}) {
+  const collaborators = report.edges
+    .filter((e) => e.source === node.mb_id || e.target === node.mb_id)
+    .map((e) => ({ node: nodes.get(e.source === node.mb_id ? e.target : e.source)!, weight: e.weight }))
+    .filter((c) => c.node)
+    .sort((x, y) => y.weight - x.weight);
+  return (
+    <>
+      <div className="row" style={{ justifyContent: "space-between", gap: 8 }}>
+        <div className="stack" style={{ gap: 2 }}>
+          <span style={{ fontWeight: 600 }}>{node.name}</span>
+          <span className="dim mono" style={{ fontSize: 11 }}>
+            {node.tracks} {node.tracks === 1 ? "recording" : "recordings"}
+          </span>
+        </div>
+        <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelect(null)} aria-label="Clear selection">✕</button>
+      </div>
+      <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+        {!centred && (
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => onCentre(node.mb_id)}>
+            Centre on this artist
+          </button>
+        )}
+        <ArtistLink node={node} />
+        <IdChip value={node.mb_id} />
+      </div>
+      <div className="eyebrow">Connected here</div>
+      {collaborators.length === 0 ? (
+        <div className="dim" style={{ fontSize: 12 }}>No connections among the artists shown.</div>
+      ) : (
+        <div className="stack" style={{ gap: 2 }}>
+          {collaborators.map((c) => (
+            <CollaboratorRow key={c.node.mb_id} node={c.node} weight={c.weight} onFocus={onSelect} />
+          ))}
+        </div>
+      )}
+    </>
+  );
 }

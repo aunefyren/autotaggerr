@@ -375,7 +375,7 @@ Feature docs:
 - `artwork.md` — covers and artist images: warming them ahead of the page, and why it is its own verb.
 - `fingerprinting.md` — optional AcoustID identification.
 - `tempo.md` — optional BPM analysis: the detector, why a file is analysed once, its own runner.
-- `insights.md` — the Insights page: duplicates by recording (and why copies are compared within one album), the audio hash taken only for candidates, and library stats.
+- `insights.md` — the Insights page: duplicates by recording (and why copies are compared within one album), the audio hash taken only for candidates, library stats, and the collaboration graph (credits derived from cached releases, kept current by Scan).
 - `replaygain.md` — optional loudness (ReplayGain) analysis with rsgain: albums as the unit, when one is measured again, how the tags reach files.
 - `authentication.md` — local login, scoped API keys, OIDC.
 - `mcp.md` — the MCP server for AI assistants: scoped API keys, the read and action tools, and how they share query methods and commands with the REST handlers.

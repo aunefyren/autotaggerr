@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"github.com/aunefyren/autotaggerr/insights"
 	"io/fs"
 	"log"
 	"mime"
@@ -192,6 +193,18 @@ func main() {
 	// load all on-disk caches into memory once; the per-file path works purely
 	// in-memory from here on (see modules/cache.go)
 	modules.LoadAllCaches()
+
+	// The collaboration graph's credits are derived from the release cache and kept
+	// up to date by every Scan; this catches an upgrade (an empty table) and releases
+	// cached since the last one without waiting for it. In the background: on a first
+	// run it reads every cached release once, and nothing at startup waits on it.
+	go func() {
+		if res, err := insights.SyncCredits(db); err != nil {
+			logger.Log.Warnf("failed to update the collaboration graph's credits: %s", err.Error())
+		} else if res.Read > 0 || res.Dropped > 0 {
+			logger.Log.Infof("collaboration graph: credits read for %d releases, %d dropped", res.Read, res.Dropped)
+		}
+	}()
 
 	// metaflac is the one required external binary. Looked up now so its absence is in
 	// the log at startup, once, rather than first appearing as the first FLAC failing.

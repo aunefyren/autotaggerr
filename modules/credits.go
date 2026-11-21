@@ -242,3 +242,34 @@ func musicianCredits(c models.Credits) []string {
 	}
 	return out
 }
+
+// Credit groups: the kinds of work a relationship credits, coarse enough to filter a
+// collaboration graph by (insights.Graph). Every relationship TrackCredits reads
+// falls in exactly one.
+const (
+	CreditGroupPerformer  = "performer"
+	CreditGroupProduction = "production"
+	CreditGroupWriting    = "writing"
+)
+
+// CreditGroup names the group an artist relationship type belongs to, or "" for one
+// TrackCredits does not read. It follows creditRelTypes, so a relationship counts as
+// a credit in the graph exactly when it is written as one to a file.
+func CreditGroup(relType string) string {
+	switch relType {
+	case "instrument", "vocal", "performer":
+		return CreditGroupPerformer
+	}
+	credit, known := creditRelTypes[relType]
+	if !known {
+		return ""
+	}
+	if strings.HasPrefix(credit, "performer:") || credit == "conductor" {
+		return CreditGroupPerformer
+	}
+	switch credit {
+	case "composer", "lyricist", "writer", "arranger":
+		return CreditGroupWriting
+	}
+	return CreditGroupProduction
+}

@@ -1846,6 +1846,8 @@ func AllDBModels() []any {
 		&MediaServer{},
 		&LibraryMediaServer{},
 		&TrackLoudness{},
+		&InsightCredit{},
+		&InsightCreditRelease{},
 	}
 }
 
