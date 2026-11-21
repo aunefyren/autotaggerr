@@ -436,3 +436,13 @@
 }
 .storage-list li:last-child { border-bottom: 0; }
 .storage-list li > :last-child { text-align: right; }
+
+/* Insights — breakdowns: a value, its bar against the largest, and its count. One
+   hue (magnitude, not identity); the count is always printed beside the bar. */
+.insight-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; align-items: start; }
+.breakdown { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.breakdown-row { display: grid; grid-template-columns: minmax(70px, 34%) 1fr auto; gap: 10px; align-items: center; }
+.breakdown-bar { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.breakdown-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.breakdown-bar > span.muted-fill { background: var(--border-strong); }
+@media (max-width: 720px) { .insight-grid { grid-template-columns: 1fr; } }

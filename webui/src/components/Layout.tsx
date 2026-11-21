@@ -33,6 +33,7 @@ const GROUPS: NavGroup[] = [
       { to: "/collection", label: "Collection", ic: "♫" },
       { to: "/import", label: "Import", ic: "⇣", adminOnly: true },
       { to: "/items", label: "Items", ic: "≣" },
+      { to: "/insights", label: "Insights", ic: "◔" },
     ],
   },
   {

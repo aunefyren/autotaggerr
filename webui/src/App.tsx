@@ -11,6 +11,7 @@ import Artist from "./pages/Artist";
 import ReleaseGroup from "./pages/ReleaseGroup";
 import TaggerProfiles from "./pages/TaggerProfiles";
 import Items from "./pages/Items";
+import Insights from "./pages/Insights";
 import Collection from "./pages/Collection";
 import Activity from "./pages/Activity";
 import Migrations from "./pages/Migrations";
@@ -52,6 +53,7 @@ export default function App() {
         <Route path="/data-sources" element={<DataSources />} />
         <Route path="/tagger-profiles" element={<TaggerProfiles />} />
         <Route path="/items" element={<Items />} />
+        <Route path="/insights" element={<Insights />} />
         {/* Admin-only server-side: an import reads and moves files anywhere on the server. */}
         <Route path="/import" element={user.role === "admin" ? <Import /> : <Navigate to="/" replace />} />
         <Route path="/download-clients" element={user.role === "admin" ? <DownloadClients /> : <Navigate to="/" replace />} />
