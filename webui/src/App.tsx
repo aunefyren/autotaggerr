@@ -1,4 +1,4 @@
-import { Navigate, Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useAuth } from "./auth";
 import Layout from "./components/Layout";
 import Login from "./pages/Login";
@@ -18,7 +18,6 @@ import Migrations from "./pages/Migrations";
 import Mirror from "./pages/Mirror";
 import Settings from "./pages/settings/Settings";
 import Account from "./pages/Account";
-import Storage from "./pages/Storage";
 import Import from "./pages/Import";
 import DownloadClients from "./pages/DownloadClients";
 import MediaServers from "./pages/MediaServers";
@@ -72,9 +71,18 @@ export default function App() {
           element={user.role === "admin" ? <Settings /> : <Navigate to="/" replace />}
         />
         <Route path="/account" element={<Account />} />
-        <Route path="/storage" element={<Storage />} />
+        {/* Storage is a tab of Insights now; the old address keeps working. */}
+        <Route path="/storage" element={<StorageRedirect />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>
   );
+}
+
+/** /storage → the Storage tab of Insights, keeping any other query parameters. */
+function StorageRedirect() {
+  const { search } = useLocation();
+  const params = new URLSearchParams(search);
+  params.set("tab", "storage");
+  return <Navigate to={`/insights?${params.toString()}`} replace />;
 }

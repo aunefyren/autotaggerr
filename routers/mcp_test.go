@@ -99,6 +99,7 @@ var mcpPhaseOneTools = []string{
 	"list_artists", "get_artist", "list_missing", "get_album", "get_release_tracks",
 	"list_files", "get_file",
 	"list_activity", "get_activity", "list_migrations",
+	"get_library_stats", "list_duplicates",
 	"preview_organise",
 }
 

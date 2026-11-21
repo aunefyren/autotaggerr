@@ -83,3 +83,31 @@ func TestInsightsGraphRoute(t *testing.T) {
 		}
 	}
 }
+
+// TestMCPInsightTools: the assistant tools answer from the same functions as the page,
+// a level narrows the groups, and a bad library or level is refused with the reason.
+func TestMCPInsightTools(t *testing.T) {
+	_, api := setupAPI(t)
+	lib := models.Library{Name: "music", Path: "/music", Enabled: true}
+	api.DB.Create(&lib)
+	api.DB.Create(&models.CollectionReleaseGroup{MBID: "rg", ArtistMBID: "a"})
+	api.DB.Create(&models.CollectionRelease{MBID: "rel", ReleaseGroupMBID: "rg"})
+	for _, p := range []string{"/music/01.flac", "/music/01.mp3"} {
+		api.DB.Create(&models.LibraryItem{LibraryID: lib.ID, Path: p, Size: 10, MBReleaseID: "rel", MBRecordingID: "rec", Status: models.LibraryItemStatusOK})
+	}
+	session := mcpSession(t, api, mcpServerKey{})
+
+	stats := callMCP[insights.Stats](t, session, "get_library_stats", map[string]any{"library_id": lib.ID.String()})
+	if stats.Files != 2 {
+		t.Errorf("stats files = %d, want 2", stats.Files)
+	}
+	dups := callMCP[mcpDuplicates](t, session, "list_duplicates", nil)
+	if dups.Matched != 1 || len(dups.Groups) != 1 || dups.Groups[0].Level != insights.LevelMixedFormat {
+		t.Errorf("duplicates = %+v", dups)
+	}
+	if dups := callMCP[mcpDuplicates](t, session, "list_duplicates", map[string]any{"level": "identical"}); len(dups.Groups) != 0 {
+		t.Errorf("level filter kept %+v", dups.Groups)
+	}
+	expectMCPError(t, session, "list_duplicates", map[string]any{"level": "nope"}, "level must be")
+	expectMCPError(t, session, "get_library_stats", map[string]any{"library_id": "nope"}, "get_configuration")
+}

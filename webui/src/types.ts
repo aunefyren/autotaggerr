@@ -1461,6 +1461,8 @@ export interface LibraryStats {
     pinned: number;
     pins_held: number;
     isrc: number;
+    /** Identified files whose album cover is in the local artwork cache. */
+    artwork: number;
     replaygain: number;
     bpm: number;
   };
