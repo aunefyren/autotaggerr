@@ -378,6 +378,7 @@ consults the guide and either follows it or reshapes it *in the same change*.
 - [collection.md](collection.md) — present vs wanted, the desire model.
 - [attach.md](attach.md) — identifying files by hand.
 - [fingerprinting.md](fingerprinting.md) — optional AcoustID identification.
+- [insights.md](insights.md) — duplicates and library stats.
 - [tagging.md](tagging.md) — what gets written to a file.
 - [naming.md](naming.md) — where a file belongs: the tagger profile's naming templates.
 - [import.md](import.md) — bringing loose files into a library.

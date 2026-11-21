@@ -241,6 +241,11 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/loudness/cancel", a.cancelLoudnessAnalysis)
 
 		// Activity events
+		// Insights: duplicates and library stats (docs/insights.md).
+		protected.GET("/insights/duplicates", a.insightsDuplicates)
+		protected.POST("/insights/duplicates/check", a.checkDuplicates)
+		protected.GET("/insights/stats", a.insightsStats)
+
 		protected.GET("/events", a.listEvents)
 		protected.GET("/events/:id", a.getEvent)
 		// The files behind one MusicBrainz identifier — which local audio an Activity

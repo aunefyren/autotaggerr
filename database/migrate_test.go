@@ -355,3 +355,21 @@ func TestWriteRedundantArtist(t *testing.T) {
 		t.Error("the migration ran again and undid a profile's choice")
 	}
 }
+
+// TestDropLibraryItemContentHash: the never-written content_hash column is dropped
+// from a database that still has it, and a database without it is left alone.
+func TestDropLibraryItemContentHash(t *testing.T) {
+	db := testDB(t)
+	if err := db.Exec("ALTER TABLE library_items ADD COLUMN content_hash text").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := dropLibraryItemContentHash(db); err != nil {
+		t.Fatal(err)
+	}
+	if db.Migrator().HasColumn("library_items", "content_hash") {
+		t.Error("content_hash is still there")
+	}
+	if err := dropLibraryItemContentHash(db); err != nil {
+		t.Errorf("second run: %v", err)
+	}
+}

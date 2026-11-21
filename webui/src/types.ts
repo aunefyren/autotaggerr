@@ -1390,3 +1390,80 @@ export interface StorageOutcome {
   after: number;
   message: string;
 }
+
+/** How files sharing a recording relate (insights.Level), most actionable first. */
+export type DuplicateLevel = "identical" | "mixed_format" | "same_format" | "across_releases";
+
+export interface DuplicateFile {
+  item_id: string;
+  library_id: string;
+  library_name: string;
+  path: string;
+  format: string;
+  lossless: boolean;
+  size: number;
+  release_mb_id: string;
+  release_title: string;
+  release_group_mb_id: string;
+  release_type: string;
+  /** Present only when taken from the file as it is now. */
+  audio_hash?: string;
+}
+
+export interface DuplicateGroup {
+  recording_mb_id: string;
+  title: string;
+  artist: string;
+  level: DuplicateLevel;
+  files: DuplicateFile[];
+  audio_unchecked: boolean;
+  identical_audio: boolean;
+  compilation: boolean;
+  libraries: number;
+}
+
+/** GET /insights/duplicates */
+export interface DuplicatesReport {
+  groups: DuplicateGroup[];
+  /** Every group by level, including the ones the filters hide. */
+  counts: Record<DuplicateLevel, number>;
+  hidden_compilations: number;
+  /** Files the duplicate check would hash, across every library. */
+  unchecked: number;
+}
+
+export interface StatsBucket {
+  key: string;
+  files: number;
+  bytes: number;
+}
+
+/** GET /insights/stats */
+export interface LibraryStats {
+  files: number;
+  identified: number;
+  bytes: number;
+  duration_ms: number;
+  uncached: number;
+  recordings: number;
+  releases: number;
+  albums: number;
+  artists: number;
+  formats: StatsBucket[];
+  release_types: StatsBucket[];
+  decades: StatsBucket[];
+  genres: StatsBucket[];
+  countries: StatsBucket[];
+  labels: StatsBucket[];
+  coverage: {
+    unmatched: number;
+    errors: number;
+    pinned: number;
+    pins_held: number;
+    isrc: number;
+    replaygain: number;
+    bpm: number;
+  };
+  /** Collection-wide; absent from one library's view. */
+  catalogue?: { wanted: number; incomplete: number; unlisted: number };
+}

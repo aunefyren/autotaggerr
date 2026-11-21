@@ -800,6 +800,22 @@ Tracks   ██████████▓▓░░           10/12 tracks on di
 - It replaces columns of bare counts. Four numeric columns were being read as one question — how much
   of this do I have — and the bar answers it directly.
 
+### Breakdown bars (`.breakdown`, Insights → Stats)
+How a set of files divides by one property — format, decade, genre — or how much of it has a
+property (coverage). One row per value: the label, a bar against the **largest** value (or against
+the whole, for coverage), and the count in mono.
+
+- **One hue, `--accent`**, because the bars show magnitude, not identity. Colouring each value would
+  invent a categorical palette for something nobody compares by colour. *Other* and *Unknown* use
+  `--border-strong` and a `--text-dim` label so they read as remainders, and they always sit last.
+- 8px track on `--surface-2`, 4px rounded data end, anchored at the left.
+- **The count is always printed beside the bar**, and the row's `title` and the bar's `aria-label`
+  state it in words. The bar is never the only thing carrying the number, so no separate table
+  view is needed.
+- Long breakdowns keep the top 12 and fold the rest into *Other*, so the total still adds up.
+- Not the coverage meter: that one says how much of one thing is **on disk**, in the diff colours.
+  A breakdown has no "missing" state.
+
 ### Signature: the tag-diff row
 The recurring element that makes Autotaggerr recognizable. One row per tag on the file/scan-detail
 view:

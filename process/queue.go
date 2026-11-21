@@ -40,6 +40,7 @@ const (
 	jobImport           jobKind = "import"
 	jobOrganise         jobKind = "organise"
 	jobDiscography      jobKind = "discography"
+	jobCheckDuplicates  jobKind = "check_duplicates"
 )
 
 // fileWriting reports whether a kind rewrites audio files. File-writing jobs are
