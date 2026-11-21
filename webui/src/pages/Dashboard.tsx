@@ -140,7 +140,7 @@ export default function Dashboard() {
 
 /**
  * One row per disk: what Autotaggerr put on it against what is left. The question it
- * answers at a glance is whether a disk is running out; the breakdown is on Storage.
+ * answers at a glance is whether a disk is running out; the breakdown is on the Storage tab of Insights.
  */
 function StorageCard() {
   const storage = useFetch<StorageReport>(() => api.get("/storage"));
@@ -149,7 +149,7 @@ function StorageCard() {
     <div className="card stack" style={{ gap: 14 }}>
       <div className="row" style={{ justifyContent: "space-between" }}>
         <div className="eyebrow">Storage</div>
-        <Link to="/storage" className="mono" style={{ fontSize: 12 }}>
+        <Link to="/insights?tab=storage" className="mono" style={{ fontSize: 12 }}>
           View storage →
         </Link>
       </div>

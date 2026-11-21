@@ -2,7 +2,7 @@
 
 What takes space, and where: the music in each library, Autotaggerr's own data under `config/`,
 and the free space of the disks they sit on. A **Storage** card on the overview answers "is a disk
-running out"; the **Storage** page (`/storage`, under System) has the breakdown and the actions
+running out"; the **Storage** tab of Insights (`/insights?tab=storage`; `/storage` redirects there) has the breakdown and the actions
 that shrink what can be shrunk. The `storage` package measures; `GET /storage` serves it.
 
 ## Two scales, kept apart

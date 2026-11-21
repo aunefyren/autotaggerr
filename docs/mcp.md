@@ -76,6 +76,8 @@ minutes per key, off the request path: authentication must not wait on a write l
 | `list_activity` | the Activity feed: filter by type, status, title, one run (`parent_id`), runs only | no |
 | `get_activity` | one event with its per-file rows (capped by `item_limit`) and its stages | no |
 | `list_migrations` | MusicBrainz merges / re-keys / deletions, with what is wrong and what approving would do; `status=open` is the queue | no |
+| `get_library_stats` | the [Insights](insights.md#stats) Stats tab: counts, size, play time, breakdowns by format / release type / decade / genre / country / label, tag coverage, and the collection-wide catalogue gap. `library_id` narrows it | no |
+| `list_duplicates` | the [Insights](insights.md#duplicates) Duplicates tab: groups by recording and level, with `counts` including hidden groups. `level`, `across_libraries`, `across_releases`, `compilations`, `library_id`; at most 200 groups (`matched` is the total) | no |
 | `preview_organise` | the [Organise](naming.md#organise) dry run for a library, artist or album: the proposed moves (first 100, with the total), conflicts, files in place, files that cannot be moved and why, and how many album files would follow. Moves nothing | cache-first |
 
 `list_missing` is the one query the REST API does not have. The UI answers it per artist, so an

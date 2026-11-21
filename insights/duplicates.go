@@ -61,17 +61,19 @@ type DuplicateOptions struct {
 
 // DuplicateFile is one file in a group.
 type DuplicateFile struct {
-	ItemID           uuid.UUID `json:"item_id"`
-	LibraryID        uuid.UUID `json:"library_id"`
-	LibraryName      string    `json:"library_name"`
-	Path             string    `json:"path"`
-	Format           string    `json:"format"`
-	Lossless         bool      `json:"lossless"`
-	Size             int64     `json:"size"`
-	ReleaseMBID      string    `json:"release_mb_id"`
-	ReleaseTitle     string    `json:"release_title"`
-	ReleaseGroupMBID string    `json:"release_group_mb_id"`
-	ReleaseType      string    `json:"release_type"`
+	// IDs as strings, not uuid.UUID: the JSON is the same, and a schema derived from
+	// the type (the MCP tools') would otherwise describe a byte array.
+	ItemID           string `json:"item_id"`
+	LibraryID        string `json:"library_id"`
+	LibraryName      string `json:"library_name"`
+	Path             string `json:"path"`
+	Format           string `json:"format"`
+	Lossless         bool   `json:"lossless"`
+	Size             int64  `json:"size"`
+	ReleaseMBID      string `json:"release_mb_id"`
+	ReleaseTitle     string `json:"release_title"`
+	ReleaseGroupMBID string `json:"release_group_mb_id"`
+	ReleaseType      string `json:"release_type"`
 	// AudioHash is set only when it is current — taken from the file as it is now.
 	AudioHash string `json:"audio_hash,omitempty"`
 }
@@ -341,8 +343,8 @@ func groupItems(db *gorm.DB, items []models.LibraryItem, acrossLibraries bool) [
 			info := releases[item.MBReleaseID]
 			format := fileFormat(item.Path)
 			file := DuplicateFile{
-				ItemID:           item.ID,
-				LibraryID:        item.LibraryID,
+				ItemID:           item.ID.String(),
+				LibraryID:        item.LibraryID.String(),
 				LibraryName:      libraries[item.LibraryID],
 				Path:             item.Path,
 				Format:           format,
@@ -426,9 +428,9 @@ func UncheckedCandidates(db *gorm.DB) ([]models.LibraryItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[uuid.UUID]models.LibraryItem, len(items))
+	byID := make(map[string]models.LibraryItem, len(items))
 	for _, item := range items {
-		byID[item.ID] = item
+		byID[item.ID.String()] = item
 	}
 
 	var out []models.LibraryItem

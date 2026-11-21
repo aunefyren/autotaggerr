@@ -1,15 +1,18 @@
 # Feature: insights
 
-The **Insights** page (Music → Insights) answers questions about the library as a whole, in three
-tabs: **Duplicates**, **Stats** and **Graph**.
+The **Insights** page (Music → Insights) answers questions about the library as a whole, in four
+tabs: **Duplicates**, **Stats**, **Graph** and **Storage**. Storage has its own doc,
+[storage.md](storage.md). It was a page of its own under System until it moved here; `/storage`
+redirects to the tab. The library select is hidden on that tab, because disks are not per library.
 
-**It reads; it does not write.** All three tabs come from the file index (`library_items`), the
-collection tables and the release cache, with no MusicBrainz call and no file opened, so they
+**It reads; it does not write.** Duplicates, Stats and Graph come from the file index
+(`library_items`), the collection tables and the release cache, with no MusicBrainz call and no file opened, so they
 answer inline. Only one thing reads audio: checking whether two copies are the same audio. That is
 a queued job, and it writes only to the index. The code lives in the `insights` package; the routes
-are in `routers/insights.go`.
+are in `routers/insights.go`. Assistants read the same functions through two MCP tools,
+`get_library_stats` and `list_duplicates` ([mcp.md](mcp.md)).
 
-Both tabs read enabled libraries only (`models.InEnabledLibrary`), and the library select narrows
+Those three read enabled libraries only (`models.InEnabledLibrary`), and the library select narrows
 them to one.
 
 ## Duplicates
@@ -85,6 +88,8 @@ and its name promised a whole-file hash, which is exactly what this hash is not.
   label. Long breakdowns keep the top 12 and sum the rest into *Other*. Files whose release does not
   say are counted as *Unknown*.
 - **Coverage:** ISRC known (MusicBrainz lists one for the recording, out of identified files),
+  album cover cached (the album's or release's front cover is in the local artwork cache; covers are
+  never embedded in files, so this is what the browsing pages can show),
   ReplayGain measured, BPM measured and identified (out of all files), plus counts of unmatched,
   failing, pinned and held files, each linking to its Items filter.
 - **Catalogue against disk:** monitored catalogue albums with nothing on disk, albums on disk with

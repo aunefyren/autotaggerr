@@ -402,6 +402,9 @@ func TestLibraryStats(t *testing.T) {
 	db.Model(&unmatched).Update("status", models.LibraryItemStatusUnmatched)
 	addItem(t, db, off, "/off/6.flac", "rel-1", "r1")
 
+	db.Create(&models.ArtworkCacheEntry{Key: "release-group_rg-1_front_500"})
+	db.Create(&models.ArtworkCacheEntry{Key: "release-group_rg-2_front_500", Missing: true})
+	db.Create(&models.ArtworkCacheEntry{Key: "artist_rg-2_thumb_500"})
 	db.Create(&models.TrackTempo{Path: "/music/1.flac", BPM: 120})
 	db.Create(&models.TrackLoudness{Path: "/music/2.flac", Analyser: "rsgain"})
 	db.Create(&models.TrackLoudness{Path: "/other/3.mp3", Analyser: "rsgain", Error: "failed"})
@@ -433,7 +436,7 @@ func TestLibraryStats(t *testing.T) {
 		t.Errorf("genres = %+v, want rock first and Unknown last", stats.Genres)
 	}
 	c := stats.Coverage
-	if c.Unmatched != 1 || c.Pinned != 1 || c.ISRC != 2 || c.BPM != 1 || c.ReplayGain != 1 {
+	if c.Unmatched != 1 || c.Pinned != 1 || c.ISRC != 2 || c.BPM != 1 || c.ReplayGain != 1 || c.Artwork != 2 {
 		t.Errorf("coverage = %+v", c)
 	}
 	if stats.Catalogue == nil || *stats.Catalogue != (CatalogueGap{Wanted: 1, Incomplete: 1, Unlisted: 1}) {

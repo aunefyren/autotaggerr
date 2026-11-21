@@ -557,7 +557,7 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   in `--surface-3`, free space as the empty track. Music and app segments are at least 3px when
   non-zero — megabytes on a terabyte disk must still read as *there*. The free figure turns
   `--warning-text` under a tenth of the disk and `--danger-text` under a twentieth. A legend of 8px
-  keys sits under the bar with each figure. The same shape shares out `config/` on the Storage page
+  keys sits under the bar with each figure. The same shape shares out `config/` on the Storage tab (Insights)
   (`.app-bar`, with `--warning` for the log).
 - **Ranked list** (`.ranked`, Storage) — a largest-first list: name and sub-line left, the figure
   in mono right, and a 3px `--accent` bar under each row scaled to the first, so the list reads as a

@@ -7,6 +7,7 @@ import { useLibraries } from "../components/Libraries";
 import { formatBytes } from "../components/storage";
 import { EmptyState, ErrorNote, IdChip, Skeleton } from "../components/ui";
 import { ArtistLink, CollabGraph, CollaboratorRow } from "../components/CollabGraph";
+import { StorageTab } from "./Storage";
 import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, GraphNode, GraphReport, LibraryStats, ScanStatus, StatsBucket } from "../types";
 
 /**
@@ -18,7 +19,7 @@ import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, GraphN
 export default function Insights() {
   const [params, setParams] = useSearchParams();
   const tabParam = params.get("tab");
-  const tab = tabParam === "stats" || tabParam === "graph" ? tabParam : "duplicates";
+  const tab = tabParam === "stats" || tabParam === "graph" || tabParam === "storage" ? tabParam : "duplicates";
   const library = params.get("library") ?? "";
   const libraries = useLibraries();
 
@@ -35,7 +36,8 @@ export default function Insights() {
     <div className="stack">
       <div className="page-head">
         <h1>Insights</h1>
-        {libraries.multi && (
+        {/* Disks are not per library, so the select is absent on Storage rather than ignored. */}
+        {libraries.multi && tab !== "storage" && (
           <select className="input" style={{ width: "auto" }} value={library} aria-label="Library" onChange={(e) => set({ library: e.target.value || null })}>
             <option value="">All libraries</option>
             {libraries.list.map((l) => (
@@ -48,10 +50,12 @@ export default function Insights() {
         <button type="button" role="tab" className="tab" aria-selected={tab === "duplicates"} onClick={() => set({ tab: null })}>Duplicates</button>
         <button type="button" role="tab" className="tab" aria-selected={tab === "stats"} onClick={() => set({ tab: "stats" })}>Stats</button>
         <button type="button" role="tab" className="tab" aria-selected={tab === "graph"} onClick={() => set({ tab: "graph" })}>Graph</button>
+        <button type="button" role="tab" className="tab" aria-selected={tab === "storage"} onClick={() => set({ tab: "storage" })}>Storage</button>
       </div>
       {tab === "duplicates" && <Duplicates library={library} multi={libraries.multi} params={params} set={set} />}
       {tab === "stats" && <Stats library={library} />}
       {tab === "graph" && <Graph library={library} params={params} set={set} />}
+      {tab === "storage" && <StorageTab />}
     </div>
   );
 }
@@ -382,6 +386,7 @@ function Stats({ library }: { library: string }) {
           <div className="eyebrow">Coverage</div>
           <div className="breakdown">
             <CoverageRow label="ISRC known" n={c.isrc} of={s.identified} />
+            <CoverageRow label="Album cover cached" n={c.artwork} of={s.identified} />
             <CoverageRow label="ReplayGain measured" n={c.replaygain} of={s.files} />
             <CoverageRow label="BPM measured" n={c.bpm} of={s.files} />
             <CoverageRow label="Identified" n={s.identified} of={s.files} />

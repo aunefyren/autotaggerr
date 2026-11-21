@@ -16,8 +16,10 @@ import { useToast } from "../toast";
  *
  * Everyone sees the disks and the music; the breakdown of config/ and the actions that
  * change it are an admin's, as Settings is.
+ *
+ * A tab of Insights (`/insights?tab=storage`); `/storage` redirects there.
  */
-export default function Storage() {
+export function StorageTab() {
   const { user } = useAuth();
   const admin = user?.role === "admin";
   const [fresh, setFresh] = useState(0);
@@ -26,8 +28,10 @@ export default function Storage() {
 
   return (
     <div className="stack">
-      <div className="page-head">
-        <h1>Storage</h1>
+      <div className="row" style={{ gap: 10, justifyContent: "space-between", flexWrap: "wrap" }}>
+        <p className="muted" style={{ margin: 0, maxWidth: "68ch", lineHeight: 1.55 }}>
+          What takes space, and where: your music, and Autotaggerr's own data beside it.
+        </p>
         <div className="row" style={{ gap: 10 }}>
           {data && (
             <span className="dim" style={{ fontSize: 12 }}>

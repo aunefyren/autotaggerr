@@ -2,6 +2,7 @@ package insights
 
 import (
 	"sort"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
@@ -20,11 +21,15 @@ type Bucket struct {
 // Coverage counts files by what is known about them. Every count is of files, out of
 // Stats.Files (or Stats.Identified, for the ones that need an identity).
 type Coverage struct {
-	Unmatched  int `json:"unmatched"`
-	Errors     int `json:"errors"`
-	Pinned     int `json:"pinned"`
-	PinsHeld   int `json:"pins_held"`
-	ISRC       int `json:"isrc"`
+	Unmatched int `json:"unmatched"`
+	Errors    int `json:"errors"`
+	Pinned    int `json:"pinned"`
+	PinsHeld  int `json:"pins_held"`
+	ISRC      int `json:"isrc"`
+	// Artwork is identified files whose album (or release) has a front cover in the
+	// local artwork cache. Covers are never embedded in files, so this is what the
+	// browsing pages can show, not what a player reads.
+	Artwork    int `json:"artwork"`
 	ReplayGain int `json:"replaygain"`
 	BPM        int `json:"bpm"`
 }
@@ -229,6 +234,10 @@ func LibraryStats(db *gorm.DB, library *uuid.UUID) (Stats, error) {
 	formats, types, decades, genres, countries, labels := tally{}, tally{}, tally{}, tally{}, tally{}, tally{}
 	recordings, releases, albums, artists := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	parsed := map[string]*releaseFacts{}
+	covers, err := cachedCovers(db)
+	if err != nil {
+		return Stats{}, err
+	}
 
 	for _, item := range items {
 		stats.Bytes += item.Size
@@ -277,6 +286,10 @@ func LibraryStats(db *gorm.DB, library *uuid.UUID) (Stats, error) {
 		countries.add(facts.country, item.Size)
 		labels.add(facts.label, item.Size)
 
+		if covers[facts.album] || covers[item.MBReleaseID] {
+			stats.Coverage.Artwork++
+		}
+
 		track, ok := facts.tracks[item.MBReleaseTrackID]
 		if !ok {
 			track = facts.recordings[item.MBRecordingID]
@@ -311,6 +324,24 @@ func LibraryStats(db *gorm.DB, library *uuid.UUID) (Stats, error) {
 		stats.Catalogue = &gap
 	}
 	return stats, nil
+}
+
+// cachedCovers is the set of release-group and release MBIDs with a front cover image
+// in the artwork cache. Keys are entity_mbid_kind_size (modules.artworkCacheKey); an
+// entity name has no underscore and an MBID none either, so splitting is exact.
+func cachedCovers(db *gorm.DB) (map[string]bool, error) {
+	var keys []string
+	err := db.Model(&models.ArtworkCacheEntry{}).Where("missing = ? AND key LIKE ?", false, "%front%").
+		Pluck("key", &keys).Error
+	out := map[string]bool{}
+	for _, key := range keys {
+		parts := strings.Split(key, "_")
+		if len(parts) == 4 && parts[2] == modules.ArtworkKindFront &&
+			(parts[0] == modules.ArtworkEntityReleaseGroup || parts[0] == modules.ArtworkEntityRelease) {
+			out[parts[1]] = true
+		}
+	}
+	return out, err
 }
 
 func catalogueGap(db *gorm.DB) (CatalogueGap, error) {
