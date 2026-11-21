@@ -21,6 +21,8 @@ func testDB(t *testing.T) *gorm.DB {
 	if err != nil {
 		t.Fatalf("Connect: %v", err)
 	}
+	resetGraphCache()
+	t.Cleanup(resetGraphCache)
 	return db
 }
 
@@ -163,7 +165,7 @@ func TestDuplicateLevels(t *testing.T) {
 	if g := groupFor(t, report, "rec-mixed"); g.AudioUnchecked {
 		t.Error("a mixed-format group asks for a hash two formats can never share")
 	}
-	if g := groupFor(t, report, "rec-ident"); len(g.Files) != 2 || g.Files[0].ReleaseTitle == "" || g.Files[0].ReleaseGroupMBID != "rg-album" {
+	if g := groupFor(t, report, "rec-ident"); len(g.Files) != 2 || g.Files[0].ReleaseTitle == "" || g.Files[0].ReleaseGroupMBID != "rg-album" || g.Files[0].RelativePath != "a/01.flac" {
 		t.Errorf("identical group files = %+v", g.Files)
 	}
 

@@ -820,14 +820,37 @@ the whole, for coverage), and the count in mono.
 A node-link picture beside a list of the same data (`.graph-split`, 300px panel, stacked below
 900px).
 
-- **One hue.** Nodes are `--accent` with a `--surface-1` ring, so overlapping nodes stay separate.
-  Edges are `--border-strong`. A node is identified by its **label**, never its colour; colouring
-  artists would be a categorical palette with hundreds of entries.
+- **Colour is by category, never by artist.** *Colour: Genre* (the default), *Role* or *None*.
+  Nodes take `--series-1`…`--series-3` (blue, orange, aqua) or the neutral `--series-other`. With
+  *None*, every node is `--accent`. A `--surface-1` ring keeps overlapping nodes apart. Edges are
+  `--border-strong`. A node is still identified by its **label**: colouring artists one by one
+  would be a palette with hundreds of entries.
+  - **Three series, then Other.** In a node graph any two colours can touch, and under that
+    all-pairs test only the first three categorical slots stay apart for colour-blind viewers
+    (validated against `--surface-1` with the dataviz validator; the fourth puts yellow beside
+    orange). So genre colours the library's three most common genres and folds the rest into
+    *Other or unknown*. Role colours credited artist, production and performer, with writing as
+    the neutral, named in the legend.
+  - **A colour follows its category, not its rank in the view.** Genres are slotted by the
+    library's own ranking (`report.genres`), not by what the current filters happen to show, so
+    moving a slider never repaints a genre.
+  - **Always with a legend** (`.graph-legend`, top left inside the canvas): swatch, name, and how
+    many artists in view have it. The node's tooltip names its genre or role too, so colour is
+    never the only carrier.
 - **Focus by contrast, not colour.** On hover or select, the artist's edges turn `--accent-text`,
   their neighbours keep full opacity, and everything else fades to about 0.3. A centred artist has an
   `--accent-text` ring.
-- **Size is area.** Node radius grows with the square root of the count, capped, and edge width with
-  the log of the weight, so one heavy pair cannot swamp the picture.
+- **Size is area, relative to the view.** Node radius grows with the square root of the count,
+  from 3 to 20, against the largest artist drawn. An absolute scale made every node the same size
+  once performers and producers (each on hundreds of recordings) were in. Edge width follows the
+  log of the weight, so one heavy pair cannot swamp the picture.
+- **Labels and strokes keep their screen size at any zoom**: labels are sized by graph units per
+  pixel, and strokes use `vector-effect: non-scaling-stroke`. The fit magnifies at most 2×, so a
+  small graph fills the canvas without its nodes becoming discs.
+- **Refetching keeps the old answer, dimmed** (`.is-updating`, 45% opacity, no pointer events),
+  with *Updating…* and the striped indeterminate bar beside the artist count. The indicator is
+  always laid out and only shown while loading, so its appearance never reflows the toolbar. The
+  Duplicates tab does the same.
 - **Labels:** the 24 largest nodes always, plus the focused artist and their neighbours. Labels get
   a `--surface-1` halo (`paint-order: stroke`) instead of a box.
 - Every node has a hit target of at least 8px whatever its drawn size, and a `<title>` with the

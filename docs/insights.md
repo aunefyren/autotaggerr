@@ -36,6 +36,13 @@ it came from are not, even when the audio is byte-identical, because deleting ei
 album. Those groups are `across_releases`, flagged `identical_audio` when two copies do share a
 hash.
 
+### Paging
+
+`GET /insights/duplicates` returns a page of groups (`limit`, default 100, at most 500; `offset`)
+and `matched`, the number of groups that pass the filters. On the large demo, the full list was
+14 MB of JSON for a page that draws a hundred groups at a time. The page appends the next page on
+*Show more*. The level counts and the unchecked count always describe every group.
+
 ### What is hidden by default
 
 - **`across_releases` groups.** They outnumber everything else in most libraries. When they are
@@ -156,14 +163,50 @@ two releases, or in two libraries, or crediting one artist in two roles, counts 
 
 - **Various Artists is out by default.** It is credited on every compilation track and would
   connect everything.
-- **The node cap is what keeps the graph readable.** Uncentred, it keeps the artists with the
-  heaviest connections. Centred, it keeps the nearest ring first and the strongest within each ring.
+- **The node cap is what keeps the graph readable.** Uncentred, artists are picked by following
+  the strongest edges: each edge, heaviest first, brings in both of its artists until the cap,
+  and an edge is never split. Picking the strongest artists one by one chose artists that did not
+  connect to each other (150 nodes with 71 edges on the 110k demo). Centred, it keeps the nearest
+  ring first and the strongest within each ring.
   `truncated` says the cap cut some artists.
 - **Only connected artists are drawn.** An artist sharing no recording with anyone is not part of a
   graph of who works with whom.
 
+**Performance.** Measured on the large [demo](demo.md) (110k tracks, 670k credits, 223k connected
+pairs), every role on: 3.5 s cold, 0.8 s while changing filters. Credited artists only: about 1 s.
+Three things keep it there:
+
+- **Two scans, no join.** The in-scope (release, recording) pairs are read once, and the credits for
+  the asked roles are streamed past them with plain row scans. The join it replaced probed
+  `library_items` by release for every credit, and scanning its result through GORM cost as much
+  again (12 s).
+- **The counted graph is cached** (one entry): per-pair weights and per-artist counts for a scope
+  (library, roles, Various Artists). The key includes a fingerprint of the credits, the index and
+  the libraries, so any change recounts. The node cap, the floors and centring are applied after,
+  so moving them does not rescan.
+- **Only what is shown is named.** The scan carries no names. The 25 strongest pairs are picked by
+  weight before anything is named or sorted by name, and names and collection membership are
+  then looked up for the artists drawn or listed.
+
+The cold cost is now mostly SQLite stepping through the credits. Counting pairs at sync time
+instead of per request is the next step if a library outgrows it.
+
 **Adding a filter** is a field on `insights.GraphOptions`, a line in `routers/insights.go`, and an
 entry in `GRAPH_FILTERS` (`webui/src/pages/Insights.tsx`).
+
+### Colour
+
+*Colour* draws nodes by **genre** (the default), **role** or nothing. It is drawn rather than
+asked for, so changing it costs no request.
+
+- **Genre:** an artist's strongest genre across the recordings that credit them in the asked
+  roles. Each release's genre (its release group's strongest MusicBrainz genre) is stored on
+  `insight_credit_releases.genre` at sync time. Rows synced before the column existed carry an older
+  `version`, and `SyncCredits` reads them again.
+- **Role:** the role they hold on the most recordings in view.
+- **Only three colours:** the library's three most common genres get colours of their own
+  (`report.genres`, ranked library-wide so a filter never repaints a genre), and the rest share a
+  neutral. The style guide explains why it is three.
 
 ### Drawing
 

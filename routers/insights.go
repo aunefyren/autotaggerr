@@ -23,17 +23,33 @@ import (
 //	?across_libraries=1  compare files in different libraries
 //	?across_releases=1   include the same recording on different albums
 //	?compilations=1      ...including compilations
+//	?limit=100&offset=0  a page of groups (default 100, at most 500); matched is the total
 func (a *API) insightsDuplicates(c *gin.Context) {
 	library, err := parseLibraryParam(c.Query("library"))
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+	limit, offset := 100, 0
+	if raw := c.Query("limit"); raw != "" {
+		if limit, err = strconv.Atoi(raw); err != nil || limit < 1 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "limit must be a positive whole number"})
+			return
+		}
+	}
+	if raw := c.Query("offset"); raw != "" {
+		if offset, err = strconv.Atoi(raw); err != nil || offset < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "offset must be a whole number"})
+			return
+		}
+	}
 	report, err := insights.Duplicates(a.DB, insights.DuplicateOptions{
 		Library:               library,
 		AcrossLibraries:       c.Query("across_libraries") == "1",
 		IncludeAcrossReleases: c.Query("across_releases") == "1",
 		IncludeCompilations:   c.Query("compilations") == "1",
+		Limit:                 min(limit, 500),
+		Offset:                offset,
 	})
 	if err != nil {
 		logger.Log.Errorf("failed to list duplicates: %s", err.Error())

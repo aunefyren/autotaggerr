@@ -169,8 +169,10 @@ func TestGraph(t *testing.T) {
 	if len(g.Nodes) != 3 || weight(g, "a", "b") != 2 || weight(g, "b", "c") != 1 || g.Connected != 3 {
 		t.Fatalf("default graph = %+v", g)
 	}
-	if g.Nodes[0].MBID != "b" || g.Nodes[0].Tracks != 3 {
-		t.Errorf("strongest node = %+v, want b on 3 recordings", g.Nodes[0])
+	// Nodes follow the strongest edge first: a and b share two recordings, b the
+	// stronger of the two.
+	if g.Nodes[0].MBID != "b" || g.Nodes[1].MBID != "a" || g.Nodes[0].Tracks != 3 {
+		t.Errorf("first nodes = %+v, want b then a", g.Nodes[:2])
 	}
 	for _, n := range g.Nodes {
 		if n.MBID == "a" && !n.InCollection {
@@ -193,9 +195,14 @@ func TestGraph(t *testing.T) {
 	if len(g.Nodes) != 2 {
 		t.Errorf("min weight 2: %d nodes, want a and b", len(g.Nodes))
 	}
+	// The cap never splits an edge: limit 1 fits no whole edge, limit 2 the strongest.
 	g, _ = Graph(db, GraphOptions{Limit: 1})
-	if len(g.Nodes) != 1 || !g.Truncated || len(g.Edges) != 0 {
+	if len(g.Nodes) != 0 || !g.Truncated {
 		t.Errorf("limit 1 = %+v", g)
+	}
+	g, _ = Graph(db, GraphOptions{Limit: 2})
+	if len(g.Nodes) != 2 || weight(g, "a", "b") != 2 || !g.Truncated {
+		t.Errorf("limit 2 = %+v", g)
 	}
 	g, _ = Graph(db, GraphOptions{Library: &other.ID})
 	if weight(g, "a", "b") != 1 || len(g.Nodes) != 2 {
@@ -213,5 +220,50 @@ func TestGraph(t *testing.T) {
 	g, _ = Graph(db, GraphOptions{Artist: "nobody"})
 	if len(g.Nodes) != 0 || g.Center != nil {
 		t.Errorf("an unknown centre = %+v", g)
+	}
+}
+
+// TestGraphColours: a node carries its strongest genre and main role, the report names
+// the library's top genres, and a release synced by an older derivation is read again
+// so its genre arrives.
+func TestGraphColours(t *testing.T) {
+	modules.ResetMusicBrainzCachesForTest(t)
+	db := testDB(t)
+	lib := addLibrary(t, db, "music", true)
+	release := seedCredits(t, "rel-1", nil,
+		creditTrack("r1", credited("a", "b"), rel("producer", "p")),
+		creditTrack("r2", credited("a"), rel("producer", "p")),
+	)
+	release.ReleaseGroup.Genres = append(release.ReleaseGroup.Genres, struct {
+		Count          int    `json:"count"`
+		ID             string `json:"id"`
+		Name           string `json:"name"`
+		Disambiguation string `json:"disambiguation"`
+	}{Count: 5, Name: "jazz"})
+	modules.SeedMusicBrainzReleaseForTest(t, release)
+	addItem(t, db, lib, "/music/1.flac", "rel-1", "r1")
+	addItem(t, db, lib, "/music/2.flac", "rel-1", "r2")
+
+	// As if synced before genres were derived: version 1, no genre.
+	db.Create(&models.InsightCreditRelease{ReleaseMBID: "rel-1", Version: 1})
+	if res, _ := SyncCredits(db); res.Read != 1 {
+		t.Fatalf("an older derivation was not read again: %+v", res)
+	}
+
+	g, err := Graph(db, GraphOptions{Roles: []string{"credit", "production"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(g.Genres) != 1 || g.Genres[0] != "jazz" {
+		t.Errorf("genres = %v, want [jazz]", g.Genres)
+	}
+	for _, n := range g.Nodes {
+		want := "credit"
+		if n.MBID == "p" {
+			want = "production"
+		}
+		if n.Genre != "jazz" || n.Role != want {
+			t.Errorf("%s: genre %q role %q, want jazz %s", n.MBID, n.Genre, n.Role, want)
+		}
 	}
 }

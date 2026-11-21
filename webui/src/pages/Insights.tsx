@@ -6,7 +6,7 @@ import { useToast } from "../toast";
 import { useLibraries } from "../components/Libraries";
 import { formatBytes } from "../components/storage";
 import { EmptyState, ErrorNote, IdChip, Skeleton } from "../components/ui";
-import { ArtistLink, CollabGraph, CollaboratorRow } from "../components/CollabGraph";
+import { ArtistLink, CollabGraph, CollaboratorRow, GraphColour } from "../components/CollabGraph";
 import { StorageTab } from "./Storage";
 import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, GraphNode, GraphReport, LibraryStats, ScanStatus, StatsBucket } from "../types";
 
@@ -63,14 +63,15 @@ export default function Insights() {
 const LEVEL_LABELS: Record<DuplicateLevel, string> = {
   identical: "Identical audio",
   mixed_format: "Lossy beside lossless",
-  same_format: "Same format, different audio",
+  // Not "different audio": until the check has run, nobody knows.
+  same_format: "Same format",
   across_releases: "Also on another album",
 };
 
 const LEVEL_NOTES: Record<DuplicateLevel, string> = {
   identical: "The same audio twice in one album. One copy can go.",
   mixed_format: "The same recording in one album in two formats.",
-  same_format: "The same recording in one album twice in one format: a re-rip, or another master.",
+  same_format: "The same recording in one album twice in one format, with different audio or audio not checked yet: a re-rip, or another master.",
   across_releases: "The same recording on two albums: a single that is also on the album, a compilation. Usually intended.",
 };
 
@@ -83,7 +84,28 @@ const LEVEL_PILL: Record<DuplicateLevel, string> = {
 
 const LEVELS: DuplicateLevel[] = ["identical", "mixed_format", "same_format", "across_releases"];
 
-/** How many groups are drawn before "Show more": a list of thousands is a wall. */
+/**
+ * A refetch in flight while the previous answer stays on screen: the striped bar that
+ * means "working, unquantified" everywhere else, and the word, so it is never only a
+ * picture. The previous answer is dimmed beside it (`.is-updating`).
+ */
+function Updating({ active }: { active: boolean }) {
+  // Always rendered, hidden when idle: appearing would reflow the toolbar and push
+  // the content below it down for the length of every refetch.
+  return (
+    <span className="row updating" role="status" style={{ gap: 6, visibility: active ? "visible" : "hidden" }} aria-hidden={!active}>
+      <span className="coverage" style={{ width: 48 }} aria-hidden="true">
+        <span className="coverage-track indeterminate" />
+      </span>
+      <span>Updating…</span>
+    </span>
+  );
+}
+
+/**
+ * Groups fetched per page. The server pages them: at 100k tracks the whole list was
+ * 14 MB of JSON for a page that draws a hundred at a time.
+ */
 const PAGE = 100;
 
 function Duplicates({
@@ -108,9 +130,25 @@ function Duplicates({
   if (compilations) query.set("compilations", "1");
   const qs = query.toString();
 
-  const report = useFetch<DuplicatesReport>(() => api.get(`/insights/duplicates${qs ? `?${qs}` : ""}`), [qs]);
-  const [shown, setShown] = useState(PAGE);
-  useEffect(() => setShown(PAGE), [qs]);
+  const report = useFetch<DuplicatesReport>(() => api.get(`/insights/duplicates?${qs}${qs ? "&" : ""}limit=${PAGE}`), [qs]);
+  // Pages after the first, appended by "Show more"; dropped whenever the first page
+  // is fetched again, so a filter change or a finished check never mixes two answers.
+  const [more, setMore] = useState<DuplicateGroup[]>([]);
+  const [loadingMore, setLoadingMore] = useState(false);
+  useEffect(() => setMore([]), [report.data]);
+  const loadMore = async () => {
+    if (!report.data) return;
+    setLoadingMore(true);
+    try {
+      const offset = report.data.groups.length + more.length;
+      const page = await api.get<DuplicatesReport>(`/insights/duplicates?${qs}${qs ? "&" : ""}limit=${PAGE}&offset=${offset}`);
+      setMore((m) => [...m, ...page.groups]);
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setLoadingMore(false);
+    }
+  };
 
   // While the check runs, follow it and reload when it finishes, so the groups it
   // settles change in front of the person who asked.
@@ -172,8 +210,9 @@ function Duplicates({
           </label>
         )}
         {data && (
-          <span className="toolbar-count dim mono">
-            {data.groups.length} {data.groups.length === 1 ? "group" : "groups"}
+          <span className="toolbar-count dim mono row" style={{ gap: 10 }}>
+            <Updating active={report.loading} />
+            {data.matched} {data.matched === 1 ? "group" : "groups"}
           </span>
         )}
       </div>
@@ -188,7 +227,7 @@ function Duplicates({
       )}
 
       {data && (
-        <>
+        <div className={`stack${report.loading ? " is-updating" : ""}`}>
           <LevelSummary report={data} acrossReleases={acrossReleases} compilations={compilations} />
 
           {(data.unchecked > 0 || checking) && (
@@ -208,21 +247,23 @@ function Duplicates({
             </div>
           )}
 
-          {data.groups.length === 0 ? (
+          {data.matched === 0 ? (
             <EmptyState icon="◎" message="No duplicates with these filters." />
           ) : (
             <div className="stack" style={{ gap: 10 }}>
-              {data.groups.slice(0, shown).map((g) => (
+              {[...data.groups, ...more].map((g) => (
                 <GroupCard key={`${g.recording_mb_id}:${g.files[0]?.library_id}`} group={g} showLibrary={multi} />
               ))}
-              {data.groups.length > shown && (
-                <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: "center" }} onClick={() => setShown((n) => n + PAGE)}>
-                  Show {Math.min(PAGE, data.groups.length - shown)} more of {data.groups.length - shown}
+              {data.matched > data.groups.length + more.length && (
+                <button type="button" className="btn btn-ghost btn-sm" style={{ alignSelf: "center" }} disabled={loadingMore} onClick={loadMore}>
+                  {loadingMore
+                    ? "Loading…"
+                    : `Show ${Math.min(PAGE, data.matched - data.groups.length - more.length)} more of ${data.matched - data.groups.length - more.length}`}
                 </button>
               )}
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   );
@@ -306,7 +347,8 @@ function FileRow({ file, showLibrary, same }: { file: DuplicateFile; showLibrary
   return (
     <tr>
       {showLibrary && <td>{file.library_name}</td>}
-      <td className="mono" style={{ wordBreak: "break-all" }} title={file.path}>{file.path}</td>
+      {/* Relative to the library root, the full path on hover — as the Items modal shows paths. */}
+      <td className="mono" style={{ wordBreak: "break-all" }} title={file.path}>{file.relative_path || file.path}</td>
       <td className="mono">{file.format}</td>
       <td className="mono tabnum" style={{ textAlign: "right", whiteSpace: "nowrap" }}>{formatBytes(file.size)}</td>
       <td>
@@ -547,6 +589,9 @@ function Graph({
   const roles = (params.get("roles") ?? "credit").split(",").filter(Boolean);
   const artist = params.get("artist") ?? "";
   const hops = params.get("hops") === "2" ? "2" : "1";
+  // Colour is drawn, not asked for: it never reaches the API, so changing it is instant.
+  const colourParam = params.get("colour");
+  const colour: GraphColour = colourParam === "role" || colourParam === "none" ? colourParam : "genre";
   const [selected, setSelected] = useState<string | null>(null);
 
   const query = new URLSearchParams();
@@ -615,8 +660,17 @@ function Graph({
             </label>
           ),
         )}
+        <label className="row" style={{ gap: 6, fontSize: 12 }}>
+          <span className="muted">Colour</span>
+          <select className="input" style={{ width: "auto" }} value={colour} onChange={(e) => set({ colour: e.target.value === "genre" ? null : e.target.value })}>
+            <option value="genre">Genre</option>
+            <option value="role">Role</option>
+            <option value="none">None</option>
+          </select>
+        </label>
         {data && (
-          <span className="toolbar-count dim mono">
+          <span className="toolbar-count dim mono row" style={{ gap: 10 }}>
+            <Updating active={graph.loading} />
             {data.nodes.length} of {data.connected} artists · {data.edges.length} connections
           </span>
         )}
@@ -663,8 +717,8 @@ function Graph({
       )}
 
       {data && data.nodes.length > 0 && (
-        <div className="graph-split">
-          <CollabGraph report={data} selected={selected} onSelect={setSelected} />
+        <div className={`graph-split${graph.loading ? " is-updating" : ""}`}>
+          <CollabGraph report={data} selected={selected} onSelect={setSelected} colour={colour} />
           <div className="card stack" style={{ gap: 12, alignSelf: "start" }}>
             {picked ? (
               <SelectedArtist node={picked} report={data} nodes={nodes} onSelect={setSelected} onCentre={centre} centred={artist === picked.mb_id} />

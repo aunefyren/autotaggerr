@@ -1399,6 +1399,8 @@ export interface DuplicateFile {
   library_id: string;
   library_name: string;
   path: string;
+  /** The path below the library root; empty when the file is not under it. */
+  relative_path: string;
   format: string;
   lossless: boolean;
   size: number;
@@ -1424,7 +1426,10 @@ export interface DuplicateGroup {
 
 /** GET /insights/duplicates */
 export interface DuplicatesReport {
+  /** One page of groups (limit/offset). */
   groups: DuplicateGroup[];
+  /** Groups passing the filters, across all pages. */
+  matched: number;
   /** Every group by level, including the ones the filters hide. */
   counts: Record<DuplicateLevel, number>;
   hidden_compilations: number;
@@ -1479,6 +1484,10 @@ export interface GraphNode {
   in_collection: boolean;
   /** Distance from the centred artist; 0 throughout an uncentred graph. */
   hop: number;
+  /** Strongest genre across the recordings that credit them (for colour). */
+  genre?: string;
+  /** The role they hold on the most of those recordings (for colour). */
+  role?: string;
 }
 
 export interface GraphEdge {
@@ -1503,4 +1512,6 @@ export interface GraphReport {
   truncated: boolean;
   center?: GraphNode;
   unsynced: number;
+  /** The library's top genres, most common first: the ones with a colour of their own. */
+  genres: string[];
 }

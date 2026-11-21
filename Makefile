@@ -16,7 +16,7 @@
 # `prebuild` hook. See docs/development.md, "Building the same checkout from Windows and
 # WSL"; note that `deps` and `update` install for the platform they are run on.
 
-.PHONY: build go ui run update test fmt vet check deps
+.PHONY: build go ui run update test fmt vet check deps demo demo-reset tour
 
 # Default: refresh the embedded frontend, then compile the binary. Use this so web/dist
 # is never stale.
@@ -79,3 +79,23 @@ fmt:
 
 vet:
 	go vet ./...
+
+# --- Demo instance and browser tour (docs/demo.md) -----------------------------------
+# A synthetic, fully offline library of any size, with a stand-in MusicBrainz, served
+# on http://localhost:8090 (admin / admin). SIZE is tiny, small, medium or large
+# (~300 / 2k / 20k / 100k tracks); DEMO_DIR defaults to ~/autotaggerr-demo.
+SIZE ?= small
+DEMO_DIR ?=
+DEMO_DIR_FLAG = $(if $(DEMO_DIR),-dir $(DEMO_DIR),)
+
+# Build the UI, then run the demo, generating it first if the directory has none.
+demo: ui
+	go run ./tools/demo run -size $(SIZE) $(DEMO_DIR_FLAG)
+
+# Throw the demo away and generate it again (another SIZE, or a clean slate).
+demo-reset:
+	go run ./tools/demo generate -size $(SIZE) $(DEMO_DIR_FLAG)
+
+# Screenshot every page of a running instance into tools/browser/out (TOUR="--only graph").
+tour:
+	cd tools/browser && npm ci --no-audit --no-fund --silent && node tour.mjs $(TOUR)

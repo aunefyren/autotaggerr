@@ -69,10 +69,10 @@ type mcpListDuplicatesInput struct {
 	Limit           int    `json:"limit,omitempty" jsonschema:"groups to return; default 50, at most 200"`
 }
 
+// mcpDuplicates is the report with Matched counting the groups at the asked level,
+// before the tool's limit.
 type mcpDuplicates struct {
 	insights.DuplicatesReport
-	// Matched is how many groups matched before Limit cut the list.
-	Matched int `json:"matched"`
 }
 
 func (a *API) mcpListDuplicates(_ context.Context, _ *mcp.CallToolRequest, in mcpListDuplicatesInput) (*mcp.CallToolResult, mcpDuplicates, error) {
@@ -115,7 +115,8 @@ func (a *API) mcpListDuplicates(_ context.Context, _ *mcp.CallToolRequest, in mc
 	if limit > 200 {
 		limit = 200
 	}
-	out := mcpDuplicates{DuplicatesReport: report, Matched: len(report.Groups)}
+	out := mcpDuplicates{DuplicatesReport: report}
+	out.Matched = len(report.Groups)
 	if len(out.Groups) > limit {
 		out.Groups = out.Groups[:limit]
 	}

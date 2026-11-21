@@ -47,6 +47,15 @@
   --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", "Cascadia Code", monospace;
 
   color-scheme: dark;
+
+  /* Categorical series for charts that colour by category (the collaboration graph).
+     Only three: where any two marks can touch, only the first three slots stay apart
+     for colour-blind viewers (validated on --surface-1 with the dataviz validator).
+     Everything past them is --series-other, a neutral that says "not one of these". */
+  --series-1: #3987e5; /* blue */
+  --series-2: #d95926; /* orange */
+  --series-3: #199e70; /* aqua */
+  --series-other: #726c8c;
 }
 
 * { box-sizing: border-box; }

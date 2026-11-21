@@ -453,11 +453,11 @@
 .graph-canvas svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .graph-canvas svg:active { cursor: grabbing; }
 .graph-reset { position: absolute; top: 8px; right: 8px; }
-.g-edge { stroke: var(--border-strong); stroke-linecap: round; }
+.g-edge { stroke: var(--border-strong); stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .g-edge.lit { stroke: var(--accent-text); }
 .g-edge.faded { opacity: 0.25; }
 .g-node { cursor: pointer; }
-.g-node circle { fill: var(--accent); stroke: var(--surface-1); stroke-width: 2px; }
+.g-node circle { fill: var(--accent); stroke: var(--surface-1); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .g-node circle.hit { fill: transparent; stroke: none; }
 .g-node.center circle:not(.hit) { stroke: var(--accent-text); stroke-width: 3px; }
 .g-node.focus circle:not(.hit) { fill: var(--accent-hover); stroke: var(--text); }
@@ -471,3 +471,15 @@
 .collab-name:hover { color: var(--accent-text); text-decoration: underline; }
 .collab-name:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: 2px; }
 @media (max-width: 900px) { .graph-split { grid-template-columns: 1fr; } .graph-canvas { height: 420px; } }
+
+/* A refetch in flight: the previous answer stays, dimmed, until the new one lands. */
+.is-updating { opacity: 0.45; transition: opacity 150ms ease; pointer-events: none; }
+.updating { font-size: 11px; color: var(--info-text); }
+
+/* Collaboration graph legend — inside the canvas, top left: swatch, name, node count. */
+.graph-legend { position: absolute; top: 8px; left: 8px; margin: 0; padding: 6px 8px; list-style: none;
+  display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-1) 85%, transparent); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.graph-legend li { display: flex; align-items: center; gap: 6px; }
+.graph-legend .swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.graph-legend .mono { margin-left: auto; padding-left: 8px; }
