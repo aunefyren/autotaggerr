@@ -28,8 +28,10 @@ func (a *API) addMCPInsightTools(server *mcp.Server) {
 		Name: "list_duplicates",
 		Description: "Files that are the same MusicBrainz recording, grouped and classified: identical (same audio " +
 			"twice in one album — one copy can go), mixed_format (a lossy copy beside the lossless one), same_format " +
-			"(a re-rip or another master; audio_unchecked means it may still be identical), across_releases (the " +
-			"same recording on two albums — usually intended, hidden unless asked for). counts includes hidden groups.",
+			"(a re-rip or another master; audio_unchecked means it may still be identical), single_on_album (a single " +
+			"whose track is also held on its album — the single can go), across_releases (another album, or another " +
+			"version's edition such as a remix or demo edition — usually intended, hidden unless asked for). Copies of " +
+			"different versions are never compared. counts includes hidden groups.",
 		Annotations: readOnlyTool("List duplicates", false),
 	}, a.mcpListDuplicates)
 }
@@ -62,9 +64,9 @@ func (a *API) mcpGetLibraryStats(_ context.Context, _ *mcp.CallToolRequest, in m
 
 type mcpListDuplicatesInput struct {
 	mcpLibraryInput
-	Level           string `json:"level,omitempty" jsonschema:"only this level: identical, mixed_format, same_format or across_releases"`
+	Level           string `json:"level,omitempty" jsonschema:"only this level: identical, mixed_format, same_format, single_on_album or across_releases"`
 	AcrossLibraries bool   `json:"across_libraries,omitempty" jsonschema:"compare files in different libraries (off: a lossy mirror library is not a duplicate)"`
-	AcrossReleases  bool   `json:"across_releases,omitempty" jsonschema:"include the same recording on different albums"`
+	AcrossReleases  bool   `json:"across_releases,omitempty" jsonschema:"include the same recording on other albums and versions"`
 	Compilations    bool   `json:"compilations,omitempty" jsonschema:"with across_releases, include compilations"`
 	Limit           int    `json:"limit,omitempty" jsonschema:"groups to return; default 50, at most 200"`
 }
@@ -87,7 +89,7 @@ func (a *API) mcpListDuplicates(_ context.Context, _ *mcp.CallToolRequest, in mc
 			known = known || l == level
 		}
 		if !known {
-			return nil, mcpDuplicates{}, errors.New("level must be identical, mixed_format, same_format or across_releases")
+			return nil, mcpDuplicates{}, errors.New("level must be identical, mixed_format, same_format, single_on_album or across_releases")
 		}
 	}
 	report, err := insights.Duplicates(a.DB, insights.DuplicateOptions{

@@ -168,6 +168,20 @@ func TestGenerate(t *testing.T) {
 			t.Errorf("no %s duplicates in the small demo: %v", level, report.Counts)
 		}
 	}
+	// Every file measured, a library profile, and followed artists, so Upgrade has rows.
+	var unmeasured, mp3s int64
+	db.Model(&models.LibraryItem{}).Where("quality = ''").Count(&unmeasured)
+	db.Model(&models.LibraryItem{}).Where("quality LIKE 'mp3-%'").Count(&mp3s)
+	if unmeasured != 0 || mp3s == 0 {
+		t.Errorf("%d files unmeasured, %d measured as MP3", unmeasured, mp3s)
+	}
+	var lib models.Library
+	db.First(&lib)
+	var followed int64
+	db.Model(&models.CollectionArtist{}).Where("monitored = ?", true).Count(&followed)
+	if lib.QualityProfileID == nil || followed == 0 {
+		t.Errorf("library profile %v, %d artists followed", lib.QualityProfileID, followed)
+	}
 	graph, err := insights.Graph(db, insights.GraphOptions{})
 	if err != nil || len(graph.Edges) == 0 {
 		t.Errorf("graph: %d edges, %v", len(graph.Edges), err)

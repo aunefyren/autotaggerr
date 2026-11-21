@@ -6,6 +6,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/aunefyren/autotaggerr/modules"
+	"github.com/aunefyren/autotaggerr/quality"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -63,7 +64,10 @@ type Stats struct {
 	Albums     int `json:"albums"`
 	Artists    int `json:"artists"`
 
-	Formats      []Bucket `json:"formats"`
+	Formats []Bucket `json:"formats"`
+	// Qualities is files by their rung on the quality ladder (docs/quality.md), by
+	// display name; "Not measured" until Process has read a file's headers.
+	Qualities    []Bucket `json:"qualities"`
 	ReleaseTypes []Bucket `json:"release_types"`
 	Decades      []Bucket `json:"decades"`
 	Genres       []Bucket `json:"genres"`
@@ -77,6 +81,9 @@ type Stats struct {
 // topBuckets is how many values a long breakdown keeps; the rest are summed into
 // one "Other" bucket so the totals still add up.
 const topBuckets = 12
+
+// notMeasuredKey is the quality bucket for files whose headers were not read yet.
+const notMeasuredKey = "Not measured"
 
 // unknownKey is the bucket for files whose release does not say.
 const unknownKey = "Unknown"
@@ -218,7 +225,7 @@ func LibraryStats(db *gorm.DB, library *uuid.UUID) (Stats, error) {
 
 	var items []models.LibraryItem
 	if err := scoped().Select("id", "path", "size", "mb_release_id", "mb_recording_id", "mb_release_track_id",
-		"status", "pinned", "pin_held", "last_error_transient").Find(&items).Error; err != nil {
+		"status", "pinned", "pin_held", "last_error_transient", "quality").Find(&items).Error; err != nil {
 		return Stats{}, err
 	}
 	var identified []uuid.UUID
@@ -232,6 +239,7 @@ func LibraryStats(db *gorm.DB, library *uuid.UUID) (Stats, error) {
 
 	stats := Stats{Files: len(items), Identified: len(identified)}
 	formats, types, decades, genres, countries, labels := tally{}, tally{}, tally{}, tally{}, tally{}, tally{}
+	qualities := tally{}
 	recordings, releases, albums, artists := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	parsed := map[string]*releaseFacts{}
 	covers, err := cachedCovers(db)
@@ -242,6 +250,11 @@ func LibraryStats(db *gorm.DB, library *uuid.UUID) (Stats, error) {
 	for _, item := range items {
 		stats.Bytes += item.Size
 		formats.add(fileFormat(item.Path), item.Size)
+		if item.Quality == "" {
+			qualities.add(notMeasuredKey, item.Size)
+		} else {
+			qualities.add(quality.Name(quality.ID(item.Quality)), item.Size)
+		}
 		switch item.Status {
 		case models.LibraryItemStatusUnmatched:
 			stats.Coverage.Unmatched++
@@ -302,6 +315,7 @@ func LibraryStats(db *gorm.DB, library *uuid.UUID) (Stats, error) {
 
 	stats.Recordings, stats.Releases, stats.Albums, stats.Artists = len(recordings), len(releases), len(albums), len(artists)
 	stats.Formats = formats.byFiles(0)
+	stats.Qualities = qualities.byFiles(0)
 	stats.ReleaseTypes = types.byFiles(0)
 	stats.Decades = decades.byKey()
 	stats.Genres = genres.byFiles(topBuckets)

@@ -9,6 +9,7 @@ package insights
 
 import (
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -32,16 +33,20 @@ const (
 	// LevelSameFormat is the same recording in one album twice in one format, with
 	// different audio (or audio not checked yet): a re-rip, or another master.
 	LevelSameFormat Level = "same_format"
-	// LevelAcrossReleases is the same recording on two different albums: a single that
-	// is also on the album, a compilation. Usually intended.
+	// LevelSingleOnAlbum is a single whose track is also on an album you hold, as the
+	// same version. The album has it, so the single is the copy that can go — the case
+	// people open this page for, so it is shown by default.
+	LevelSingleOnAlbum Level = "single_on_album"
+	// LevelAcrossReleases is the same recording on two different albums otherwise: a
+	// compilation, an EP, another version's edition. Usually intended.
 	LevelAcrossReleases Level = "across_releases"
 )
 
 // levelRank orders levels for picking a group's most actionable one.
-var levelRank = map[Level]int{LevelIdentical: 0, LevelMixedFormat: 1, LevelSameFormat: 2, LevelAcrossReleases: 3}
+var levelRank = map[Level]int{LevelIdentical: 0, LevelMixedFormat: 1, LevelSameFormat: 2, LevelSingleOnAlbum: 3, LevelAcrossReleases: 4}
 
 // Levels lists every level in display order.
-var Levels = []Level{LevelIdentical, LevelMixedFormat, LevelSameFormat, LevelAcrossReleases}
+var Levels = []Level{LevelIdentical, LevelMixedFormat, LevelSameFormat, LevelSingleOnAlbum, LevelAcrossReleases}
 
 // DuplicateOptions narrows what Duplicates reports.
 type DuplicateOptions struct {
@@ -80,6 +85,11 @@ type DuplicateFile struct {
 	ReleaseTitle     string `json:"release_title"`
 	ReleaseGroupMBID string `json:"release_group_mb_id"`
 	ReleaseType      string `json:"release_type"`
+	// Version is the kind of version the copy is ("remix", "demo", "live" …), from its
+	// edition's title or MusicBrainz comment, or its own track title on that release;
+	// empty for the plain version. Copies of different versions are never compared as
+	// duplicates of each other (see versionOf).
+	Version string `json:"version,omitempty"`
 	// AudioHash is set only when it is current — taken from the file as it is now.
 	AudioHash string `json:"audio_hash,omitempty"`
 }
@@ -161,6 +171,53 @@ type releaseInfo struct {
 	group       string // release-group MBID, or the release's own when unknown
 	primaryType string
 	compilation bool
+	// version is the edition's kind of version, from its title or disambiguation.
+	version string
+}
+
+// versionWords names the kinds of version a title can mark, each with what it counts
+// as. A remix edition and a demo edition of one album share the album's release group
+// in MusicBrainz, and often the original recordings too — but someone who holds both
+// holds them on purpose. "Version" alone is left out: "Album Version" is the original.
+var versionWords = []struct {
+	re   *regexp.Regexp
+	kind string
+}{
+	{regexp.MustCompile(`\b(re-?mix(es|ed)?|mix)\b`), "remix"},
+	{regexp.MustCompile(`\bdemos?\b`), "demo"},
+	{regexp.MustCompile(`\blive\b`), "live"},
+	{regexp.MustCompile(`\b(acoustic|unplugged|stripped)\b`), "acoustic"},
+	{regexp.MustCompile(`\binstrumentals?\b`), "instrumental"},
+	{regexp.MustCompile(`\ba ?cappella\b`), "a cappella"},
+	{regexp.MustCompile(`\bkaraoke\b`), "karaoke"},
+	{regexp.MustCompile(`\b(radio |single |short )?edit\b`), "edit"},
+}
+
+// bracketed is the parenthesised and bracketed parts of a title: where a version is
+// marked ("Song (Demo)", "Album [Remixes]"), as opposed to a title that happens to
+// contain the word ("Live Forever").
+var bracketed = regexp.MustCompile(`[(\[]([^)\]]*)[)\]]`)
+
+// versionKind is the kind of version text marks, or "". whole reads all of it (a
+// MusicBrainz disambiguation is nothing but such a note); otherwise only its
+// bracketed parts count.
+func versionKind(text string, whole bool) string {
+	text = strings.ToLower(text)
+	parts := []string{text}
+	if !whole {
+		parts = parts[:0]
+		for _, m := range bracketed.FindAllStringSubmatch(text, -1) {
+			parts = append(parts, m[1])
+		}
+	}
+	for _, part := range parts {
+		for _, w := range versionWords {
+			if w.re.MatchString(part) {
+				return w.kind
+			}
+		}
+	}
+	return ""
 }
 
 // releaseInfos resolves each release to its album, from the collection tables first
@@ -180,7 +237,8 @@ func releaseInfos(db *gorm.DB, releaseIDs []string) map[string]releaseInfo {
 	}
 	groupIDs := make([]string, 0, len(releases))
 	for _, r := range releases {
-		out[r.MBID] = releaseInfo{title: r.Title, group: r.ReleaseGroupMBID}
+		out[r.MBID] = releaseInfo{title: r.Title, group: r.ReleaseGroupMBID,
+			version: firstNonEmpty(versionKind(r.Title, false), versionKind(r.Disambiguation, true))}
 		groupIDs = append(groupIDs, r.ReleaseGroupMBID)
 	}
 	var groups []models.CollectionReleaseGroup
@@ -204,6 +262,9 @@ func releaseInfos(db *gorm.DB, releaseIDs []string) map[string]releaseInfo {
 			if info.title == "" {
 				info.title = cached.Title
 			}
+			if info.version == "" {
+				info.version = firstNonEmpty(versionKind(cached.Title, false), versionKind(cached.Disambiguation, true))
+			}
 			if info.group == "" {
 				info.group = cached.ReleaseGroup.ID
 			}
@@ -222,6 +283,40 @@ func releaseInfos(db *gorm.DB, releaseIDs []string) map[string]releaseInfo {
 		out[id] = info
 	}
 	return out
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+// trackVersion is the kind of version a file's own track title marks on its release
+// ("Song (Demo)") — MusicBrainz sometimes credits a version to the plain recording, and
+// the track title is then the only place that says so. "" when the release is not
+// cached or the title marks none.
+func trackVersion(releaseID, trackID string) string {
+	cached, ok := modules.CachedRelease(releaseID)
+	if !ok || trackID == "" {
+		return ""
+	}
+	for _, medium := range cached.Media {
+		for _, track := range medium.Tracks {
+			if track.ID == trackID {
+				return versionKind(track.Title, false)
+			}
+		}
+	}
+	return ""
+}
+
+// albumKey is what copies are compared within: the album, and the version. Two
+// copies on one album in different versions are on different "albums" here.
+func albumKey(f DuplicateFile) string {
+	return f.ReleaseGroupMBID + "|" + f.Version
 }
 
 // recordingNames reads a recording's title and credited artist from the cached
@@ -285,7 +380,7 @@ func relativeTo(root, path string) string {
 func classify(group *DuplicateGroup) {
 	byAlbum := map[string][]DuplicateFile{}
 	for _, f := range group.Files {
-		byAlbum[f.ReleaseGroupMBID] = append(byAlbum[f.ReleaseGroupMBID], f)
+		byAlbum[albumKey(f)] = append(byAlbum[albumKey(f)], f)
 	}
 
 	best := LevelAcrossReleases
@@ -309,10 +404,13 @@ func classify(group *DuplicateGroup) {
 			}
 		}
 	}
+	if best == LevelAcrossReleases && singleOnAlbum(group.Files) {
+		best = LevelSingleOnAlbum
+	}
 	group.Level = best
 	group.AudioUnchecked = best == LevelSameFormat && unchecked
 
-	if best == LevelAcrossReleases {
+	if best == LevelAcrossReleases || best == LevelSingleOnAlbum {
 		seen := map[string]bool{}
 		for _, f := range group.Files {
 			if f.AudioHash == "" {
@@ -324,6 +422,24 @@ func classify(group *DuplicateGroup) {
 			seen[f.AudioHash] = true
 		}
 	}
+}
+
+// singleOnAlbum reports a copy on a single beside a copy of the same version on an
+// album. A version marked on either side (a radio edit, a remix single) is not the
+// album's track, so it does not count.
+func singleOnAlbum(files []DuplicateFile) bool {
+	for _, single := range files {
+		if !strings.EqualFold(single.ReleaseType, "Single") {
+			continue
+		}
+		for _, album := range files {
+			if strings.EqualFold(album.ReleaseType, "Album") && album.Version == single.Version &&
+				album.ReleaseGroupMBID != single.ReleaseGroupMBID {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // groupItems builds the groups: one per recording, or one per recording and library
@@ -382,6 +498,7 @@ func groupItems(db *gorm.DB, items []models.LibraryItem, acrossLibraries bool) [
 				ReleaseTitle:     info.title,
 				ReleaseGroupMBID: info.group,
 				ReleaseType:      info.primaryType,
+				Version:          firstNonEmpty(info.version, trackVersion(item.MBReleaseID, item.MBReleaseTrackID)),
 			}
 			if hashCurrent(item) {
 				file.AudioHash = item.AudioHash
@@ -489,10 +606,10 @@ func uncheckedIn(groups []DuplicateGroup, items []models.LibraryItem) []models.L
 		type slot struct{ album, format string }
 		counts := map[slot]int{}
 		for _, f := range group.Files {
-			counts[slot{f.ReleaseGroupMBID, f.Format}]++
+			counts[slot{albumKey(f), f.Format}]++
 		}
 		for _, f := range group.Files {
-			if counts[slot{f.ReleaseGroupMBID, f.Format}] < 2 || f.AudioHash != "" {
+			if counts[slot{albumKey(f), f.Format}] < 2 || f.AudioHash != "" {
 				continue
 			}
 			out = append(out, byID[f.ItemID])

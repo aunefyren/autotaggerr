@@ -65,24 +65,27 @@ const LEVEL_LABELS: Record<DuplicateLevel, string> = {
   mixed_format: "Lossy beside lossless",
   // Not "different audio": until the check has run, nobody knows.
   same_format: "Same format",
-  across_releases: "Also on another album",
+  single_on_album: "Single also on the album",
+  across_releases: "Other album or version",
 };
 
 const LEVEL_NOTES: Record<DuplicateLevel, string> = {
   identical: "The same audio twice in one album. One copy can go.",
   mixed_format: "The same recording in one album in two formats.",
   same_format: "The same recording in one album twice in one format, with different audio or audio not checked yet: a re-rip, or another master.",
-  across_releases: "The same recording on two albums: a single that is also on the album, a compilation. Usually intended.",
+  single_on_album: "A single whose track you also hold on its album, as the same version. The album has it, so the single's copy can go.",
+  across_releases: "The same recording on another album (a compilation, an EP) or on another version's edition (a remix or demo edition, a radio edit). Usually intended.",
 };
 
 const LEVEL_PILL: Record<DuplicateLevel, string> = {
   identical: "pill-warn",
   mixed_format: "pill-warn",
   same_format: "pill-off",
+  single_on_album: "pill-off",
   across_releases: "pill-off",
 };
 
-const LEVELS: DuplicateLevel[] = ["identical", "mixed_format", "same_format", "across_releases"];
+const LEVELS: DuplicateLevel[] = ["identical", "mixed_format", "same_format", "single_on_album", "across_releases"];
 
 /**
  * A refetch in flight while the previous answer stays on screen: the striped bar that
@@ -201,7 +204,7 @@ function Duplicates({
             checked={acrossReleases}
             onChange={(e) => set(e.target.checked ? { across_releases: "1" } : { across_releases: null, compilations: null })}
           />
-          <span>Show recordings also on another album</span>
+          <span>Show other albums and versions</span>
         </label>
         {acrossReleases && (
           <label className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12 }}>
@@ -354,6 +357,7 @@ function FileRow({ file, showLibrary, same }: { file: DuplicateFile; showLibrary
       <td>
         <Link to={`/items?mbid=${file.release_mb_id}`}>{file.release_title || file.release_mb_id}</Link>
         {file.release_type && <span className="dim"> · {file.release_type}</span>}
+        {file.version && <span className="dim" title="The version this copy is, from its edition or track title; copies of different versions are not compared"> · {file.version}</span>}
       </td>
       <td className="mono" style={{ whiteSpace: "nowrap" }}>
         {same ? (
@@ -416,6 +420,7 @@ function Stats({ library }: { library: string }) {
 
       <div className="insight-grid">
         <Breakdown title="Formats" buckets={s.formats} showBytes />
+        <Breakdown title="Quality" buckets={s.qualities ?? []} showBytes />
         <Breakdown title="Release types" buckets={s.release_types} />
         <Breakdown title="Decades" buckets={s.decades} />
         <Breakdown title="Genres" buckets={s.genres} />

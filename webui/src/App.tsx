@@ -10,6 +10,7 @@ import AuthProviders from "./pages/AuthProviders";
 import Artist from "./pages/Artist";
 import ReleaseGroup from "./pages/ReleaseGroup";
 import TaggerProfiles from "./pages/TaggerProfiles";
+import QualityProfiles from "./pages/QualityProfiles";
 import Items from "./pages/Items";
 import Insights from "./pages/Insights";
 import Collection from "./pages/Collection";
@@ -51,6 +52,7 @@ export default function App() {
         <Route path="/managers" element={<Managers />} />
         <Route path="/data-sources" element={<DataSources />} />
         <Route path="/tagger-profiles" element={<TaggerProfiles />} />
+        <Route path="/quality-profiles" element={<QualityProfiles />} />
         <Route path="/items" element={<Items />} />
         <Route path="/insights" element={<Insights />} />
         {/* Admin-only server-side: an import reads and moves files anywhere on the server. */}

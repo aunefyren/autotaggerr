@@ -11,6 +11,7 @@ import { BulkAttachModal } from "../components/BulkAttachModal";
 import { MBLink } from "../components/MBLink";
 import { SetReleaseGroupModal } from "../components/ReleaseGroupEdit";
 import { FailureLine, ItemStatusPill } from "../components/ItemStatus";
+import { useQualityNames } from "../quality";
 
 const PAGE = 50;
 
@@ -38,8 +39,19 @@ const STATUS_FILTERS: Record<string, { label: string; query: Record<string, stri
   pin_held: { label: "Pin needs review", query: { pin_held: "true" } },
 };
 
+/** What a file's quality was measured from: "320 kbit/s · 44.1 kHz", "24-bit · 96 kHz". */
+function qualityDetail(it: LibraryItem): string | undefined {
+  if (!it.quality) return "Not measured yet — the next Process reads it from the file's headers";
+  const parts: string[] = [];
+  if (it.bit_depth) parts.push(`${it.bit_depth}-bit`);
+  if (it.bitrate) parts.push(`${it.bitrate} kbit/s`);
+  if (it.sample_rate) parts.push(`${it.sample_rate / 1000} kHz`);
+  return parts.length ? parts.join(" · ") : undefined;
+}
+
 export default function Items() {
   const libs = useFetch<Library[]>(() => api.get("/libraries"));
+  const qualityName = useQualityNames();
   // "Show me the files behind this identifier", asked by a link from somewhere that
   // knows an MBID — a migration row, an activity detail. It lives in the URL rather
   // than in a filter control because it is a destination, not something you would ever
@@ -229,6 +241,7 @@ export default function Items() {
                   <th>Path</th>
                   <th>MB release id</th>
                   <th>Release group</th>
+                  <th>Quality</th>
                   <th>Source</th>
                   <th>Status</th>
                   <th style={{ textAlign: "right" }}>Actions</th>
@@ -260,6 +273,9 @@ export default function Items() {
                     </td>
                     <td className="mono dim" style={{ fontSize: 11 }} title={it.release_group == null ? "Not recorded" : undefined}>
                       {it.release_group || "—"}
+                    </td>
+                    <td className="mono dim" style={{ fontSize: 11, whiteSpace: "nowrap" }} title={qualityDetail(it)}>
+                      {it.quality ? qualityName(it.quality) : "—"}
                     </td>
                     <td className="mono dim" style={{ fontSize: 11 }}>
                       {it.correlation_source || "—"}

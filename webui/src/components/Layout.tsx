@@ -52,6 +52,7 @@ const GROUPS: NavGroup[] = [
       { to: "/download-clients", label: "Download clients", ic: "⤓", adminOnly: true },
       { to: "/media-servers", label: "Media servers", ic: "▷", adminOnly: true },
       { to: "/tagger-profiles", label: "Tagger profiles", ic: "✎" },
+      { to: "/quality-profiles", label: "Quality profiles", ic: "◈" },
       { to: "/data-sources", label: "Data sources", ic: "⛃" },
     ],
   },

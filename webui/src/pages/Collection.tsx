@@ -120,6 +120,7 @@ function LoadingRows({ libraries }: { libraries: boolean }) {
           </td>
           <td className="num"><Skeleton w={14} /></td>
           <td className="num"><Skeleton w={14} /></td>
+          <td className="num"><Skeleton w={14} /></td>
           <td><Skeleton w={88} h={21} pill /></td>
         </tr>
       ))}
@@ -133,6 +134,7 @@ const SORT: Record<string, (ar: CollectionArtist) => string | number> = {
   albums: (ar) => ar.owned_count ?? 0,
   missing: (ar) => ar.missing_count ?? 0,
   mismatch: (ar) => ar.mismatch_count ?? 0,
+  upgrade: (ar) => ar.upgrade_count ?? 0,
 };
 
 export default function Collection() {
@@ -303,6 +305,9 @@ export default function Collection() {
   const onlyMissing = browse.flag("missing") === "1";
   const hasMissing = (ar: CollectionArtist) => hasWanted(ar) && (ar.missing_count ?? 0) > 0;
   const missingCount = artists.filter(hasMissing).length;
+  // Already gated server-side: only a wanted album under a quality profile can count.
+  const onlyUpgrade = browse.flag("upgrade") === "1";
+  const upgradeCount = artists.filter((ar) => (ar.upgrade_count ?? 0) > 0).length;
 
   // Which library an artist lives in is a filter only once there is a choice to make.
   const libraryFilter = libraries.multi ? browse.flag("library") : null;
@@ -315,6 +320,7 @@ export default function Collection() {
     (ar) =>
       matches(browse.query, ar.name) &&
       (!onlyMissing || hasMissing(ar)) &&
+      (!onlyUpgrade || (ar.upgrade_count ?? 0) > 0) &&
       (!onlyMismatched || (ar.mismatch_count ?? 0) > 0) &&
       (!libraryFilter || (ar.library_ids ?? []).includes(libraryFilter))
   );
@@ -497,6 +503,15 @@ export default function Collection() {
             )}
             {!first && (
               <FilterChip
+                on={onlyUpgrade}
+                count={upgradeCount}
+                label="Upgrade"
+                title="Only artists with wanted albums held below their quality profile's cutoff"
+                onClick={() => browse.setFlag("upgrade", onlyUpgrade ? null : "1")}
+              />
+            )}
+            {!first && (
+              <FilterChip
                 on={onlyMismatched}
                 count={mismatchedCount}
                 label="Mismatched"
@@ -533,6 +548,7 @@ export default function Collection() {
                         is the question those numbers were being read to answer. */}
                     <th style={{ width: 190 }}>On disk</th>
                     <SortHeader browse={browse} sortKey="missing" align="right" defaultDir="desc">Missing</SortHeader>
+                    <SortHeader browse={browse} sortKey="upgrade" align="right" defaultDir="desc">Upgrade</SortHeader>
                     <SortHeader browse={browse} sortKey="mismatch" align="right" defaultDir="desc">Mismatch</SortHeader>
                     <th>Wanted</th>
                   </tr>
@@ -599,6 +615,13 @@ export default function Collection() {
                         </td>
                         <td className="num" style={{ color: (ar.missing_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}>
                           {hasWanted(ar) ? (ar.missing_count ?? 0) : "—"}
+                        </td>
+                        <td
+                          className="num"
+                          style={{ color: (ar.upgrade_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}
+                          title={(ar.upgrade_count ?? 0) > 0 ? "Wanted albums held below their quality profile's cutoff" : undefined}
+                        >
+                          {(ar.upgrade_count ?? 0) > 0 ? ar.upgrade_count : "—"}
                         </td>
                         <td
                           className="num"

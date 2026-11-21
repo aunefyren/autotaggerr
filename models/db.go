@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/aunefyren/autotaggerr/quality"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 )
@@ -482,9 +483,13 @@ type Library struct {
 	// nothing reads as a setting that does not work. See docs/media-manager.md.
 	DataSourceID    *uuid.UUID `gorm:"type:uuid" json:"data_source_id"`
 	TaggerProfileID *uuid.UUID `gorm:"type:uuid" json:"tagger_profile_id"`
-	Enabled         bool       `json:"enabled"`
-	Cron            string     `json:"cron"`
-	LastScan        *time.Time `json:"last_scan"`
+	// QualityProfileID is the quality this library's copies are wanted in (see
+	// docs/quality.md). Nil is no opinion: nothing here is flagged for an upgrade.
+	// Native libraries only — Lidarr decides quality in its own.
+	QualityProfileID *uuid.UUID `gorm:"type:uuid" json:"quality_profile_id"`
+	Enabled          bool       `json:"enabled"`
+	Cron             string     `json:"cron"`
+	LastScan         *time.Time `json:"last_scan"`
 	// MediaServers are the media servers that scan this library, each with the section
 	// it is in — none, one or several. Replaced as a set by the library form; the rows
 	// go with the library or the server.
@@ -540,6 +545,18 @@ type LibraryItem struct {
 	AudioHash        string     `json:"audio_hash,omitempty"`
 	AudioHashSize    int64      `json:"-"`
 	AudioHashModTime *time.Time `json:"-"`
+
+	// Quality is the file's rung on the quality ladder (quality.ID), read from its
+	// headers with the measurements it came from. Measured by Process for any file
+	// whose QualitySize/QualityModTime no longer match Size/ModTime — the AudioHash
+	// rule: a tag write moves both and leaves the audio alone, so it costs one header
+	// read, never a decode. Empty means not measured yet, which nothing reads as low.
+	Quality        string     `gorm:"index" json:"quality,omitempty"`
+	Bitrate        int        `json:"bitrate,omitempty"`
+	SampleRate     int        `json:"sample_rate,omitempty"`
+	BitDepth       int        `json:"bit_depth,omitempty"`
+	QualitySize    int64      `json:"-"`
+	QualityModTime *time.Time `json:"-"`
 
 	MBReleaseID      string `gorm:"index" json:"mb_release_id"`
 	MBRecordingID    string `json:"mb_recording_id"`
@@ -1388,6 +1405,10 @@ type CollectionArtist struct {
 	// missing everything the follow wants. See collection.FollowAppliesIn. It replaced
 	// a single FollowLibraryID; data migration follow_library_sets carried it across.
 	FollowLibraryIDs UUIDSet `gorm:"type:text" json:"follow_library_ids"`
+	// QualityProfileID overrides, for this artist, the quality profile of every
+	// library their albums are wanted into. Nil follows each library's own. See
+	// collection.QualityProfileFor.
+	QualityProfileID *uuid.UUID `gorm:"type:uuid" json:"quality_profile_id"`
 
 	LastSyncedAt *time.Time `json:"last_synced_at"`
 
@@ -1811,12 +1832,30 @@ func (rg CollectionReleaseGroup) Discrepancy(catalogChecked bool) string {
 	return DiscrepancyNotIndexed
 }
 
+// QualityProfile is what a library or an artist wants its copies to be: the ranked
+// qualities (worst first), which are acceptable, the one good enough to stop at, and
+// whether to want upgrades at all. The judging is quality.Profile's; this is the row.
+// See docs/quality.md.
+type QualityProfile struct {
+	Base
+	Name           string        `gorm:"not null" json:"name"`
+	Tiers          quality.Tiers `gorm:"type:text" json:"tiers"`
+	CutoffTier     int           `json:"cutoff_tier"`
+	UpgradeAllowed bool          `json:"upgrade_allowed"`
+}
+
+// Profile is the row as the quality engine judges with it.
+func (p QualityProfile) Profile() quality.Profile {
+	return quality.Profile{Tiers: p.Tiers, Cutoff: p.CutoffTier, UpgradeAllowed: p.UpgradeAllowed}
+}
+
 // AllDBModels is the AutoMigrate set — keep in sync when adding tables.
 func AllDBModels() []any {
 	return []any{
 		&DataSource{},
 		&Manager{},
 		&TaggerProfile{},
+		&QualityProfile{},
 		&Library{},
 		&LibraryItem{},
 		&MusicbrainzReleaseCache{},

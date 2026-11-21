@@ -94,6 +94,7 @@ type fileSpec struct {
 	tags         FileTags
 	lengthMS     int
 	seed         uint64
+	enc          Encoding
 	release      *Release
 	track        *Track
 }
@@ -130,7 +131,7 @@ func plan(u *Universe, music string) []fileSpec {
 					tags: FileTags{Title: rec.Title, Artist: CreditName(rec.Credit), Album: rel.Title, AlbumArtist: albumArtist,
 						Track: t.Position, Disc: m.Position, Date: rel.Date, ReleaseID: rel.ID, ReleaseGroupID: rel.Group.ID,
 						ReleaseTrackID: t.ID, RecordingID: rec.ID, AlbumArtistID: rel.Group.Credit[0].Artist.ID},
-					lengthMS: rec.LengthMS, seed: rec.Master ^ h.Salt, release: rel, track: t,
+					lengthMS: rec.LengthMS, seed: rec.Master ^ h.Salt, enc: encodingFor(rel.Group.ID, h.Format), release: rel, track: t,
 				})
 			}
 		}
@@ -138,7 +139,7 @@ func plan(u *Universe, music string) []fileSpec {
 	for i := 0; i < u.Unmatched; i++ {
 		out = append(out, fileSpec{
 			path:   filepath.Join(music, "Unsorted", fmt.Sprintf("track%03d.flac", i+1)),
-			format: "flac", tags: FileTags{Title: fmt.Sprintf("Untitled %d", i+1)}, lengthMS: 200000, seed: uint64(i) + 1,
+			format: "flac", tags: FileTags{Title: fmt.Sprintf("Untitled %d", i+1)}, lengthMS: 200000, seed: uint64(i) + 1, enc: Encoding{BitDepth: 16},
 		})
 	}
 	return out
@@ -155,7 +156,7 @@ func writeFiles(specs []fileSpec) error {
 			defer wg.Done()
 			for s := range work {
 				if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err == nil {
-					err = writeAudio(s.path, s.format, s.tags, s.lengthMS, s.seed)
+					err = writeAudio(s.path, s.format, s.tags, s.lengthMS, s.seed, s.enc)
 					if err == nil {
 						continue
 					}
@@ -344,6 +345,12 @@ func prefill(db *gorm.DB, u *Universe, specs []fileSpec, dir string) error {
 		}
 		mt := info.ModTime()
 		item := models.LibraryItem{LibraryID: library.ID, Path: s.path, Size: info.Size(), ModTime: &mt}
+		// Measured from the file, as Process would: a header read, so cheap at any size.
+		if props, err := modules.ReadAudioProperties(s.path); err == nil {
+			item.Quality = string(props.Quality())
+			item.Bitrate, item.SampleRate, item.BitDepth = props.BitrateKbps, props.SampleRate, props.BitsPerSample
+			item.QualitySize, item.QualityModTime = item.Size, &mt
+		}
 		if s.release == nil {
 			item.Status = models.LibraryItemStatusUnmatched
 			item.Error = "no MusicBrainz IDs in the file's tags"
@@ -365,6 +372,52 @@ func prefill(db *gorm.DB, u *Universe, specs []fileSpec, dir string) error {
 	if _, err := collection.Rebuild(db); err != nil {
 		return err
 	}
+	if err := wantInQuality(db, library); err != nil {
+		return err
+	}
 	_, err := insights.SyncCredits(db)
 	return err
+}
+
+// wantInQuality gives the demo something to want and a quality to want it in: the
+// library uses the Lossless preset, and every third artist (by MBID, so it is stable)
+// is followed. Their MP3 albums are then marked Upgrade, and the discography read at
+// startup fills in what they are missing from the stand-in.
+func wantInQuality(db *gorm.DB, library models.Library) error {
+	var lossless models.QualityProfile
+	if err := db.Where("name = ?", "Lossless").First(&lossless).Error; err != nil {
+		return fmt.Errorf("the Lossless quality profile was not seeded: %w", err)
+	}
+	if err := db.Model(&library).Update("quality_profile_id", lossless.ID).Error; err != nil {
+		return err
+	}
+	var artists []string
+	if err := db.Model(&models.CollectionArtist{}).Where("mb_id <> ?", models.VariousArtistsMBID).
+		Order("mb_id").Pluck("mb_id", &artists).Error; err != nil {
+		return err
+	}
+	followed := []string{}
+	for i, id := range artists {
+		if i%3 == 0 {
+			followed = append(followed, id)
+		}
+	}
+	for _, chunk := range chunks(followed, 500) {
+		if err := db.Model(&models.CollectionArtist{}).Where("mb_id IN ?", chunk).Update("monitored", true).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// chunks splits ids for IN clauses SQLite can take.
+func chunks(ids []string, size int) [][]string {
+	var out [][]string
+	for len(ids) > size {
+		out, ids = append(out, ids[:size]), ids[size:]
+	}
+	if len(ids) > 0 {
+		out = append(out, ids)
+	}
+	return out
 }

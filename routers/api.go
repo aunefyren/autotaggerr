@@ -154,6 +154,13 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/tagger-profiles/:id", a.getTaggerProfile)
 		protected.PUT("/tagger-profiles/:id", a.updateTaggerProfile)
 		protected.DELETE("/tagger-profiles/:id", a.deleteTaggerProfile)
+		// Quality profiles: the quality copies are wanted in (docs/quality.md).
+		protected.GET("/quality", a.qualityInfo)
+		protected.GET("/quality-profiles", a.listQualityProfiles)
+		protected.POST("/quality-profiles", a.createQualityProfile)
+		protected.GET("/quality-profiles/:id", a.getQualityProfile)
+		protected.PUT("/quality-profiles/:id", a.updateQualityProfile)
+		protected.DELETE("/quality-profiles/:id", a.deleteQualityProfile)
 		protected.GET("/naming", a.namingInfo)
 		protected.POST("/naming/preview", a.namingPreview)
 
@@ -289,6 +296,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/artists/:mbid/release-groups/:rgid/plex", a.albumPlexLinks)
 		protected.POST("/artists/:mbid/release-groups/:rgid/same-as", a.markSameAlbum)
 		protected.POST("/artists/:mbid/follow", a.updateFollow)
+		protected.PUT("/artists/:mbid/quality-profile", a.setArtistQualityProfile)
 		protected.POST("/artists/:mbid/desires", a.setDesire)
 		protected.DELETE("/artists/:mbid/desires", a.clearDesire)
 		// Detaching is a change of authority over one artist: the manager stops

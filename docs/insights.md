@@ -26,15 +26,34 @@ recording. It is classified by its most actionable pair:
 | `identical` | same audio hash, same album | the same audio twice. One copy can go |
 | `mixed_format` | different formats, same album | a lossy copy beside the lossless one (FLAC and MP3 are the only formats read today) |
 | `same_format` | same format, same album, audio different or not checked | a re-rip, or another master |
-| `across_releases` | the same recording on different albums | a single also on the album, a compilation. Usually intended |
+| `single_on_album` | a copy on a single, and one of the same version on an album | the single's copy can go: the album has it |
+| `across_releases` | the same recording on another album, or another version | a compilation, an EP, a remix or demo edition. Usually intended |
 
-### Copies are compared within one album only
+### Copies are compared within one album and one version
 
 "Album" means the release group (`CollectionRelease.ReleaseGroupMBID`, falling back to the cached
-release). Two editions of one album holding the same track are duplicates. A single and the album
-it came from are not, even when the audio is byte-identical, because deleting either copy loses an
-album. Those groups are `across_releases`, flagged `identical_audio` when two copies do share a
-hash.
+release). Two editions of one album holding the same track are duplicates: a standard and a deluxe
+edition, say.
+
+**A copy of another version is not.** MusicBrainz files a remix or demo edition in the album's own
+release group, often with the original recordings on it, and a radio edit single can carry the
+album recording. Whoever holds both holds them on purpose. So each copy has a **version**
+(`DuplicateFile.Version`, `versionKind`): remix, demo, live, acoustic, instrumental, a cappella,
+karaoke or edit. It is read from the edition's title or MusicBrainz disambiguation, or else from
+the file's own track title on that release, since MusicBrainz sometimes credits a version to the
+plain recording and only the track title says so. A title only counts in its brackets, so
+"Song (Demo)" marks a demo and "Live Forever" marks nothing. A disambiguation is read whole
+("demo edition"). "Version" alone does not count, because "Album Version" is the original, and
+neither does "remastered", because a remaster is another master of the same version (`same_format`).
+Copies are compared within one album *and* one version. Two versions of a recording are at most
+`across_releases`, and are never hashed against each other.
+
+**A single on its album is the one cross-album case shown by default.** A copy on a single, beside
+a copy of the same version on an album, is `single_on_album`. The album has the track, so the
+single is redundant, which is often why someone opens this page. A radio edit or remix single is
+another version and stays `across_releases`. Other cross-album copies (compilations, EPs) are
+`across_releases` because deleting either copy loses an album. Both levels are flagged
+`identical_audio` when two copies share a hash.
 
 ### Paging
 
@@ -45,7 +64,8 @@ and `matched`, the number of groups that pass the filters. On the large demo, th
 
 ### What is hidden by default
 
-- **`across_releases` groups.** They outnumber everything else in most libraries. When they are
+- **`across_releases` groups** (*Show other albums and versions*). They outnumber everything else
+  in most libraries. `single_on_album` groups are not hidden. When they are
   shown, compilations stay hidden behind a second toggle.
 - **Files in different libraries.** A lossless library beside a lossy mirror is a duplicate of every
   file, on purpose. *Compare across libraries* turns it on.
@@ -90,7 +110,8 @@ and its name promised a whole-file hash, which is exactly what this hash is not.
 
 - **Counts:** files, size, play time, recordings, releases, albums, artists. Albums and artists are
   release groups and their primary credited artist, read from the cached releases.
-- **Breakdowns:** format (from the extension), release type, decade (release-group first release
+- **Breakdowns:** format (from the extension), quality (the file's rung on the quality ladder, read
+  from its headers by Process, *Not measured* until then; see [quality.md](quality.md#measuring-files)), release type, decade (release-group first release
   date), genre (the album's strongest MusicBrainz genre, so each file counts once), country and
   label. Long breakdowns keep the top 12 and sum the rest into *Other*. Files whose release does not
   say are counted as *Unknown*.
@@ -107,8 +128,9 @@ Breakdowns and play time read the **release cache only** (`modules.CachedRelease
 network. A file whose release is not cached is left out of them and counted in `uncached`, and the
 page says so instead of showing smaller numbers as if they were complete.
 
-Bitrate, sample rate and bit depth are not stored anywhere, so they are not broken down. Adding them
-would mean reading every file's headers at index time.
+Bitrate, sample rate and bit depth are now stored with each file's quality, but are shown only
+through the Quality breakdown and on Items. The quality rung is the question they were being read to
+answer.
 
 ## Graph
 

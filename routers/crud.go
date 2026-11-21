@@ -637,6 +637,7 @@ type libraryInput struct {
 	ManagerID        clearableUUID `json:"manager_id"`
 	DataSourceID     clearableUUID `json:"data_source_id"`
 	TaggerProfileID  clearableUUID `json:"tagger_profile_id"`
+	QualityProfileID clearableUUID `json:"quality_profile_id"`
 	Enabled          *bool         `json:"enabled"`
 	Cron             *string       `json:"cron"`
 	UseAcoustID      *bool         `json:"use_acoustid"`
@@ -688,6 +689,9 @@ func (in libraryInput) apply(l *models.Library) {
 	}
 	if in.TaggerProfileID.Set {
 		l.TaggerProfileID = in.TaggerProfileID.Value
+	}
+	if in.QualityProfileID.Set {
+		l.QualityProfileID = in.QualityProfileID.Value
 	}
 	if in.Enabled != nil {
 		l.Enabled = *in.Enabled
@@ -906,7 +910,7 @@ func (a *API) createLibrary(c *gin.Context) {
 		}
 		in.TaggerProfileID = clearableUUID{Set: true, Value: &first.ID}
 	}
-	if !a.checkLibraryTaggerProfile(c, in.TaggerProfileID) {
+	if !a.checkLibraryTaggerProfile(c, in.TaggerProfileID) || !a.checkLibraryQualityProfile(c, in.QualityProfileID, in.ManagerID.Value) {
 		return
 	}
 	l := models.Library{Enabled: true}
@@ -945,6 +949,13 @@ func (a *API) updateLibrary(c *gin.Context) {
 	}
 	if !a.checkLibraryDataSource(c, in.DataSourceID.Value) || !a.checkLibraryMediaServers(c, in.MediaServers) ||
 		!a.checkLibraryTaggerProfile(c, in.TaggerProfileID) {
+		return
+	}
+	managerAfter := l.ManagerID
+	if in.ManagerID.Set {
+		managerAfter = in.ManagerID.Value
+	}
+	if !a.checkLibraryQualityProfile(c, in.QualityProfileID, managerAfter) {
 		return
 	}
 	wasEnabled := l.Enabled

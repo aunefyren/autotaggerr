@@ -144,14 +144,17 @@ func TestDuplicateLevels(t *testing.T) {
 	if g := groupFor(t, report, "rec-ident"); g.Title != "Song" || g.Artist != "A feat. B" {
 		t.Errorf("identical group named %q by %q, want Song by A feat. B", g.Title, g.Artist)
 	}
-	want := map[Level]int{LevelIdentical: 1, LevelMixedFormat: 1, LevelSameFormat: 2, LevelAcrossReleases: 2}
+	want := map[Level]int{LevelIdentical: 1, LevelMixedFormat: 1, LevelSameFormat: 2, LevelSingleOnAlbum: 1, LevelAcrossReleases: 1}
 	for level, n := range want {
 		if report.Counts[level] != n {
 			t.Errorf("count %s = %d, want %d", level, report.Counts[level], n)
 		}
 	}
-	if len(report.Groups) != 4 {
-		t.Fatalf("default view lists %d groups, want 4 (across-release hidden)", len(report.Groups))
+	if len(report.Groups) != 5 {
+		t.Fatalf("default view lists %d groups, want 5 (the single on the album shown, the compilation hidden)", len(report.Groups))
+	}
+	if g := groupFor(t, report, "rec-single"); g.Level != LevelSingleOnAlbum || !g.IdenticalAudio {
+		t.Errorf("single on album = %+v, want single_on_album with identical audio, shown by default", g)
 	}
 	if report.Groups[0].Level != LevelIdentical {
 		t.Errorf("first group is %s, want identical first", report.Groups[0].Level)
@@ -170,9 +173,6 @@ func TestDuplicateLevels(t *testing.T) {
 	}
 
 	report, _ = Duplicates(db, DuplicateOptions{IncludeAcrossReleases: true})
-	if g := groupFor(t, report, "rec-single"); g.Level != LevelAcrossReleases || !g.IdenticalAudio {
-		t.Errorf("single on album = %+v, want across_releases with identical audio", g)
-	}
 	if hasGroup(report, "rec-comp") || report.HiddenCompilations != 1 {
 		t.Errorf("compilation listed without asking (hidden=%d)", report.HiddenCompilations)
 	}
@@ -398,6 +398,8 @@ func TestLibraryStats(t *testing.T) {
 	db.Model(&a).Update("mb_release_track_id", "t1")
 	b := addItem(t, db, lib, "/music/2.flac", "rel-1", "r2")
 	db.Model(&b).Updates(map[string]any{"mb_release_track_id": "t2", "pinned": true})
+	db.Model(&a).Update("quality", "flac")
+	db.Model(&b).Update("quality", "flac-24")
 	addItem(t, db, other, "/other/3.mp3", "rel-2", "r3")
 	addItem(t, db, other, "/other/4.mp3", "rel-uncached", "r4")
 	unmatched := addItem(t, db, other, "/other/5.mp3", "", "")
@@ -430,6 +432,10 @@ func TestLibraryStats(t *testing.T) {
 	}
 	if len(stats.Formats) != 2 || stats.Formats[0].Key != "MP3" || stats.Formats[0].Files != 3 {
 		t.Errorf("formats = %+v, want MP3 (3) first", stats.Formats)
+	}
+	// By display name; the three MP3s were never measured.
+	if len(stats.Qualities) != 3 || stats.Qualities[0].Key != "Not measured" || stats.Qualities[0].Files != 3 {
+		t.Errorf("qualities = %+v, want Not measured (3) first, then FLAC and FLAC 24bit", stats.Qualities)
 	}
 	if len(stats.Decades) != 2 || stats.Decades[0].Key != "1990s" || stats.Decades[1].Key != "2000s" {
 		t.Errorf("decades = %+v, want 1990s then 2000s", stats.Decades)
@@ -464,5 +470,85 @@ func TestTopBuckets(t *testing.T) {
 	got := tl.byFiles(2)
 	if len(got) != 4 || got[0].Key != "e" || got[2].Key != "Other" || got[2].Files != 6 || got[3].Key != unknownKey {
 		t.Errorf("byFiles(2) = %+v", got)
+	}
+}
+
+// TestDuplicateVersions: copies of different versions are not duplicates of each other
+// — a remix or demo edition filed in the album's release group, a track titled as a
+// demo, a radio edit single — while the plain copies on those editions still are.
+func TestDuplicateVersions(t *testing.T) {
+	db := testDB(t)
+	lib := addLibrary(t, db, "music", true)
+	album(t, db, "rel-album", "rg-album", "The Album", "Album", "")
+	album(t, db, "rel-remixes", "rg-album", "The Album (Remixes)", "Album", "")
+	album(t, db, "rel-demos", "rg-album", "The Album", "Album", "")
+	db.Model(&models.CollectionRelease{}).Where("mb_id = ?", "rel-demos").Update("disambiguation", "demo edition")
+	album(t, db, "rel-deluxe", "rg-album", "The Album (Deluxe)", "Album", "")
+	album(t, db, "rel-edit", "rg-edit", "Song (Radio Edit)", "Single", "")
+	album(t, db, "rel-live", "rg-live", "Live Forever", "Single", "")
+
+	// On the remix and demo editions: not duplicates of the album's copy.
+	addItem(t, db, lib, "/music/a/01.flac", "rel-album", "rec-1")
+	addItem(t, db, lib, "/music/r/01.flac", "rel-remixes", "rec-1")
+	addItem(t, db, lib, "/music/d/01.flac", "rel-demos", "rec-1")
+	// The deluxe edition is the same version: still a duplicate.
+	addItem(t, db, lib, "/music/a/02.flac", "rel-album", "rec-2")
+	addItem(t, db, lib, "/music/x/02.flac", "rel-deluxe", "rec-2")
+	// A track titled as a demo on an otherwise plain edition.
+	addItem(t, db, lib, "/music/a/03.flac", "rel-album", "rec-3")
+	addItem(t, db, lib, "/music/x/03.flac", "rel-deluxe", "rec-3")
+	// A radio edit single is not the album's track; a single titled "Live Forever"
+	// marks no version (only bracketed words count) and is.
+	addItem(t, db, lib, "/music/a/04.flac", "rel-album", "rec-4")
+	addItem(t, db, lib, "/music/e/01.flac", "rel-edit", "rec-4")
+	addItem(t, db, lib, "/music/a/05.flac", "rel-album", "rec-5")
+	addItem(t, db, lib, "/music/l/01.flac", "rel-live", "rec-5")
+
+	modules.ResetMusicBrainzCachesForTest(t)
+	demo := track("track-rec-3", "rec-3", 1000, false)
+	demo.Title = "Song (Demo)"
+	seedRelease(t, "rel-deluxe", "rg-album", "Album", "", "", "", "", demo)
+
+	report, err := Duplicates(db, DuplicateOptions{IncludeAcrossReleases: true, IncludeCompilations: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g := groupFor(t, report, "rec-1"); g.Level != LevelAcrossReleases {
+		t.Errorf("remix and demo editions = %s, want across_releases (never compared)", g.Level)
+	}
+	if g := groupFor(t, report, "rec-2"); g.Level != LevelSameFormat {
+		t.Errorf("deluxe edition = %s, want same_format", g.Level)
+	}
+	if g := groupFor(t, report, "rec-3"); g.Level != LevelAcrossReleases || g.Files[1].Version != "demo" {
+		t.Errorf("demo track = %+v, want across_releases with the version named", g)
+	}
+	if g := groupFor(t, report, "rec-4"); g.Level != LevelAcrossReleases {
+		t.Errorf("radio edit single = %s, want across_releases", g.Level)
+	}
+	if g := groupFor(t, report, "rec-5"); g.Level != LevelSingleOnAlbum {
+		t.Errorf("single titled Live Forever = %s, want single_on_album", g.Level)
+	}
+	// Different versions are not hashed against each other.
+	unchecked, _ := UncheckedCandidates(db)
+	for _, item := range unchecked {
+		if item.MBRecordingID != "rec-2" {
+			t.Errorf("unchecked candidate %s: only rec-2's plain copies need a hash", item.Path)
+		}
+	}
+}
+
+func TestVersionKind(t *testing.T) {
+	for text, want := range map[string]string{
+		"Song (Demo)": "demo", "Album [Remixes]": "remix", "Song (Extended Mix)": "remix",
+		"Song (Radio Edit)": "edit", "Song (Live at Wembley)": "live", "Song (Acoustic)": "acoustic",
+		"Song (Instrumental)": "instrumental", "Live Forever": "", "Song (Album Version)": "",
+		"Song (Remastered 2011)": "", "Song": "",
+	} {
+		if got := versionKind(text, false); got != want {
+			t.Errorf("versionKind(%q) = %q, want %q", text, got, want)
+		}
+	}
+	if versionKind("demo edition", true) != "demo" || versionKind("deluxe edition", true) != "" {
+		t.Error("a disambiguation is read whole")
 	}
 }

@@ -363,6 +363,7 @@ Feature docs:
 - `media-manager.md` — the component model (managers, data sources, libraries, tagger profiles),
   the pipeline, and the DB/config/SPA infrastructure. Start here.
 - `collection.md` — present vs wanted: ownership, the disk/catalog split, and the desire model.
+- `quality.md` — quality profiles: the quality ladder, measuring files from their headers, which profile applies (library, artist override, never Lidarr's), Upgrade wanted, and the contract a future indexer search must use.
 - `attach.md` — identifying files by hand, single and per folder, plus release search.
 - `scanning.md` — scans, skip-unchanged, drift sync, activity events, caching and concurrency.
 - `tagging.md` — what gets written to a file, and why idempotency is the property that matters.

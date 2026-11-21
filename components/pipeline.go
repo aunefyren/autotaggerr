@@ -407,6 +407,7 @@ func ScanLibraryRoots(
 	for _, root := range roots {
 		c, u, tw, errs, walkErr := modules.WalkAndProcessContext(ctx, root, workers, func(path string) (bool, int, error) {
 			if !force && shouldSkip(db, path, processedVersion, managerType, taggedWith) && !(writesTempo && tempoPending(db, path)) && !(writesLoudness && loudnessPending(db, path)) {
+				measureQualityIfStale(db, path)
 				return true, 0, nil // counts as unchanged
 			}
 			return ProcessFile(db, library, manager, tagger, plex, refreshSet, detail, path, library.Path, processedVersion)
@@ -571,6 +572,8 @@ func recordItemTagged(db *gorm.DB, libraryID uuid.UUID, filePath string, correla
 		mod := fi.ModTime()
 		item.ModTime = &mod
 	}
+	// A fact about the file's audio, true whatever the attempt below came to.
+	measureQuality(&item, filePath)
 
 	// Identity first, and unconditionally: what a file *is* was resolved before
 	// anything was attempted on it, and it stays true whether or not the attempt

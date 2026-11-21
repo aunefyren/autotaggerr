@@ -30,11 +30,12 @@ type mcpArtistRow struct {
 	Missing   int    `json:"missing" jsonschema:"albums known but not owned (wanted or not)"`
 	Mismatch  int    `json:"mismatch" jsonschema:"albums where disk and the manager's catalog disagree"`
 	Picked    int    `json:"picked" jsonschema:"albums explicitly asked for"`
+	Upgrade   int    `json:"upgrade" jsonschema:"wanted albums held below their quality profile's cutoff"`
 }
 
 type mcpListArtistsInput struct {
 	NameContains string `json:"name_contains,omitempty" jsonschema:"case-insensitive substring of the artist name"`
-	Filter       string `json:"filter,omitempty" jsonschema:"only artists with: partial (owned albums missing tracks), mismatch, picked, monitored or unmonitored"`
+	Filter       string `json:"filter,omitempty" jsonschema:"only artists with: partial (owned albums missing tracks), mismatch, picked, upgrade (wanted albums below their quality cutoff), monitored or unmonitored"`
 	Library      string `json:"library,omitempty" jsonschema:"only artists with files in one library (name or ID), counted in that library: its holdings, its wants and who decides there. Omitted, every library at once"`
 	mcpPaging
 }
@@ -61,6 +62,9 @@ type mcpAlbumRow struct {
 	WantedEditions   int      `json:"wanted_editions,omitempty" jsonschema:"specific editions asked for; 0 with wanted means any edition"`
 	WantedTracks     int      `json:"wanted_tracks,omitempty" jsonschema:"specific songs asked for; 0 means the whole album"`
 	Libraries        []string `json:"libraries,omitempty" jsonschema:"names of the libraries holding files of this album"`
+	Quality          string   `json:"quality,omitempty" jsonschema:"the lowest quality on the album's best edition, e.g. MP3-320, when a quality profile applies"`
+	QualityCutoff    string   `json:"quality_cutoff,omitempty" jsonschema:"the quality the profile is satisfied by, e.g. FLAC"`
+	UpgradeWanted    bool     `json:"upgrade_wanted,omitempty" jsonschema:"wanted and held below the quality profile's cutoff"`
 }
 
 // libraryNamesOf is the names of the libraries in a copy list, in its order.
@@ -87,7 +91,22 @@ func newMCPAlbumRow(v releaseGroupView) mcpAlbumRow {
 		Wanted: v.Wanted, WantedSource: v.WantedSource,
 		WantedEditions: len(v.DesiredReleases), WantedTracks: len(v.DesiredRecordings),
 		Libraries: libraryNamesOf(v.Libraries),
+		Quality:   qualityName(v.Quality), QualityCutoff: qualityCutoffName(v.Quality), UpgradeWanted: v.UpgradeWanted,
 	}
+}
+
+func qualityName(q *collection.AlbumQuality) string {
+	if q == nil {
+		return ""
+	}
+	return q.LowestName
+}
+
+func qualityCutoffName(q *collection.AlbumQuality) string {
+	if q == nil {
+		return ""
+	}
+	return q.CutoffName
 }
 
 type mcpArtistRef struct {
@@ -320,6 +339,7 @@ func (a *API) mcpListArtists(_ context.Context, _ *mcp.CallToolRequest, in mcpLi
 			MBID: ar.MBID, Name: ar.Name, Monitored: ar.Monitored, ManagedBy: ar.ManagedBy,
 			Owned: ar.OwnedCount, Complete: ar.CompleteCount, Partial: ar.PartialCount,
 			Missing: ar.MissingCount, Mismatch: ar.MismatchCount, Picked: ar.PickedCount,
+			Upgrade: ar.UpgradeCount,
 		})
 	}
 	return nil, out, nil
@@ -335,12 +355,14 @@ func mcpArtistFilter(filter string) (func(artistSummary) bool, error) {
 		return func(ar artistSummary) bool { return ar.MismatchCount > 0 }, nil
 	case "picked":
 		return func(ar artistSummary) bool { return ar.PickedCount > 0 }, nil
+	case "upgrade":
+		return func(ar artistSummary) bool { return ar.UpgradeCount > 0 }, nil
 	case "monitored":
 		return func(ar artistSummary) bool { return ar.Monitored }, nil
 	case "unmonitored":
 		return func(ar artistSummary) bool { return !ar.Monitored }, nil
 	}
-	return nil, fmt.Errorf("unknown filter %q — use partial, mismatch, picked, monitored or unmonitored; for wanted albums not owned, use list_missing", filter)
+	return nil, fmt.Errorf("unknown filter %q — use partial, mismatch, picked, upgrade, monitored or unmonitored; for wanted albums not owned, use list_missing", filter)
 }
 
 func (a *API) mcpGetArtist(_ context.Context, _ *mcp.CallToolRequest, in mcpGetArtistInput) (*mcp.CallToolResult, mcpArtistDetail, error) {

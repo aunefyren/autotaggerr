@@ -144,6 +144,8 @@ export interface Library {
   manager_id: string | null;
   data_source_id: string | null;
   tagger_profile_id: string | null;
+  /** The quality copies here are wanted in; null is no opinion (no upgrade flags). Native libraries only. */
+  quality_profile_id: string | null;
   enabled: boolean;
   cron: string;
   last_scan: string | null;
@@ -234,6 +236,12 @@ export interface LibraryItem {
   release_group?: string | null;
   /** False in a Lidarr library, which records the release group itself. */
   release_group_editable: boolean;
+  /** The file's rung on the quality ladder ("mp3-320", "flac"); absent until measured. */
+  quality?: QualityID;
+  /** kbit/s: an MP3's bitrate (the average for VBR). */
+  bitrate?: number;
+  sample_rate?: number;
+  bit_depth?: number;
 }
 
 /** One hit from the MusicBrainz release search used by manual attach. */
@@ -819,6 +827,8 @@ export interface CollectionArtist {
    * that rule.
    */
   follow_library_ids: string[];
+  /** Overrides the quality profile of every library this artist is wanted into; null follows each library's. */
+  quality_profile_id: string | null;
   /** The native libraries following actually wants into, as the server reads the rule. */
   following_in?: string[];
   /**
@@ -847,6 +857,8 @@ export interface CollectionArtist {
   partial_count?: number;
   missing_count?: number;
   mismatch_count?: number;
+  /** Wanted albums held below their quality profile's cutoff. */
+  upgrade_count?: number;
   picked_count?: number;
   /** Libraries holding any of this artist's albums (list view only). */
   library_ids?: string[];
@@ -931,6 +943,51 @@ export interface CollectionReleaseGroup {
   libraries: LibraryCopy[];
   /** The managers holding the album, as links into each. Set by the discography only. */
   links?: ExternalLink[];
+  /** The copies judged against the quality profile that applies; absent when none applies or nothing was measured. */
+  quality?: AlbumQuality;
+  /** Wanted, owned, and held below a cutoff the profile wants upgraded to. */
+  upgrade_wanted: boolean;
+}
+
+/** A rung on the quality ladder. The strings are stored, so they never change. */
+export type QualityID = string;
+
+export interface QualityDefinition {
+  id: QualityID;
+  name: string;
+  group: "unknown" | "lossy" | "lossless";
+}
+
+/** One rank in a profile: qualities counted as equally good, and whether they are acceptable. */
+export interface QualityTier {
+  qualities: QualityID[];
+  allowed: boolean;
+}
+
+export interface QualityProfile {
+  id: string;
+  name: string;
+  /** Worst first. */
+  tiers: QualityTier[];
+  /** Index into tiers of the tier that is good enough. */
+  cutoff_tier: number;
+  upgrade_allowed: boolean;
+  /** List view only: the libraries using it, and how many artists override to it. */
+  libraries?: string[];
+  artists?: number;
+}
+
+/** An album's copies judged against the quality profile that applies (collection.AlbumQuality). */
+export interface AlbumQuality {
+  known: boolean;
+  library_id: string;
+  profile_id: string;
+  profile: string;
+  cutoff_met: boolean;
+  lowest: QualityID;
+  lowest_name: string;
+  cutoff_name: string;
+  upgrade_allowed: boolean;
 }
 
 /** One MusicBrainz edition of a release-group, plus what is owned of *that* edition. */
@@ -1392,7 +1449,7 @@ export interface StorageOutcome {
 }
 
 /** How files sharing a recording relate (insights.Level), most actionable first. */
-export type DuplicateLevel = "identical" | "mixed_format" | "same_format" | "across_releases";
+export type DuplicateLevel = "identical" | "mixed_format" | "same_format" | "single_on_album" | "across_releases";
 
 export interface DuplicateFile {
   item_id: string;
@@ -1408,6 +1465,8 @@ export interface DuplicateFile {
   release_title: string;
   release_group_mb_id: string;
   release_type: string;
+  /** The kind of version this copy is ("remix", "demo", "live" …); absent for the plain version. */
+  version?: string;
   /** Present only when taken from the file as it is now. */
   audio_hash?: string;
 }
@@ -1455,6 +1514,8 @@ export interface LibraryStats {
   albums: number;
   artists: number;
   formats: StatsBucket[];
+  /** Files by quality-ladder rung, by display name; "Not measured" until read. */
+  qualities: StatsBucket[];
   release_types: StatsBucket[];
   decades: StatsBucket[];
   genres: StatsBucket[];

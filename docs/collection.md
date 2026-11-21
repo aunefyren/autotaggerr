@@ -1135,6 +1135,10 @@ three callers dropped the recordings, so `GET /artists/:mbid` reported "whole al
 had specific tracks while the discography endpoint reported it correctly. One argument cannot
 disagree with itself. Guarded by `routers/wanted_source_test.go`.
 
+**How good the copy has to be is a separate question**, answered by a quality profile: a wanted,
+owned album held below its profile's cutoff is `upgrade_wanted`, beside Missing. See
+[quality.md](quality.md#upgrade-wanted).
+
 Provenance has a real **unknown** state (`models.ManagedByUnknown`) for an artist whose library
 manager cannot be resolved. Absence of information is never presented as a positive claim that an
 artist is natively managed.

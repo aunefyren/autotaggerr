@@ -2,7 +2,7 @@ import { FormEvent, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { BPMWrite, Library, LibraryMediaServer, LoudnessStatus, Manager, MediaServer, MediaServerSections, TaggerProfile, TempoStatus } from "../types";
+import { BPMWrite, Library, LibraryMediaServer, LoudnessStatus, Manager, MediaServer, MediaServerSections, QualityProfile, TaggerProfile, TempoStatus } from "../types";
 import { EmptyState, ErrorNote, Modal, Note, Pill } from "../components/ui";
 import { RecorrelateDialog } from "../components/RecorrelateDialog";
 import { OrganiseDialog } from "../components/OrganiseDialog";
@@ -15,6 +15,7 @@ import { useSetup } from "../setup";
 interface Options {
   managers: Manager[];
   profiles: TaggerProfile[];
+  qualityProfiles: QualityProfile[];
 }
 
 export default function Libraries() {
@@ -22,6 +23,7 @@ export default function Libraries() {
   const libs = useFetch<Library[]>(() => api.get("/libraries"));
   const managers = useFetch<Manager[]>(() => api.get("/managers"));
   const profiles = useFetch<TaggerProfile[]>(() => api.get("/tagger-profiles"));
+  const qualityProfiles = useFetch<QualityProfile[]>(() => api.get("/quality-profiles"));
 
   const setup = useSetup();
   const [creating, setCreating] = useState(false);
@@ -38,6 +40,7 @@ export default function Libraries() {
   const options: Options = {
     managers: managers.data ?? [],
     profiles: profiles.data ?? [],
+    qualityProfiles: qualityProfiles.data ?? [],
   };
   const managerOf = (l: Library) => (l.manager_id ? options.managers.find((m) => m.id === l.manager_id) : undefined);
   const managerName = (id: string | null) => (id ? options.managers.find((m) => m.id === id)?.name : undefined);
@@ -347,6 +350,10 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
   // UUIDv7). Derived rather than seeded so the profiles can load after the form opens.
   const firstProfileId = options.profiles.map((p) => p.id).sort()[0] ?? "";
   const profileId = taggerProfileId || firstProfileId;
+  const [qualityProfileId, setQualityProfileId] = useState(initial?.quality_profile_id ?? "");
+  // Lidarr decides quality in its own libraries, so the choice is not offered there
+  // (absent, not disabled: no edit of this library could make it apply).
+  const lidarrManaged = options.managers.find((m) => m.id === managerId)?.type === "lidarr";
   const [useAcoustID, setUseAcoustID] = useState(initial?.use_acoustid ?? false);
   const [analyseTempo, setAnalyseTempo] = useState(initial?.analyse_tempo ?? false);
   const [bpmWrite, setBPMWrite] = useState<BPMWrite>(initial?.bpm_write ?? "");
@@ -375,6 +382,7 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
       // absent only before the profiles have loaded, and the server then picks the same one.
       body.manager_id = managerId || null;
       if (profileId) body.tagger_profile_id = profileId;
+      body.quality_profile_id = lidarrManaged ? null : qualityProfileId || null;
 
       if (editing) await api.put(`/libraries/${initial!.id}`, body);
       else await api.post("/libraries", { ...body, enabled: true });
@@ -432,6 +440,23 @@ function LibraryForm({ initial, options, onClose, onSaved }: { initial?: Library
             ))}
           </select>
         </div>
+
+        {!lidarrManaged && (
+          <div className="field">
+            <label className="flabel">Quality profile</label>
+            <select className="select" value={qualityProfileId} onChange={(e) => setQualityProfileId(e.target.value)}>
+              <option value="">None — never ask for an upgrade</option>
+              {options.qualityProfiles.map((p) => (
+                <option key={p.id} value={p.id}>{p.name}</option>
+              ))}
+            </select>
+            <span className="dim" style={{ fontSize: 11 }}>
+              The quality albums here are wanted in. A wanted album held below its cutoff is marked{" "}
+              <strong>Upgrade</strong> on the collection. An artist can override it.{" "}
+              <Link to="/quality-profiles">Quality profiles</Link>
+            </span>
+          </div>
+        )}
 
         <MediaServerLinks links={mediaServers} onChange={setMediaServers} />
 

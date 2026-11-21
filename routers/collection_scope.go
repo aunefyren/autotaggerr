@@ -38,6 +38,9 @@ type viewScope struct {
 	holdings map[string]collection.Holding
 	// followingIn is the native libraries following wants into, whatever the view.
 	followingIn []uuid.UUID
+	// quality judges the albums' copies against their quality profiles; nil leaves
+	// every row unjudged (no quality, never an upgrade).
+	quality *collection.QualityIndex
 }
 
 func (s viewScope) overview() bool { return s.library == uuid.Nil }

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useFetch } from "../hooks";
-import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, Manager, ScanStatus } from "../types";
+import { ArtistDetail, ArtistInfo, CollectionArtist, CollectionReleaseGroup, Library, Manager, QualityProfile, ScanStatus } from "../types";
 import { ConfirmDialog, ErrorNote, Pill } from "../components/ui";
 import { MBLink } from "../components/MBLink";
 import { ExternalLinks } from "../components/ExternalLinks";
@@ -74,6 +74,32 @@ function ManagedBy({ artist }: { artist: CollectionArtist }) {
 }
 
 /** How a disk-vs-catalog disagreement reads. The disk count is the one to trust. */
+/**
+ * What an owned album's copies are, by its quality profile: "MP3-320 → FLAC" when it
+ * wants an upgrade (held → good enough), the quality alone otherwise. Nothing when no
+ * profile applies or nothing was measured — never a guess.
+ */
+function QualityLabel({ g }: { g: CollectionReleaseGroup }) {
+  const q = g.quality;
+  if (!q?.known) return null;
+  if (g.upgrade_wanted) {
+    return (
+      <span className="mono" style={{ fontSize: 11, color: "var(--accent-text)" }}
+        title={`Upgrade: the best edition held is ${q.lowest_name} at its lowest, and ${q.profile} is satisfied by ${q.cutoff_name}`}>
+        ↑ {q.lowest_name} → {q.cutoff_name}
+      </span>
+    );
+  }
+  const why = q.cutoff_met
+    ? `Meets ${q.profile} (good enough at ${q.cutoff_name})`
+    : q.upgrade_allowed
+      ? `Below ${q.profile}'s ${q.cutoff_name}, but not wanted, so no upgrade is asked for`
+      : `Below ${q.profile}'s ${q.cutoff_name}; the profile asks for no upgrades`;
+  return (
+    <span className="mono dim" style={{ fontSize: 11 }} title={why}>{q.lowest_name}</span>
+  );
+}
+
 function discrepancyNote(g: CollectionReleaseGroup, manager: string): { label: string; title: string } | null {
   const cat = `${g.catalog_owned_tracks}/${g.catalog_total_tracks}`;
   // Checked first: when no edition is selected, the counts below describe an edition
@@ -149,7 +175,7 @@ const SORT: Record<string, (g: CollectionReleaseGroup) => string | number> = {
   tracks: (g) => (g.total_tracks > 0 ? g.owned_tracks / g.total_tracks : -1),
 };
 
-type Filter = "all" | "disk" | "partial" | "wanted" | "missing" | "mismatch";
+type Filter = "all" | "disk" | "partial" | "wanted" | "missing" | "upgrade" | "mismatch";
 
 export default function Artist() {
   const { mbid = "" } = useParams();
@@ -399,6 +425,7 @@ export default function Artist() {
     partial: scoped.filter((g) => g.owned && !g.complete).length,
     wanted: scoped.filter((g) => g.wanted).length,
     missing: scoped.filter((g) => g.wanted && !g.owned).length,
+    upgrade: scoped.filter((g) => g.upgrade_wanted).length,
     mismatch: scoped.filter((g) => g.discrepancy !== "").length,
   };
 
@@ -409,6 +436,7 @@ export default function Artist() {
       case "partial": return g.owned && !g.complete;
       case "wanted": return g.wanted;
       case "missing": return g.wanted && !g.owned;
+      case "upgrade": return g.upgrade_wanted;
       case "mismatch": return g.discrepancy !== "";
       default: return true;
     }
@@ -574,6 +602,7 @@ export default function Artist() {
       {artist && settingsOpen && (
         <>
           <FollowSettings artist={artist} busy={busy} onChange={updateFollow} manager={managerLabel} />
+          <QualitySettings artist={artist} libraries={libraries.list} onSaved={refresh} />
           {/* Authority sits under the follow settings because it is the question
               those settings depend on: they are frozen above until this is answered
               natively. Inside the disclosure, not the header — it is a decision you
@@ -784,6 +813,9 @@ export default function Artist() {
         <FilterChip on={filter === "missing"} count={chipCounts.missing} label="Missing"
           title="Wanted, and nothing on disk yet"
           onClick={() => setFilter(filter === "missing" ? "all" : "missing")} />
+        <FilterChip on={filter === "upgrade"} count={chipCounts.upgrade} label="Upgrade"
+          title="Wanted, and held below the quality profile's cutoff"
+          onClick={() => setFilter(filter === "upgrade" ? "all" : "upgrade")} />
         <FilterChip on={filter === "mismatch"} count={chipCounts.mismatch} label="Mismatch" tone="warn"
           title="Disk and manager disagree about these albums"
           onClick={() => setFilter(filter === "mismatch" ? "all" : "mismatch")} />
@@ -1116,6 +1148,7 @@ function ReleaseGroupRow({
               ⚠ {note.label}
             </span>
           )}
+          <QualityLabel g={g} />
         </div>
       </td>
       <td className="mono dim" style={{ fontSize: 11 }}>
@@ -1353,6 +1386,59 @@ function FollowSettings({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The quality this artist's albums are wanted in: each native library's own profile,
+ * or one override for the artist. Absent when no library of theirs is native — Lidarr
+ * decides quality in its own, so there would be nothing for a choice here to change.
+ */
+function QualitySettings({ artist, libraries, onSaved }: { artist: CollectionArtist; libraries: Library[]; onSaved: () => void }) {
+  const toast = useToast();
+  const profiles = useFetch<QualityProfile[]>(() => api.get("/quality-profiles"));
+  const [busy, setBusy] = useState(false);
+  const native = (artist.libraries ?? []).filter((l) => l.authority === "autotaggerr");
+  if (native.length === 0) return null;
+
+  const profileName = (id: string | null | undefined) => (id ? profiles.data?.find((p) => p.id === id)?.name : undefined);
+  const override = artist.quality_profile_id;
+  // What the libraries would use without an override: "Music: Lossless · Sandbox: none".
+  const ownProfiles = native
+    .map((l) => `${native.length > 1 ? `${l.name}: ` : ""}${profileName(libraries.find((x) => x.id === l.library_id)?.quality_profile_id) ?? "none"}`)
+    .join(" · ");
+
+  const save = async (id: string) => {
+    setBusy(true);
+    try {
+      await api.put(`/artists/${artist.mb_id}/quality-profile`, { quality_profile_id: id || null });
+      onSaved();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="card">
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <span className="eyebrow">Quality</span>
+      </div>
+      <div className="dim" style={{ fontSize: 11, marginBottom: 10 }}>
+        {override
+          ? `Wanted in ${profileName(override) ?? "a deleted profile"}, whatever the library says.`
+          : `Wanted in each library's own profile (${ownProfiles}).`}{" "}
+        A wanted album held below the cutoff is marked Upgrade.
+      </div>
+      <select className="select" style={{ maxWidth: 320 }} value={override ?? ""} disabled={busy || !profiles.data}
+        onChange={(e) => save(e.target.value)} aria-label="Quality profile for this artist">
+        <option value="">Each library's own</option>
+        {(profiles.data ?? []).map((p) => (
+          <option key={p.id} value={p.id}>{p.name}</option>
+        ))}
+      </select>
     </div>
   );
 }

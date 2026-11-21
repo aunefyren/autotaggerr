@@ -53,6 +53,11 @@ hundred thousand small files on `/mnt/c` is many times slower.
   - **MP3** is an ID3v2.4 tag (the TXXX MusicBrainz frames the app reads) followed by four MPEG-1
     Layer III frames.
 
+  - **Encodings vary by album** (`encodingFor`, a hash of the release-group ID, so the universe's
+    own random stream is untouched): a quarter of FLAC albums are 24-bit; MP3 albums are 320, V0
+    (a Xing frame stating the preset), 256, 192 or 128 kbit/s. Every copy of one album is encoded
+    alike, so the duplicate scenarios hold. This is what [quality profiles](quality.md) measure.
+
   The seed belongs to the recording, so two copies of a recording are the same audio for
   `modules.AudioPayloadHash` whatever their tags, and a remaster is not. Nothing decodes the audio
   (`flac -t` complains that the stream is shorter than it claims, which is expected), so tempo and
@@ -62,9 +67,11 @@ hundred thousand small files on `/mnt/c` is many times slower.
   - `config/autotaggerr.db` with the seeded defaults and admin/admin.
   - The MusicBrainz data source pointed at the stand-in (`http://127.0.0.1:8091/ws/2`, 50 req/s)
     and the Cover Art Archive at `/caa`.
-  - A native manager and one library on `music/`.
+  - A native manager and one library on `music/`, using the **Lossless** quality profile.
 - **The pre-fill** (the default): the release cache for every held release, an index row per file
-  as a first Process would record it, then `collection.Rebuild` and `insights.SyncCredits`. The
+  as a first Process would record it, then `collection.Rebuild` and `insights.SyncCredits`. Index rows carry each file's measured quality,
+and every third artist (by MBID) is followed, so their lossy albums show as **Upgrade** and the
+discography read at startup lists what they are missing. The
   instance is ready the moment it starts. `-raw` skips this and leaves the library unindexed, so
   the first **Process** identifies and tags every file through the stand-in (small: 2.3k files in
   about a minute). Use it to exercise the real pipeline.

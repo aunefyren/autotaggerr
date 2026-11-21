@@ -77,6 +77,9 @@ type artistSummary struct {
 	// MismatchCount is albums where the disk view and the manager's catalog view
 	// disagree — worth a look, but not an error on either side.
 	MismatchCount int `json:"mismatch_count"`
+	// UpgradeCount is how many wanted albums are held below their quality profile's
+	// cutoff, with upgrades on (releaseGroupView.UpgradeWanted).
+	UpgradeCount int `json:"upgrade_count"`
 	// PickedCount is how many albums were explicitly asked for, as opposed to
 	// wanted automatically by following the artist.
 	PickedCount int `json:"picked_count"`
@@ -123,6 +126,12 @@ type releaseGroupView struct {
 	// Links are the managers holding the album, as links into each — set by the
 	// discography only, where a row is the way into the album in Lidarr.
 	Links []collection.ExternalLink `json:"links,omitempty"`
+	// Quality is the album's copies judged against the quality profile that applies
+	// (collection.JudgeAlbum); absent when none applies or nothing was measured.
+	Quality *collection.AlbumQuality `json:"quality,omitempty"`
+	// UpgradeWanted: wanted, owned, and held below a cutoff the profile wants
+	// upgraded to — the album's "Upgrade" state, beside Missing.
+	UpgradeWanted bool `json:"upgrade_wanted"`
 }
 
 // editionView is one MusicBrainz edition of a release-group plus what is owned of
@@ -322,8 +331,16 @@ func newReleaseGroupViewIn(
 		collection.FollowWantsStored(artist, rg.PrimaryType, rg.SecondaryTypes, rg.FirstReleaseDate):
 		source = wantedSourceAuto
 	}
+	var albumQuality *collection.AlbumQuality
+	if scope.quality != nil && rg.Owned {
+		if verdict := scope.quality.JudgeAlbum(artist, rg.MBID, scope.library); verdict.Known {
+			albumQuality = &verdict
+		}
+	}
 	return releaseGroupView{
 		CollectionReleaseGroup: rg,
+		Quality:                albumQuality,
+		UpgradeWanted:          source != "" && rg.Owned && albumQuality != nil && albumQuality.NeedsUpgrade(),
 		Complete:               rg.Complete(),
 		Discrepancy:            discrepancy,
 		Wanted:                 source != "",
@@ -406,7 +423,10 @@ func collectionFingerprint(db *gorm.DB) (string, error) {
 		&models.CollectionDesire{}, &models.CollectionReleaseGroupArtist{}, &models.CollectionReleaseCopy{},
 		// Libraries too: a library's name, manager and enabled flag decide which views
 		// exist and who has authority in them, without any collection row changing.
-		&models.Library{}} {
+		&models.Library{},
+		// And what upgrade wanted is judged from: the profiles, and each file's
+		// measured quality, both of which change with no collection row moving.
+		&models.QualityProfile{}, &models.LibraryItem{}} {
 		// Newest as `any`: an aggregate over a time column comes back as text from
 		// SQLite and as a timestamp elsewhere, and all the fingerprint needs is that the
 		// same state prints the same way twice.
@@ -517,7 +537,7 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 
 	// Aggregated in Go rather than SQL so the complete/discrepancy rules have exactly
 	// one definition (the model) shared by this list, the artist detail, and the UI.
-	type agg struct{ total, owned, complete, mismatch int }
+	type agg struct{ total, owned, complete, mismatch, upgrade int }
 	byArtist := map[string]*agg{}
 
 	var groups []models.CollectionReleaseGroup
@@ -571,6 +591,15 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 	// count differently. The overview keeps the plain rules, which are the same ones.
 	groupDesires := desiresByGroup(desires)
 	scopes := map[string]viewScope{}
+	// Quality is judged through the same view as the artist page, in either reading.
+	var qualityIdx *collection.QualityIndex
+	if idxErr == nil {
+		if q, err := collection.LoadQualityIndex(a.DB, idx, nil); err != nil {
+			logger.Log.Warnf("failed to load quality profiles: %s", err.Error())
+		} else {
+			qualityIdx = &q
+		}
+	}
 
 	catalogued := catalogChecked(artists)
 	for _, rg := range groups {
@@ -594,7 +623,7 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 				}
 				scope, ok := scopes[artistMBID]
 				if !ok {
-					scope = viewScope{library: library, authority: idx.Authority(ar, library), holdings: holdings}
+					scope = viewScope{library: library, authority: idx.Authority(ar, library), holdings: holdings, quality: qualityIdx}
 					scopes[artistMBID] = scope
 				}
 				view := newReleaseGroupViewIn(rg, catalogued[artistMBID], ar, groupDesires[rg.MBID], scope)
@@ -607,7 +636,16 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 				if view.Discrepancy != models.DiscrepancyNone {
 					g.mismatch++
 				}
+				if view.UpgradeWanted {
+					g.upgrade++
+				}
 				continue
+			}
+			// Only an owned album can want an upgrade, so only those pay for the view.
+			if ar, known := artistByID[artistMBID]; known && rg.Owned && qualityIdx != nil {
+				if newReleaseGroupViewIn(rg, catalogued[artistMBID], ar, groupDesires[rg.MBID], viewScope{quality: qualityIdx}).UpgradeWanted {
+					g.upgrade++
+				}
 			}
 			if rg.Owned {
 				g.owned++
@@ -643,6 +681,7 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 			PartialCount:  g.owned - g.complete,
 			MissingCount:  g.total - g.owned,
 			MismatchCount: g.mismatch,
+			UpgradeCount:  g.upgrade,
 			PickedCount:   len(picked[ar.MBID]),
 			LibraryIDs:    sortedLibraryIDs(artistLibraries[ar.MBID]),
 		})
@@ -1801,6 +1840,16 @@ func (a *API) artistInLibrary(artist models.CollectionArtist, library *uuid.UUID
 		return artistView{}, viewScope{}, err
 	}
 	view := artistViewIn(artist, scope)
+	// Only the albums named: nil would read every copy in the collection.
+	named := rgMBIDs
+	if named == nil {
+		named = []string{}
+	}
+	if q, qErr := collection.LoadQualityIndex(a.DB, idx, named); qErr != nil {
+		logger.Log.Warnf("failed to load quality profiles for %s: %s", artist.MBID, qErr.Error())
+	} else {
+		scope.quality = &q
+	}
 	if view.Libraries, err = idx.ArtistLibraries(a.DB, artist, rgMBIDs); err != nil {
 		logger.Log.Warnf("failed to list the libraries of %s: %s", artist.MBID, err.Error())
 	}

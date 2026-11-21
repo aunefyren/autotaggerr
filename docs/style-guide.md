@@ -260,7 +260,7 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   `--accent-text` label, 2px `--accent` left marker. Hover = `--surface-2`. Width 224px.
   - **Groups**, by how often each page is used: Overview (no heading) · Music · Activity · Setup ·
     System. Setup is in the order things are created (Managers → Libraries → Download clients),
-    with the two that ship with working defaults (Tagger profiles, Data sources) last. Groups are
+    with the ones that ship with working defaults (Tagger profiles, Quality profiles, Data sources) last. Groups are
     always expanded — five short ones fit, and a collapsed group hides where a page lives.
   - **Group headings are sentence case**, `--text-xs`, 500, `--text-dim`, 16px above the group.
     This is a deliberate exception to the uppercase eyebrow: five tracked-uppercase labels stacked
@@ -911,7 +911,7 @@ MUSICBRAINZ_ALBUMID   e28e29e0-…-a6beffd99aad   ← current (mono, --text-mute
 - Sentence case everywhere. Active voice. A control says what it does: **Save changes**, not Submit;
   **Add library**, not Create. An action keeps its name through the flow (button "Scan" → toast
   "Scan started").
-- Name things by what the user controls: **Libraries, Managers, Data sources, Tagger profiles, Scans**
+- Name things by what the user controls: **Libraries, Managers, Data sources, Tagger profiles, Quality profiles, Scans**
   — never by internal type names.
 - Errors explain what happened and how to fix it, in the interface's voice, never vague, no apology:
   "Lidarr didn't respond — check the base URL and API key."

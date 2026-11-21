@@ -7,6 +7,7 @@ import (
 
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/models"
+	"github.com/aunefyren/autotaggerr/quality"
 	"github.com/google/uuid"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -31,6 +32,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"pin_fallback_tagger_profile", pinFallbackTaggerProfile},
 		{"write_redundant_artist", writeRedundantArtist},
 		{"drop_library_item_content_hash", dropLibraryItemContentHash},
+		{"seed_quality_profiles", seedQualityProfiles},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -313,4 +315,31 @@ func dropLibraryItemContentHash(db *gorm.DB) error {
 		return nil
 	}
 	return db.Exec("ALTER TABLE library_items DROP COLUMN content_hash").Error
+}
+
+// seedQualityProfiles creates the preset quality profiles (quality.Presets) once. A
+// data migration rather than a Seed step because Seed re-creates what is missing on
+// every start, and deleting every quality profile is a choice — no library has to
+// have one — that a restart must not undo. No library is given one: a library without
+// a profile flags nothing, so upgrading changes nothing until someone picks.
+func seedQualityProfiles(db *gorm.DB) error {
+	var count int64
+	if err := db.Model(&models.QualityProfile{}).Count(&count).Error; err != nil {
+		return err
+	}
+	if count > 0 {
+		return nil
+	}
+	for _, preset := range quality.Presets() {
+		row := models.QualityProfile{
+			Name:           preset.Name,
+			Tiers:          preset.Profile.Tiers,
+			CutoffTier:     preset.Profile.Cutoff,
+			UpgradeAllowed: preset.Profile.UpgradeAllowed,
+		}
+		if err := db.Create(&row).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

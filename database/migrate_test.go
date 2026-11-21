@@ -373,3 +373,45 @@ func TestDropLibraryItemContentHash(t *testing.T) {
 		t.Errorf("second run: %v", err)
 	}
 }
+
+// TestSeedQualityProfilesOnce: the presets are created once, valid, and assigned to
+// no library; deleting them all is a choice a later start does not undo.
+func TestSeedQualityProfilesOnce(t *testing.T) {
+	db := testDB(t)
+	lib := models.Library{Name: "Music", Path: "/music", Enabled: true}
+	if err := db.Create(&lib).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyDataMigrations(db); err != nil {
+		t.Fatalf("ApplyDataMigrations: %v", err)
+	}
+	var profiles []models.QualityProfile
+	if err := db.Order("id").Find(&profiles).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(profiles) != 3 || profiles[0].Name != "Lossless" {
+		t.Fatalf("seeded %d profiles: %+v", len(profiles), profiles)
+	}
+	for _, p := range profiles {
+		if err := p.Profile().Validate(); err != nil {
+			t.Errorf("%s does not validate after a round trip: %v", p.Name, err)
+		}
+	}
+	var reread models.Library
+	db.First(&reread, "id = ?", lib.ID)
+	if reread.QualityProfileID != nil {
+		t.Error("a library was given a quality profile; upgrading must change nothing")
+	}
+
+	if err := db.Where("1 = 1").Delete(&models.QualityProfile{}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyDataMigrations(db); err != nil {
+		t.Fatal(err)
+	}
+	var count int64
+	db.Model(&models.QualityProfile{}).Count(&count)
+	if count != 0 {
+		t.Errorf("the presets came back after being deleted: %d", count)
+	}
+}
