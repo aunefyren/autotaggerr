@@ -157,6 +157,9 @@ const (
 	// EventTypeOrganise is files moved to where their library's naming templates put
 	// them, after a review. Its items carry where each came from (EventItem.From).
 	EventTypeOrganise = "organise"
+	// EventTypeDuplicateCheck is a pass hashing the audio of files that share a
+	// recording, so the Insights page can say whether two copies are identical.
+	EventTypeDuplicateCheck = "duplicate_check"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -524,11 +527,19 @@ type Library struct {
 // detection and present/wanted reporting.
 type LibraryItem struct {
 	Base
-	LibraryID   uuid.UUID  `gorm:"type:uuid;index;not null" json:"library_id"`
-	Path        string     `gorm:"uniqueIndex;not null" json:"path"`
-	Size        int64      `json:"size"`
-	ModTime     *time.Time `json:"mod_time"`
-	ContentHash string     `json:"content_hash"`
+	LibraryID uuid.UUID  `gorm:"type:uuid;index;not null" json:"library_id"`
+	Path      string     `gorm:"uniqueIndex;not null" json:"path"`
+	Size      int64      `json:"size"`
+	ModTime   *time.Time `json:"mod_time"`
+
+	// AudioHash is modules.AudioPayloadHash of the file — its audio with every tag
+	// block left out — taken when the file had AudioHashSize and AudioHashModTime. It
+	// is computed only for duplicate candidates (insights.VerifyDuplicates), never by
+	// Process: hashing reads the whole file. It is current while those two still
+	// match Size and ModTime; otherwise the audio is "not checked", not different.
+	AudioHash        string     `json:"audio_hash,omitempty"`
+	AudioHashSize    int64      `json:"-"`
+	AudioHashModTime *time.Time `json:"-"`
 
 	MBReleaseID      string `gorm:"index" json:"mb_release_id"`
 	MBRecordingID    string `json:"mb_recording_id"`
@@ -1835,6 +1846,8 @@ func AllDBModels() []any {
 		&MediaServer{},
 		&LibraryMediaServer{},
 		&TrackLoudness{},
+		&InsightCredit{},
+		&InsightCreditRelease{},
 	}
 }
 

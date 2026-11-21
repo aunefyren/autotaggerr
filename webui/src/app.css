@@ -436,3 +436,50 @@
 }
 .storage-list li:last-child { border-bottom: 0; }
 .storage-list li > :last-child { text-align: right; }
+
+/* Insights — breakdowns: a value, its bar against the largest, and its count. One
+   hue (magnitude, not identity); the count is always printed beside the bar. */
+.insight-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; align-items: start; }
+.breakdown { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.breakdown-row { display: grid; grid-template-columns: minmax(70px, 34%) 1fr auto; gap: 10px; align-items: center; }
+.breakdown-bar { height: 8px; background: var(--surface-2); border-radius: 4px; overflow: hidden; }
+.breakdown-bar > span { display: block; height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; }
+.breakdown-bar > span.muted-fill { background: var(--border-strong); }
+@media (max-width: 720px) { .insight-grid { grid-template-columns: 1fr; } }
+
+/* Insights — collaboration graph. Single hue: node identity is the label, not a colour. */
+.graph-split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
+.graph-canvas { position: relative; height: 560px; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
+.graph-canvas svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
+.graph-canvas svg:active { cursor: grabbing; }
+.graph-reset { position: absolute; top: 8px; right: 8px; }
+.g-edge { stroke: var(--border-strong); stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.g-edge.lit { stroke: var(--accent-text); }
+.g-edge.faded { opacity: 0.25; }
+.g-node { cursor: pointer; }
+.g-node circle { fill: var(--accent); stroke: var(--surface-1); stroke-width: 2px; vector-effect: non-scaling-stroke; }
+.g-node circle.hit { fill: transparent; stroke: none; }
+.g-node.center circle:not(.hit) { stroke: var(--accent-text); stroke-width: 3px; }
+.g-node.focus circle:not(.hit) { fill: var(--accent-hover); stroke: var(--text); }
+.g-node.faded { opacity: 0.3; }
+.g-node text { font-family: var(--font-sans); font-size: 10px; fill: var(--text-muted); paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; pointer-events: none; }
+.g-node.focus text { fill: var(--text); font-weight: 600; }
+.collab-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--border); }
+.collab-row:last-child { border-bottom: none; }
+.collab-pair { min-width: 0; }
+.collab-name { background: none; border: none; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+.collab-name:hover { color: var(--accent-text); text-decoration: underline; }
+.collab-name:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); border-radius: 2px; }
+@media (max-width: 900px) { .graph-split { grid-template-columns: 1fr; } .graph-canvas { height: 420px; } }
+
+/* A refetch in flight: the previous answer stays, dimmed, until the new one lands. */
+.is-updating { opacity: 0.45; transition: opacity 150ms ease; pointer-events: none; }
+.updating { font-size: 11px; color: var(--info-text); }
+
+/* Collaboration graph legend — inside the canvas, top left: swatch, name, node count. */
+.graph-legend { position: absolute; top: 8px; left: 8px; margin: 0; padding: 6px 8px; list-style: none;
+  display: flex; flex-direction: column; gap: 3px; font-size: 11px; color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-1) 85%, transparent); border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.graph-legend li { display: flex; align-items: center; gap: 6px; }
+.graph-legend .swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.graph-legend .mono { margin-left: auto; padding-left: 8px; }

@@ -43,6 +43,7 @@ const TYPE_LABELS: Record<string, string> = {
   discography_read: "Discographies",
   download_removed: "Downloads removed",
   organise: "Organise",
+  duplicate_check: "Duplicate check",
 };
 
 /**
@@ -87,6 +88,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Files moved to where their library's naming templates put them, after the review that listed every move. Each row shows where the file came from. Its identity, pin, tempo analysis and fingerprint moved with it; folders the moves emptied were removed, and Plex was asked to rescan. Nothing was deleted and no tags were written.",
   download_removed:
     "Imported downloads removed from their client, files and all, because the client is set to remove them once they finish seeding. Only downloads Autotaggerr imported in full, and only once the client stopped them for reaching a share limit set there — a torrent paused by hand is never removed. Every album was already in the library; this removes the second copy.",
+  duplicate_check:
+    "Reads the audio of files that share a recording, an album and a format, so Insights can say whether two copies are the same audio. Each file is read once with its tags left out and nothing decoded; a hash the tempo or loudness analysis already took of the file as it is now is reused instead. No file is written. Only failures are listed below.",
   tag_files:
     "Everything this pass wrote to disk. The walk finds files whose tags no longer match what Autotaggerr knows; the drift half rewrites files whose release changed upstream, which the walk cannot see because the file itself has not moved.",
 };

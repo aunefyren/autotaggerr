@@ -30,6 +30,7 @@ func ApplyDataMigrations(db *gorm.DB) error {
 		{"expire_edition_lists", expireEditionLists},
 		{"pin_fallback_tagger_profile", pinFallbackTaggerProfile},
 		{"write_redundant_artist", writeRedundantArtist},
+		{"drop_library_item_content_hash", dropLibraryItemContentHash},
 	} {
 		var done models.DataMigration
 		err := db.Where("name = ?", m.name).Limit(1).Find(&done).Error
@@ -300,4 +301,16 @@ func followLibrarySets(db *gorm.DB) error {
 		logger.Log.Infof("carried %d artist follow(s) into the follow library set", len(rows))
 	}
 	return nil
+}
+
+// dropLibraryItemContentHash removes library_items.content_hash, a column nothing ever
+// wrote. Its name promised a whole-file hash, which is exactly what the audio hash
+// that replaced it (LibraryItem.AudioHash) deliberately is not — a tag write changes
+// every byte-for-byte hash and no audio hash. Plain SQL because the field is gone from
+// the model; SQLite has had DROP COLUMN since 3.35.
+func dropLibraryItemContentHash(db *gorm.DB) error {
+	if !db.Migrator().HasColumn("library_items", "content_hash") {
+		return nil
+	}
+	return db.Exec("ALTER TABLE library_items DROP COLUMN content_hash").Error
 }

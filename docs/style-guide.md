@@ -557,7 +557,7 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   in `--surface-3`, free space as the empty track. Music and app segments are at least 3px when
   non-zero — megabytes on a terabyte disk must still read as *there*. The free figure turns
   `--warning-text` under a tenth of the disk and `--danger-text` under a twentieth. A legend of 8px
-  keys sits under the bar with each figure. The same shape shares out `config/` on the Storage page
+  keys sits under the bar with each figure. The same shape shares out `config/` on the Storage tab (Insights)
   (`.app-bar`, with `--warning` for the log).
 - **Ranked list** (`.ranked`, Storage) — a largest-first list: name and sub-line left, the figure
   in mono right, and a 3px `--accent` bar under each row scaled to the first, so the list reads as a
@@ -799,6 +799,66 @@ Tracks   ██████████▓▓░░           10/12 tracks on di
   what the items are. The bar is never the only carrier of the count.
 - It replaces columns of bare counts. Four numeric columns were being read as one question — how much
   of this do I have — and the bar answers it directly.
+
+### Breakdown bars (`.breakdown`, Insights → Stats)
+How a set of files divides by one property — format, decade, genre — or how much of it has a
+property (coverage). One row per value: the label, a bar against the **largest** value (or against
+the whole, for coverage), and the count in mono.
+
+- **One hue, `--accent`**, because the bars show magnitude, not identity. Colouring each value would
+  invent a categorical palette for something nobody compares by colour. *Other* and *Unknown* use
+  `--border-strong` and a `--text-dim` label so they read as remainders, and they always sit last.
+- 8px track on `--surface-2`, 4px rounded data end, anchored at the left.
+- **The count is always printed beside the bar**, and the row's `title` and the bar's `aria-label`
+  state it in words. The bar is never the only thing carrying the number, so no separate table
+  view is needed.
+- Long breakdowns keep the top 12 and fold the rest into *Other*, so the total still adds up.
+- Not the coverage meter: that one says how much of one thing is **on disk**, in the diff colours.
+  A breakdown has no "missing" state.
+
+### Collaboration graph (`.graph-canvas`, `CollabGraph.tsx`, Insights → Graph)
+A node-link picture beside a list of the same data (`.graph-split`, 300px panel, stacked below
+900px).
+
+- **Colour is by category, never by artist.** *Colour: Genre* (the default), *Role* or *None*.
+  Nodes take `--series-1`…`--series-3` (blue, orange, aqua) or the neutral `--series-other`. With
+  *None*, every node is `--accent`. A `--surface-1` ring keeps overlapping nodes apart. Edges are
+  `--border-strong`. A node is still identified by its **label**: colouring artists one by one
+  would be a palette with hundreds of entries.
+  - **Three series, then Other.** In a node graph any two colours can touch, and under that
+    all-pairs test only the first three categorical slots stay apart for colour-blind viewers
+    (validated against `--surface-1` with the dataviz validator; the fourth puts yellow beside
+    orange). So genre colours the library's three most common genres and folds the rest into
+    *Other or unknown*. Role colours credited artist, production and performer, with writing as
+    the neutral, named in the legend.
+  - **A colour follows its category, not its rank in the view.** Genres are slotted by the
+    library's own ranking (`report.genres`), not by what the current filters happen to show, so
+    moving a slider never repaints a genre.
+  - **Always with a legend** (`.graph-legend`, top left inside the canvas): swatch, name, and how
+    many artists in view have it. The node's tooltip names its genre or role too, so colour is
+    never the only carrier.
+- **Focus by contrast, not colour.** On hover or select, the artist's edges turn `--accent-text`,
+  their neighbours keep full opacity, and everything else fades to about 0.3. A centred artist has an
+  `--accent-text` ring.
+- **Size is area, relative to the view.** Node radius grows with the square root of the count,
+  from 3 to 20, against the largest artist drawn. An absolute scale made every node the same size
+  once performers and producers (each on hundreds of recordings) were in. Edge width follows the
+  log of the weight, so one heavy pair cannot swamp the picture.
+- **Labels and strokes keep their screen size at any zoom**: labels are sized by graph units per
+  pixel, and strokes use `vector-effect: non-scaling-stroke`. The fit magnifies at most 2×, so a
+  small graph fills the canvas without its nodes becoming discs.
+- **Refetching keeps the old answer, dimmed** (`.is-updating`, 45% opacity, no pointer events),
+  with *Updating…* and the striped indeterminate bar beside the artist count. The indicator is
+  always laid out and only shown while loading, so its appearance never reflows the toolbar. The
+  Duplicates tab does the same.
+- **Labels:** the 24 largest nodes always, plus the focused artist and their neighbours. Labels get
+  a `--surface-1` halo (`paint-order: stroke`) instead of a box.
+- Every node has a hit target of at least 8px whatever its drawn size, and a `<title>` with the
+  exact count.
+- **The list is the accessible way in, not an extra.** Every artist and pair in the picture can be
+  selected from the panel, and the SVG's `aria-label` says so.
+- **Static layout.** It is computed once per answer and never animates; the only motion is the
+  user's own pan and zoom. *Reset view* appears only after the view has moved.
 
 ### Signature: the tag-diff row
 The recurring element that makes Autotaggerr recognizable. One row per tag on the file/scan-detail

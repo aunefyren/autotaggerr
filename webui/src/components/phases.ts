@@ -19,6 +19,7 @@ export const PHASE_LABELS: Record<string, string> = {
   migrations: "Applying identity changes",
   collection: "Updating the collection",
   importing: "Importing files",
+  check_duplicates: "Checking duplicate audio",
   // metadata-pass phases
   artists: "Artists",
   discographies: "Discographies",
@@ -45,6 +46,7 @@ export const PHASE_LABELS: Record<string, string> = {
 const PHASES_DRIVING_PROGRESS = new Set([
   "scanning",
   "importing",
+  "check_duplicates",
   "artists",
   "discographies",
   "editions",

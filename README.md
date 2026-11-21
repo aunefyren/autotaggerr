@@ -87,6 +87,10 @@ downloads, but it never searches for or grabs anything.
 ### Managing the library
 
 - **Collection view.** Artists, albums and editions you own, and which ones you are missing.
+- **Insights.** Duplicate songs by MusicBrainz recording (identical audio, a lossy copy beside
+  the lossless one, re-rips), library stats (formats, decades, genres, labels, tag coverage) and a
+  graph of which artists, producers and writers work together.
+  See [docs/insights.md](docs/insights.md).
 - **Follow artists** and track the albums you want, computed from MusicBrainz.
 - **Import.** Point it at a folder, or let it watch qBittorrent, Transmission or SABnzbd for
   finished downloads. Each album is identified and reviewed before it is moved into the library.

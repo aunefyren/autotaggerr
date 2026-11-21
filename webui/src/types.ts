@@ -1390,3 +1390,128 @@ export interface StorageOutcome {
   after: number;
   message: string;
 }
+
+/** How files sharing a recording relate (insights.Level), most actionable first. */
+export type DuplicateLevel = "identical" | "mixed_format" | "same_format" | "across_releases";
+
+export interface DuplicateFile {
+  item_id: string;
+  library_id: string;
+  library_name: string;
+  path: string;
+  /** The path below the library root; empty when the file is not under it. */
+  relative_path: string;
+  format: string;
+  lossless: boolean;
+  size: number;
+  release_mb_id: string;
+  release_title: string;
+  release_group_mb_id: string;
+  release_type: string;
+  /** Present only when taken from the file as it is now. */
+  audio_hash?: string;
+}
+
+export interface DuplicateGroup {
+  recording_mb_id: string;
+  title: string;
+  artist: string;
+  level: DuplicateLevel;
+  files: DuplicateFile[];
+  audio_unchecked: boolean;
+  identical_audio: boolean;
+  compilation: boolean;
+  libraries: number;
+}
+
+/** GET /insights/duplicates */
+export interface DuplicatesReport {
+  /** One page of groups (limit/offset). */
+  groups: DuplicateGroup[];
+  /** Groups passing the filters, across all pages. */
+  matched: number;
+  /** Every group by level, including the ones the filters hide. */
+  counts: Record<DuplicateLevel, number>;
+  hidden_compilations: number;
+  /** Files the duplicate check would hash, across every library. */
+  unchecked: number;
+}
+
+export interface StatsBucket {
+  key: string;
+  files: number;
+  bytes: number;
+}
+
+/** GET /insights/stats */
+export interface LibraryStats {
+  files: number;
+  identified: number;
+  bytes: number;
+  duration_ms: number;
+  uncached: number;
+  recordings: number;
+  releases: number;
+  albums: number;
+  artists: number;
+  formats: StatsBucket[];
+  release_types: StatsBucket[];
+  decades: StatsBucket[];
+  genres: StatsBucket[];
+  countries: StatsBucket[];
+  labels: StatsBucket[];
+  coverage: {
+    unmatched: number;
+    errors: number;
+    pinned: number;
+    pins_held: number;
+    isrc: number;
+    /** Identified files whose album cover is in the local artwork cache. */
+    artwork: number;
+    replaygain: number;
+    bpm: number;
+  };
+  /** Collection-wide; absent from one library's view. */
+  catalogue?: { wanted: number; incomplete: number; unlisted: number };
+}
+
+/** An artist in the collaboration graph (insights.GraphNode). */
+export interface GraphNode {
+  mb_id: string;
+  name: string;
+  /** Recordings in scope crediting the artist, in the roles asked for. */
+  tracks: number;
+  in_collection: boolean;
+  /** Distance from the centred artist; 0 throughout an uncentred graph. */
+  hop: number;
+  /** Strongest genre across the recordings that credit them (for colour). */
+  genre?: string;
+  /** The role they hold on the most of those recordings (for colour). */
+  role?: string;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  /** Recordings in scope crediting both. */
+  weight: number;
+}
+
+export interface Collaboration {
+  a: GraphNode;
+  b: GraphNode;
+  weight: number;
+}
+
+/** GET /insights/graph */
+export interface GraphReport {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  collaborators: Collaboration[];
+  connected: number;
+  truncated: boolean;
+  center?: GraphNode;
+  unsynced: number;
+  /** The library's top genres, most common first: the ones with a colour of their own. */
+  genres: string[];
+}

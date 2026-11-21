@@ -33,6 +33,7 @@ const GROUPS: NavGroup[] = [
       { to: "/collection", label: "Collection", ic: "♫" },
       { to: "/import", label: "Import", ic: "⇣", adminOnly: true },
       { to: "/items", label: "Items", ic: "≣" },
+      { to: "/insights", label: "Insights", ic: "◔" },
     ],
   },
   {
@@ -58,7 +59,6 @@ const GROUPS: NavGroup[] = [
     title: "System",
     items: [
       { to: "/settings", label: "Settings", ic: "⚙", adminOnly: true },
-      { to: "/storage", label: "Storage", ic: "◫" },
       { to: "/account", label: "Account", ic: "◉" },
       { to: "/login-providers", label: "Login providers", ic: "⚿" },
     ],

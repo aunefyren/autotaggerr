@@ -18,6 +18,7 @@ package collection
 import (
 	"errors"
 	"fmt"
+	"github.com/aunefyren/autotaggerr/insights"
 	"io/fs"
 	"math/rand/v2"
 	"os"
@@ -104,7 +105,19 @@ func RebuildScoped(db *gorm.DB, scope RebuildScope) (RebuildStats, error) {
 	if err != nil {
 		return RebuildStats{}, err
 	}
+	syncInsightCredits(db)
 	return stats, nil
+}
+
+// syncInsightCredits brings the collaboration graph's credits up to date with what the
+// rebuild just recorded (docs/insights.md). After the transaction, not in it: the
+// credits are derived data, and failing to derive them must not undo a rebuild. A pass
+// where nothing changed writes nothing, so running it after every scoped rebuild is
+// cheap.
+func syncInsightCredits(db *gorm.DB) {
+	if _, err := insights.SyncCredits(db); err != nil {
+		logger.Log.Warnf("failed to update the collaboration graph's credits: %s", err.Error())
+	}
 }
 
 // rebuildBusyRetries is how many times a rebuild re-runs its transaction after losing

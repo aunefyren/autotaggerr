@@ -71,6 +71,9 @@ A [`Makefile`](../Makefile) wraps these flows so the frontend step is never forg
 | `make deps` | force a clean `npm ci --include=dev` in `webui/` (fixes a missing `tsc`); installs for the platform you run it on — see [below](#building-the-same-checkout-from-windows-and-wsl) |
 | `make update` | verify prereqs, then `go get -u` + `go mod tidy` + `npm update` + rebuild the bundle |
 | `make test` / `make fmt` / `make vet` | the CI gates locally |
+| `make demo SIZE=…` | run an offline demo instance on :8090, generating it first if needed ([demo.md](demo.md)) |
+| `make demo-reset SIZE=…` | generate the demo again from scratch |
+| `make tour` | screenshot every page of a running instance into `tools/browser/out/` |
 
 Every recipe uses only `go`/`npm`/`cd`, so the same Makefile runs on Linux/macOS and Windows —
 but `make` is not bundled with Windows. Install it once (`choco install make` or
@@ -112,6 +115,14 @@ Three caveats worth knowing:
   made an earlier version of the script skip lightningcss silently and *look* like it had worked,
   because npm re-resolves optional dependencies as a side effect of any other install. The script
   reads `node_modules` off disk for exactly that reason.
+- **The npm scripts call `node <tool>.js`, never the `.bin` shims.** The shims are platform-specific
+  too, and a set written by Windows npm picks the wrong Node on WSL2. Its fallback tests
+  `[ -x node ]`, which looks for a file named `node` in the current directory rather than on PATH,
+  so it falls through to `node.exe`: Windows Node through WSL interop. That Node then asks rolldown
+  for the `win32` binding, and the build fails with "Cannot find native binding". The native
+  binaries were present the whole time, so `ensure-native` could not catch it. A bare `node` in a
+  script resolves to whichever Node is running npm, on both sides. Keep `dev`, `build` and
+  `preview` in the form `node node_modules/<pkg>/bin/<entry>`.
 - **`make check` cannot see this problem.** `checkenv` checks for the platform's `tsc` *launcher*
   (`.bin/tsc.cmd` vs `.bin/tsc`), but npm writes both of those regardless of platform, and the
   native binaries it does not look at. So a cross-platform tree reports "All prerequisites present"
@@ -367,6 +378,8 @@ Feature docs:
 - `artwork.md` — covers and artist images: warming them ahead of the page, and why it is its own verb.
 - `fingerprinting.md` — optional AcoustID identification.
 - `tempo.md` — optional BPM analysis: the detector, why a file is analysed once, its own runner.
+- `demo.md` — the offline demo instance (synthetic library of any size, stand-in MusicBrainz) and the headless browser tour that screenshots every page.
+- `insights.md` — the Insights page: duplicates by recording (and why copies are compared within one album), the audio hash taken only for candidates, library stats, and the collaboration graph (credits derived from cached releases, kept current by Scan).
 - `replaygain.md` — optional loudness (ReplayGain) analysis with rsgain: albums as the unit, when one is measured again, how the tags reach files.
 - `authentication.md` — local login, scoped API keys, OIDC.
 - `mcp.md` — the MCP server for AI assistants: scoped API keys, the read and action tools, and how they share query methods and commands with the REST handlers.
