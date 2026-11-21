@@ -52,6 +52,26 @@ type artistView struct {
 	// Libraries are the libraries this artist can be viewed in (see
 	// collection.ArtistLibraries). Only the artist's own pages fill it.
 	Libraries []collection.ArtistLibrary `json:"libraries,omitempty"`
+	// Managed is whether this is one of the user's artists rather than one present
+	// only because files credit them, and ManagedReason why (collection.ManagedReason).
+	Managed       bool   `json:"managed"`
+	ManagedReason string `json:"managed_reason,omitempty"`
+}
+
+// withManagedReason fills in Managed from the reason.
+func (v artistView) withManagedReason(reason string) artistView {
+	v.Managed, v.ManagedReason = reason != "", reason
+	return v
+}
+
+// managedReason reads one artist's reason, logging (and reading as present-only) a
+// failure rather than failing the page.
+func (a *API) managedReason(artist models.CollectionArtist) string {
+	reason, err := collection.ManagedReasonFor(a.DB, artist)
+	if err != nil {
+		logger.Log.Warnf("failed to read whether %s is managed: %s", artist.MBID, err.Error())
+	}
+	return reason
 }
 
 // newArtistView is the artist-wide reading, with no library named and none read.
@@ -132,6 +152,18 @@ type releaseGroupView struct {
 	// UpgradeWanted: wanted, owned, and held below a cutoff the profile wants
 	// upgraded to — the album's "Upgrade" state, beside Missing.
 	UpgradeWanted bool `json:"upgrade_wanted"`
+	// Tracked: the album is part of what the user has or manages — owned in this
+	// view, held in any library, or wanted for any reason. The artist page lists
+	// these first and the rest of the MusicBrainz discography under *More from
+	// MusicBrainz*, which is for browsing.
+	Tracked bool `json:"tracked"`
+}
+
+// withTracked sets Tracked from what the view already says. Called once Libraries
+// is filled in.
+func (v releaseGroupView) withTracked() releaseGroupView {
+	v.Tracked = v.Owned || v.Wanted || len(v.Libraries) > 0
+	return v
 }
 
 // editionView is one MusicBrainz edition of a release-group plus what is owned of
@@ -408,10 +440,10 @@ type artistListCache struct {
 	lists map[uuid.UUID][]artistSummary
 }
 
-// collectionFingerprint names the state of the six tables the collection list is
+// collectionFingerprint names the state of the tables the collection list is
 // computed from: each one's row count and newest updated_at. An insert or an update
 // moves the newest stamp, a delete moves the count, so any write the list could show
-// changes it — four aggregate queries instead of loading every row of all four.
+// changes it — two aggregates per table instead of loading every row.
 //
 // It holds because every write to these tables goes through GORM, which stamps
 // updated_at on Create, Save and Updates alike. A raw Exec or UpdateColumn would slip
@@ -426,7 +458,10 @@ func collectionFingerprint(db *gorm.DB) (string, error) {
 		&models.Library{},
 		// And what upgrade wanted is judged from: the profiles, and each file's
 		// measured quality, both of which change with no collection row moving.
-		&models.QualityProfile{}, &models.LibraryItem{}} {
+		&models.QualityProfile{}, &models.LibraryItem{},
+		// And who is managed: a Lidarr listing makes an artist managed, and whether
+		// that manager is enabled decides whether the listing counts.
+		&models.ManagerLink{}, &models.Manager{}} {
 		// Newest as `any`: an aggregate over a time column comes back as text from
 		// SQLite and as a timestamp elsewhere, and all the fingerprint needs is that the
 		// same state prints the same way twice.
@@ -450,8 +485,17 @@ func collectionFingerprint(db *gorm.DB) (string, error) {
 //
 // ?library=<id> reads the list in one library, the way the artist page's library tab
 // reads one artist: that library's holdings, its authority, the wants it shows.
+//
+// ?scope=managed|present narrows it to the user's own artists or to those present only
+// because files credit them (collection.ManagedReason); the default is every artist,
+// which the Collection page asks for so both tabs count from one answer.
 func (a *API) listArtists(c *gin.Context) {
 	library, err := parseLibraryParam(c.Query("library"))
+	if err != nil {
+		respondErr(c, err)
+		return
+	}
+	scope, err := parseArtistScope(c.Query("scope"), artistScopeAll)
 	if err != nil {
 		respondErr(c, err)
 		return
@@ -461,7 +505,40 @@ func (a *API) listArtists(c *gin.Context) {
 		respondErr(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, out)
+	c.JSON(http.StatusOK, filterArtistScope(out, scope))
+}
+
+// Which artists a list shows: the user's own, those present only because files
+// credit them, or both.
+const (
+	artistScopeAll     = "all"
+	artistScopeManaged = "managed"
+	artistScopePresent = "present"
+)
+
+func parseArtistScope(raw, fallback string) (string, error) {
+	switch v := strings.TrimSpace(raw); v {
+	case "":
+		return fallback, nil
+	case artistScopeAll, artistScopeManaged, artistScopePresent:
+		return v, nil
+	}
+	return "", failWith(http.StatusBadRequest, "scope must be managed, present or all")
+}
+
+// filterArtistScope keeps the artists of one scope, in a new slice: the list it is
+// given is the shared memo.
+func filterArtistScope(list []artistSummary, scope string) []artistSummary {
+	if scope == artistScopeAll {
+		return list
+	}
+	out := make([]artistSummary, 0, len(list))
+	for _, ar := range list {
+		if ar.Managed == (scope == artistScopeManaged) {
+			out = append(out, ar)
+		}
+	}
+	return out
 }
 
 // artistList is the collection list behind GET /artists and the MCP list_artists
@@ -663,6 +740,10 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 	if inLibrary {
 		scopeLibrary = &library
 	}
+	managed, err := collection.ManagedArtists(a.DB)
+	if err != nil {
+		logger.Log.Warnf("failed to read which artists are managed: %s", err.Error())
+	}
 	out := make([]artistSummary, 0, len(artists))
 	for _, ar := range artists {
 		g := byArtist[ar.MBID]
@@ -674,6 +755,7 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 			scope, _ := a.resolveScope(idx, ar, scopeLibrary, nil)
 			view = artistViewIn(ar, scope)
 		}
+		view = view.withManagedReason(managed[ar.MBID])
 		out = append(out, artistSummary{
 			artistView:    view,
 			OwnedCount:    g.owned,
@@ -779,12 +861,13 @@ func (a *API) artistDetail(mbid string, library *uuid.UUID) (artistDetailData, e
 	if err != nil {
 		return artistDetailData{}, err
 	}
+	artistV = artistV.withManagedReason(a.managedReason(artist))
 	views := make([]releaseGroupView, 0, len(groups))
 	for _, rg := range groups {
 		view := newReleaseGroupViewIn(rg, catalogued, artist, byGroup[rg.MBID], scope)
 		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, rg.MBID)
 		view.Libraries = librariesOf(copies, rg.MBID)
-		views = append(views, view)
+		views = append(views, view.withTracked())
 	}
 	return artistDetailData{
 		Artist:        artistV,
@@ -1257,6 +1340,31 @@ func (a *API) detachArtist(c *gin.Context) {
 	})
 }
 
+// manageArtist makes an artist one of the user's own, whatever the rule says.
+func (a *API) manageArtist(c *gin.Context) { a.setManaged(c, true) }
+
+// unmanageArtist moves an artist to *Other artists in your files*, refused while
+// they are followed or hold a pick (collection.ErrManagedByIntent).
+func (a *API) unmanageArtist(c *gin.Context) { a.setManaged(c, false) }
+
+func (a *API) setManaged(c *gin.Context, on bool) {
+	artist, err := collection.SetManaged(a.DB, c.Param("mbid"), on)
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+		return
+	}
+	if errors.Is(err, collection.ErrManagedByIntent) {
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+		return
+	}
+	if err != nil {
+		logger.Log.Warnf("failed to set whether %s is managed: %s", c.Param("mbid"), err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update the artist"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"artist": a.artistViewFor(artist)})
+}
+
 // reattachArtist hands an artist back to whatever manages its libraries. The wants
 // detaching made manual stay manual — see collection.ReattachArtist.
 func (a *API) reattachArtist(c *gin.Context) {
@@ -1483,7 +1591,7 @@ func (a *API) discography(c *gin.Context) {
 		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, g.ID)
 		view.Libraries = librariesOf(copies, g.ID)
 		view.Links = links[g.ID]
-		out = append(out, view)
+		out = append(out, view.withTracked())
 	}
 
 	// Add any release-group the collection owns that the live discography did not list.
@@ -1497,7 +1605,7 @@ func (a *API) discography(c *gin.Context) {
 		view.OwnedEditions = ownedEditionsIn(scope, editionCounts, rg.MBID)
 		view.Libraries = librariesOf(copies, rg.MBID)
 		view.Links = links[rg.MBID]
-		out = append(out, view)
+		out = append(out, view.withTracked())
 	}
 
 	c.JSON(http.StatusOK, out)

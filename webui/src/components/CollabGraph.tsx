@@ -296,7 +296,9 @@ export function CollabGraph({
             return (
               <g
                 key={n.mb_id}
-                className={`g-node${isFocus || n.mb_id === selected ? " focus" : ""}${n.hop === 0 && report.center ? " center" : ""}${dim ? " faded" : ""}`}
+                // Not one of your artists: drawn quieter, so with everyone shown your own
+                // still stand out. The tooltip says it in words too.
+                className={`g-node${isFocus || n.mb_id === selected ? " focus" : ""}${n.hop === 0 && report.center ? " center" : ""}${dim ? " faded" : ""}${n.managed ? "" : " unmanaged"}`}
                 transform={`translate(${n.x},${n.y})`}
                 onPointerEnter={() => setHover(n.mb_id)}
                 onPointerLeave={() => setHover(null)}
@@ -311,6 +313,7 @@ export function CollabGraph({
                   {`${n.name}: ${n.tracks} ${n.tracks === 1 ? "recording" : "recordings"}`}
                   {colour === "genre" && n.genre ? ` · ${n.genre}` : ""}
                   {colour === "role" && n.role ? ` · mostly ${n.role}` : ""}
+                  {n.managed ? "" : " · not one of your artists"}
                 </title>
                 {showLabel && (
                   <text x={r + 4 * unit} y={3.5 * unit} style={{ fontSize: 10 * unit, strokeWidth: 3 * unit }}>

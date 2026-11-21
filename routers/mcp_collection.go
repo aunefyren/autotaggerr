@@ -31,12 +31,15 @@ type mcpArtistRow struct {
 	Mismatch  int    `json:"mismatch" jsonschema:"albums where disk and the manager's catalog disagree"`
 	Picked    int    `json:"picked" jsonschema:"albums explicitly asked for"`
 	Upgrade   int    `json:"upgrade" jsonschema:"wanted albums held below their quality profile's cutoff"`
+	Managed   bool   `json:"managed" jsonschema:"one of the user's own artists, rather than present only because files credit them"`
+	Reason    string `json:"managed_reason,omitempty" jsonschema:"why they are managed: added, manual, followed, wanted, lidarr, album_artist or settings"`
 }
 
 type mcpListArtistsInput struct {
 	NameContains string `json:"name_contains,omitempty" jsonschema:"case-insensitive substring of the artist name"`
 	Filter       string `json:"filter,omitempty" jsonschema:"only artists with: partial (owned albums missing tracks), mismatch, picked, upgrade (wanted albums below their quality cutoff), monitored or unmonitored"`
 	Library      string `json:"library,omitempty" jsonschema:"only artists with files in one library (name or ID), counted in that library: its holdings, its wants and who decides there. Omitted, every library at once"`
+	Scope        string `json:"scope,omitempty" jsonschema:"managed (default): the user's own artists — added, followed, wanted, listed in Lidarr or the album artist of an owned album; present: artists only credited on someone else's album; all: both"`
 	mcpPaging
 }
 
@@ -266,7 +269,8 @@ func (a *API) addMCPCollectionTools(server *mcp.Server) {
 	mcp.AddTool(server, &mcp.Tool{
 		Name: "list_artists",
 		Description: "The artists in the collection, by name, with album counts: owned, complete, partial, missing, " +
-			"mismatch and picked. Filter by name or by what needs attention.",
+			"mismatch and picked. The user's own (managed) artists by default; scope=present lists the artists only " +
+			"credited on someone else's album. Filter by name or by what needs attention.",
 		Annotations: readOnlyTool("List artists", false),
 	}, a.mcpListArtists)
 
@@ -306,10 +310,15 @@ func (a *API) mcpListArtists(_ context.Context, _ *mcp.CallToolRequest, in mcpLi
 	if err != nil {
 		return nil, mcpArtistList{}, err
 	}
+	scope, err := parseArtistScope(in.Scope, artistScopeManaged)
+	if err != nil {
+		return nil, mcpArtistList{}, err
+	}
 	all, err := a.artistList(library)
 	if err != nil {
 		return nil, mcpArtistList{}, mcpStoreError(err)
 	}
+	all = filterArtistScope(all, scope)
 	keep, err := mcpArtistFilter(in.Filter)
 	if err != nil {
 		return nil, mcpArtistList{}, err
@@ -339,7 +348,7 @@ func (a *API) mcpListArtists(_ context.Context, _ *mcp.CallToolRequest, in mcpLi
 			MBID: ar.MBID, Name: ar.Name, Monitored: ar.Monitored, ManagedBy: ar.ManagedBy,
 			Owned: ar.OwnedCount, Complete: ar.CompleteCount, Partial: ar.PartialCount,
 			Missing: ar.MissingCount, Mismatch: ar.MismatchCount, Picked: ar.PickedCount,
-			Upgrade: ar.UpgradeCount,
+			Upgrade: ar.UpgradeCount, Managed: ar.Managed, Reason: ar.ManagedReason,
 		})
 	}
 	return nil, out, nil

@@ -840,6 +840,9 @@ A node-link picture beside a list of the same data (`.graph-split`, 300px panel,
 - **Focus by contrast, not colour.** On hover or select, the artist's edges turn `--accent-text`,
   their neighbours keep full opacity, and everything else fades to about 0.3. A centred artist has an
   `--accent-text` ring.
+- **Your artists stand out by emphasis, not by another colour.** With *Show everyone credited* on,
+  an artist who is not one of yours (`.g-node.unmanaged`) keeps its category colour at 0.45 fill
+  opacity, and its tooltip says so. Colour stays the category's alone.
 - **Size is area, relative to the view.** Node radius grows with the square root of the count,
   from 3 to 20, against the largest artist drawn. An absolute scale made every node the same size
   once performers and producers (each on hundreds of recordings) were in. Edge width follows the

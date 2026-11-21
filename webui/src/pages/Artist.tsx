@@ -149,8 +149,29 @@ const CATEGORIES: { id: Category; label: string; hint: string }[] = [
   { id: "other", label: "Other", hint: "Live albums, compilations, remixes, soundtracks and broadcasts" },
 ];
 
-/** Sections that start closed: numerous, and rarely what you opened the page for. */
-const CLOSED_BY_DEFAULT = "single,other";
+/**
+ * Sections that start closed: numerous, and rarely what you opened the page for. The
+ * `more-` ones are the same categories under *More from MusicBrainz*.
+ */
+const CLOSED_BY_DEFAULT = "single,other,more-single,more-other";
+
+/**
+ * Whether an album is one the user has or manages — owned, held in a library, or
+ * wanted — rather than the rest of the MusicBrainz discography. The server says so
+ * (`tracked`); the fallback covers a payload from before the field existed.
+ */
+const isTracked = (g: CollectionReleaseGroup) => g.tracked ?? (g.owned || g.wanted);
+
+/** Why an artist is managed, as the header says it. */
+const MANAGED_REASON: Record<string, string> = {
+  added: "you manage them",
+  manual: "added by hand",
+  followed: "followed",
+  wanted: "something of theirs is wanted",
+  lidarr: "listed in Lidarr",
+  album_artist: "you have an album of theirs",
+  settings: "their settings were changed",
+};
 
 function category(g: CollectionReleaseGroup): Category {
   if ((g.secondary_types || "").trim() !== "") return "other";
@@ -368,6 +389,23 @@ export default function Artist() {
     }
   };
 
+  // Managing is the user's answer to "is this one of my artists?", overriding the
+  // rule the header reads. Stopping is refused while they are followed or hold a pick
+  // (a 409 naming what to undo first), which the toast says.
+  const setManaged = async (on: boolean) => {
+    setBusy(true);
+    try {
+      if (on) await api.post(`/artists/${mbid}/manage`);
+      else await api.del(`/artists/${mbid}/manage`);
+      toast("ok", on ? "Now one of your artists" : "Moved to Other artists in your files");
+      refresh();
+    } catch (e) {
+      toast("err", errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const updateFollow = async (body: Record<string, unknown>) => {
     setBusy(true);
     try {
@@ -447,12 +485,48 @@ export default function Artist() {
   // "unset" and spring the defaults back open.
   const closedRaw = browse.flag("closed") ?? CLOSED_BY_DEFAULT;
   const closed = new Set(closedRaw === "-" ? [] : closedRaw.split(",").filter(Boolean));
-  const toggleSection = (id: Category) => {
+  const toggleSection = (id: string) => {
     const next = new Set(closed);
     if (next.has(id)) next.delete(id);
     else next.add(id);
     browse.setFlag("closed", next.size === 0 ? "-" : [...next].join(","));
   };
+
+  // Two tiers, Lidarr-style: what you have or manage first, and the rest of the
+  // discography under *More from MusicBrainz*, closed unless asked for — browsing a
+  // catalogue is not the same as wanting it, and the rest is most of it. With nothing
+  // in the first tier there is nothing to hide the rest behind.
+  const trackedRows = shown.filter(isTracked);
+  const moreRows = shown.filter((g) => !isTracked(g));
+  const moreForced = trackedRows.length === 0;
+  const moreOpen = moreForced || browse.flag("more") === "1";
+  // The four categories over one tier's rows. The `more-` prefix keeps the second
+  // tier's open/closed state and paging apart from the first's.
+  const renderSections = (tierRows: CollectionReleaseGroup[], prefix: "" | "more-") =>
+    CATEGORIES.map(({ id, label, hint }) => {
+      const rows = sortRows(tierRows.filter((g) => category(g) === id), SORT[browse.sort] ?? SORT.year, browse.dir);
+      if (rows.length === 0) return null;
+      const key = prefix + id;
+      return (
+        <CatalogSection
+          key={key}
+          id={key}
+          label={label}
+          hint={hint}
+          rows={rows}
+          browseOnly={prefix === "more-"}
+          closed={closed.has(key)}
+          onToggle={() => toggleSection(key)}
+          browse={browse}
+          manager={managerLabel}
+          managerGoverns={lidarrView}
+          showLibraries={libraries.multi && !viewLibrary}
+          artist={artist}
+          artistMbid={mbid}
+          onChanged={refresh}
+        />
+      );
+    });
 
   if (detail.err) return <ErrorNote message={detail.err} />;
 
@@ -509,6 +583,20 @@ export default function Artist() {
             {artist?.origin === "manual" && (
               <span className="dim" style={{ fontSize: 11 }} title="Added by hand">added</span>
             )}
+            {artist && (
+              <>
+                <span className="sep">·</span>
+                {artist.managed ? (
+                  <span className="dim" style={{ fontSize: 11 }} title="One of your artists: listed under Managed in the collection">
+                    Managed · {MANAGED_REASON[artist.managed_reason ?? ""] ?? "yours"}
+                  </span>
+                ) : (
+                  <span className="dim" style={{ fontSize: 11 }} title="Here because a file credits them, not because you chose them">
+                    Not one of your artists · credited on {onDisk.length} {onDisk.length === 1 ? "album" : "albums"} you own
+                  </span>
+                )}
+              </>
+            )}
             {whereLabel && (
               <>
                 <span className="sep">·</span>
@@ -538,6 +626,16 @@ export default function Artist() {
                 the page has but does not show — the same failure the "Following"
                 label fixed for the toggle itself. It sits here, not only inside the
                 Settings disclosure, because that disclosure starts closed. */}
+            {!artist.managed && (
+              <button
+                className="btn btn-primary btn-sm"
+                disabled={busy}
+                title="Make this one of your artists: listed under Managed in the collection, their discography read, and shown in the Insights graph"
+                onClick={() => setManaged(true)}
+              >
+                Manage
+              </button>
+            )}
             {!artist.follow_governs && (
               <Pill kind="off">{artist.edit_blocked === "choose_library" ? "Choose a library" : `Managed by ${managerLabel}`}</Pill>
             )}
@@ -614,6 +712,7 @@ export default function Artist() {
             onDetach={() => setAuthorityAsk("detach")}
             onReattach={() => setAuthorityAsk("reattach")}
           />
+          <ManagedSetting artist={artist} busy={busy} onSet={setManaged} />
         </>
       )}
 
@@ -849,28 +948,29 @@ export default function Artist() {
                 <th style={{ textAlign: "right" }}>Actions</th>
               </tr>
             </thead>
-            {CATEGORIES.map(({ id, label, hint }) => {
-              const rows = sortRows(shown.filter((g) => category(g) === id), SORT[browse.sort] ?? SORT.year, browse.dir);
-              if (rows.length === 0) return null;
-              return (
-                <CatalogSection
-                  key={id}
-                  id={id}
-                  label={label}
-                  hint={hint}
-                  rows={rows}
-                  closed={closed.has(id)}
-                  onToggle={() => toggleSection(id)}
-                  browse={browse}
-                  manager={managerLabel}
-                  managerGoverns={lidarrView}
-                  showLibraries={libraries.multi && !viewLibrary}
-                  artist={artist}
-                  artistMbid={mbid}
-                  onChanged={refresh}
-                />
-              );
-            })}
+            {trackedRows.length > 0 && renderSections(trackedRows, "")}
+            {moreRows.length > 0 && (
+              <tbody>
+                <tr className="group-row">
+                  <td colSpan={8}>
+                    <button
+                      type="button"
+                      className="group-head"
+                      aria-expanded={moreOpen}
+                      disabled={moreForced}
+                      title="The rest of what MusicBrainz lists for this artist: nothing of it is owned or wanted. Browse it, and pick what you want."
+                      onClick={() => browse.setFlag("more", moreOpen ? null : "1")}
+                    >
+                      <span className="twisty">{moreOpen ? "▼" : "▶"}</span>
+                      More from MusicBrainz
+                      <span className="group-n">{moreRows.length}</span>
+                      <span className="dim" style={{ fontSize: 11, fontWeight: 400 }}>not in your collection</span>
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            )}
+            {moreRows.length > 0 && moreOpen && renderSections(moreRows, "more-")}
           </table>
         </div>
       )}
@@ -899,6 +999,7 @@ function CatalogSection({
   label,
   hint,
   rows,
+  browseOnly,
   closed,
   onToggle,
   browse,
@@ -909,11 +1010,14 @@ function CatalogSection({
   artistMbid,
   onChanged,
 }: {
-  id: Category;
+  /** The category, prefixed `more-` under More from MusicBrainz. */
+  id: string;
   label: string;
   hint: string;
   /** Already filtered and sorted: the section slices, it does not decide the order. */
   rows: CollectionReleaseGroup[];
+  /** Under More from MusicBrainz: nothing is owned, so no coverage meter. */
+  browseOnly?: boolean;
   closed: boolean;
   onToggle: () => void;
   browse: Browse;
@@ -941,14 +1045,16 @@ function CatalogSection({
                 is on screen; a header that counted only the slice would make the
                 coverage meter beside it describe a different set. */}
             <span className="group-n">{rows.length}</span>
-            <span className="group-cov">
-              <CoverageBar
-                total={rows.length}
-                owned={owned.filter((g) => g.complete).length}
-                partial={owned.filter((g) => !g.complete).length}
-                label={label}
-              />
-            </span>
+            {!browseOnly && (
+              <span className="group-cov">
+                <CoverageBar
+                  total={rows.length}
+                  owned={owned.filter((g) => g.complete).length}
+                  partial={owned.filter((g) => !g.complete).length}
+                  label={label}
+                />
+              </span>
+            )}
           </button>
         </td>
       </tr>
@@ -1281,6 +1387,45 @@ function ReleaseGroupRow({
  * natively-managed case is a sentence with no control, which is the honest shape:
  * there is no authority to take back.
  */
+/**
+ * Whether this is one of your artists, and the way to say otherwise. The rule decides
+ * by default (added, followed, wanted, listed in Lidarr, the artist of an album you
+ * own); this is the override, in the disclosure because it is set once.
+ */
+function ManagedSetting({
+  artist,
+  busy,
+  onSet,
+}: {
+  artist: CollectionArtist;
+  busy: boolean;
+  onSet: (on: boolean) => void;
+}) {
+  return (
+    <div className="card">
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <span className="eyebrow">Your artists</span>
+      </div>
+      <div className="row" style={{ justifyContent: "space-between", gap: 16, alignItems: "flex-start" }}>
+        <div className="dim" style={{ fontSize: 11, maxWidth: "58ch" }}>
+          {artist.managed
+            ? `Managed: ${MANAGED_REASON[artist.managed_reason ?? ""] ?? "yours"}. Listed under Managed in the collection and drawn in the Insights graph. Stopping moves them to Other artists in your files; their files are not touched.`
+            : "Not one of your artists: here because a file credits them. Nothing of theirs is wanted and their discography is not read."}
+        </div>
+        {artist.managed ? (
+          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onSet(false)}>
+            Stop managing
+          </button>
+        ) : (
+          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onSet(true)}>
+            Manage
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ManagerAuthority({
   artist,
   busy,

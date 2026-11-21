@@ -45,7 +45,22 @@ func (r *Runner) ReadCatalogues() {
 			logger.Log.Warnf("failed to list artists to read discographies for: %s", err.Error())
 			return
 		}
-		r.readDiscographies("Read discographies", mbids)
+		// Managed artists only. A present-only artist is a co-credit nobody asked
+		// about, and a large library has hundreds: reading each one's catalogue spent
+		// rate-limited MusicBrainz time on a number no view of them shows. Managing
+		// one reads theirs (collection.SetManaged).
+		managed, err := collection.ManagedArtists(r.db)
+		if err != nil {
+			logger.Log.Warnf("failed to read which artists are managed: %s", err.Error())
+			return
+		}
+		kept := mbids[:0]
+		for _, id := range mbids {
+			if managed[id] != "" {
+				kept = append(kept, id)
+			}
+		}
+		r.readDiscographies("Read discographies", kept)
 	}})
 }
 

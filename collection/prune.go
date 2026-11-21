@@ -319,6 +319,8 @@ func withdrawCredit(db *gorm.DB, rg models.CollectionReleaseGroup, artistMBID, n
 //
 //   - **Origin is `library`.** An artist added by hand is a statement of intent that
 //     owning nothing does not retract — that is the whole reason Origin exists.
+//   - **Not managed by hand** (ManageOverride on). Choosing to manage an artist is
+//     the same statement as adding them, and survives their last file the same way.
 //   - **Not monitored.** Following someone is authored state, and an artist followed
 //     before their first file arrives owns nothing by definition.
 //   - **No desires.** Same rule the deletion path follows: what the user asked for is
@@ -335,7 +337,8 @@ func pruneOrphanArtists(db *gorm.DB) (int, error) {
 	}
 
 	var artists []models.CollectionArtist
-	if err := db.Where("origin = ? AND monitored = ?", models.CollectionOriginLibrary, false).
+	if err := db.Where("origin = ? AND monitored = ? AND (manage_override IS NULL OR manage_override <> ?)",
+		models.CollectionOriginLibrary, false, models.ManageOn).
 		Find(&artists).Error; err != nil {
 		return 0, err
 	}

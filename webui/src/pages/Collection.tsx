@@ -280,7 +280,24 @@ export default function Collection() {
     }
   };
 
-  const artists = data ?? [];
+  const everyone = data ?? [];
+  // Two tabs over one answer. *Managed* is your artists: added, followed, wanted,
+  // listed in Lidarr, or the album artist of something you own. *Other artists in
+  // your files* is everyone else a file credits — a featured artist on someone else's
+  // album — whom the collection keeps (they own files) without calling them yours.
+  const tab: "managed" | "other" = browse.flag("tab") === "other" ? "other" : "managed";
+  const managedArtists = everyone.filter((ar) => ar.managed);
+  const otherArtists = everyone.filter((ar) => !ar.managed);
+  const artists = tab === "other" ? otherArtists : managedArtists;
+  const manage = async (ar: CollectionArtist) => {
+    try {
+      await api.post(`/artists/${ar.mb_id}/manage`);
+      toast("ok", `${ar.name} is now one of your artists`);
+      reload();
+    } catch (e) {
+      toast("err", errMsg(e));
+    }
+  };
   // The first load only — the one with nothing on screen to keep. A reload has data
   // already (after a run ends, and after Scan), and replacing a populated table with
   // placeholders would be a step backwards from the wait this exists to soften: the
@@ -289,7 +306,7 @@ export default function Collection() {
   // Mirroring cannot introduce an artist — it reads the catalogue of artists the
   // collection already has and says are Lidarr's. With none of those, the pass returns
   // before its first HTTP call, so the button's only outcome is a zero in the feed.
-  const lidarrArtists = artists.filter(
+  const lidarrArtists = everyone.filter(
     (ar) => ar.managed_by === "lidarr" || ar.managed_by === "mixed"
   ).length;
   const syncBlocked = !loading && lidarrArtists === 0;
@@ -358,7 +375,7 @@ export default function Collection() {
           <button
             className="btn btn-secondary btn-sm"
             onClick={() => setFollowing(true)}
-            disabled={artists.length === 0}
+            disabled={managedArtists.length === 0}
             title="Follow several artists at once, so what they released is listed as missing"
           >
             Follow artists
@@ -463,7 +480,7 @@ export default function Collection() {
       </p>
 
       {err && <ErrorNote message={err} />}
-      {!err && !loading && artists.length === 0 && (
+      {!err && !loading && everyone.length === 0 && (
         <EmptyState
           icon="♫"
           message="No artists yet. Process your libraries to read the files on disk — the collection is derived from what that finds."
@@ -475,8 +492,36 @@ export default function Collection() {
         />
       )}
 
-      {(first || artists.length > 0) && (
+      {(first || everyone.length > 0) && (
         <>
+          <div className="tabs" role="tablist" aria-label="Which artists">
+            <button
+              type="button"
+              role="tab"
+              className="tab"
+              aria-selected={tab === "managed"}
+              onClick={() => browse.setFlag("tab", null)}
+              title="Artists you added, follow, want something from, have set up, that Lidarr lists, or whose own album you have"
+            >
+              Managed{!first && <span className="dim mono"> {managedArtists.length}</span>}
+            </button>
+            <button
+              type="button"
+              role="tab"
+              className="tab"
+              aria-selected={tab === "other"}
+              onClick={() => browse.setFlag("tab", "other")}
+              title="Artists here only because a file credits them — featured on, or co-credited with, someone else's album"
+            >
+              Other artists in your files{!first && <span className="dim mono"> {otherArtists.length}</span>}
+            </button>
+          </div>
+          {tab === "other" && (
+            <p className="muted" style={{ margin: 0, maxWidth: "70ch" }}>
+              Credited on albums you own, but not one of your artists: nothing of theirs is wanted, and
+              their discography is not read. <strong>Manage</strong> makes one yours.
+            </p>
+          )}
           {/* The filter box is live through the wait — typing while the collection
               loads narrows the list the moment it arrives, which is the other half of
               making the page usable before it is finished. The chip and the count are
@@ -527,7 +572,13 @@ export default function Collection() {
 
           {!first && shown.length === 0 ? (
             <div className="card">
-              <div className="dim" style={{ fontSize: 12 }}>No artist matches this filter.</div>
+              <div className="dim" style={{ fontSize: 12 }}>
+                {artists.length > 0
+                  ? "No artist matches this filter."
+                  : tab === "other"
+                    ? "Every artist in your files is one of yours."
+                    : "None of your artists yet. Add or follow one, or manage one from Other artists in your files."}
+              </div>
             </div>
           ) : (
             <div className="tablewrap" aria-busy={first || undefined}>
@@ -546,11 +597,20 @@ export default function Collection() {
                     {libraries.multi && <th>Libraries</th>}
                     {/* One bar replaces the four bare count columns: "9 of 12 on disk"
                         is the question those numbers were being read to answer. */}
-                    <th style={{ width: 190 }}>On disk</th>
-                    <SortHeader browse={browse} sortKey="missing" align="right" defaultDir="desc">Missing</SortHeader>
-                    <SortHeader browse={browse} sortKey="upgrade" align="right" defaultDir="desc">Upgrade</SortHeader>
-                    <SortHeader browse={browse} sortKey="mismatch" align="right" defaultDir="desc">Mismatch</SortHeader>
-                    <th>Wanted</th>
+                    {tab === "other" ? (
+                      <>
+                        <SortHeader browse={browse} sortKey="albums" align="right" defaultDir="desc">Credited on</SortHeader>
+                        <th></th>
+                      </>
+                    ) : (
+                      <>
+                        <th style={{ width: 190 }}>On disk</th>
+                        <SortHeader browse={browse} sortKey="missing" align="right" defaultDir="desc">Missing</SortHeader>
+                        <SortHeader browse={browse} sortKey="upgrade" align="right" defaultDir="desc">Upgrade</SortHeader>
+                        <SortHeader browse={browse} sortKey="mismatch" align="right" defaultDir="desc">Mismatch</SortHeader>
+                        <th>Wanted</th>
+                      </>
+                    )}
                   </tr>
                 </thead>
                 {first && <LoadingRows libraries={libraries.multi} />}
@@ -588,49 +648,72 @@ export default function Collection() {
                             )}
                           </td>
                         )}
-                        <td>
-                          <div className="row" style={{ gap: 8 }}>
-                            {/* Proportional down the whole column, whatever the count:
-                                one shape all the way down a page of artists is worth
-                                more than the cell count on the short rows, and the
-                                number beside it already answers "how many". */}
-                            {/* Faded until the discography is read: what it shows is only
-                                what is stored, and a full bar would claim completeness. */}
-                            <span style={{ display: "inline-flex", opacity: unread ? 0.45 : 1 }}>
-                              <CoverageBar
-                                total={total}
-                                owned={complete}
-                                partial={partial}
-                                label={`${ar.name} albums`}
-                                width={120}
-                                proportional
-                              />
-                            </span>
-                            <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                              {owned}
-                              {total > owned && <span className="dim">/{total}</span>}
-                              {unread && <span className="dim" title="The discography is queued to be read; until then only what is stored is counted">/?</span>}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="num" style={{ color: (ar.missing_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}>
-                          {hasWanted(ar) ? (ar.missing_count ?? 0) : "—"}
-                        </td>
-                        <td
-                          className="num"
-                          style={{ color: (ar.upgrade_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}
-                          title={(ar.upgrade_count ?? 0) > 0 ? "Wanted albums held below their quality profile's cutoff" : undefined}
-                        >
-                          {(ar.upgrade_count ?? 0) > 0 ? ar.upgrade_count : "—"}
-                        </td>
-                        <td
-                          className="num"
-                          style={{ color: (ar.mismatch_count ?? 0) > 0 ? "var(--warning-text)" : "var(--text-dim)" }}
-                          title={(ar.mismatch_count ?? 0) > 0 ? "Disk and manager disagree on some albums — open the artist for details" : undefined}
-                        >
-                          {(ar.mismatch_count ?? 0) > 0 ? ar.mismatch_count : "—"}
-                        </td>
-                        <td><WantedSummary artist={ar} /></td>
+                        {tab === "other" ? (
+                          <>
+                            {/* No coverage bar: their discography is not read, so there is
+                                nothing to measure them against — only how many of your
+                                albums credit them. */}
+                            <td className="num">
+                              {owned} {owned === 1 ? "album" : "albums"}
+                            </td>
+                            <td style={{ textAlign: "right" }}>
+                              <button
+                                type="button"
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => manage(ar)}
+                                title="Make this one of your artists: listed under Managed, their discography read, and followable"
+                              >
+                                Manage
+                              </button>
+                            </td>
+                          </>
+                        ) : (
+                          <>
+                            <td>
+                              <div className="row" style={{ gap: 8 }}>
+                                {/* Proportional down the whole column, whatever the count:
+                                    one shape all the way down a page of artists is worth
+                                    more than the cell count on the short rows, and the
+                                    number beside it already answers "how many". */}
+                                {/* Faded until the discography is read: what it shows is only
+                                    what is stored, and a full bar would claim completeness. */}
+                                <span style={{ display: "inline-flex", opacity: unread ? 0.45 : 1 }}>
+                                  <CoverageBar
+                                    total={total}
+                                    owned={complete}
+                                    partial={partial}
+                                    label={`${ar.name} albums`}
+                                    width={120}
+                                    proportional
+                                  />
+                                </span>
+                                <span className="mono" style={{ fontSize: 11, color: "var(--text-muted)" }}>
+                                  {owned}
+                                  {total > owned && <span className="dim">/{total}</span>}
+                                  {unread && <span className="dim" title="The discography is queued to be read; until then only what is stored is counted">/?</span>}
+                                </span>
+                              </div>
+                            </td>
+                            <td className="num" style={{ color: (ar.missing_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}>
+                              {hasWanted(ar) ? (ar.missing_count ?? 0) : "—"}
+                            </td>
+                            <td
+                              className="num"
+                              style={{ color: (ar.upgrade_count ?? 0) > 0 ? "var(--accent-text)" : "var(--text-dim)" }}
+                              title={(ar.upgrade_count ?? 0) > 0 ? "Wanted albums held below their quality profile's cutoff" : undefined}
+                            >
+                              {(ar.upgrade_count ?? 0) > 0 ? ar.upgrade_count : "—"}
+                            </td>
+                            <td
+                              className="num"
+                              style={{ color: (ar.mismatch_count ?? 0) > 0 ? "var(--warning-text)" : "var(--text-dim)" }}
+                              title={(ar.mismatch_count ?? 0) > 0 ? "Disk and manager disagree on some albums — open the artist for details" : undefined}
+                            >
+                              {(ar.mismatch_count ?? 0) > 0 ? ar.mismatch_count : "—"}
+                            </td>
+                            <td><WantedSummary artist={ar} /></td>
+                          </>
+                        )}
                       </tr>
                     );
                   })}
@@ -659,7 +742,9 @@ export default function Collection() {
       )}
       {following && (
         <FollowArtistsDialog
-          artists={artists}
+          // Your artists only: the dialog ticks every candidate, and following one
+          // makes them yours — offering everyone would manage the Other tab in a click.
+          artists={managedArtists}
           onClose={() => setFollowing(false)}
           onDone={() => { setFollowing(false); reload(); }}
         />

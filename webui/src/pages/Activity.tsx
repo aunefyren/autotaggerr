@@ -44,6 +44,7 @@ const TYPE_LABELS: Record<string, string> = {
   download_removed: "Downloads removed",
   organise: "Organise",
   duplicate_check: "Duplicate check",
+  follow_cleanup: "Follow cleanup",
 };
 
 /**
@@ -90,6 +91,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Imported downloads removed from their client, files and all, because the client is set to remove them once they finish seeding. Only downloads Autotaggerr imported in full, and only once the client stopped them for reaching a share limit set there — a torrent paused by hand is never removed. Every album was already in the library; this removes the second copy.",
   duplicate_check:
     "Reads the audio of files that share a recording, an album and a format, so Insights can say whether two copies are the same audio. Each file is read once with its tags left out and nothing decoded; a hash the tempo or loudness analysis already took of the file as it is now is reused instead. No file is written. Only failures are listed below.",
+  follow_cleanup:
+    "Once, on upgrade: artists the new-artist policy had followed only because they were credited beside someone else on an album you own were unfollowed, and their follow settings reset. The policy now follows only the artist whose album it is. Follow any of them again from their page if that was you; nothing on disk changed.",
   tag_files:
     "Everything this pass wrote to disk. The walk finds files whose tags no longer match what Autotaggerr knows; the drift half rewrites files whose release changed upstream, which the walk cannot see because the file itself has not moved.",
 };
@@ -965,6 +968,11 @@ const ENTITY_OUTCOMES: Record<string, { label: string; kind: string; note: strin
     label: "Left the collection",
     kind: "warn",
     note: "No indexed file resolves to it any more — the files were removed or moved, their identity changed, or their manager stopped recognising them. The album stays in the catalogue if a manager or a want still holds it; only the disk view let go.",
+  },
+  unfollowed: {
+    label: "Unfollowed",
+    kind: "off",
+    note: "No longer followed: the new-artist policy followed them only because an album you own credits them beside its own artist. Their albums stay; nothing of theirs is wanted any more.",
   },
   recredited: {
     label: "Credit moved",

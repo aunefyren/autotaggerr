@@ -161,6 +161,10 @@ const (
 	// EventTypeDuplicateCheck is a pass hashing the audio of files that share a
 	// recording, so the Insights page can say whether two copies are identical.
 	EventTypeDuplicateCheck = "duplicate_check"
+	// EventTypeFollowCleanup is the one-time pass that unfollowed artists the
+	// new-artist policy had followed only because a collaboration credited them
+	// (collection.UnfollowPolicyCoCredits).
+	EventTypeFollowCleanup = "follow_cleanup"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -1315,6 +1319,8 @@ const (
 	EventItemStatusAdded      = "added"
 	EventItemStatusLeft       = "left"
 	EventItemStatusRecredited = "recredited"
+	// EventItemStatusUnfollowed: an artist the follow cleanup stopped following.
+	EventItemStatusUnfollowed = "unfollowed"
 )
 
 // What an EventItem describes. Empty (EventItemKindFile) is the default and covers
@@ -1428,7 +1434,21 @@ type CollectionArtist struct {
 	// their own page can say it and offer to join them to the artist the manager now
 	// lists instead. Cleared by the next sync that finds them.
 	ManagerMissingAt *time.Time `json:"manager_missing_at"`
+
+	// ManageOverride is the user's own answer to "is this one of my artists?",
+	// overriding the derived rule (collection.ManagedReason): ManageOn keeps an artist
+	// managed whatever the rule says, ManageOff keeps them in *Other artists in your
+	// files*, and ManageAuto (empty, every row by default) lets the rule decide. Only
+	// the user writes it, so it survives every Rebuild, the same as ManagerDetached.
+	ManageOverride string `gorm:"size:8" json:"manage_override"`
 }
+
+// ManageOverride values. See CollectionArtist.ManageOverride.
+const (
+	ManageAuto = ""
+	ManageOn   = "on"
+	ManageOff  = "off"
+)
 
 // DefaultFollowTypes is what following an artist wants when nothing is configured.
 const DefaultFollowTypes = "Album,EP"

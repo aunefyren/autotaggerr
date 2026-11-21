@@ -54,6 +54,14 @@ type GraphOptions struct {
 	Hops   int
 	// Limit caps the nodes drawn (DefaultGraphNodes when zero).
 	Limit int
+	// Managed is the user's own artists (collection.ManagedArtists), handed in
+	// because this package cannot import collection. It marks nodes, and with
+	// ManagedOnly it decides which artists the graph is between: an edge is kept only
+	// when both ends are managed, the centred artist counting as managed so a graph
+	// centred on anyone shows their managed collaborators. Applied after the
+	// cached count, like the floors, so toggling it never recounts.
+	Managed     map[string]bool
+	ManagedOnly bool
 }
 
 // GraphNode is one artist.
@@ -65,6 +73,8 @@ type GraphNode struct {
 	Tracks int `json:"tracks"`
 	// InCollection marks an artist with a collection page to link to.
 	InCollection bool `json:"in_collection"`
+	// Managed marks one of the user's own artists (GraphOptions.Managed).
+	Managed bool `json:"managed"`
 	// Hop is the distance from the centred artist (0 for it); 0 for every node of an
 	// uncentred graph.
 	Hop int `json:"hop"`
@@ -112,6 +122,13 @@ type GraphReport struct {
 
 type pairKey struct{ a, b string }
 
+// managedPair reports whether an edge is between managed artists, the centred artist
+// counting as one.
+func managedPair(opts GraphOptions, p pairKey) bool {
+	in := func(id string) bool { return opts.Managed[id] || (opts.Artist != "" && id == opts.Artist) }
+	return in(p.a) && in(p.b)
+}
+
 func orderedPair(x, y string) pairKey {
 	if x < y {
 		return pairKey{x, y}
@@ -143,6 +160,9 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 	adjacent := map[string]map[string]int{}
 	for p, w := range weights {
 		if w < opts.MinWeight || tracks[p.a] < opts.MinTracks || tracks[p.b] < opts.MinTracks {
+			continue
+		}
+		if opts.ManagedOnly && !managedPair(opts, p) {
 			continue
 		}
 		for _, e := range [][2]string{{p.a, p.b}, {p.b, p.a}} {
@@ -250,7 +270,8 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 		}
 	}
 	node := func(id string) GraphNode {
-		return GraphNode{MBID: id, Name: names[id], Tracks: tracks[id], InCollection: collected[id], Hop: hop[id],
+		return GraphNode{MBID: id, Name: names[id], Tracks: tracks[id], InCollection: collected[id],
+			Managed: opts.Managed[id], Hop: hop[id],
 			Genre: genres[id], Role: mainRoles[id]}
 	}
 

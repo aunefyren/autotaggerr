@@ -779,6 +779,15 @@ export interface EventsPage {
 export interface CollectionArtist {
   mb_id: string;
   name: string;
+  /**
+   * One of the user's own artists rather than one present only because files credit
+   * them. `managed_reason` says why: added, manual, followed, wanted, lidarr,
+   * album_artist or settings.
+   */
+  managed: boolean;
+  managed_reason?: ManagedReason;
+  /** The user's own answer, overriding the rule: "on", "off" or "" (the rule decides). */
+  manage_override?: string;
   /** Set when a manager sync found the manager no longer lists this artist. */
   manager_missing_at?: string | null;
   /** Following is *stored*; see follow_governs for whether it currently decides. */
@@ -892,6 +901,11 @@ export type Discrepancy = "" | "unmapped" | "stale_catalog" | "not_indexed" | "n
 
 export interface CollectionReleaseGroup {
   mb_id: string;
+  /**
+   * Owned in this view, held in any library, or wanted: the albums the artist page
+   * lists first. The rest of the discography is under *More from MusicBrainz*.
+   */
+  tracked?: boolean;
   artist_mb_id: string;
   title: string;
   primary_type: string;
@@ -1540,6 +1554,8 @@ export interface LibraryStats {
 export interface GraphNode {
   mb_id: string;
   name: string;
+  /** One of the user's own artists. */
+  managed: boolean;
   /** Recordings in scope crediting the artist, in the roles asked for. */
   tracks: number;
   in_collection: boolean;
@@ -1576,3 +1592,6 @@ export interface GraphReport {
   /** The library's top genres, most common first: the ones with a colour of their own. */
   genres: string[];
 }
+
+/** Why an artist is managed (collection.ManagedReason). */
+export type ManagedReason = "added" | "manual" | "followed" | "wanted" | "lidarr" | "album_artist" | "settings";

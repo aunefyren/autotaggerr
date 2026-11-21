@@ -63,12 +63,14 @@ func TestReadCataloguesReadsWhatWasNeverRead(t *testing.T) {
 	r := catalogueRunner(t, meta)
 	recent, old := time.Now(), time.Now().Add(-2*catalogueMaxAge)
 	for _, a := range []models.CollectionArtist{
-		{MBID: "scanned", Name: "Scanned", ManagedBy: models.ManagedByAutotaggerr},
+		{MBID: "scanned", Name: "Scanned", ManagedBy: models.ManagedByAutotaggerr, Origin: models.CollectionOriginManual},
 		{MBID: "followed", Name: "Followed", ManagedBy: models.ManagedByAutotaggerr, Monitored: true},
 		{MBID: "lidarr", Name: "Lidarr", ManagedBy: models.ManagedByLidarr, Monitored: true},
 		{MBID: "fresh", Name: "Fresh", ManagedBy: models.ManagedByAutotaggerr, CatalogueReadAt: &recent, CatalogueCount: 9},
-		{MBID: "stale", Name: "Stale", ManagedBy: models.ManagedByAutotaggerr, CatalogueReadAt: &old},
-		{MBID: "down", Name: "Down", ManagedBy: models.ManagedByAutotaggerr},
+		{MBID: "stale", Name: "Stale", ManagedBy: models.ManagedByAutotaggerr, CatalogueReadAt: &old, Origin: models.CollectionOriginManual},
+		{MBID: "down", Name: "Down", ManagedBy: models.ManagedByAutotaggerr, Origin: models.CollectionOriginManual},
+		// Present only: credited beside someone else, never managed, never read.
+		{MBID: "cocredit", Name: "Cocredit", ManagedBy: models.ManagedByAutotaggerr, Origin: models.CollectionOriginLibrary},
 	} {
 		if err := r.db.Create(&a).Error; err != nil {
 			t.Fatal(err)
@@ -87,6 +89,9 @@ func TestReadCataloguesReadsWhatWasNeverRead(t *testing.T) {
 		if a := artist(mbid); a.CatalogueCount != 2 || a.CatalogueReadAt == nil {
 			t.Errorf("%s: catalogue = %d read %v, want 2", mbid, a.CatalogueCount, a.CatalogueReadAt)
 		}
+	}
+	if meta.reads["cocredit"] != 0 {
+		t.Error("a present-only artist's discography was read")
 	}
 	if meta.reads["fresh"] != 0 || artist("fresh").CatalogueCount != 9 {
 		t.Error("a discography read recently was read again")

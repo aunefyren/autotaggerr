@@ -134,6 +134,13 @@ func main() {
 		logger.Log.Warnf("failed to backfill want provenance: %s", err.Error())
 	}
 
+	// Once per install: take back the follows the new-artist policy gave artists who
+	// were only co-credited on someone else's album. Before anything can enqueue a
+	// discography read for them.
+	if err := collection.UnfollowPolicyCoCredits(db); err != nil {
+		logger.Log.Warnf("failed to unfollow co-credited artists: %s", err.Error())
+	}
+
 	// Set GIN mode
 	if files.ConfigFile.AutotaggerrEnvironment != "test" {
 		gin.SetMode(gin.ReleaseMode)

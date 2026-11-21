@@ -1066,6 +1066,9 @@ func applyArtistRedirect(tx *gorm.DB, m models.MusicbrainzMigration) (applyCount
 		if source.Origin == models.CollectionOriginManual {
 			target.Origin = models.CollectionOriginManual
 		}
+		// The user's own answer about managing them: "manage" beats "don't", and
+		// either beats leaving it to the rule — the same lean toward keeping more.
+		target.ManageOverride = strongerManageOverride(target.ManageOverride, source.ManageOverride)
 		if target.Name == "" {
 			target.Name = source.Name
 		}
@@ -1348,4 +1351,14 @@ func RelinkRelease(db *gorm.DB, releaseMBID, releaseGroupMBID string) (bool, err
 	return true, db.Model(&models.CollectionRelease{}).
 		Where("mb_id = ?", releaseMBID).
 		Update("release_group_mb_id", releaseGroupMBID).Error
+}
+
+// strongerManageOverride merges two artists' ManageOverride: on, then off, then auto.
+func strongerManageOverride(a, b string) string {
+	for _, v := range []string{models.ManageOn, models.ManageOff} {
+		if a == v || b == v {
+			return v
+		}
+	}
+	return models.ManageAuto
 }

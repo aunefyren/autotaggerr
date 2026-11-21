@@ -462,6 +462,7 @@
 .g-node.center circle:not(.hit) { stroke: var(--accent-text); stroke-width: 3px; }
 .g-node.focus circle:not(.hit) { fill: var(--accent-hover); stroke: var(--text); }
 .g-node.faded { opacity: 0.3; }
+.g-node.unmanaged circle:not(.hit) { fill-opacity: 0.45; }
 .g-node text { font-family: var(--font-sans); font-size: 10px; fill: var(--text-muted); paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; pointer-events: none; }
 .g-node.focus text { fill: var(--text); font-weight: 600; }
 .collab-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--border); }

@@ -182,9 +182,19 @@ two releases, or in two libraries, or crediting one artist in two roles, counts 
 | `special` | off | let Various Artists and placeholders (`[unknown]`, `[traditional]`, …) in |
 | `artist`, `hops` | — | centre on one artist: their collaborators (1) or theirs too (2) |
 | `limit` | 150 (max 500) | node cap |
+| `everyone` | off | every artist credited, not only [managed](collection.md#managed-and-present-only-artists) ones |
 
 - **Various Artists is out by default.** It is credited on every compilation track and would
   connect everything.
+- **Only your artists by default.** The credits name every featured artist, producer and writer, so
+  the graph was mostly strangers. An edge is kept only when both of its artists are
+  [managed](collection.md#managed-and-present-only-artists). The centred artist counts as managed,
+  so a graph centred on anyone shows their managed collaborators. *Show everyone credited*
+  (`everyone=1`) turns this off. The router reads the managed set per request
+  (`collection.ManagedArtists`) and hands it in through `GraphOptions.Managed`, because `insights`
+  cannot import `collection`. It is applied **after the cached count**, like the floors, so toggling
+  it never recounts. Each node carries `managed`. In the everyone view, unmanaged nodes are drawn at
+  lower fill opacity and their tooltip says so.
 - **The node cap is what keeps the graph readable.** Uncentred, artists are picked by following
   the strongest edges: each edge, heaviest first, brings in both of its artists until the cap,
   and an edge is never split. Picking the strongest artists one by one chose artists that did not

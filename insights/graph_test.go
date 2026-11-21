@@ -183,6 +183,25 @@ func TestGraph(t *testing.T) {
 		t.Errorf("collaborators = %+v", g.Collaborators)
 	}
 
+	// Managed only: an edge needs both ends managed, unless it touches the centre.
+	g, _ = Graph(db, GraphOptions{ManagedOnly: true, Managed: map[string]bool{"a": true}})
+	if len(g.Nodes) != 0 || g.Connected != 0 {
+		t.Errorf("one managed artist with no managed partner = %+v, want no graph", g)
+	}
+	g, _ = Graph(db, GraphOptions{ManagedOnly: true, Managed: map[string]bool{"a": true, "b": true}})
+	if len(g.Nodes) != 2 || weight(g, "a", "b") != 2 || weight(g, "b", "c") != 0 {
+		t.Errorf("managed a and b = %+v, want a-b only", g)
+	}
+	for _, n := range g.Nodes {
+		if !n.Managed {
+			t.Errorf("%s is not marked managed", n.MBID)
+		}
+	}
+	g, _ = Graph(db, GraphOptions{ManagedOnly: true, Managed: map[string]bool{"a": true}, Artist: "b"})
+	if len(g.Nodes) != 2 || weight(g, "a", "b") != 2 || g.Center == nil {
+		t.Errorf("centred on unmanaged b = %+v, want b and its managed partner a", g)
+	}
+
 	g, _ = Graph(db, GraphOptions{Roles: []string{"credit", "production"}})
 	if weight(g, "c", "p") != 1 {
 		t.Error("a producer does not connect with production asked for")

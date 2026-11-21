@@ -140,7 +140,7 @@ reach — the collection-wide Scan, which uses no IN list, is the answer there.
 
 | Model | Written by | Holds |
 |-------|-----------|-------|
-| `CollectionArtist` | `Rebuild` (library) / `AddArtist` (manual) | name, `ManagedBy`, `Origin`, follow settings |
+| `CollectionArtist` | `Rebuild` (library) / `AddArtist` (manual) | name, `ManagedBy`, `Origin`, follow settings, `ManageOverride` (the user's own answer to [whether they are one of your artists](#managed-and-present-only-artists)) |
 | `CollectionReleaseGroup` | `Rebuild` (disk block) + `SyncLidarr`/`SyncArtist` (catalog block) | album-level ownership and catalog state |
 | `CollectionReleaseGroupArtist` | every writer, additively | which artists a release-group is credited to |
 | `CollectionRelease` | `Rebuild` only | one row per **owned edition**: per-edition track counts, and the files behind them |
@@ -1043,13 +1043,15 @@ exactly that (`collection.RecordCatalogue`, through `FollowWants`).
   column on the artist is also what lets the [cached collection list](#the-collection-list-is-kept-between-writes)
   notice it change.
 - **A queued, rate-limited job** (`process.Runner.ReadCatalogues`, job kind `discography`, event
-  `discography_read`) reads every artist whose discography was never read, or was read over 30 days
-  ago (`catalogueMaxAge`). It runs:
-  - at startup (the backlog, the first time it is every artist);
+  `discography_read`) reads every [managed](#managed-and-present-only-artists) artist whose
+  discography was never read, or was read over 30 days ago (`catalogueMaxAge`). A present-only
+  artist is skipped: a co-credit nobody asked about, whose catalogue no view of them shows, and a
+  large library has hundreds of them. Managing one reads theirs. It runs:
+  - at startup (the backlog, the first time it is every managed artist);
   - after the scheduled metadata refresh;
   - whenever an artist is new to the collection, through the `collection.CatalogueReader` hook in
-    `upsertArtist` and `AddArtist`. The hook sits in the create branch only and only enqueues, like
-    the artwork hook.
+    `upsertArtist` (album artists only) and `AddArtist`, and when an artist is managed by hand. The
+    hook sits in the create branch only and only enqueues, like the artwork hook.
 - **What gets synced:** a followed artist Autotaggerr governs is synced (`SyncArtist`, which also
   records the catalogue), listing what the follow wants. Every other artist only has its catalogue
   counted. An artist a manager governs is never synced here, because its catalog block is the
@@ -1080,12 +1082,94 @@ created (`applyNewArtistPolicy`): an existing artist is never re-decided, and an
 governs is never followed by it (`FollowGoverns`). The discography read that the new artist queues
 then syncs what the follow wants.
 
+**Only album artists.** `Rebuild` creates a row for every artist an owned album credits, and the
+policy used to follow each of them, so a collaboration's second artist was followed and their whole
+discography wanted. It now applies only to the first-credited artist of a non-compilation album
+(`upsertArtist`'s `albumArtist`), the artist Lidarr's import would have added. One gap follows from
+"never re-decided": a co-credit who later gets an album of their own becomes managed but is not
+followed by the policy, because their row already existed.
+
+**The cleanup.** Installs that ran with the policy on had every co-credit followed.
+`collection.UnfollowPolicyCoCredits` runs once at startup (recorded as the data migration
+`unfollow_policy_cocredits`; called from `main`, since `database` cannot import `collection`) and
+unfollows every artist that matches what the policy left behind. That means an artist found in files,
+followed, with no override, no album of their own, no pick by hand and no Lidarr listing. Their
+follow settings go back to the defaults too: they were the policy's, and left in place they would
+keep the artist managed through `settings`. Each one is an `unfollowed` row on a `follow_cleanup`
+activity, so the change can be seen and undone by hand. Which follows the policy made was never
+recorded, so a follow a user made by hand on such an artist is taken too. The activity is what makes
+that recoverable.
+
 **Following several at once** is **Follow artists** on the Collection page. It lists the artists
 Autotaggerr governs that nobody follows, all ticked, with one follow shape. `POST
 /collection/follow` writes the settings and queues the syncs as one `discography` job
 (`Runner.FollowArtists`). Artists a manager governs are skipped and named. **Add artist** follows
 in the same step, on by default, with the same controls (`FollowFields`, shared by all four places
 a follow is shaped).
+
+## Managed and present-only artists
+
+Every artist an owned album credits has a collection row, which is right for ownership: a
+collaboration's second artist owns those files as much as the first. It is wrong for "who are my
+artists". A library of a few hundred albums carries as many co-credits again, most of them names the
+owner would not recognise, and they filled the collection list and the Insights graph. Lidarr answers
+this by making an artist something you add. Here the rows already exist, so the answer is a rule over
+them. An artist is **managed** when any of these holds, and `managed_reason` names the first that
+does:
+
+| Reason | When |
+|---|---|
+| `added` | the user chose **Manage** (`ManageOverride = on`) |
+| `manual` | added by hand from search (`Origin = manual`) |
+| `followed` | followed (`Monitored`) |
+| `wanted` | any want names them, whatever its source |
+| `lidarr` | an enabled Lidarr manager lists them (a `ManagerLink` of type artist) |
+| `album_artist` | first-credited on an owned album that is not a compilation, and not Various Artists |
+| `settings` | follow settings off the defaults, a quality profile override, or detached |
+
+`ManageOverride = off` (**Stop managing**) makes an artist present-only whatever the rule says.
+Everyone else is **present-only**. They keep their row and their page, because they own files, but
+they appear under *Other artists in your files*, nothing of theirs is wanted, and their discography
+is not read.
+
+**Derived, not stored.** `collection.ManagedReason` is the one definition, and `ManagedArtists` (three
+queries plus the artist rows) and `ManagedReasonFor` read it for many or for one. A stored flag
+re-derived by `Rebuild` would go stale. Its inputs are wants, follow settings, the quality override
+and the manager's listing, and all of them change outside `Rebuild`. Only the override is stored,
+and only the user writes it, so it survives every rebuild the way `ManagerDetached` does. Managing an
+artist does not touch `Origin`, which records how they entered the collection.
+
+**Two inputs are deliberately not the obvious column:**
+
+- **Lidarr is read from `ManagerLink`, not `ManagedBy`.** `ManagedBy` says which library an artist's
+  files sit in, so every co-credit on an album in a Lidarr library reads `lidarr`. A link exists only
+  for an artist Lidarr actually listed. Links of a disabled or deleted manager linger, so the read
+  joins `managers` on `enabled`. Without a Lidarr manager the rule loses one reason and nothing
+  else.
+- **The album artist is `CollectionReleaseGroup.ArtistMBID`, not the link's `Position`.** Catalog
+  writers link at position 0 for whichever artist they sync. Only `Rebuild` writes `artist_mb_id`,
+  and it writes it from the album's real credit.
+
+**Stopping is refused while it would hide intent.** `DELETE /artists/:mbid/manage` is a **409**
+(`ErrManagedByIntent`) while the artist is followed or holds a pick by hand. Otherwise their wanted
+albums would stay on the missing list under an artist the Managed view no longer shows. Wants the
+manager derived do not block it.
+
+**What follows from it:**
+
+- `pruneOrphanArtists` keeps an artist managed by hand once their last file leaves, as it keeps one
+  added by hand.
+- An artist merge carries the override: on, then off, then auto.
+- The [discography read](#every-artist-has-a-catalogue) skips present-only artists, and the
+  new-artist policy follows album artists only.
+- Every missing album belongs to a managed artist already, since each want makes its artist
+  managed, so `list_missing` needs no scope.
+- The [collection list](#the-collection-list-is-kept-between-writes) carries `managed` and
+  `managed_reason`, and `?scope=managed|present` narrows it. Its fingerprint covers `manager_links` and
+  `managers`, the two inputs no collection row records. MCP `list_artists` defaults to `managed`.
+- The Insights graph draws managed artists only by default ([insights.md](insights.md#graph)).
+
+Tests: `collection/managed_test.go`, `routers/managed_test.go`.
 
 ### Following can start at a year
 
@@ -1275,7 +1359,7 @@ repeated here because they are about *this* data model.
 
 | Endpoint | Purpose |
 |----------|---------|
-| `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts — [kept between writes](#the-collection-list-is-kept-between-writes); `?library=<id>` counts them in one library |
+| `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts and `managed`/`managed_reason` — [kept between writes](#the-collection-list-is-kept-between-writes); `?library=<id>` counts them in one library; `?scope=managed\|present` keeps [your artists or the others](#managed-and-present-only-artists) (default: every artist; anything else is a **400**) |
 | `GET /artists/:mbid` | artist detail: release-groups (with derived `complete`, `discrepancy`, `wanted*`) + desires |
 | `GET /artists/:mbid/info` | who the artist is (kind, origin, active years, top genres) — a live MusicBrainz entity read for the page header, cached 24h. Its own endpoint so the page never waits on it; a failure means the header shows less, never an error. |
 | `GET /artists/:mbid/discography` | live MusicBrainz read of *all* release-group types, **not stored** — browsing a catalogue must never require committing to it, or inflate the missing count. Cached 6h; a stale copy beats an empty page when MB is down. |
@@ -1287,6 +1371,7 @@ repeated here because they are about *this* data model.
 | `POST\|DELETE /artists/:mbid/desires` | author or clear intent |
 | `POST /artists/:mbid/detach` | [take authority back](#detaching-a-manager) from the manager, keeping its decisions as manual wants. **409** when no manager governs the artist — the request is well-formed and was true of an earlier state, so the page is out of date rather than wrong. Idempotent. |
 | `DELETE /artists/:mbid/detach` | hand the artist back; provenance is re-derived at once. Kept wants stay manual. |
+| `POST\|DELETE /artists/:mbid/manage` | [manage an artist, or stop](#managed-and-present-only-artists), whatever the rule says. Answers `{artist}`. Stopping is a **409** while the artist is followed or holds a pick by hand |
 | `POST /scan` · `POST /artists/:mbid/scan` | re-derive the disk view, collection-wide or for one artist |
 | `POST /collection/sync-lidarr` · `POST /artists/:mbid/sync-lidarr` | [mirror Lidarr](#mirroring-lidarr-at-two-scopes), collection-wide or for one artist. Both take an optional `{"ignore_cache": true}`. **400** without an enabled Lidarr manager; the per-artist form is also **404** for an unknown artist and **400** for one the mirror does not govern |
 
@@ -1296,10 +1381,11 @@ repeated here because they are about *this* data model.
 
 `GET /artists` aggregates every artist, release-group, want and credit link in Go — deliberately, so
 the complete/discrepancy rules have one definition shared with the artist page — which made its cost
-the size of the collection on every request. Its answer only changes when one of those four tables
+the size of the collection on every request. Its answer only changes when one of the tables it reads
 does, so the computed list is kept on the API and served again until `collectionFingerprint` says
-otherwise: each table's row count and newest `updated_at`, four aggregate queries instead of four
-full loads. One list is kept per view — the overview and each library read so far — under the one
+otherwise: each table's row count and newest `updated_at`, one aggregate query per table instead of
+full loads. Besides the collection tables, those are the libraries, quality profiles, the index and,
+for [managed](#managed-and-present-only-artists), `manager_links` and `managers`. One list is kept per view — the overview and each library read so far — under the one
 fingerprint, since every view is computed from the same tables. An insert or update moves the
 newest stamp and a delete moves the count, so no write the
 list could show slips past — given that every write goes through GORM, which stamps `updated_at` on
@@ -1315,7 +1401,12 @@ filter state kept in the URL so opening an album and coming back does not reset 
 toolbar, grouped sections).
 
 - `/collection` — artist list: avatar, provenance badge, coverage meter, missing/mismatch counts,
-  wanted summary. Sortable by name, missing and mismatch; filterable by text and by "mismatched".
+  wanted summary. Two **tabs** over one answer (`tab=other` in the URL): **Managed**, the default,
+  and **Other artists in your files**, the [present-only](#managed-and-present-only-artists) artists.
+  The Other tab shows how many owned albums credit each of them, with no coverage meter because
+  their discography is not read, and a **Manage** button per row. **Follow artists** offers managed
+  artists only. It ticks every candidate, and following makes an artist managed, so offering
+  everyone would manage the Other tab in one click. Sortable by name, missing and mismatch; filterable by text and by "mismatched".
   The page head holds only the two actions that change *what the collection holds* — **Add artist**
   and **Sync from Lidarr**, neither of which queues anything — and the four verbs sit below in the
   **run bar** with the single status they share (see
@@ -1337,6 +1428,13 @@ toolbar, grouped sections).
   thinks of as the discography. Singles and Other start closed, and **each section pages on its own**
   (50 rows, keyed `page-<section>` in the URL) — a prolific artist has six albums and three hundred
   singles, so the one long section pages while the rest render whole.
+  **Two tiers.** The sections list the albums you have or manage first: `tracked` on each row, which
+  means owned in this view, held in any library, or wanted. The rest of the MusicBrainz discography
+  follows under **More from MusicBrainz · N not in your collection**, closed unless `more=1`, in the
+  same four sections keyed `more-<category>`, with no coverage meter since nothing there is owned.
+  An artist with nothing in the first tier shows the second open. The header says whether the
+  artist is yours (*Managed · followed*) or *Not one of your artists · credited on N albums you own*.
+  It offers **Manage** for the latter, and the Settings disclosure holds **Stop managing**.
 - `/collection/:mbid/:rgid` — the release-group page: an entity header (cover, type/year/artist, track
   coverage, the derived want summary, Wanted/Pin), then a `.rg-split` master/detail with editions on
   the left and the selected edition's tracklist on the right.

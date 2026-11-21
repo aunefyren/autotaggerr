@@ -219,7 +219,20 @@ func TestMCPCollectionTools(t *testing.T) {
 	session := mcpSession(t, api, mcpReader)
 
 	t.Run("list_artists", func(t *testing.T) {
-		all := callMCP[mcpArtistList](t, session, "list_artists", nil)
+		// Talk Talk owns nothing and nobody follows them: present, not managed, so the
+		// default lists Kate Bush alone.
+		managed := callMCP[mcpArtistList](t, session, "list_artists", nil)
+		if managed.Total != 1 || managed.Artists[0].MBID != "artist-1" || !managed.Artists[0].Managed ||
+			managed.Artists[0].Reason != "followed" {
+			t.Fatalf("list_artists = %+v, want Kate Bush alone, managed because followed", managed)
+		}
+		present := callMCP[mcpArtistList](t, session, "list_artists", map[string]any{"scope": "present"})
+		if present.Total != 1 || present.Artists[0].MBID != "artist-2" || present.Artists[0].Managed {
+			t.Errorf("scope=present = %+v, want Talk Talk alone", present)
+		}
+		expectMCPError(t, session, "list_artists", map[string]any{"scope": "mine"}, "scope")
+
+		all := callMCP[mcpArtistList](t, session, "list_artists", map[string]any{"scope": "all"})
 		if all.Total != 2 || len(all.Artists) != 2 || all.NextOffset != nil {
 			t.Fatalf("list_artists = %+v, want both artists on one page", all)
 		}
@@ -232,11 +245,11 @@ func TestMCPCollectionTools(t *testing.T) {
 		if partial.Total != 1 || partial.Artists[0].MBID != "artist-1" {
 			t.Errorf("filter=partial = %+v, want only Kate Bush", partial)
 		}
-		byName := callMCP[mcpArtistList](t, session, "list_artists", map[string]any{"name_contains": "TALK"})
+		byName := callMCP[mcpArtistList](t, session, "list_artists", map[string]any{"name_contains": "TALK", "scope": "all"})
 		if byName.Total != 1 || byName.Artists[0].MBID != "artist-2" {
 			t.Errorf("name_contains=TALK = %+v, want only Talk Talk", byName)
 		}
-		paged := callMCP[mcpArtistList](t, session, "list_artists", map[string]any{"limit": 1})
+		paged := callMCP[mcpArtistList](t, session, "list_artists", map[string]any{"limit": 1, "scope": "all"})
 		if len(paged.Artists) != 1 || paged.NextOffset == nil || *paged.NextOffset != 1 {
 			t.Errorf("limit=1 = %+v, want one row and next_offset 1", paged)
 		}

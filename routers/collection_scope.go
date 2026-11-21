@@ -178,11 +178,12 @@ func artistViewIn(artist models.CollectionArtist, scope viewScope) artistView {
 // artistViewFor is the overview of an artist, read with the libraries it needs. A
 // failed read degrades to the artist-wide rule rather than failing the response.
 func (a *API) artistViewFor(artist models.CollectionArtist) artistView {
+	reason := a.managedReason(artist)
 	idx, err := collection.LoadLibraryIndex(a.DB)
 	if err != nil {
 		logger.Log.Warnf("failed to load the libraries: %s", err.Error())
-		return newArtistView(artist)
+		return newArtistView(artist).withManagedReason(reason)
 	}
 	scope, _ := a.resolveScope(idx, artist, nil, nil)
-	return artistViewIn(artist, scope)
+	return artistViewIn(artist, scope).withManagedReason(reason)
 }

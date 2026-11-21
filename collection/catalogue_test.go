@@ -75,10 +75,14 @@ func TestNewArtistsAskForTheirCatalogue(t *testing.T) {
 	SetCatalogueReader(reader)
 	t.Cleanup(func() { SetCatalogueReader(nil) })
 
-	if err := upsertArtist(db, "found", "Found", models.ManagedByAutotaggerr); err != nil {
+	if err := upsertArtist(db, "found", "Found", models.ManagedByAutotaggerr, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := upsertArtist(db, "found", "Found", models.ManagedByAutotaggerr); err != nil {
+	if err := upsertArtist(db, "found", "Found", models.ManagedByAutotaggerr, true); err != nil {
+		t.Fatal(err)
+	}
+	// A co-credit is present, not one of your artists: no read on arrival.
+	if err := upsertArtist(db, "featured", "Featured", models.ManagedByAutotaggerr, false); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := AddArtist(db, "added", "Added"); err != nil {
@@ -95,7 +99,7 @@ func TestNewArtistPolicy(t *testing.T) {
 	db := testDB(t)
 	artistAfter := func(mbid, managedBy string) models.CollectionArtist {
 		t.Helper()
-		if err := upsertArtist(db, mbid, mbid, managedBy); err != nil {
+		if err := upsertArtist(db, mbid, mbid, managedBy, true); err != nil {
 			t.Fatal(err)
 		}
 		var a models.CollectionArtist
@@ -128,6 +132,16 @@ func TestNewArtistPolicy(t *testing.T) {
 	db.Model(&models.CollectionArtist{}).Where("mb_id = ?", "off").Update("monitored", false)
 	if a := artistAfter("off", models.ManagedByAutotaggerr); a.Monitored {
 		t.Error("the policy re-followed an existing artist")
+	}
+
+	// A co-credit on someone else's album is not followed, whatever the policy says.
+	if err := upsertArtist(db, "cocredit", "cocredit", models.ManagedByAutotaggerr, false); err != nil {
+		t.Fatal(err)
+	}
+	var co models.CollectionArtist
+	db.Where("mb_id = ?", "cocredit").First(&co)
+	if co.Monitored {
+		t.Error("the policy followed a co-credited artist")
 	}
 
 	if _, err := SavePolicy(db, models.CollectionPolicy{NewArtistFollow: "sometimes"}); err == nil {

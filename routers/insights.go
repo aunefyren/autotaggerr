@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/insights"
 	"github.com/aunefyren/autotaggerr/logger"
 	"github.com/aunefyren/autotaggerr/process"
@@ -105,6 +106,7 @@ func (a *API) insightsStats(c *gin.Context) {
 //	?special=1                 let Various Artists and placeholder artists in
 //	?artist=<mbid>&hops=1|2    centre on one artist
 //	?limit=150                 node cap (max insights.MaxGraphNodes)
+//	?everyone=1                every artist credited, not only the managed ones
 func (a *API) insightsGraph(c *gin.Context) {
 	library, err := parseLibraryParam(c.Query("library"))
 	if err != nil {
@@ -144,6 +146,20 @@ func (a *API) insightsGraph(c *gin.Context) {
 	if opts.Limit, ok = number("limit"); !ok {
 		return
 	}
+	// Managed artists only, unless asked for everyone: the credits name every
+	// featured artist, producer and writer, most of them strangers to the owner. Read
+	// per request — three queries and the artist rows, small beside the graph itself.
+	managed, err := collection.ManagedArtists(a.DB)
+	if err != nil {
+		logger.Log.Errorf("failed to read which artists are managed: %s", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build the collaboration graph"})
+		return
+	}
+	opts.Managed = make(map[string]bool, len(managed))
+	for id := range managed {
+		opts.Managed[id] = true
+	}
+	opts.ManagedOnly = c.Query("everyone") != "1"
 	graph, err := insights.Graph(a.DB, opts)
 	if err != nil {
 		logger.Log.Errorf("failed to build the collaboration graph: %s", err.Error())

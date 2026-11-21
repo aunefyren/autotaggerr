@@ -580,6 +580,9 @@ const GRAPH_FILTERS: GraphFilter[] = [
     options: ["50", "150", "300", "500"].map((v) => ({ value: v, label: v })),
   },
   { kind: "check", key: "special", label: "Include Various Artists" },
+  // Your artists only by default: the credits name every featured artist, producer
+  // and writer, most of whom the owner has never heard of.
+  { kind: "check", key: "everyone", label: "Show everyone credited" },
 ];
 
 function Graph({
@@ -631,7 +634,7 @@ function Graph({
       <p className="muted" style={{ margin: 0, maxWidth: "68ch", lineHeight: 1.55 }}>
         Who works with whom in your library. Two artists are connected when the same recording credits both; the
         line is thicker the more recordings they share. Credits come from MusicBrainz, read from the releases
-        already cached.
+        already cached. Only your artists are drawn unless <em>Show everyone credited</em> is on.
       </p>
 
       <div className="table-toolbar">
@@ -716,7 +719,16 @@ function Graph({
               ? "That artist has no credits in scope."
               : data.unsynced > 0 && data.connected === 0
                 ? "No credits read yet. They come from cached releases, which the next Scan or metadata refresh fills in."
-                : "No two artists share a recording with these filters."
+                : params.get("everyone") === "1"
+                  ? "No two artists share a recording with these filters."
+                  : "None of your artists share a recording with these filters."
+          }
+          action={
+            params.get("everyone") !== "1" && !(data.unsynced > 0 && data.connected === 0) ? (
+              <button type="button" className="btn btn-secondary btn-sm" onClick={() => set({ everyone: "1" })}>
+                Show everyone credited
+              </button>
+            ) : undefined
           }
         />
       )}

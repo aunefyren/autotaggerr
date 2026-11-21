@@ -304,6 +304,8 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// the user's own. DELETE is the undo, not a deletion of anything.
 		protected.POST("/artists/:mbid/detach", a.detachArtist)
 		protected.DELETE("/artists/:mbid/detach", a.reattachArtist)
+		protected.POST("/artists/:mbid/manage", a.manageArtist)
+		protected.DELETE("/artists/:mbid/manage", a.unmanageArtist)
 		protected.POST("/collection/sync-lidarr", a.syncLidarr)
 		protected.POST("/collection/follow", a.followArtists)
 		protected.GET("/collection/policy", a.getCollectionPolicy)

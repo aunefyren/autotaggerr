@@ -1055,8 +1055,17 @@ func rebuildTx(db *gorm.DB, scope bounds) (RebuildStats, error) {
 		return RebuildStats{}, err
 	}
 
+	// The artists Lidarr's import would have added: first-credited on an owned album
+	// that is not a compilation. Only they are followed by the new-artist policy and
+	// have their discography read on arrival — see managed.go.
+	albumArtists := map[string]bool{}
+	for _, info := range rgBest {
+		if len(info.credits) > 0 && !models.IsVariousArtists(info.credits[0]) && isAlbumArtistOf(info.secondary) {
+			albumArtists[info.credits[0]] = true
+		}
+	}
 	for artistID, mgrs := range artistManagers {
-		if err := upsertArtist(db, artistID, artistName[artistID], managedByLabel(mgrs)); err != nil {
+		if err := upsertArtist(db, artistID, artistName[artistID], managedByLabel(mgrs), albumArtists[artistID]); err != nil {
 			return RebuildStats{}, err
 		}
 	}
@@ -1824,7 +1833,12 @@ func managedByLabel(mgrs map[string]bool) string {
 // upsertArtist returns an error so Rebuild can roll back on a failed write. The
 // sync paths log it and carry on instead, which is why the error is returned rather
 // than acted on here.
-func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
+//
+// albumArtist says the artist is first-credited on an owned album (managed.go). Only
+// then does a new row get the new-artist follow policy and an immediate discography
+// read: a co-credit on someone else's album is present, not one of your artists, and
+// following every co-credit is what filled the missing list with strangers.
+func upsertArtist(db *gorm.DB, mbID, name, managedBy string, albumArtist bool) error {
 	var a models.CollectionArtist
 	if err := db.Where("mb_id = ?", mbID).First(&a).Error; err == nil {
 		// A detached artist keeps its native provenance whatever manages the library
@@ -1847,7 +1861,9 @@ func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
 		MBID: mbID, Name: name, ManagedBy: managedBy,
 		Origin: models.CollectionOriginLibrary,
 	}
-	applyNewArtistPolicy(db, &artist)
+	if albumArtist {
+		applyNewArtistPolicy(db, &artist)
+	}
 	if err := db.Create(&artist).Error; err != nil {
 		logger.Log.Warnf("failed to upsert artist %s: %s", mbID, err.Error())
 		return err
@@ -1855,7 +1871,9 @@ func upsertArtist(db *gorm.DB, mbID, name, managedBy string) error {
 	// Only on create: the update branch above returns before this, so a rebuild does
 	// not hand the whole collection to the warmer several times a day.
 	warmArtistArtwork(mbID)
-	readNewArtistCatalogue()
+	if albumArtist {
+		readNewArtistCatalogue()
+	}
 	return nil
 }
 
