@@ -3,6 +3,8 @@ package routers
 import (
 	"errors"
 	"net/http"
+	"strconv"
+	"strings"
 
 	"github.com/aunefyren/autotaggerr/insights"
 	"github.com/aunefyren/autotaggerr/logger"
@@ -75,4 +77,62 @@ func (a *API) insightsStats(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, stats)
+}
+
+// insightsGraph is the collaboration graph (insights.Graph). Each filter is a query
+// parameter; adding one means a field on insights.GraphOptions and a line here.
+//
+//	?library=<id>              one library
+//	?roles=credit,performer    which credits connect artists (default: credit)
+//	?min_weight=2              fewest shared recordings per edge
+//	?min_tracks=3              fewest recordings per artist
+//	?special=1                 let Various Artists and placeholder artists in
+//	?artist=<mbid>&hops=1|2    centre on one artist
+//	?limit=150                 node cap (max insights.MaxGraphNodes)
+func (a *API) insightsGraph(c *gin.Context) {
+	library, err := parseLibraryParam(c.Query("library"))
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	number := func(key string) (int, bool) {
+		raw := strings.TrimSpace(c.Query(key))
+		if raw == "" {
+			return 0, true
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": key + " must be a whole number"})
+			return 0, false
+		}
+		return n, true
+	}
+	opts := insights.GraphOptions{
+		Library:        library,
+		IncludeSpecial: c.Query("special") == "1",
+		Artist:         strings.TrimSpace(c.Query("artist")),
+	}
+	if raw := strings.TrimSpace(c.Query("roles")); raw != "" {
+		opts.Roles = strings.Split(raw, ",")
+	}
+	var ok bool
+	if opts.MinWeight, ok = number("min_weight"); !ok {
+		return
+	}
+	if opts.MinTracks, ok = number("min_tracks"); !ok {
+		return
+	}
+	if opts.Hops, ok = number("hops"); !ok {
+		return
+	}
+	if opts.Limit, ok = number("limit"); !ok {
+		return
+	}
+	graph, err := insights.Graph(a.DB, opts)
+	if err != nil {
+		logger.Log.Errorf("failed to build the collaboration graph: %s", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to build the collaboration graph"})
+		return
+	}
+	c.JSON(http.StatusOK, graph)
 }

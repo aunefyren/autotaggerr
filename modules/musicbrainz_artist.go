@@ -20,6 +20,15 @@ func CachedRelease(mbID string) (models.MusicBrainzReleaseResponse, bool) {
 	return cached.Release, ok
 }
 
+// CachedReleaseEntry is CachedRelease with the entry's timestamp, so a reader that
+// derives something from a release can tell when the cached copy has been replaced.
+func CachedReleaseEntry(mbID string) (models.CachedMusicBrainzRelease, bool) {
+	musicbrainzReleaseCacheMu.RLock()
+	defer musicbrainzReleaseCacheMu.RUnlock()
+	cached, ok := musicbrainzReleaseCache[mbID]
+	return cached, ok
+}
+
 // artistReleaseGroupPageSize / maxArtistReleaseGroupPages bound a discography fetch.
 const (
 	artistReleaseGroupPageSize = 100

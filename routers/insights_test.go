@@ -59,3 +59,27 @@ func TestInsightsRoutes(t *testing.T) {
 	w = do(r, http.MethodPost, "/api/v1/insights/duplicates/check", token, nil)
 	expectStatus(t, "check without runner", w.Code, w.Body.String(), http.StatusServiceUnavailable, "")
 }
+
+// TestInsightsGraphRoute: the graph answers with its filters read from the query, and
+// a malformed number is a 400 naming the parameter.
+func TestInsightsGraphRoute(t *testing.T) {
+	r, _ := setupAPI(t)
+	token := loginToken(t, r)
+
+	w := do(r, http.MethodGet, "/api/v1/insights/graph?roles=credit,writing&min_weight=1&min_tracks=0&hops=1&limit=10&special=1", token, nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("graph: %d %s", w.Code, w.Body.String())
+	}
+	var graph insights.GraphReport
+	if err := json.Unmarshal(w.Body.Bytes(), &graph); err != nil {
+		t.Fatal(err)
+	}
+	if graph.Nodes == nil || graph.Edges == nil {
+		t.Errorf("an empty graph should be empty lists, got %s", w.Body.String())
+	}
+	for _, path := range []string{"/api/v1/insights/graph?min_weight=x", "/api/v1/insights/graph?limit=-1", "/api/v1/insights/graph?library=nope"} {
+		if w := do(r, http.MethodGet, path, token, nil); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d, want 400", path, w.Code)
+		}
+	}
+}

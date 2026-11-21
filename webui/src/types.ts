@@ -1467,3 +1467,38 @@ export interface LibraryStats {
   /** Collection-wide; absent from one library's view. */
   catalogue?: { wanted: number; incomplete: number; unlisted: number };
 }
+
+/** An artist in the collaboration graph (insights.GraphNode). */
+export interface GraphNode {
+  mb_id: string;
+  name: string;
+  /** Recordings in scope crediting the artist, in the roles asked for. */
+  tracks: number;
+  in_collection: boolean;
+  /** Distance from the centred artist; 0 throughout an uncentred graph. */
+  hop: number;
+}
+
+export interface GraphEdge {
+  source: string;
+  target: string;
+  /** Recordings in scope crediting both. */
+  weight: number;
+}
+
+export interface Collaboration {
+  a: GraphNode;
+  b: GraphNode;
+  weight: number;
+}
+
+/** GET /insights/graph */
+export interface GraphReport {
+  nodes: GraphNode[];
+  edges: GraphEdge[];
+  collaborators: Collaboration[];
+  connected: number;
+  truncated: boolean;
+  center?: GraphNode;
+  unsynced: number;
+}

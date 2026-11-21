@@ -816,6 +816,27 @@ the whole, for coverage), and the count in mono.
 - Not the coverage meter: that one says how much of one thing is **on disk**, in the diff colours.
   A breakdown has no "missing" state.
 
+### Collaboration graph (`.graph-canvas`, `CollabGraph.tsx`, Insights → Graph)
+A node-link picture beside a list of the same data (`.graph-split`, 300px panel, stacked below
+900px).
+
+- **One hue.** Nodes are `--accent` with a `--surface-1` ring, so overlapping nodes stay separate.
+  Edges are `--border-strong`. A node is identified by its **label**, never its colour; colouring
+  artists would be a categorical palette with hundreds of entries.
+- **Focus by contrast, not colour.** On hover or select, the artist's edges turn `--accent-text`,
+  their neighbours keep full opacity, and everything else fades to about 0.3. A centred artist has an
+  `--accent-text` ring.
+- **Size is area.** Node radius grows with the square root of the count, capped, and edge width with
+  the log of the weight, so one heavy pair cannot swamp the picture.
+- **Labels:** the 24 largest nodes always, plus the focused artist and their neighbours. Labels get
+  a `--surface-1` halo (`paint-order: stroke`) instead of a box.
+- Every node has a hit target of at least 8px whatever its drawn size, and a `<title>` with the
+  exact count.
+- **The list is the accessible way in, not an extra.** Every artist and pair in the picture can be
+  selected from the panel, and the SVG's `aria-label` says so.
+- **Static layout.** It is computed once per answer and never animates; the only motion is the
+  user's own pan and zoom. *Reset view* appears only after the view has moved.
+
 ### Signature: the tag-diff row
 The recurring element that makes Autotaggerr recognizable. One row per tag on the file/scan-detail
 view:
