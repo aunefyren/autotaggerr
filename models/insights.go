@@ -34,4 +34,11 @@ type InsightCredit struct {
 type InsightCreditRelease struct {
 	ReleaseMBID string    `gorm:"primaryKey" json:"release_mb_id"`
 	CachedAt    time.Time `json:"cached_at"`
+	// Genre is the release group's strongest MusicBrainz genre, for colouring the
+	// graph by genre. Empty when MusicBrainz lists none.
+	Genre string `gorm:"index" json:"genre"`
+	// Version is the insights.SyncCredits derivation the row was read with. A row
+	// from an older one is read again, which is how a change to what is derived (the
+	// genre, when it was added) reaches releases already synced.
+	Version int `json:"version"`
 }

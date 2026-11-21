@@ -6,6 +6,10 @@ import (
 	"gorm.io/gorm"
 )
 
+// creditsVersion is what SyncCredits derives per release. Bump it when that changes,
+// and every release is read again on the next pass. 2 added the genre.
+const creditsVersion = 2
+
 // SyncResult is what one SyncCredits pass changed.
 type SyncResult struct {
 	// Read is how many releases had their credits read (new, or re-fetched upstream).
@@ -52,7 +56,7 @@ func SyncCredits(db *gorm.DB) (SyncResult, error) {
 			}
 			continue
 		}
-		if s, had := known[id]; had && s.CachedAt.Equal(entry.Timestamp) {
+		if s, had := known[id]; had && s.CachedAt.Equal(entry.Timestamp) && s.Version == creditsVersion {
 			continue
 		}
 		stale = append(stale, entry)
@@ -86,7 +90,8 @@ func SyncCredits(db *gorm.DB) (SyncResult, error) {
 					return err
 				}
 			}
-			if err := tx.Save(&models.InsightCreditRelease{ReleaseMBID: id, CachedAt: entry.Timestamp}).Error; err != nil {
+			row := models.InsightCreditRelease{ReleaseMBID: id, CachedAt: entry.Timestamp, Genre: topGenre(entry.Release), Version: creditsVersion}
+			if err := tx.Save(&row).Error; err != nil {
 				return err
 			}
 		}
@@ -97,6 +102,17 @@ func SyncCredits(db *gorm.DB) (SyncResult, error) {
 	}
 	res.Read, res.Dropped = len(stale), len(gone)
 	return res, nil
+}
+
+// topGenre is a release group's strongest genre by MusicBrainz vote count.
+func topGenre(release models.MusicBrainzReleaseResponse) string {
+	best, genre := 0, ""
+	for _, g := range release.ReleaseGroup.Genres {
+		if g.Count > best || (g.Count == best && g.Name < genre) {
+			best, genre = g.Count, g.Name
+		}
+	}
+	return genre
 }
 
 func chunk(ids []string, size int) [][]string {

@@ -57,16 +57,22 @@ type DuplicateOptions struct {
 	// IncludeCompilations lists across-release groups where one of the albums is a
 	// compilation. Only read when IncludeAcrossReleases is set.
 	IncludeCompilations bool
+	// Limit and Offset page the groups (Limit 0: all). A large library has thousands
+	// of groups, and the page draws a hundred at a time.
+	Limit, Offset int
 }
 
 // DuplicateFile is one file in a group.
 type DuplicateFile struct {
 	// IDs as strings, not uuid.UUID: the JSON is the same, and a schema derived from
 	// the type (the MCP tools') would otherwise describe a byte array.
-	ItemID           string `json:"item_id"`
-	LibraryID        string `json:"library_id"`
-	LibraryName      string `json:"library_name"`
-	Path             string `json:"path"`
+	ItemID      string `json:"item_id"`
+	LibraryID   string `json:"library_id"`
+	LibraryName string `json:"library_name"`
+	Path        string `json:"path"`
+	// RelativePath is Path below its library's root, which is how the page shows it;
+	// empty when the file is not under the root.
+	RelativePath     string `json:"relative_path"`
 	Format           string `json:"format"`
 	Lossless         bool   `json:"lossless"`
 	Size             int64  `json:"size"`
@@ -101,6 +107,8 @@ type DuplicateGroup struct {
 // DuplicatesReport is the answer to GET /insights/duplicates.
 type DuplicatesReport struct {
 	Groups []DuplicateGroup `json:"groups"`
+	// Matched is how many groups pass the filters, before paging.
+	Matched int `json:"matched"`
 	// Counts is every group by level, including the ones the options hide, so the
 	// page can say what a filter is hiding.
 	Counts map[Level]int `json:"counts"`
@@ -163,16 +171,23 @@ func releaseInfos(db *gorm.DB, releaseIDs []string) map[string]releaseInfo {
 		return out
 	}
 
+	// Chunked: one bound variable per ID, and SQLite caps how many a statement takes.
 	var releases []models.CollectionRelease
-	db.Where("mb_id IN ?", releaseIDs).Find(&releases)
+	for _, ids := range chunk(releaseIDs, 500) {
+		var part []models.CollectionRelease
+		db.Where("mb_id IN ?", ids).Find(&part)
+		releases = append(releases, part...)
+	}
 	groupIDs := make([]string, 0, len(releases))
 	for _, r := range releases {
 		out[r.MBID] = releaseInfo{title: r.Title, group: r.ReleaseGroupMBID}
 		groupIDs = append(groupIDs, r.ReleaseGroupMBID)
 	}
 	var groups []models.CollectionReleaseGroup
-	if len(groupIDs) > 0 {
-		db.Where("mb_id IN ?", groupIDs).Find(&groups)
+	for _, ids := range chunk(groupIDs, 500) {
+		var part []models.CollectionReleaseGroup
+		db.Where("mb_id IN ?", ids).Find(&part)
+		groups = append(groups, part...)
 	}
 	byGroup := make(map[string]models.CollectionReleaseGroup, len(groups))
 	for _, g := range groups {
@@ -240,15 +255,27 @@ func recordingNames(releaseID, recordingID string) (title, artist string) {
 	return "", ""
 }
 
-// libraryNames maps library IDs to names.
-func libraryNames(db *gorm.DB) map[uuid.UUID]string {
+// libraryRows maps library IDs to their rows (name and root).
+func libraryRows(db *gorm.DB) map[uuid.UUID]models.Library {
 	var libraries []models.Library
-	db.Select("id", "name").Find(&libraries)
-	out := make(map[uuid.UUID]string, len(libraries))
+	db.Select("id", "name", "path").Find(&libraries)
+	out := make(map[uuid.UUID]models.Library, len(libraries))
 	for _, l := range libraries {
-		out[l.ID] = l.Name
+		out[l.ID] = l
 	}
 	return out
+}
+
+// relativeTo is path below root, or "" when it is not under it.
+func relativeTo(root, path string) string {
+	if root == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 // classify decides a group's level from its files. Files are compared only with
@@ -312,7 +339,7 @@ func groupItems(db *gorm.DB, items []models.LibraryItem, acrossLibraries bool) [
 	}
 	sort.Strings(ids)
 	releases := releaseInfos(db, ids)
-	libraries := libraryNames(db)
+	libraries := libraryRows(db)
 
 	type key struct {
 		recording string
@@ -345,8 +372,9 @@ func groupItems(db *gorm.DB, items []models.LibraryItem, acrossLibraries bool) [
 			file := DuplicateFile{
 				ItemID:           item.ID.String(),
 				LibraryID:        item.LibraryID.String(),
-				LibraryName:      libraries[item.LibraryID],
+				LibraryName:      libraries[item.LibraryID].Name,
 				Path:             item.Path,
+				RelativePath:     relativeTo(libraries[item.LibraryID].Path, item.Path),
 				Format:           format,
 				Lossless:         losslessFormats[format],
 				Size:             item.Size,
@@ -386,7 +414,8 @@ func Duplicates(db *gorm.DB, opts DuplicateOptions) (DuplicatesReport, error) {
 	if err != nil {
 		return report, err
 	}
-	for _, group := range groupItems(db, items, opts.AcrossLibraries) {
+	groups := groupItems(db, items, opts.AcrossLibraries)
+	for _, group := range groups {
 		report.Counts[group.Level]++
 		if group.Level == LevelAcrossReleases {
 			if !opts.IncludeAcrossReleases {
@@ -410,6 +439,23 @@ func Duplicates(db *gorm.DB, opts DuplicateOptions) (DuplicatesReport, error) {
 		return strings.ToLower(a.Title) < strings.ToLower(b.Title)
 	})
 
+	report.Matched = len(report.Groups)
+	if opts.Offset > 0 {
+		report.Groups = report.Groups[min(opts.Offset, len(report.Groups)):]
+	}
+	if opts.Limit > 0 && len(report.Groups) > opts.Limit {
+		report.Groups = report.Groups[:opts.Limit]
+	}
+
+	// The unchecked count is defined across every library. When these groups already
+	// are that — every library compared, or only one to compare — they are reused
+	// rather than grouped a second time.
+	var enabled int64
+	db.Model(&models.Library{}).Where("enabled = ?", true).Count(&enabled)
+	if opts.Library == nil && (opts.AcrossLibraries || enabled <= 1) {
+		report.Unchecked = len(uncheckedIn(groups, items))
+		return report, nil
+	}
 	unchecked, err := UncheckedCandidates(db)
 	if err != nil {
 		return report, err
@@ -428,13 +474,18 @@ func UncheckedCandidates(db *gorm.DB) ([]models.LibraryItem, error) {
 	if err != nil {
 		return nil, err
 	}
+	return uncheckedIn(groupItems(db, items, true), items), nil
+}
+
+// uncheckedIn picks the unchecked candidates out of groups built from items.
+func uncheckedIn(groups []DuplicateGroup, items []models.LibraryItem) []models.LibraryItem {
 	byID := make(map[string]models.LibraryItem, len(items))
 	for _, item := range items {
 		byID[item.ID.String()] = item
 	}
 
 	var out []models.LibraryItem
-	for _, group := range groupItems(db, items, true) {
+	for _, group := range groups {
 		type slot struct{ album, format string }
 		counts := map[slot]int{}
 		for _, f := range group.Files {
@@ -447,5 +498,5 @@ func UncheckedCandidates(db *gorm.DB) ([]models.LibraryItem, error) {
 			out = append(out, byID[f.ItemID])
 		}
 	}
-	return out, nil
+	return out
 }

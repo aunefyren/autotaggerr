@@ -1,0 +1,12 @@
+{
+  "name": "autotaggerr-browser-tour",
+  "private": true,
+  "description": "Headless screenshots of a running Autotaggerr (usually the demo instance). See docs/demo.md.",
+  "type": "module",
+  "scripts": {
+    "tour": "node tour.mjs"
+  },
+  "dependencies": {
+    "playwright-core": "^1.65.0"
+  }
+}

@@ -71,6 +71,9 @@ A [`Makefile`](../Makefile) wraps these flows so the frontend step is never forg
 | `make deps` | force a clean `npm ci --include=dev` in `webui/` (fixes a missing `tsc`); installs for the platform you run it on — see [below](#building-the-same-checkout-from-windows-and-wsl) |
 | `make update` | verify prereqs, then `go get -u` + `go mod tidy` + `npm update` + rebuild the bundle |
 | `make test` / `make fmt` / `make vet` | the CI gates locally |
+| `make demo SIZE=…` | run an offline demo instance on :8090, generating it first if needed ([demo.md](demo.md)) |
+| `make demo-reset SIZE=…` | generate the demo again from scratch |
+| `make tour` | screenshot every page of a running instance into `tools/browser/out/` |
 
 Every recipe uses only `go`/`npm`/`cd`, so the same Makefile runs on Linux/macOS and Windows —
 but `make` is not bundled with Windows. Install it once (`choco install make` or
@@ -375,6 +378,7 @@ Feature docs:
 - `artwork.md` — covers and artist images: warming them ahead of the page, and why it is its own verb.
 - `fingerprinting.md` — optional AcoustID identification.
 - `tempo.md` — optional BPM analysis: the detector, why a file is analysed once, its own runner.
+- `demo.md` — the offline demo instance (synthetic library of any size, stand-in MusicBrainz) and the headless browser tour that screenshots every page.
 - `insights.md` — the Insights page: duplicates by recording (and why copies are compared within one album), the audio hash taken only for candidates, library stats, and the collaboration graph (credits derived from cached releases, kept current by Scan).
 - `replaygain.md` — optional loudness (ReplayGain) analysis with rsgain: albums as the unit, when one is measured again, how the tags reach files.
 - `authentication.md` — local login, scoped API keys, OIDC.
