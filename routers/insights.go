@@ -168,3 +168,15 @@ func (a *API) insightsGraph(c *gin.Context) {
 	}
 	c.JSON(http.StatusOK, graph)
 }
+
+// insightsGraphArtists finds credited artists by name (?q=), for the graph's search:
+// one drawn is selected, one not drawn is centred on.
+func (a *API) insightsGraphArtists(c *gin.Context) {
+	found, err := insights.SearchGraphArtists(a.DB, c.Query("q"), 10)
+	if err != nil {
+		logger.Log.Errorf("failed to search the graph's artists: %s", err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to search artists"})
+		return
+	}
+	c.JSON(http.StatusOK, found)
+}

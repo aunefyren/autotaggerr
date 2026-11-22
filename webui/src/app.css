@@ -463,6 +463,9 @@
 .g-node.focus circle:not(.hit) { fill: var(--accent-hover); stroke: var(--text); }
 .g-node.faded { opacity: 0.3; }
 .g-node.unmanaged circle:not(.hit) { fill-opacity: 0.45; }
+/* No genre known: a ring in the neutral, so missing data reads apart from "some other genre". */
+.g-node circle.unknown { fill: var(--surface-1); stroke-width: 2px; }
+.g-node.focus circle.unknown { fill: var(--surface-2); }
 .g-node text { font-family: var(--font-sans); font-size: 10px; fill: var(--text-muted); paint-order: stroke; stroke: var(--surface-1); stroke-width: 3px; pointer-events: none; }
 .g-node.focus text { fill: var(--text); font-weight: 600; }
 .collab-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; font-size: 12px; padding: 3px 0; border-bottom: 1px solid var(--border); }
@@ -483,4 +486,8 @@
   background: color-mix(in srgb, var(--surface-1) 85%, transparent); border: 1px solid var(--border); border-radius: var(--radius-sm); }
 .graph-legend li { display: flex; align-items: center; gap: 6px; }
 .graph-legend .swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+/* Find an artist on the graph: a search box with its suggestions dropping over the canvas. */
+.graph-search { position: relative; max-width: 320px; }
+.graph-search-results { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 20; box-shadow: var(--shadow-2); }
+.graph-legend .swatch.hollow { background: transparent; border: 2px solid; }
 .graph-legend .mono { margin-left: auto; padding-left: 8px; }

@@ -107,24 +107,37 @@ export interface LegendEntry {
   label: string;
   colour: string;
   count: number;
+  /** Drawn as a ring rather than a disc: the category is "not known". */
+  hollow?: boolean;
 }
+
+/** How many genres get a colour of their own (insights.ColouredGenres). */
+const GENRE_SLOTS = 8;
 
 /**
  * The colour of each node, and the legend for it. A category keeps its colour
  * whatever the filters show: genres are slotted by the library's own ranking
- * (report.genres), roles by a fixed order. Past three categories everything is the
- * neutral, because only three series stay apart when any two marks can touch.
+ * (report.genres), roles by a fixed order. Genres take all eight series, then the
+ * neutral for any other genre; an artist with no genre at all is a hollow ring, so
+ * missing data reads apart from "some other genre". Roles take three.
  */
-export function graphColours(report: GraphReport, by: GraphColour): { of: (n: GraphNode) => string | undefined; legend: LegendEntry[] } {
-  if (by === "none") return { of: () => undefined, legend: [] };
-  const slot = (i: number) => (i >= 0 && i < 3 ? `var(--series-${i + 1})` : "var(--series-other)");
+export function graphColours(report: GraphReport, by: GraphColour): {
+  of: (n: GraphNode) => string | undefined;
+  hollow: (n: GraphNode) => boolean;
+  legend: LegendEntry[];
+} {
+  if (by === "none") return { of: () => undefined, hollow: () => false, legend: [] };
+  const slots = by === "genre" ? GENRE_SLOTS : 3;
+  const slot = (i: number) => (i >= 0 && i < slots ? `var(--series-${i + 1})` : "var(--series-other)");
   let keyOf: (n: GraphNode) => string;
   let labelOf: (key: string) => string;
   let order: string[];
+  // The key of "no genre known", which only genre colouring has.
+  const UNKNOWN = "\u0000unknown";
   if (by === "genre") {
-    order = report.genres.slice(0, 3);
-    keyOf = (n) => (n.genre && order.includes(n.genre) ? n.genre : "");
-    labelOf = (k) => k || "Other or unknown";
+    order = report.genres.slice(0, GENRE_SLOTS);
+    keyOf = (n) => (!n.genre ? UNKNOWN : order.includes(n.genre) ? n.genre : "");
+    labelOf = (k) => (k === UNKNOWN ? "No genre known" : k || "Other genres");
   } else {
     order = ROLE_SLOTS.map((r) => r.role);
     keyOf = (n) => (n.role && order.includes(n.role) ? n.role : n.role ? "writing" : "");
@@ -133,10 +146,19 @@ export function graphColours(report: GraphReport, by: GraphColour): { of: (n: Gr
   const colourOf = (key: string) => slot(order.indexOf(key));
   const counts = new Map<string, number>();
   for (const n of report.nodes) counts.set(keyOf(n), (counts.get(keyOf(n)) ?? 0) + 1);
-  const keys = [...order.filter((k) => counts.has(k)), ...[...counts.keys()].filter((k) => !order.includes(k))];
+  // The coloured categories in slot order, then Other, then unknown last.
+  const rest = [...counts.keys()].filter((k) => !order.includes(k)).sort((a, b) => (a === UNKNOWN ? 1 : b === UNKNOWN ? -1 : 0));
+  const keys = [...order.filter((k) => counts.has(k)), ...rest];
   return {
     of: (n) => colourOf(keyOf(n)),
-    legend: keys.map((k) => ({ key: k || "other", label: labelOf(k), colour: colourOf(k), count: counts.get(k) ?? 0 })),
+    hollow: (n) => keyOf(n) === UNKNOWN,
+    legend: keys.map((k) => ({
+      key: k === UNKNOWN ? "unknown" : k || "other",
+      label: labelOf(k),
+      colour: colourOf(k),
+      count: counts.get(k) ?? 0,
+      hollow: k === UNKNOWN,
+    })),
   };
 }
 
@@ -145,11 +167,14 @@ export function CollabGraph({
   selected,
   onSelect,
   colour = "none",
+  reveal = null,
 }: {
   report: GraphReport;
   selected: string | null;
   onSelect: (mbid: string | null) => void;
   colour?: GraphColour;
+  /** Bring an artist into view: pan to them and zoom in. A new `at` repeats it. */
+  reveal?: { mbid: string; at: number } | null;
 }) {
   const colours = useMemo(() => graphColours(report, colour), [report, colour]);
   const laid = useMemo(() => layout(report), [report]);
@@ -191,6 +216,18 @@ export function CollabGraph({
     setFramed(laid);
     setView(null);
   }
+
+  // Found by the search: centre on the artist, zoomed in to about a third of the
+  // fitted graph so their neighbourhood is readable, never past the zoom cap.
+  useEffect(() => {
+    if (!reveal) return;
+    const n = laid.nodes.find((x) => x.mb_id === reveal.mbid);
+    if (!n || n.x === undefined || n.y === undefined) return;
+    const w = Math.max(canvas.w / MAX_ZOOM, fitted.w / 3);
+    const h = Math.max(canvas.h / MAX_ZOOM, fitted.h / 3);
+    setView({ x: n.x - w / 2, y: n.y - h / 2, w, h });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reveal]);
 
   const focus = hover ?? selected;
   const neighbours = useMemo(() => {
@@ -308,7 +345,11 @@ export function CollabGraph({
               >
                 {/* A hit target larger than the mark, so small nodes are clickable. */}
                 <circle className="hit" r={Math.max(r, 8)} />
-                <circle r={r} style={colours.of(n) ? { fill: colours.of(n) } : undefined} />
+                {colours.hollow(n) ? (
+                  <circle className="unknown" r={r} style={{ stroke: colours.of(n) }} />
+                ) : (
+                  <circle r={r} style={colours.of(n) ? { fill: colours.of(n) } : undefined} />
+                )}
                 <title>
                   {`${n.name}: ${n.tracks} ${n.tracks === 1 ? "recording" : "recordings"}`}
                   {colour === "genre" && n.genre ? ` · ${n.genre}` : ""}
@@ -334,7 +375,7 @@ export function CollabGraph({
         <ul className="graph-legend" aria-label={`Colour: ${colour}`}>
           {colours.legend.map((e) => (
             <li key={e.key}>
-              <span className="swatch" style={{ background: e.colour }} />
+              <span className={`swatch${e.hollow ? " hollow" : ""}`} style={e.hollow ? { borderColor: e.colour } : { background: e.colour }} />
               <span>{e.label}</span>
               <span className="mono dim">{e.count}</span>
             </li>

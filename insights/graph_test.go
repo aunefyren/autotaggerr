@@ -202,6 +202,18 @@ func TestGraph(t *testing.T) {
 		t.Errorf("centred on unmanaged b = %+v, want b and its managed partner a", g)
 	}
 
+	// Search finds credited artists by name, most credited first, across every credit.
+	found, err := SearchGraphArtists(db, "NAME", 10)
+	if err != nil || len(found) == 0 || found[0].MBID != "b" || found[0].Recordings != 3 {
+		t.Errorf("search = %+v, %v; want b first with 3 recordings", found, err)
+	}
+	if found, _ := SearchGraphArtists(db, "name p", 10); len(found) != 1 || found[0].MBID != "p" {
+		t.Errorf("search for one producer = %+v", found)
+	}
+	if found, _ := SearchGraphArtists(db, "%", 10); len(found) != 0 {
+		t.Errorf("a %% matched as a wildcard: %+v", found)
+	}
+
 	g, _ = Graph(db, GraphOptions{Roles: []string{"credit", "production"}})
 	if weight(g, "c", "p") != 1 {
 		t.Error("a producer does not connect with production asked for")

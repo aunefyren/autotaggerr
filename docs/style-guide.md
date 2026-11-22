@@ -821,16 +821,22 @@ A node-link picture beside a list of the same data (`.graph-split`, 300px panel,
 900px).
 
 - **Colour is by category, never by artist.** *Colour: Genre* (the default), *Role* or *None*.
-  Nodes take `--series-1`…`--series-3` (blue, orange, aqua) or the neutral `--series-other`. With
+  Nodes take `--series-1`…`--series-8` (blue, orange, aqua, yellow, magenta, green, violet, red) or
+  the neutral `--series-other`. With
   *None*, every node is `--accent`. A `--surface-1` ring keeps overlapping nodes apart. Edges are
   `--border-strong`. A node is still identified by its **label**: colouring artists one by one
   would be a palette with hundreds of entries.
-  - **Three series, then Other.** In a node graph any two colours can touch, and under that
-    all-pairs test only the first three categorical slots stay apart for colour-blind viewers
-    (validated against `--surface-1` with the dataviz validator; the fourth puts yellow beside
-    orange). So genre colours the library's three most common genres and folds the rest into
-    *Other or unknown*. Role colours credited artist, production and performer, with writing as
-    the neutral, named in the legend.
+  - **Eight genres, then Other, then a ring for unknown.** In a node graph any two colours can
+    touch, and under that all-pairs test only the first three categorical slots stay apart for
+    colour-blind viewers (validated against `--surface-1` with the dataviz validator). Every
+    fourth slot fails it, and violet beside blue scores ΔE 9.8, under the normal-vision floor of
+    15. Genre uses all eight anyway: with three, most of a real library's graph was *Other*
+    (85 of 150 nodes), which said less than imperfect colours do. The cost is carried by naming:
+    the legend lists every category with its count, and every node's tooltip names its genre, so
+    colour is never the only carrier. Genres past the eighth share the neutral as *Other genres*;
+    an artist with **no genre known** is a neutral **ring** (`circle.unknown`, a hollow legend
+    swatch), so missing data reads apart from "some other genre". Role keeps three: credited
+    artist, production and performer, with writing as the neutral, named in the legend.
   - **A colour follows its category, not its rank in the view.** Genres are slotted by the
     library's own ranking (`report.genres`), not by what the current filters happen to show, so
     moving a slider never repaints a genre.

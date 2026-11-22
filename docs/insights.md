@@ -226,6 +226,20 @@ instead of per request is the next step if a library outgrows it.
 **Adding a filter** is a field on `insights.GraphOptions`, a line in `routers/insights.go`, and an
 entry in `GRAPH_FILTERS` (`webui/src/pages/Insights.tsx`).
 
+### Finding an artist
+
+The search box above the graph finds an artist by name. Artists already drawn are matched in the
+browser and listed first. Picking one selects them, which lights up their connections, and pans and
+zooms the canvas to them. Everyone else the credits name comes from
+`GET /insights/graph/artists?q=` (`insights.SearchGraphArtists`: a name match over every credited
+artist, in every role and library, most credited first, ten at most), because the node cap and the
+filters leave most artists undrawn. The list it searches is built by one grouped scan of
+`insight_credits` and kept in memory until the graph's fingerprint changes. Scanning per keystroke
+took over a second on the medium demo. Picking one of those **centres** the graph on them, which draws them
+with their collaborators. A centred artist counts as managed for the [managed-only](#assembling-a-graph)
+filter, so someone who is not one of your artists can still be found. Enter takes the first
+suggestion.
+
 ### Colour
 
 *Colour* draws nodes by **genre** (the default), **role** or nothing. It is drawn rather than
@@ -236,9 +250,11 @@ asked for, so changing it costs no request.
   `insight_credit_releases.genre` at sync time. Rows synced before the column existed carry an older
   `version`, and `SyncCredits` reads them again.
 - **Role:** the role they hold on the most recordings in view.
-- **Only three colours:** the library's three most common genres get colours of their own
-  (`report.genres`, ranked library-wide so a filter never repaints a genre), and the rest share a
-  neutral. The style guide explains why it is three.
+- **Eight colours:** the library's eight most common genres get colours of their own
+  (`report.genres`, `insights.ColouredGenres`, ranked library-wide so a filter never repaints a
+  genre). Any other genre shares a neutral as *Other genres*, and an artist with no genre known
+  is drawn as a neutral ring. Past three, not every pair of colours stays apart; the style guide
+  says why eight was chosen anyway and how naming carries it.
 
 ### Drawing
 

@@ -253,6 +253,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.POST("/insights/duplicates/check", a.checkDuplicates)
 		protected.GET("/insights/stats", a.insightsStats)
 		protected.GET("/insights/graph", a.insightsGraph)
+		protected.GET("/insights/graph/artists", a.insightsGraphArtists)
 
 		protected.GET("/events", a.listEvents)
 		protected.GET("/events/:id", a.getEvent)

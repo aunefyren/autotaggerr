@@ -84,8 +84,9 @@ func TestManagedArtistsRoutes(t *testing.T) {
 		t.Errorf("an owned album is not tracked: %+v", detailRGs.ReleaseGroups)
 	}
 
-	// The graph answers both ways.
-	for _, path := range []string{"/api/v1/insights/graph", "/api/v1/insights/graph?everyone=1"} {
+	// The graph answers both ways, and its artist search answers a list, empty for no query.
+	for _, path := range []string{"/api/v1/insights/graph", "/api/v1/insights/graph?everyone=1",
+		"/api/v1/insights/graph/artists?q=feat", "/api/v1/insights/graph/artists"} {
 		if w := do(r, http.MethodGet, path, token, nil); w.Code != http.StatusOK {
 			t.Errorf("%s = %d: %s", path, w.Code, w.Body.String())
 		}

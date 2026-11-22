@@ -1595,3 +1595,10 @@ export interface GraphReport {
 
 /** Why an artist is managed (collection.ManagedReason). */
 export type ManagedReason = "added" | "manual" | "followed" | "wanted" | "lidarr" | "album_artist" | "settings";
+
+/** A credited artist found by name for the graph search (GET /insights/graph/artists). */
+export interface GraphArtist {
+  mb_id: string;
+  name: string;
+  recordings: number;
+}

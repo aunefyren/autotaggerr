@@ -1,14 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../api";
-import { useFetch } from "../hooks";
+import { useDebounced, useFetch } from "../hooks";
 import { useToast } from "../toast";
 import { useLibraries } from "../components/Libraries";
 import { formatBytes } from "../components/storage";
 import { EmptyState, ErrorNote, IdChip, Skeleton } from "../components/ui";
 import { ArtistLink, CollabGraph, CollaboratorRow, GraphColour } from "../components/CollabGraph";
 import { StorageTab } from "./Storage";
-import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, GraphNode, GraphReport, LibraryStats, ScanStatus, StatsBucket } from "../types";
+import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, GraphArtist, GraphNode, GraphReport, LibraryStats, ScanStatus, StatsBucket } from "../types";
 
 /**
  * Insights: questions about the library as a whole. Duplicates and Stats read the
@@ -601,6 +601,7 @@ function Graph({
   const colourParam = params.get("colour");
   const colour: GraphColour = colourParam === "role" || colourParam === "none" ? colourParam : "genre";
   const [selected, setSelected] = useState<string | null>(null);
+  const [reveal, setReveal] = useState<{ mbid: string; at: number } | null>(null);
 
   const query = new URLSearchParams();
   if (library) query.set("library", library);
@@ -684,6 +685,15 @@ function Graph({
         )}
       </div>
 
+      <GraphSearch
+        nodes={data?.nodes ?? []}
+        onFound={(mbid) => {
+          setSelected(mbid);
+          setReveal({ mbid, at: Date.now() });
+        }}
+        onCentre={(mbid) => centre(mbid)}
+      />
+
       {data?.center && (
         <div className="selected-bar row" style={{ gap: 10, flexWrap: "wrap" }}>
           <span>
@@ -735,7 +745,7 @@ function Graph({
 
       {data && data.nodes.length > 0 && (
         <div className={`graph-split${graph.loading ? " is-updating" : ""}`}>
-          <CollabGraph report={data} selected={selected} onSelect={setSelected} colour={colour} />
+          <CollabGraph report={data} selected={selected} onSelect={setSelected} colour={colour} reveal={reveal} />
           <div className="card stack" style={{ gap: 12, alignSelf: "start" }}>
             {picked ? (
               <SelectedArtist node={picked} report={data} nodes={nodes} onSelect={setSelected} onCentre={centre} centred={artist === picked.mb_id} />
@@ -840,5 +850,101 @@ function SelectedArtist({
         </div>
       )}
     </>
+  );
+}
+
+/**
+ * Find an artist on the graph by name. Artists already drawn are matched in the
+ * browser and listed first: picking one selects them and brings them into view.
+ * Everyone else the credits name is asked of the server, because the node cap and the
+ * filters leave most artists undrawn; picking one of them centres the graph on them,
+ * which draws them with their collaborators.
+ */
+function GraphSearch({
+  nodes,
+  onFound,
+  onCentre,
+}: {
+  nodes: GraphNode[];
+  onFound: (mbid: string) => void;
+  onCentre: (mbid: string) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const settled = useDebounced(query.trim(), 250);
+  const [remote, setRemote] = useState<GraphArtist[]>([]);
+  useEffect(() => {
+    if (settled.length < 2) {
+      setRemote([]);
+      return;
+    }
+    let live = true;
+    api
+      .get<GraphArtist[]>(`/insights/graph/artists?q=${encodeURIComponent(settled)}`)
+      .then((r) => live && setRemote(r))
+      .catch(() => live && setRemote([]));
+    return () => {
+      live = false;
+    };
+  }, [settled]);
+
+  const needle = query.trim().toLowerCase();
+  const drawn = needle
+    ? nodes.filter((n) => n.name.toLowerCase().includes(needle)).sort((a, b) => b.tracks - a.tracks).slice(0, 8)
+    : [];
+  const drawnIDs = new Set(nodes.map((n) => n.mb_id));
+  const elsewhere = remote.filter((a) => !drawnIDs.has(a.mb_id)).slice(0, 8);
+  const pick = (fn: () => void) => {
+    fn();
+    setOpen(false);
+    setQuery("");
+  };
+
+  return (
+    <div className="graph-search">
+      <input
+        className="input"
+        type="search"
+        placeholder="Find an artist"
+        aria-label="Find an artist on the graph"
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => setTimeout(() => setOpen(false), 150)}
+        onKeyDown={(e) => {
+          if (e.key === "Escape") setOpen(false);
+          if (e.key === "Enter") {
+            if (drawn[0]) pick(() => onFound(drawn[0].mb_id));
+            else if (elsewhere[0]) pick(() => onCentre(elsewhere[0].mb_id));
+          }
+        }}
+      />
+      {open && needle && (
+        <ul className="pick-list graph-search-results">
+          {drawn.map((n) => (
+            <li key={n.mb_id}>
+              <button type="button" className="pick-row pick-row-inline" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(() => onFound(n.mb_id))}>
+                <span>{n.name}</span>
+                <span className="pick-sub">on the graph</span>
+              </button>
+            </li>
+          ))}
+          {elsewhere.map((a) => (
+            <li key={a.mb_id}>
+              <button type="button" className="pick-row pick-row-inline" onMouseDown={(e) => e.preventDefault()} onClick={() => pick(() => onCentre(a.mb_id))}>
+                <span>{a.name}</span>
+                <span className="pick-sub">not drawn · centre on them</span>
+              </button>
+            </li>
+          ))}
+          {drawn.length === 0 && elsewhere.length === 0 && (
+            <li className="pick-static dim">{settled === query.trim() || needle.length < 2 ? "No artist by that name in your credits." : "Searching…"}</li>
+          )}
+        </ul>
+      )}
+    </div>
   );
 }

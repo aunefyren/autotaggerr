@@ -552,11 +552,13 @@ func strongest(pairs []weightedPair, k int) []weightedPair {
 	return pairs
 }
 
-// ColouredGenres is how many genres get a colour of their own. Three, because a node
-// graph puts any two colours side by side, and only the first three categorical
-// slots stay apart for colour-blind viewers when every pair can touch (docs/style-guide.md,
+// ColouredGenres is how many genres get a colour of their own: the eight categorical
+// slots. A node graph puts any two colours side by side, and past the first three not
+// every pair stays apart (for colour-blind viewers, and violet beside blue even for
+// full colour vision) — eight was chosen over that so fewer artists read as "Other",
+// with the genre named in the legend and every node's tooltip (docs/style-guide.md,
 // Collaboration graph). The rest share a neutral "Other".
-const ColouredGenres = 3
+const ColouredGenres = 8
 
 // artistColours finds, for each artist, their strongest genre and their main role
 // across the recordings in the asked roles that credit them: what the node is
@@ -654,4 +656,84 @@ func validRoles(asked []string) []string {
 		return []string{models.InsightRoleCredit}
 	}
 	return out
+}
+
+// GraphArtist is a credited artist found by name, for finding someone on the graph.
+type GraphArtist struct {
+	MBID string `json:"mb_id"`
+	Name string `json:"name"`
+	// Recordings is how many recordings credit them, in any role and any library: a
+	// ranking for the suggestions, not a count the graph shows.
+	Recordings int `json:"recordings"`
+}
+
+// SearchGraphArtists finds credited artists whose name contains q, most credited
+// first. It searches every credit, not the graph on screen, so an artist the node cap
+// or a filter left out can still be found and centred on.
+//
+// The search runs over an in-memory list of every credited artist, built by one
+// grouped scan and kept until graphFingerprint changes: scanning the credits per
+// keystroke cost a second on the medium demo.
+func SearchGraphArtists(db *gorm.DB, q string, limit int) ([]GraphArtist, error) {
+	out := []GraphArtist{}
+	needle := strings.ToLower(strings.TrimSpace(q))
+	if needle == "" {
+		return out, nil
+	}
+	if limit <= 0 || limit > 50 {
+		limit = 10
+	}
+	all, err := creditedArtists(db)
+	if err != nil {
+		return out, err
+	}
+	// The list is sorted most credited first, so the first matches are the answer.
+	for _, a := range all {
+		if strings.Contains(a.lower, needle) {
+			out = append(out, a.GraphArtist)
+			if len(out) == limit {
+				break
+			}
+		}
+	}
+	return out, nil
+}
+
+type searchableArtist struct {
+	GraphArtist
+	lower string
+}
+
+// artistIndex is the one cached list behind SearchGraphArtists.
+var artistIndex struct {
+	sync.Mutex
+	key  string
+	list []searchableArtist
+}
+
+func creditedArtists(db *gorm.DB) ([]searchableArtist, error) {
+	key := fmt.Sprintf("%p|%s", db.ConnPool, graphFingerprint(db))
+	artistIndex.Lock()
+	defer artistIndex.Unlock()
+	if artistIndex.list != nil && artistIndex.key == key {
+		return artistIndex.list, nil
+	}
+	var rows []GraphArtist
+	if err := db.Model(&models.InsightCredit{}).
+		Select("artist_mb_id AS mb_id, MAX(artist_name) AS name, COUNT(DISTINCT recording_mb_id) AS recordings").
+		Group("artist_mb_id").Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Recordings != rows[j].Recordings {
+			return rows[i].Recordings > rows[j].Recordings
+		}
+		return rows[i].Name < rows[j].Name
+	})
+	list := make([]searchableArtist, len(rows))
+	for i, r := range rows {
+		list[i] = searchableArtist{GraphArtist: r, lower: strings.ToLower(r.Name)}
+	}
+	artistIndex.key, artistIndex.list = key, list
+	return list, nil
 }
