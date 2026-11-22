@@ -622,12 +622,18 @@ const LISTEN_FILTERS: GraphFilter[] = [
     label: "Period",
     fallback: "all",
     options: [
+      { value: "off", label: "Off (library only)" },
       { value: "30d", label: "Last 30 days" },
       { value: "90d", label: "Last 90 days" },
       { value: "365d", label: "Last year" },
       { value: "all", label: "All time" },
     ],
-    help: (v) => (v === "all" ? "Every play read from your accounts" : `Only plays from the ${v === "365d" ? "last year" : `last ${v.replace("d", "")} days`}`),
+    help: (v) =>
+      v === "off"
+        ? "Your plays are not shown: the graph is your library alone"
+        : v === "all"
+          ? "Every play read from your accounts"
+          : `Only plays from the ${v === "365d" ? "last year" : `last ${v.replace("d", "")} days`}`,
   },
   {
     kind: "select",
@@ -693,9 +699,11 @@ function Graph({
   const query = new URLSearchParams();
   if (library) query.set("library", library);
   query.set("roles", roles.join(","));
+  // With the overlay off, the other listening filters are not asked about at all.
+  const listeningOff = params.get("since") === "off";
   for (const f of [...GRAPH_FILTERS, ...LISTEN_FILTERS]) {
     const v = params.get(f.key);
-    if (v) query.set(f.key, v);
+    if (v && (!listeningOff || f.key === "since" || !LISTEN_FILTERS.includes(f))) query.set(f.key, v);
   }
   if (artist) {
     query.set("artist", artist);
@@ -715,8 +723,12 @@ function Graph({
 
   const data = graph.data;
   const listening = data?.listening;
+  // Plays are on the answer: the user has an account and has not turned the overlay off.
+  const playsShown = !!listening && !listening.off;
+  // Colour by plays falls back to genre while there are no plays to colour by.
+  const shownColour: GraphColour = colour === "plays" && !playsShown ? "genre" : colour;
   // One filter: label, control, and the line saying what its value does.
-  const renderFilter = (f: GraphFilter) => {
+  const renderFilter = (f: GraphFilter, disabled = false) => {
     const id = `graph-${f.key}`;
     if (f.kind === "select") {
       const value = params.get(f.key) ?? f.fallback;
@@ -727,6 +739,7 @@ function Graph({
             id={id}
             className="input"
             value={value}
+            disabled={disabled}
             onChange={(e) => set({ [f.key]: e.target.value === f.fallback ? null : e.target.value })}
           >
             {f.options.map((o) => (
@@ -742,7 +755,7 @@ function Graph({
       <div key={f.key} className="field">
         <span className="flabel">{f.label}</span>
         <label className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12, minHeight: 32 }}>
-          <input type="checkbox" checked={on} onChange={(e) => set({ [f.key]: e.target.checked ? "1" : null })} />
+          <input type="checkbox" checked={on} disabled={disabled} onChange={(e) => set({ [f.key]: e.target.checked ? "1" : null })} />
           <span>{f.box}</span>
         </label>
         <span className="dim graph-help">{f.help(on)}</span>
@@ -794,13 +807,13 @@ function Graph({
           {GRAPH_FILTERS.map((f) => renderFilter(f))}
           <div className="field">
             <label className="flabel" htmlFor="graph-colour">Colour</label>
-            <select id="graph-colour" className="input" value={colour} onChange={(e) => set({ colour: e.target.value === "genre" ? null : e.target.value })}>
+            <select id="graph-colour" className="input" value={shownColour} onChange={(e) => set({ colour: e.target.value === "genre" ? null : e.target.value })}>
               <option value="genre">Genre</option>
               <option value="role">Role</option>
-              {listening && <option value="plays">Plays</option>}
+              {playsShown && <option value="plays">Plays</option>}
               <option value="none">None</option>
             </select>
-            <span className="dim graph-help">{COLOUR_HELP[colour]}</span>
+            <span className="dim graph-help">{COLOUR_HELP[shownColour]}</span>
           </div>
         </div>
 
@@ -808,10 +821,12 @@ function Graph({
           <div className="stack" style={{ gap: 6 }}>
             <span className="flabel">Your listening</span>
             <div className="field-row">
-              {LISTEN_FILTERS.map((f) => renderFilter(f))}
+              {/* Off greys out the rest rather than hiding it, so turning the overlay
+                  back on is where it was. */}
+              {LISTEN_FILTERS.map((f) => renderFilter(f, !playsShown && f.key !== "since"))}
               <div className="field">
                 <label className="flabel" htmlFor="graph-size">Size by</label>
-                <select id="graph-size" className="input" value={size} onChange={(e) => set({ size: e.target.value === "tracks" ? null : e.target.value })}>
+                <select id="graph-size" className="input" value={size} disabled={!playsShown} onChange={(e) => set({ size: e.target.value === "tracks" ? null : e.target.value })}>
                   <option value="tracks">Recordings</option>
                   <option value="plays">Plays</option>
                 </select>
@@ -820,11 +835,15 @@ function Graph({
                 </span>
               </div>
             </div>
-            <span className="dim graph-help">
-              {listening.plays.toLocaleString()} {listening.plays === 1 ? "play" : "plays"} in the period
-              {listening.unmatched > 0 ? `, ${listening.unmatched.toLocaleString()} of them not identified and left out` : ""}.
-              Plays reported by two sources a few minutes apart count once.
-            </span>
+            {playsShown ? (
+              <span className="dim graph-help">
+                {listening.plays.toLocaleString()} {listening.plays === 1 ? "play" : "plays"} in the period
+                {listening.unmatched > 0 ? `, ${listening.unmatched.toLocaleString()} of them not identified and left out` : ""}.
+                Plays reported by two sources a few minutes apart count once.
+              </span>
+            ) : (
+              <span className="dim graph-help">Listening is off. Pick a period to show your plays again.</span>
+            )}
           </div>
         ) : (
           data && (
@@ -914,8 +933,8 @@ function Graph({
             report={data}
             selected={selected}
             onSelect={setSelected}
-            colour={colour === "plays" && !listening ? "genre" : colour}
-            size={size === "plays" && listening ? "plays" : "tracks"}
+            colour={shownColour}
+            size={size === "plays" && playsShown ? "plays" : "tracks"}
             reveal={reveal}
           />
           <div className="card stack" style={{ gap: 12, alignSelf: "start" }}>
@@ -937,7 +956,7 @@ function Graph({
                     )}
                   </div>
                 )}
-                {listening && <MostPlayed nodes={data.nodes} onFocus={setSelected} />}
+                {playsShown && <MostPlayed nodes={data.nodes} onFocus={setSelected} />}
                 <div className="dim" style={{ fontSize: 11 }}>Select an artist in the graph or the list; drag to pan, scroll to zoom.</div>
               </>
             )}
@@ -1021,7 +1040,7 @@ function SelectedArtist({
           <span style={{ fontWeight: 600 }}>{node.name}</span>
           <span className="dim mono" style={{ fontSize: 11 }}>
             {node.tracks} {node.tracks === 1 ? "recording" : "recordings"}
-            {report.listening ? ` · ${node.plays ?? 0} ${node.plays === 1 ? "play" : "plays"}` : ""}
+            {report.listening && !report.listening.off ? ` · ${node.plays ?? 0} ${node.plays === 1 ? "play" : "plays"}` : ""}
           </span>
         </div>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelect(null)} aria-label="Clear selection">✕</button>

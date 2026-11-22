@@ -413,7 +413,7 @@ export function CollabGraph({
                   {`${n.name}: ${n.tracks} ${n.tracks === 1 ? "recording" : "recordings"}`}
                   {colour === "genre" && n.genre ? ` · ${n.genre}` : ""}
                   {colour === "role" && n.role ? ` · mostly ${n.role}` : ""}
-                  {report.listening ? ` · ${n.plays ?? 0} ${n.plays === 1 ? "play" : "plays"}` : ""}
+                  {report.listening && !report.listening.off ? ` · ${n.plays ?? 0} ${n.plays === 1 ? "play" : "plays"}` : ""}
                   {n.managed ? "" : " · not one of your artists"}
                 </title>
                 {showLabel && (

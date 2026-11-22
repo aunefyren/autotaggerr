@@ -52,6 +52,25 @@ type ListeningSummary struct {
 	Unmatched int        `json:"unmatched"`
 	Since     *time.Time `json:"since,omitempty"`
 	Accounts  int        `json:"accounts"`
+	// Off says the overlay was turned off for this answer (GraphOptions.ListeningOff):
+	// nothing was counted, and the counts above are zero.
+	Off bool `json:"off,omitempty"`
+}
+
+// listeningOff is the summary of an overlay turned off: only that the user has
+// accounts to turn it back on with. Nil for a user with none.
+func listeningOff(db *gorm.DB, user *uuid.UUID) (*ListeningSummary, error) {
+	if user == nil {
+		return nil, nil
+	}
+	var accounts int64
+	if err := db.Model(&models.ListeningAccount{}).Where("user_id = ?", *user).Count(&accounts).Error; err != nil {
+		return nil, err
+	}
+	if accounts == 0 {
+		return nil, nil
+	}
+	return &ListeningSummary{Accounts: int(accounts), Off: true}, nil
 }
 
 // play is one kept play, reduced to what the overlay reads.

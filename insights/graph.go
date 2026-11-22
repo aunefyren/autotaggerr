@@ -69,6 +69,10 @@ type GraphOptions struct {
 	Listener *uuid.UUID
 	// Since starts the period plays are counted over; zero is all time.
 	Since time.Time
+	// ListeningOff draws the library alone, with no plays, though the listener has
+	// accounts: nothing is counted, and the report says only that the overlay is off,
+	// so the page can offer to turn it back on.
+	ListeningOff bool
 	// ListenedOnly keeps an edge only when both artists have at least MinPlays plays
 	// (at least one), the centred artist exempt. Applied after the cached count, like
 	// ManagedOnly.
@@ -178,8 +182,12 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 	if err != nil {
 		return report, err
 	}
-	listened, err := cachedListenGraph(db, opts, roles, counted, creditKey)
-	if err != nil {
+	var listened *listenGraph
+	if opts.ListeningOff {
+		if report.Listening, err = listeningOff(db, opts.Listener); err != nil {
+			return report, err
+		}
+	} else if listened, err = cachedListenGraph(db, opts, roles, counted, creditKey); err != nil {
 		return report, err
 	}
 	plays := map[string]int{}

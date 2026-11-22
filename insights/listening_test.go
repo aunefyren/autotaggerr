@@ -226,3 +226,28 @@ func TestBackbone(t *testing.T) {
 		t.Errorf("a weak pair kept: %v", got)
 	}
 }
+
+// TestListeningOff: the library alone, though the user has plays: no plays on any
+// node, credit edges whatever Edges says, and a summary that says only "off".
+func TestListeningOff(t *testing.T) {
+	f := newListenFixture(t)
+	g, err := Graph(f.db, GraphOptions{Listener: &f.user, ListeningOff: true, Edges: EdgesListening, ListenedOnly: true, MinPlays: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Listening == nil || !g.Listening.Off || g.Listening.Plays != 0 || g.Listening.Accounts != 2 {
+		t.Errorf("summary = %+v", g.Listening)
+	}
+	for _, n := range g.Nodes {
+		if n.Plays != 0 {
+			t.Errorf("%s has %d plays with the overlay off", n.MBID, n.Plays)
+		}
+	}
+	if edgeOf(g, "a", "b", "") != 2 || edgeOf(g, "b", "c", "") != 1 {
+		t.Errorf("edges with the overlay off = %+v", g.Edges)
+	}
+	stranger := uuid.New()
+	if g, _ := Graph(f.db, GraphOptions{Listener: &stranger, ListeningOff: true}); g.Listening != nil {
+		t.Error("off summary for a user with no account")
+	}
+}

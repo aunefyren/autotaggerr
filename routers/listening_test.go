@@ -256,6 +256,10 @@ func TestGraphListeningParams(t *testing.T) {
 	if !strings.Contains(w.Body.String(), `"listening":{`) {
 		t.Errorf("linked account, no summary: %s", w.Body.String())
 	}
+	w = do(r, "GET", "/api/v1/insights/graph?since=off&edges=listening", admin, nil)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"off":true`) {
+		t.Errorf("overlay off = %d %s", w.Code, w.Body.String())
+	}
 }
 
 func TestParsePeriod(t *testing.T) {

@@ -164,6 +164,8 @@ func (a *API) insightsGraph(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "edges must be credits, listening or both"})
 		return
 	}
+	// "off" draws the library alone: no plays counted, whatever else is asked.
+	opts.ListeningOff = strings.TrimSpace(c.Query("since")) == "off"
 	since, err := parsePeriod(c.Query("since"), time.Now())
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
@@ -209,7 +211,7 @@ func (a *API) insightsGraphArtists(c *gin.Context) {
 // "all" for all time.
 func parsePeriod(raw string, now time.Time) (time.Time, error) {
 	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "all" {
+	if raw == "" || raw == "all" || raw == "off" {
 		return time.Time{}, nil
 	}
 	days, err := strconv.Atoi(strings.TrimSuffix(raw, "d"))

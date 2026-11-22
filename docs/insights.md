@@ -267,11 +267,16 @@ absent for a user with no account, which hides its controls.
 
 | Parameter | Default | Effect |
 |---|---|---|
-| `since` | all | the period plays are counted over: `30d`, `90d`, `365d` (any number of days) or `all` |
+| `since` | all | the period plays are counted over: `30d`, `90d`, `365d` (any number of days) or `all`; `off` draws the library alone (below) |
 | `listened` | off | keep an edge only between artists with at least `min_plays` plays; the centred artist is exempt |
 | `min_plays` | 1 | the floor for `listened` |
 | `edges` | `credits` | `listening` connects artists played close together in a session; `both` lays out by credits and adds co-listening between the artists drawn |
 
+- **Off is the library graph exactly as without an account.** *Period: Off (library only)*
+  (`since=off`, `GraphOptions.ListeningOff`) counts nothing and ignores `listened`, `min_plays`
+  and `edges`. The answer carries `listening: {off: true, accounts: N}` and no plays, so the page
+  keeps the *Your listening* controls, greys out all but Period, and falls back from *Colour:
+  Plays* and *Size by: Plays* to genre and recordings.
 - **Plays per artist** (`GraphNode.Plays`) are every play, not distinct recordings, attributed
   through the credits in the roles asked for (see [listening.md](listening.md#counting-a-play)).
   `Tracks` stays recordings.

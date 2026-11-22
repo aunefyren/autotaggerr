@@ -1588,6 +1588,8 @@ export interface ListeningSummary {
   /** Start of the period (RFC 3339); absent for all time. */
   since?: string;
   accounts: number;
+  /** The overlay was turned off for this answer (Period: Off): nothing counted. */
+  off?: boolean;
 }
 
 export interface Collaboration {
