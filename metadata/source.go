@@ -22,4 +22,6 @@ type MetadataSource interface {
 	GetReleaseGroupReleases(releaseGroupID string) ([]models.MusicBrainzReleaseSearchResult, error)
 	SearchReleases(query ReleaseSearchQuery) (ReleaseSearchPage, error)
 	SearchArtists(query string) ([]models.MusicBrainzArtistSearchResult, error)
+	SearchReleaseGroups(query string) ([]models.MusicBrainzReleaseGroupSearchResult, error)
+	SearchRecordings(query string) ([]models.MusicBrainzRecordingSearchResult, error)
 }

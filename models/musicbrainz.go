@@ -348,3 +348,69 @@ type MusicBrainzReleaseBrowseResponse struct {
 	Count    int                              `json:"release-count"`
 	Releases []MusicBrainzReleaseSearchResult `json:"releases"`
 }
+
+// MusicBrainzReleaseGroupSearchResponse is the /release-group?query= search result,
+// used to want an album straight from search, without first adding its artist.
+type MusicBrainzReleaseGroupSearchResponse struct {
+	Count         int                                   `json:"count"`
+	ReleaseGroups []MusicBrainzReleaseGroupSearchResult `json:"release-groups"`
+}
+
+type MusicBrainzReleaseGroupSearchResult struct {
+	ID               string         `json:"id"`
+	Score            int            `json:"score"`
+	Title            string         `json:"title"`
+	PrimaryType      string         `json:"primary-type"`
+	SecondaryTypes   []string       `json:"secondary-types"`
+	FirstReleaseDate string         `json:"first-release-date"`
+	Disambiguation   string         `json:"disambiguation"`
+	ArtistCredit     []ArtistCredit `json:"artist-credit"`
+	Count            int            `json:"count"`
+}
+
+// MusicBrainzRecordingSearchResponse is the /recording?query= search result, used to
+// want one song — from any release, or from the releases picked.
+type MusicBrainzRecordingSearchResponse struct {
+	Count      int                                `json:"count"`
+	Recordings []MusicBrainzRecordingSearchResult `json:"recordings"`
+}
+
+type MusicBrainzRecordingSearchResult struct {
+	ID               string         `json:"id"`
+	Score            int            `json:"score"`
+	Title            string         `json:"title"`
+	Length           int            `json:"length"`
+	Disambiguation   string         `json:"disambiguation"`
+	Video            bool           `json:"video"`
+	FirstReleaseDate string         `json:"first-release-date"`
+	ArtistCredit     []ArtistCredit `json:"artist-credit"`
+	// Releases are the editions the recording appears on, each with its group: what
+	// a song want is placed under (the group) and what it may be narrowed to.
+	Releases []MusicBrainzRecordingRelease `json:"releases"`
+}
+
+// MusicBrainzRecordingRelease is one release a recording search hit appears on.
+type MusicBrainzRecordingRelease struct {
+	ID             string         `json:"id"`
+	Title          string         `json:"title"`
+	Status         string         `json:"status"`
+	Date           string         `json:"date"`
+	Country        string         `json:"country"`
+	Disambiguation string         `json:"disambiguation"`
+	TrackCount     int            `json:"track-count"`
+	ArtistCredit   []ArtistCredit `json:"artist-credit"`
+	ReleaseGroup   struct {
+		ID             string   `json:"id"`
+		Title          string   `json:"title"`
+		PrimaryType    string   `json:"primary-type"`
+		SecondaryTypes []string `json:"secondary-types"`
+	} `json:"release-group"`
+	Media []struct {
+		Position int    `json:"position"`
+		Format   string `json:"format"`
+		Track    []struct {
+			Number string `json:"number"`
+		} `json:"track"`
+		TrackCount int `json:"track-count"`
+	} `json:"media"`
+}

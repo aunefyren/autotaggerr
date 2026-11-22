@@ -26,6 +26,8 @@ type fakeMeta struct {
 	getRGReleases func(rgID string) ([]models.MusicBrainzReleaseSearchResult, error)
 	searchRel     func(q metadata.ReleaseSearchQuery) (metadata.ReleaseSearchPage, error)
 	searchArtists func(q string) ([]models.MusicBrainzArtistSearchResult, error)
+	searchRGs     func(q string) ([]models.MusicBrainzReleaseGroupSearchResult, error)
+	searchRecs    func(q string) ([]models.MusicBrainzRecordingSearchResult, error)
 }
 
 func (f *fakeMeta) GetRelease(mbID string) (models.MusicBrainzReleaseResponse, error) {
@@ -66,6 +68,20 @@ func (f *fakeMeta) SearchReleases(q metadata.ReleaseSearchQuery) (metadata.Relea
 func (f *fakeMeta) SearchArtists(q string) ([]models.MusicBrainzArtistSearchResult, error) {
 	if f.searchArtists != nil {
 		return f.searchArtists(q)
+	}
+	return nil, nil
+}
+
+func (f *fakeMeta) SearchReleaseGroups(q string) ([]models.MusicBrainzReleaseGroupSearchResult, error) {
+	if f.searchRGs != nil {
+		return f.searchRGs(q)
+	}
+	return nil, nil
+}
+
+func (f *fakeMeta) SearchRecordings(q string) ([]models.MusicBrainzRecordingSearchResult, error) {
+	if f.searchRecs != nil {
+		return f.searchRecs(q)
 	}
 	return nil, nil
 }

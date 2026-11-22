@@ -308,13 +308,19 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   shared fact (a country, a word in a folder name) is never strong, however many agree. A filter that hides rows says how many, and
   says so when it hides a match. While a column's first fetch is in flight it shows `PickSkeleton`
   (`.pick-skel`): its own rows, values missing, per *Loading placeholder*. Stacks below 900px.
-  **Two columns** (`.pick-grid.two`, Add artist) when there is one choice to make but the list
+  **Two columns** (`.pick-grid.two`, every tab of Add) when there is one choice to make but the list
   cannot make it alone: twenty artists share a name, and a bracketed description does not say
   which one you mean. The right pane says who the selected one is — type, origin, active years,
   genres, release counts and their studio albums by year, which is what someone recognises an
   artist by — and the footer carries **one** action for the selection, never one per row. Rows that
   are information rather than choices (`.pick-static`) keep the list's rhythm without hover or
   pointer. Something already in the collection is marked on its row and opened rather than added.
+  On Add's **Album** tab the right pane is the album page's edition and track pickers, stacked: the
+  same rows (`.any-row`, `.edition-row`, `.all-row`, `.track-row`) and the same tick rules, editing
+  a draft that the one footer action writes. The action names what it will write ("Want 1 track of
+  *OK Computer* (1997 CD)"), and after it a selected bar says what was wanted and offers **Open
+  album**. The **Track** tab lists the song's albums, each an "any release" row with its releases
+  indented under it.
 - **Selected bar / release card** — what a later step will act on, stated in one line before it
   does (`.selected-bar`, `--surface-2`), and at the head of the step that uses it
   (`.release-card`, `--surface-1` with `--border-strong`) beside a secondary **Change …** button —
@@ -365,7 +371,7 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   its label through a run (the bar says "Working", the button does not become it) — an action keeps
   its name through the flow.
   **What belongs beside it and what does not:** a verb that queues goes in the bar; an action that
-  changes *what the surface holds* or only re-reads a manager, and queues nothing (Add artist, Sync
+  changes *what the surface holds* or only re-reads a manager, and queues nothing (Add, Sync
   from Lidarr) stays in the page head. That is a fact about the actions rather than about which
   manager a user happens to run, which is why it holds at both scopes.
   **Shared by the collection and one artist**, because the verbs are the same four at both scopes

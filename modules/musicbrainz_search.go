@@ -145,7 +145,7 @@ var mbidPattern = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{
 
 // ParsedMBID is an entity reference recognised in what the user typed.
 type ParsedMBID struct {
-	Entity string // "release", "release-group", "artist", or "" when unqualified
+	Entity string // "release", "release-group", "artist", "recording", or "" when unqualified
 	MBID   string
 }
 
@@ -166,7 +166,7 @@ func ParseMBIDInput(input string) (ParsedMBID, bool) {
 	mbid = strings.ToLower(mbid)
 
 	entity := ""
-	for _, candidate := range []string{"release-group", "release", "artist"} {
+	for _, candidate := range []string{"release-group", "release", "artist", "recording"} {
 		// Match the URL path segment, not a substring of the title: "/release/<id>".
 		if strings.Contains(strings.ToLower(input), "/"+candidate+"/") {
 			entity = candidate
@@ -253,6 +253,41 @@ func SearchMusicBrainzArtists(query string) ([]models.MusicBrainzArtistSearchRes
 		return nil, err
 	}
 	return parsed.Artists, nil
+}
+
+// SearchMusicBrainzReleaseGroups searches albums by title (or any Lucene clause), so
+// one can be wanted without first adding its artist. Like every search it is not
+// cached; what is picked is read again through the cached editions browse.
+func SearchMusicBrainzReleaseGroups(query string) ([]models.MusicBrainzReleaseGroupSearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	endpoint := fmt.Sprintf("%s/release-group?query=%s&limit=%d&fmt=json",
+		musicbrainzBaseURL(), url.QueryEscape(query), artistSearchLimit)
+
+	var parsed models.MusicBrainzReleaseGroupSearchResponse
+	if err := musicbrainzGetJSON(endpoint, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.ReleaseGroups, nil
+}
+
+// SearchMusicBrainzRecordings searches songs. Each hit carries the releases it
+// appears on, so a song can be wanted from any release or narrowed to some.
+func SearchMusicBrainzRecordings(query string) ([]models.MusicBrainzRecordingSearchResult, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	endpoint := fmt.Sprintf("%s/recording?query=%s&limit=%d&fmt=json",
+		musicbrainzBaseURL(), url.QueryEscape(query), artistSearchLimit)
+
+	var parsed models.MusicBrainzRecordingSearchResponse
+	if err := musicbrainzGetJSON(endpoint, &parsed); err != nil {
+		return nil, err
+	}
+	return parsed.Recordings, nil
 }
 
 // releaseBrowseLimit bounds how many editions of one release-group are listed.

@@ -6,7 +6,7 @@ import { CollectionArtist, Manager, ScanStatus } from "../types";
 import { EmptyState, ErrorNote, Pill, Skeleton } from "../components/ui";
 import { useToast } from "../toast";
 import { MBLink } from "../components/MBLink";
-import { AddArtistModal } from "../components/AddArtistModal";
+import { AddModal } from "../components/AddModal";
 import { FollowArtistsDialog, NewArtistsDialog } from "../components/FollowDialogs";
 import { Artwork } from "../components/Artwork";
 import { CoverageBar } from "../components/CoverageBar";
@@ -366,11 +366,11 @@ export default function Collection() {
             disabled={lidarrOnly}
             title={
               lidarrOnly
-                ? "Lidarr manages every library, so an artist added here could never be fulfilled — add them in Lidarr, or add a library Autotaggerr manages"
-                : undefined
+                ? "Lidarr manages every library, so anything added here could never be fulfilled — add it in Lidarr, or add a library Autotaggerr manages"
+                : "Add an artist, an album, particular editions or a few songs from MusicBrainz"
             }
           >
-            Add artist
+            Add
           </button>
           <button
             className="btn btn-secondary btn-sm"
@@ -734,10 +734,10 @@ export default function Collection() {
         />
       )}
       {adding && (
-        <AddArtistModal
+        <AddModal
           existing={new Set((data ?? []).map((a) => a.mb_id))}
           onClose={() => setAdding(false)}
-          onAdded={() => { setAdding(false); reload(); }}
+          onChanged={reload}
         />
       )}
       {following && (

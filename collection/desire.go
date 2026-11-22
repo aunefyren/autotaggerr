@@ -325,3 +325,126 @@ func DesiresForArtist(db *gorm.DB, artistMBID string, releaseGroupMBIDs []string
 func ReleaseGroupEditions(meta metadata.MetadataSource, releaseGroupMBID string) ([]models.MusicBrainzReleaseSearchResult, error) {
 	return meta.GetReleaseGroupReleases(releaseGroupMBID)
 }
+
+// WantPick is one edition (or "any edition", ReleaseMBID empty) of an album, narrowed
+// to some of its songs when RecordingMBIDs is set — one row of the desire model.
+type WantPick struct {
+	ReleaseMBID    string
+	RecordingMBIDs []string
+}
+
+// AddWantInput is a want made from search: an album, edition or song whose artist
+// may not be in the collection yet. ArtistMBID is the release-group's first credit,
+// the artist every album is stored under.
+type AddWantInput struct {
+	ArtistMBID string
+	ArtistName string
+
+	ReleaseGroupMBID string
+	Title            string
+	PrimaryType      string
+	SecondaryTypes   string
+	FirstReleaseDate string
+
+	// Picks empty means the whole album, any edition.
+	Picks []WantPick
+}
+
+// AddWantResult says what the add did: whether the artist is new, and the wants.
+type AddWantResult struct {
+	Artist      models.CollectionArtist
+	ArtistAdded bool
+	Desires     []models.CollectionDesire
+}
+
+// ErrMixedPicks: one request asked for "any edition" and for specific editions of the
+// same album. SetDesire would keep whichever came last and delete the other, so the
+// request is refused instead of half-honoured.
+var ErrMixedPicks = errors.New("choose either any edition or specific editions, not both")
+
+// ValidatePicks refuses a pick set the desire model cannot hold: "any edition"
+// beside specific editions, or one edition named twice.
+func ValidatePicks(picks []WantPick) error {
+	anyEdition, specific := false, false
+	seen := map[string]bool{}
+	for _, p := range picks {
+		release := strings.TrimSpace(p.ReleaseMBID)
+		if release == "" {
+			anyEdition = true
+		} else {
+			specific = true
+		}
+		if seen[release] {
+			return errors.New("an edition is listed twice")
+		}
+		seen[release] = true
+	}
+	if anyEdition && specific {
+		return ErrMixedPicks
+	}
+	return nil
+}
+
+// AddWant is *Add album* and *Add track*: it adds the artist when the collection does
+// not hold them yet (AddArtist — not followed; you asked for one album, not a
+// discography) and records one want per pick.
+//
+// target resolves the library each want is written for, after the artist exists, so
+// the want lands where one made on the album page would. It is called once before
+// anything is written as well: an existing artist whose wants are Lidarr's to decide
+// is refused without a row changing.
+func AddWant(db *gorm.DB, in AddWantInput, target func(artistMBID string) (uuid.UUID, error)) (AddWantResult, error) {
+	var res AddWantResult
+	in.ArtistMBID = strings.TrimSpace(in.ArtistMBID)
+	in.ReleaseGroupMBID = strings.TrimSpace(in.ReleaseGroupMBID)
+	if in.ArtistMBID == "" || in.ReleaseGroupMBID == "" {
+		return res, errors.New("an artist and release-group MusicBrainz ID are required")
+	}
+	if err := ValidatePicks(in.Picks); err != nil {
+		return res, err
+	}
+	picks := in.Picks
+	if len(picks) == 0 {
+		picks = []WantPick{{}}
+	}
+
+	var existing int64
+	if err := db.Model(&models.CollectionArtist{}).Where("mb_id = ?", in.ArtistMBID).Count(&existing).Error; err != nil {
+		return res, err
+	}
+	if existing > 0 {
+		if _, err := target(in.ArtistMBID); err != nil {
+			return res, err
+		}
+	}
+
+	artist, err := AddArtist(db, in.ArtistMBID, in.ArtistName)
+	if err != nil {
+		return res, err
+	}
+	res.Artist = artist
+	res.ArtistAdded = existing == 0
+
+	library, err := target(in.ArtistMBID)
+	if err != nil {
+		return res, err
+	}
+	for _, p := range picks {
+		desire, err := SetDesire(db, DesireInput{
+			ArtistMBID:       in.ArtistMBID,
+			ReleaseGroupMBID: in.ReleaseGroupMBID,
+			ReleaseMBID:      p.ReleaseMBID,
+			RecordingMBIDs:   p.RecordingMBIDs,
+			LibraryID:        library,
+			Title:            in.Title,
+			PrimaryType:      in.PrimaryType,
+			SecondaryTypes:   in.SecondaryTypes,
+			FirstReleaseDate: in.FirstReleaseDate,
+		})
+		if err != nil {
+			return res, err
+		}
+		res.Desires = append(res.Desires, desire)
+	}
+	return res, nil
+}

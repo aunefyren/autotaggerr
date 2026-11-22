@@ -1602,3 +1602,52 @@ export interface GraphArtist {
   name: string;
   recordings: number;
 }
+
+/** An album hit from GET /search/release-groups (Add → Album). */
+export interface ReleaseGroupSearchHit {
+  id: string;
+  title: string;
+  "primary-type": string;
+  "secondary-types": string[] | null;
+  "first-release-date": string;
+  disambiguation: string;
+  "artist-credit": { name: string; joinphrase: string; artist: { id: string; name: string } }[] | null;
+  count: number;
+}
+
+/** release_mb_id is set when the query was a pasted release link: that edition opens ticked. */
+export interface ReleaseGroupSearchResponse {
+  release_groups: ReleaseGroupSearchHit[];
+  release_mb_id?: string;
+}
+
+/** One release a song search hit appears on. */
+export interface RecordingSearchRelease {
+  id: string;
+  title: string;
+  status: string;
+  date: string;
+  country: string;
+  disambiguation: string;
+  "track-count": number;
+  "artist-credit": { name: string; joinphrase: string; artist: { id: string; name: string } }[] | null;
+  "release-group": { id: string; title: string; "primary-type": string; "secondary-types": string[] | null };
+  media: { position: number; format: string; "track-count": number }[] | null;
+}
+
+/** A song hit from GET /search/recordings (Add → Track). */
+export interface RecordingSearchHit {
+  id: string;
+  title: string;
+  length: number;
+  disambiguation: string;
+  video: boolean;
+  "artist-credit": { name: string; joinphrase: string; artist: { id: string; name: string } }[] | null;
+  releases: RecordingSearchRelease[] | null;
+}
+
+/** One row of a POST /wants: an edition ("" = any) and the songs on it ([] = all). */
+export interface WantPick {
+  release_mb_id: string;
+  recording_mb_ids: string[];
+}

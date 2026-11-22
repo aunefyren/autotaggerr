@@ -290,6 +290,10 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/search/artists/:mbid/release-groups", a.searchArtistReleaseGroups)
 		protected.GET("/search/artists/:mbid/info", a.searchArtistInfo)
 		protected.POST("/artists", a.addArtist)
+		// Add album / Add track: want something from search, adding its artist on the way.
+		protected.GET("/search/release-groups", a.searchReleaseGroups)
+		protected.GET("/search/recordings", a.searchRecordings)
+		protected.POST("/wants", a.addWant)
 		protected.GET("/release-groups/:mbid/releases", a.releaseGroupEditions)
 		protected.POST("/release-groups/:mbid/recorrelate", a.recorrelateReleaseGroup)
 		protected.GET("/artists/:mbid/info", a.artistInfo)

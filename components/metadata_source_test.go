@@ -36,6 +36,14 @@ func (fakeMeta) SearchArtists(string) ([]models.MusicBrainzArtistSearchResult, e
 	return nil, nil
 }
 
+func (fakeMeta) SearchReleaseGroups(string) ([]models.MusicBrainzReleaseGroupSearchResult, error) {
+	return nil, nil
+}
+
+func (fakeMeta) SearchRecordings(string) ([]models.MusicBrainzRecordingSearchResult, error) {
+	return nil, nil
+}
+
 // TestMusicBrainzDataSourceAdapter: the DataSource seam delegates GetRelease to its
 // injected metadata source, and the trivial HealthCheck/Type answers hold.
 func TestMusicBrainzDataSourceAdapter(t *testing.T) {

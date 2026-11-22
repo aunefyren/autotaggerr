@@ -57,6 +57,14 @@ func (f fakeMeta) SearchArtists(string) ([]models.MusicBrainzArtistSearchResult,
 	return nil, nil
 }
 
+func (f fakeMeta) SearchReleaseGroups(string) ([]models.MusicBrainzReleaseGroupSearchResult, error) {
+	return nil, nil
+}
+
+func (f fakeMeta) SearchRecordings(string) ([]models.MusicBrainzRecordingSearchResult, error) {
+	return nil, nil
+}
+
 // stubMB stands MusicBrainz up for the lookups that bypass the metadata port. Release
 // "rel-gone" is a 404, "rel-bad" a non-transient 400, and every other release answers
 // with release-group "rg-new" and a title that changes per request — so a second read

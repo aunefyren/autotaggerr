@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, errMsg } from "../api";
 import { useDebounced } from "../hooks";
 import { ArtistInfo, ArtistSearchResult } from "../types";
-import { Modal, Pill } from "./ui";
+import { Pill } from "./ui";
 import { MBLink } from "./MBLink";
 import { useToast } from "../toast";
 import { DEFAULT_FOLLOW, FollowFields, FollowShape, describeFollow } from "./FollowFields";
@@ -47,7 +47,7 @@ function factsLine(r: ArtistSearchResult, info?: ArtistInfo): string {
  * selected artist is and what they released — the albums are what someone recognises.
  * One Add, for the selected artist, rather than an Add on every row.
  */
-export function AddArtistModal({
+export function AddArtistPanel({
   existing,
   onClose,
   onAdded,
@@ -136,7 +136,6 @@ export function AddArtistModal({
   const inCollection = !!selected && !!existing?.has(selected.id);
 
   return (
-    <Modal title="Add artist" onClose={onClose} xl>
       <div className="stack">
         <form
           className="row"
@@ -227,7 +226,6 @@ export function AddArtistModal({
           )}
         </div>
       </div>
-    </Modal>
   );
 }
 

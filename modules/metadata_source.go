@@ -43,3 +43,11 @@ func (metadataSource) SearchReleases(query metadata.ReleaseSearchQuery) (metadat
 func (metadataSource) SearchArtists(query string) ([]models.MusicBrainzArtistSearchResult, error) {
 	return SearchMusicBrainzArtists(query)
 }
+
+func (metadataSource) SearchReleaseGroups(query string) ([]models.MusicBrainzReleaseGroupSearchResult, error) {
+	return SearchMusicBrainzReleaseGroups(query)
+}
+
+func (metadataSource) SearchRecordings(query string) ([]models.MusicBrainzRecordingSearchResult, error) {
+	return SearchMusicBrainzRecordings(query)
+}

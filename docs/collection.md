@@ -780,7 +780,7 @@ anything). `POST /artists/:mbid/desires` and `POST /artists/:mbid/follow` take `
 Library names appear only when more than one library is configured; on a single-library install
 every row would carry the same word. Then:
 
-- **Add artist needs a native library.** Where Lidarr manages every library, an artist added by
+- **Add needs a native library.** Where Lidarr manages every library, an artist added by
   hand could be wanted but never fulfilled — Import and Downloads cannot write into a Lidarr library,
   and Lidarr never sees the want — so `AddArtist` refuses it (`ErrAllLibrariesManaged`, a 409; the
   MCP `add_artist` shares it) and the button is disabled with the reason. Disabled rather than
@@ -902,6 +902,39 @@ when a file lands for an "any" desire, `reconcileAutoDesires` (last step of `reb
 are replaced, but never touches a hand-pinned one. Own two editions ⇒ one `auto` want each. Edge case
 (v1): deleting *every* file of a promoted album prunes its `auto` wants and drops it from wanted —
 re-add to restore. Lidarr artists are skipped; their edition arrives the other way, below.
+
+### Adding an album or a track
+
+**Add** on `/collection` covers more than an artist. Its **Album** and **Track** tabs want something
+straight from a MusicBrainz search, and every row of the table above can be made there: an album
+(any edition), particular editions, or a few songs, from any release or from the releases ticked.
+One track of a fifteen-track edition is case 4.
+
+- **One request, the artist on the way.** `POST /wants` (`collection.AddWant`) adds the artist with
+  `AddArtist` when the collection does not hold them yet, then calls `SetDesire` once per pick. The
+  artist is the release-group's **first credit**, the artist every album is stored under
+  ([above](#whose-album-it-is-the-release-groups-credit-not-the-releases)). A song picked from a
+  compilation therefore lands under Various Artists, whose discography is never fetched.
+- **Not followed.** Wanting one album is not asking for the discography, so the artist is added
+  unfollowed, which is also what Lidarr does when an artist arrives through one album. The modal
+  offers **Also follow**, off by default. It is a second request (`POST /artists/:mbid/follow`), as
+  after Add artist, so a want is kept when the sync behind a follow fails.
+- **Refused before anything is written.** "Any edition" beside a specific edition, or one edition
+  named twice, is a **400** (`ErrMixedPicks`). Without that check, `SetDesire` would keep whichever
+  came last. An artist already in the collection whose wants are Lidarr's is checked
+  (`wantTarget`) before any row changes, and gets the same 409 as the album page. Where Lidarr
+  manages every library, a new artist is `ErrAllLibrariesManaged`, as for Add artist.
+- **Pasted links.** The searches take a MusicBrainz link or bare MBID and resolve it through the
+  search's own ID fields, so no lookup is added to the port. An album resolves by `rgid`, an edition
+  by `reid`, which returns its album with `release_mb_id` set so that edition opens ticked. A song
+  resolves by `rid` and an artist by `arid`. A link of the other kind moves to the tab it belongs to.
+- **Draft, then one write.** The modal's edition and track pickers follow the album page's rules (any
+  vs. specific editions, "All tracks", narrowing by unticking, and a subset that covers the whole
+  tracklist stored as the whole). They edit a draft and write once on **Want**. The album page writes
+  on every tick, because there the want already exists.
+
+The MCP side needs nothing new: `add_artist` and then `want_album` (which takes a release and
+recordings) is the same pair of writes.
 
 ### Manager-derived wants
 
@@ -1398,6 +1431,7 @@ repeated here because they are about *this* data model.
 | `GET /artists/:mbid/discography` | live MusicBrainz read of *all* release-group types, **not stored** — browsing a catalogue must never require committing to it, or inflate the missing count. Cached 6h; a stale copy beats an empty page when MB is down. |
 | `GET /artists/:mbid/release-groups/:rgid` | the group, every edition (annotated with owned state), and that group's desires, in one call |
 | `POST /artists` · `GET /search/artists` | add an artist you own nothing of |
+| `POST /wants` · `GET /search/release-groups` · `GET /search/recordings` | [want an album, editions or songs](#adding-an-album-or-a-track) from search, adding the artist (unfollowed) when needed; `{artist, artist_added, desires}`. **400** for "any edition" beside a specific edition, **409** when Lidarr decides the artist's wants. The album search answers `{release_groups, release_mb_id?}`, and the song search `{recordings}`, each release carrying its release-group |
 | `POST /artists/:mbid/follow` | follow settings, then re-sync with them (or recount the catalogue, when not following) |
 | `POST /collection/follow` | [follow several artists](#new-artists) with one shape; the syncs are queued (**202**), artists a manager governs are skipped and named |
 | `GET\|PUT /collection/policy` | whether [a new artist](#new-artists) found in your files is followed |
@@ -1440,8 +1474,9 @@ toolbar, grouped sections).
   their discography is not read, and a **Manage** button per row. **Follow artists** offers managed
   artists only. It ticks every candidate, and following makes an artist managed, so offering
   everyone would manage the Other tab in one click. Sortable by name, missing and mismatch; filterable by text and by "mismatched".
-  The page head holds only the two actions that change *what the collection holds* — **Add artist**
-  and **Sync from Lidarr**, neither of which queues anything — and the four verbs sit below in the
+  The page head holds only the two actions that change *what the collection holds*. **Add** is a
+  modal with Artist, Album and Track tabs ([adding an album or a track](#adding-an-album-or-a-track)).
+  The other is **Sync from Lidarr**, neither of which queues anything — and the four verbs sit below in the
   **run bar** with the single status they share (see
   [style-guide.md](style-guide.md#components)). The split is by whether an action queues a job, not
   by which manager a user runs, which is the same line the artist page draws.

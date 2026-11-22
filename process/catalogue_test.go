@@ -39,6 +39,14 @@ func (m *catalogueMeta) SearchArtists(string) ([]models.MusicBrainzArtistSearchR
 	return nil, nil
 }
 
+func (m *catalogueMeta) SearchReleaseGroups(string) ([]models.MusicBrainzReleaseGroupSearchResult, error) {
+	return nil, nil
+}
+
+func (m *catalogueMeta) SearchRecordings(string) ([]models.MusicBrainzRecordingSearchResult, error) {
+	return nil, nil
+}
+
 func catalogueRunner(t *testing.T, meta *catalogueMeta) *Runner {
 	t.Helper()
 	r := NewRunner(newTestDB(t), models.ConfigStruct{AutotaggerrVersion: "test"})

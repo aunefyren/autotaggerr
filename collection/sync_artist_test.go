@@ -50,6 +50,14 @@ func (f fakeMeta) SearchArtists(string) ([]models.MusicBrainzArtistSearchResult,
 	return nil, nil
 }
 
+func (f fakeMeta) SearchReleaseGroups(string) ([]models.MusicBrainzReleaseGroupSearchResult, error) {
+	return nil, nil
+}
+
+func (f fakeMeta) SearchRecordings(string) ([]models.MusicBrainzRecordingSearchResult, error) {
+	return nil, nil
+}
+
 // TestSyncArtistWantsFollowedReleaseGroups: syncing a followed native artist records
 // the release-groups the follow settings want and skips the rest. This whole path was
 // only exercisable against live MusicBrainz before the metadata port — it now runs
