@@ -148,6 +148,8 @@ type Runner struct {
 	// autoMu keeps two auto-import passes from overlapping (see autoImportDownloads).
 	// Separate from downloadMu, which the imports it queues take.
 	autoMu sync.Mutex
+	// listenMu keeps two listening-history passes from overlapping (SyncListening).
+	listenMu sync.Mutex
 
 	// The job queue: a single worker (started in NewRunner) drains `queue` one at a
 	// time, so every background verb is serial and visible. `current` is the executing

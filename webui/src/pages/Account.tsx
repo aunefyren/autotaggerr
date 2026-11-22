@@ -4,6 +4,7 @@ import { useFetch } from "../hooks";
 import { useAuth } from "../auth";
 import { ConfirmDialog, ErrorNote, Note, Pill } from "../components/ui";
 import { useToast } from "../toast";
+import ListeningAccounts from "../components/ListeningAccounts";
 
 /**
  * What belongs to the signed-in user rather than to the instance. Open to everyone:
@@ -25,6 +26,10 @@ export default function Account() {
       <section className="card stack" style={{ gap: 14 }}>
         <h2 className="section-title">API keys</h2>
         <ApiAccess />
+      </section>
+      <section className="card stack" style={{ gap: 14 }} id="listening">
+        <h2 className="section-title">Listening</h2>
+        <ListeningAccounts />
       </section>
     </div>
   );

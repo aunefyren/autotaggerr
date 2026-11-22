@@ -460,6 +460,8 @@
 .g-edge { stroke: var(--border-strong); stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .g-edge.lit { stroke: var(--accent-text); }
 .g-edge.faded { opacity: 0.25; }
+/* Co-listening (Edges: Both): dashed, so it reads apart from a credit without a colour. */
+.g-edge.listening { stroke-dasharray: 4 3; }
 .g-node { cursor: pointer; }
 .g-node circle { fill: var(--accent); stroke: var(--surface-1); stroke-width: 2px; vector-effect: non-scaling-stroke; }
 .g-node circle.hit { fill: transparent; stroke: none; }

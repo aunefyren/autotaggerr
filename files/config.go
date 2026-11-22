@@ -190,6 +190,12 @@ func LoadConfig() (err error) {
 		anythingChanged = true
 	}
 
+	if ConfigFile.AutotaggerrListeningCronSchedule == "" {
+		// set new value — every 30 minutes; reads only what is new per linked account
+		ConfigFile.AutotaggerrListeningCronSchedule = models.DefaultListeningCronSchedule
+		anythingChanged = true
+	}
+
 	if ConfigFile.AutotaggerrHealthCronSchedule == "" {
 		// set new value — every five minutes; cheap, and only records an event when a
 		// connection's health actually changes
@@ -310,6 +316,7 @@ func CreateConfigFile() error {
 	ConfigFile.AutotaggerrTempoCronSchedule = models.DefaultTempoCronSchedule
 	ConfigFile.AutotaggerrTempoConcurrency = models.DefaultTempoConcurrency
 	ConfigFile.AutotaggerrLoudnessCronSchedule = models.DefaultLoudnessCronSchedule
+	ConfigFile.AutotaggerrListeningCronSchedule = models.DefaultListeningCronSchedule
 
 	ConfigFile.AutotaggerrMCPDisabled = false
 

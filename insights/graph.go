@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/aunefyren/autotaggerr/models"
 	"github.com/google/uuid"
@@ -62,6 +63,21 @@ type GraphOptions struct {
 	// cached count, like the floors, so toggling it never recounts.
 	Managed     map[string]bool
 	ManagedOnly bool
+
+	// Listener is whose plays overlay the graph (docs/listening.md); nil draws none.
+	// Always the signed-in user, never a parameter: history is personal.
+	Listener *uuid.UUID
+	// Since starts the period plays are counted over; zero is all time.
+	Since time.Time
+	// ListenedOnly keeps an edge only when both artists have at least MinPlays plays
+	// (at least one), the centred artist exempt. Applied after the cached count, like
+	// ManagedOnly.
+	ListenedOnly bool
+	MinPlays     int
+	// Edges is what connects artists: EdgesCredits (the default), EdgesListening
+	// (played close together in a session) or EdgesBoth (credits laid out, with
+	// co-listening drawn between the artists they chose).
+	Edges string
 }
 
 // GraphNode is one artist.
@@ -83,14 +99,20 @@ type GraphNode struct {
 	// are for colouring the node.
 	Genre string `json:"genre,omitempty"`
 	Role  string `json:"role,omitempty"`
+	// Plays is the listener's plays of recordings crediting the artist, in the period
+	// asked for. Zero without an overlay.
+	Plays int `json:"plays,omitempty"`
 }
 
 // GraphEdge is two artists credited on the same recordings.
 type GraphEdge struct {
 	Source string `json:"source"`
 	Target string `json:"target"`
-	// Weight is how many recordings in scope credit both.
+	// Weight is how many recordings in scope credit both; for a listening edge, how
+	// many sessions played both.
 	Weight int `json:"weight"`
+	// Kind is EdgeKindListening for a co-listening edge; empty is a credit.
+	Kind string `json:"kind,omitempty"`
 }
 
 // Collaboration is one pair, named, for the ranked list beside the graph.
@@ -118,6 +140,9 @@ type GraphReport struct {
 	// get a colour. Library-wide rather than per answer, so changing a filter never
 	// repaints a genre (a colour follows its genre, not its rank in the view).
 	Genres []string `json:"genres"`
+	// Listening is what the overlay counted; nil when the user has linked no
+	// listening account (docs/listening.md).
+	Listening *ListeningSummary `json:"listening,omitempty"`
 }
 
 type pairKey struct{ a, b string }
@@ -149,11 +174,37 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 		limit = MaxGraphNodes
 	}
 
-	counted, err := cachedCreditGraph(db, opts, roles)
+	counted, creditKey, err := cachedCreditGraph(db, opts, roles)
 	if err != nil {
 		return report, err
 	}
+	listened, err := cachedListenGraph(db, opts, roles, counted, creditKey)
+	if err != nil {
+		return report, err
+	}
+	plays := map[string]int{}
+	if listened != nil {
+		plays = listened.plays
+		summary := listened.summary
+		report.Listening = &summary
+	}
+	// Which edges connect artists. Co-listening swaps the counted graph and leaves
+	// every step after it (floors, managed, centring, cap, naming) as it is; then
+	// "tracks" is plays, which is what the floors and the node size should read.
 	weights, tracks := counted.weights, counted.tracks
+	edgeKind := ""
+	if listened != nil && opts.Edges == EdgesListening {
+		weights, tracks = listened.weights, listened.plays
+		edgeKind = EdgeKindListening
+	}
+	minPlays := opts.MinPlays
+	if minPlays < 1 {
+		minPlays = 1
+	}
+	listenedPair := func(p pairKey) bool {
+		in := func(id string) bool { return plays[id] >= minPlays || (opts.Artist != "" && id == opts.Artist) }
+		return in(p.a) && in(p.b)
+	}
 
 	// The filtered graph: edges at or above the weight floor between artists at or
 	// above the track floor.
@@ -163,6 +214,9 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 			continue
 		}
 		if opts.ManagedOnly && !managedPair(opts, p) {
+			continue
+		}
+		if listened != nil && opts.ListenedOnly && !listenedPair(p) {
 			continue
 		}
 		for _, e := range [][2]string{{p.a, p.b}, {p.b, p.a}} {
@@ -257,6 +311,13 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 	if err != nil {
 		return report, err
 	}
+	if listened != nil {
+		for _, id := range shown {
+			if names[id] == "" && listened.names[id] != "" {
+				names[id] = listened.names[id]
+			}
+		}
+	}
 	genres, mainRoles, err := artistColours(db, shown, roles)
 	if err != nil {
 		return report, err
@@ -270,9 +331,9 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 		}
 	}
 	node := func(id string) GraphNode {
-		return GraphNode{MBID: id, Name: names[id], Tracks: tracks[id], InCollection: collected[id],
+		return GraphNode{MBID: id, Name: names[id], Tracks: counted.tracks[id], InCollection: collected[id],
 			Managed: opts.Managed[id], Hop: hop[id],
-			Genre: genres[id], Role: mainRoles[id]}
+			Genre: genres[id], Role: mainRoles[id], Plays: plays[id]}
 	}
 
 	included := map[string]bool{}
@@ -282,7 +343,16 @@ func Graph(db *gorm.DB, opts GraphOptions) (GraphReport, error) {
 	}
 	for p, w := range weights {
 		if included[p.a] && included[p.b] && adjacent[p.a][p.b] > 0 {
-			report.Edges = append(report.Edges, GraphEdge{Source: p.a, Target: p.b, Weight: w})
+			report.Edges = append(report.Edges, GraphEdge{Source: p.a, Target: p.b, Weight: w, Kind: edgeKind})
+		}
+	}
+	// Both: the credits chose and laid out the artists; co-listening is drawn between
+	// the ones they chose.
+	if listened != nil && opts.Edges == EdgesBoth {
+		for p, w := range listened.weights {
+			if included[p.a] && included[p.b] {
+				report.Edges = append(report.Edges, GraphEdge{Source: p.a, Target: p.b, Weight: w, Kind: EdgeKindListening})
+			}
 		}
 	}
 	sort.Slice(report.Edges, func(i, j int) bool {
@@ -449,6 +519,9 @@ func byCollaboration(weights map[pairKey]int, adjacent map[string]map[string]int
 type creditGraph struct {
 	weights map[pairKey]int
 	tracks  map[string]int
+	// byRecording is the artists credited on each recording in scope: what the
+	// listening overlay attributes a play through.
+	byRecording map[string][]string
 }
 
 // graphCache keeps the last counted graph. Moving a slider or the node cap on the page
@@ -464,7 +537,7 @@ var graphCache struct {
 // cachedCreditGraph counts the graph, or returns the count already made for the same
 // scope over unchanged data. The key carries a fingerprint of everything the count
 // reads — the credits, the index and the libraries — so any change recounts.
-func cachedCreditGraph(db *gorm.DB, opts GraphOptions, roles []string) (*creditGraph, error) {
+func cachedCreditGraph(db *gorm.DB, opts GraphOptions, roles []string) (*creditGraph, string, error) {
 	library := ""
 	if opts.Library != nil {
 		library = opts.Library.String()
@@ -475,11 +548,11 @@ func cachedCreditGraph(db *gorm.DB, opts GraphOptions, roles []string) (*creditG
 	graphCache.Lock()
 	defer graphCache.Unlock()
 	if graphCache.data != nil && graphCache.key == key {
-		return graphCache.data, nil
+		return graphCache.data, key, nil
 	}
 	byRecording, tracks, err := scopedCredits(db, opts, roles)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	weights := map[pairKey]int{}
 	for _, artists := range byRecording {
@@ -489,8 +562,8 @@ func cachedCreditGraph(db *gorm.DB, opts GraphOptions, roles []string) (*creditG
 			}
 		}
 	}
-	graphCache.key, graphCache.data = key, &creditGraph{weights: weights, tracks: tracks}
-	return graphCache.data, nil
+	graphCache.key, graphCache.data = key, &creditGraph{weights: weights, tracks: tracks, byRecording: byRecording}
+	return graphCache.data, key, nil
 }
 
 // graphFingerprint changes whenever anything a count reads does: a release's credits

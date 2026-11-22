@@ -5,7 +5,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/aunefyren/autotaggerr/auth"
 	"github.com/aunefyren/autotaggerr/collection"
 	"github.com/aunefyren/autotaggerr/insights"
 	"github.com/aunefyren/autotaggerr/logger"
@@ -146,6 +148,28 @@ func (a *API) insightsGraph(c *gin.Context) {
 	if opts.Limit, ok = number("limit"); !ok {
 		return
 	}
+	if opts.MinPlays, ok = number("min_plays"); !ok {
+		return
+	}
+	// The listening overlay is the signed-in user's own plays (docs/listening.md).
+	if user, signedIn := auth.CurrentUser(c); signedIn {
+		id := user.ID
+		opts.Listener = &id
+	}
+	opts.ListenedOnly = c.Query("listened") == "1"
+	switch edges := strings.TrimSpace(c.Query("edges")); edges {
+	case "", insights.EdgesCredits, insights.EdgesListening, insights.EdgesBoth:
+		opts.Edges = edges
+	default:
+		c.JSON(http.StatusBadRequest, gin.H{"error": "edges must be credits, listening or both"})
+		return
+	}
+	since, err := parsePeriod(c.Query("since"), time.Now())
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+	opts.Since = since
 	// Managed artists only, unless asked for everyone: the credits name every
 	// featured artist, producer and writer, most of them strangers to the owner. Read
 	// per request — three queries and the artist rows, small beside the graph itself.
@@ -179,4 +203,18 @@ func (a *API) insightsGraphArtists(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, found)
+}
+
+// parsePeriod reads the overlay's period: a number of days ("30d"), or empty or
+// "all" for all time.
+func parsePeriod(raw string, now time.Time) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" || raw == "all" {
+		return time.Time{}, nil
+	}
+	days, err := strconv.Atoi(strings.TrimSuffix(raw, "d"))
+	if err != nil || days < 1 || !strings.HasSuffix(raw, "d") {
+		return time.Time{}, errors.New("since must be a number of days, like 30d, or all")
+	}
+	return now.AddDate(0, 0, -days), nil
 }

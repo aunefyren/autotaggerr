@@ -255,6 +255,16 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		protected.GET("/insights/graph", a.insightsGraph)
 		protected.GET("/insights/graph/artists", a.insightsGraphArtists)
 
+		// Listening history: each user's own linked accounts (docs/listening.md).
+		protected.GET("/listening/accounts", a.listListeningAccounts)
+		protected.POST("/listening/accounts", a.createListeningAccount)
+		protected.PUT("/listening/accounts/:id", a.updateListeningAccount)
+		protected.DELETE("/listening/accounts/:id", a.deleteListeningAccount)
+		protected.POST("/listening/accounts/:id/test", a.testListeningAccount)
+		protected.POST("/listening/plex/pin", a.createPlexPin)
+		protected.POST("/listening/plex/pin/:id/claim", a.claimPlexPin)
+		protected.POST("/listening/sync", a.syncListening)
+
 		protected.GET("/events", a.listEvents)
 		protected.GET("/events/:id", a.getEvent)
 		// The files behind one MusicBrainz identifier — which local audio an Activity
@@ -348,6 +358,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 			admin.PUT("/media-servers/:id", a.updateMediaServer)
 			admin.DELETE("/media-servers/:id", a.deleteMediaServer)
 			admin.POST("/media-servers/:id/test", a.testMediaServer)
+			admin.GET("/media-servers/:id/accounts", a.plexServerAccounts)
 
 			// Download clients, and the finished downloads they offer for import.
 			admin.GET("/download-clients", a.listDownloadClients)

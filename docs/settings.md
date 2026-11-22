@@ -32,8 +32,8 @@ without a section.
 | Connections | AI assistants · Email |
 
 A page is named for what someone comes to do, not for the module behind it. **Background jobs**
-gathers every schedule — scan, metadata refresh, artwork, tempo, loudness, following Lidarr, download
-clients, health checks — as one card per job, each holding the job's switch, schedule and load,
+gathers every schedule — scan, metadata refresh, artwork, tempo, loudness, listening history, following Lidarr,
+download clients, health checks — as one card per job, each holding the job's switch, schedule and load,
 because "when does X run" is asked *across* the jobs ("does the scan land on the refresh?"), never
 of one alone. Concurrency stays on its job's card for the same reason.
 

@@ -14,12 +14,12 @@ import { GraphEdge, GraphNode, GraphReport } from "../types";
  */
 
 type SimNode = GraphNode & SimulationNodeDatum;
-type SimLink = SimulationLinkDatum<SimNode> & { weight: number };
+type SimLink = SimulationLinkDatum<SimNode> & { weight: number; kind?: string };
 
 interface Laid {
   nodes: SimNode[];
-  radius: (tracks: number) => number;
-  links: { source: SimNode; target: SimNode; weight: number }[];
+  radius: (n: GraphNode) => number;
+  links: { source: SimNode; target: SimNode; weight: number; kind?: string }[];
   box: { x: number; y: number; w: number; h: number };
 }
 
@@ -29,10 +29,16 @@ interface Laid {
  * node the same size once performers and producers were in — each on hundreds of
  * recordings — and the graph packed into a uniform blob.
  */
-function radiusScale(nodes: GraphNode[]): (tracks: number) => number {
-  const most = Math.max(1, ...nodes.map((n) => n.tracks));
-  return (tracks) => 3 + 17 * Math.sqrt(tracks / most);
+function radiusScale(nodes: GraphNode[], size: GraphSize): (n: GraphNode) => number {
+  const of = sizeOf(size);
+  const most = Math.max(1, ...nodes.map(of));
+  return (n) => 3 + 17 * Math.sqrt(of(n) / most);
 }
+
+/** What node size shows: recordings in scope, or the listener's plays. */
+export type GraphSize = "tracks" | "plays";
+
+const sizeOf = (size: GraphSize) => (n: GraphNode) => (size === "plays" ? (n.plays ?? 0) : n.tracks);
 
 /** Edge width from its weight, compressed so one heavy pair does not swamp the rest. */
 function edgeWidth(weight: number): number {
@@ -45,10 +51,10 @@ const MAX_ZOOM = 2;
 /** How many of the largest nodes carry a permanent label; the rest label on hover. */
 const LABELLED = 24;
 
-function layout(report: GraphReport): Laid {
-  const radius = radiusScale(report.nodes);
+function layout(report: GraphReport, size: GraphSize): Laid {
+  const radius = radiusScale(report.nodes, size);
   const nodes: SimNode[] = report.nodes.map((n) => ({ ...n }));
-  const links: SimLink[] = report.edges.map((e: GraphEdge) => ({ source: e.source, target: e.target, weight: e.weight }));
+  const links: SimLink[] = report.edges.map((e: GraphEdge) => ({ source: e.source, target: e.target, weight: e.weight, kind: e.kind }));
   const centred = report.center != null;
   const sim = forceSimulation(nodes)
     .force(
@@ -56,10 +62,12 @@ function layout(report: GraphReport): Laid {
       forceLink<SimNode, SimLink>(links)
         .id((d) => d.mb_id)
         .distance((l) => 40 + 60 / Math.sqrt(l.weight))
-        .strength((l) => Math.min(1, 0.15 + l.weight / 20)),
+        // Co-listening drawn over credits (Edges: Both) does not pull the layout:
+        // the credits chose and placed the artists.
+        .strength((l) => (l.kind === "listening" && report.edges.some((e) => e.kind !== "listening") ? 0 : Math.min(1, 0.15 + l.weight / 20))),
     )
     .force("charge", forceManyBody().strength(-90))
-    .force("collide", forceCollide<SimNode>((d) => radius(d.tracks) + 3))
+    .force("collide", forceCollide<SimNode>((d) => radius(d) + 3))
     .stop();
   if (centred) {
     // The centred artist pinned in the middle, each hop on its own ring.
@@ -77,7 +85,7 @@ function layout(report: GraphReport): Laid {
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const n of nodes) {
-    const r = radius(n.tracks) + 40; // room for the label beside the node
+    const r = radius(n) + 40; // room for the label beside the node
     minX = Math.min(minX, (n.x ?? 0) - r);
     minY = Math.min(minY, (n.y ?? 0) - r);
     maxX = Math.max(maxX, (n.x ?? 0) + r);
@@ -93,7 +101,20 @@ function layout(report: GraphReport): Laid {
 }
 
 /** What nodes are coloured by. */
-export type GraphColour = "genre" | "role" | "none";
+export type GraphColour = "genre" | "role" | "plays" | "none";
+
+/**
+ * Play bins for Colour: Plays. Log-spaced, because plays are heavy-tailed: a few
+ * artists hold most of them, and linear bins would put everyone else in the first.
+ * The edges are relative to the most-played artist in view, so the ramp always
+ * spans the picture.
+ */
+function playBins(most: number): number[] {
+  if (most <= 1) return [1];
+  const edges: number[] = [];
+  for (let i = 0; i < 5; i++) edges.push(Math.max(1, Math.round(Math.pow(most, i / 5))));
+  return [...new Set(edges)];
+}
 
 /** Roles in the order they take the series slots; writing is the neutral. */
 const ROLE_SLOTS: { role: string; label: string }[] = [
@@ -127,6 +148,36 @@ export function graphColours(report: GraphReport, by: GraphColour): {
   legend: LegendEntry[];
 } {
   if (by === "none") return { of: () => undefined, hollow: () => false, legend: [] };
+  if (by === "plays") {
+    // Sequential: one hue, darker for fewer plays. Unplayed is a neutral ring, so
+    // "none" reads apart from "a few".
+    const most = Math.max(0, ...report.nodes.map((n) => n.plays ?? 0));
+    const bins = playBins(most);
+    const step = (p: number) => {
+      let i = 0;
+      while (i + 1 < bins.length && p >= bins[i + 1]) i++;
+      return i + (5 - bins.length);
+    };
+    const counts = new Array(5).fill(0);
+    let unplayed = 0;
+    for (const n of report.nodes) {
+      if (!n.plays) unplayed++;
+      else counts[step(n.plays)]++;
+    }
+    const legend: LegendEntry[] = [];
+    bins.forEach((lo, i) => {
+      const k = i + (5 - bins.length);
+      const hi = i + 1 < bins.length ? bins[i + 1] - 1 : most;
+      legend.push({ key: `p${k}`, label: lo === hi ? `${lo} ${lo === 1 ? "play" : "plays"}` : `${lo}–${hi} plays`, colour: `var(--seq-${k + 1})`, count: counts[k] });
+    });
+    legend.reverse();
+    if (unplayed > 0) legend.push({ key: "unplayed", label: "Not played", colour: "var(--series-other)", count: unplayed, hollow: true });
+    return {
+      of: (n) => (n.plays ? `var(--seq-${step(n.plays) + 1})` : "var(--series-other)"),
+      hollow: (n) => !n.plays,
+      legend,
+    };
+  }
   const slots = by === "genre" ? GENRE_SLOTS : 3;
   const slot = (i: number) => (i >= 0 && i < slots ? `var(--series-${i + 1})` : "var(--series-other)");
   let keyOf: (n: GraphNode) => string;
@@ -167,17 +218,20 @@ export function CollabGraph({
   selected,
   onSelect,
   colour = "none",
+  size = "tracks",
   reveal = null,
 }: {
   report: GraphReport;
   selected: string | null;
   onSelect: (mbid: string | null) => void;
   colour?: GraphColour;
+  /** What node size shows. */
+  size?: GraphSize;
   /** Bring an artist into view: pan to them and zoom in. A new `at` repeats it. */
   reveal?: { mbid: string; at: number } | null;
 }) {
   const colours = useMemo(() => graphColours(report, colour), [report, colour]);
-  const laid = useMemo(() => layout(report), [report]);
+  const laid = useMemo(() => layout(report, size), [report, size]);
   const [hover, setHover] = useState<string | null>(null);
   const [view, setView] = useState<Laid["box"] | null>(null);
 
@@ -243,9 +297,10 @@ export function CollabGraph({
   const labelled = useMemo(() => {
     // Fewer standing labels in a crowded graph: past sixty artists, 24 overlap.
     const count = laid.nodes.length > 60 ? LABELLED / 2 : LABELLED;
-    const top = [...laid.nodes].sort((a, b) => b.tracks - a.tracks).slice(0, count);
+    const of = sizeOf(size);
+    const top = [...laid.nodes].sort((a, b) => of(b) - of(a)).slice(0, count);
     return new Set(top.map((n) => n.mb_id));
-  }, [laid]);
+  }, [laid, size]);
 
   // Pointer position in graph coordinates, for zooming about the cursor.
   const toGraph = (clientX: number, clientY: number) => {
@@ -308,22 +363,26 @@ export function CollabGraph({
             const lit = focus != null && (l.source.mb_id === focus || l.target.mb_id === focus);
             return (
               <line
-                key={`${l.source.mb_id}-${l.target.mb_id}`}
-                className={`g-edge${lit ? " lit" : focus ? " faded" : ""}`}
+                key={`${l.kind ?? "credit"}-${l.source.mb_id}-${l.target.mb_id}`}
+                className={`g-edge${lit ? " lit" : focus ? " faded" : ""}${l.kind === "listening" ? " listening" : ""}`}
                 x1={l.source.x}
                 y1={l.source.y}
                 x2={l.target.x}
                 y2={l.target.y}
                 strokeWidth={edgeWidth(l.weight)}
               >
-                <title>{`${l.source.name} × ${l.target.name}: ${l.weight} shared ${l.weight === 1 ? "recording" : "recordings"}`}</title>
+                <title>
+                  {l.kind === "listening"
+                    ? `${l.source.name} × ${l.target.name}: played close together in ${l.weight} ${l.weight === 1 ? "session" : "sessions"}`
+                    : `${l.source.name} × ${l.target.name}: ${l.weight} shared ${l.weight === 1 ? "recording" : "recordings"}`}
+                </title>
               </line>
             );
           })}
         </g>
         <g>
           {laid.nodes.map((n) => {
-            const r = laid.radius(n.tracks);
+            const r = laid.radius(n);
             const isFocus = n.mb_id === focus;
             const dim = focus != null && !neighbours.has(n.mb_id);
             // hop is 0 for every node of an uncentred graph, so it only names the
@@ -354,6 +413,7 @@ export function CollabGraph({
                   {`${n.name}: ${n.tracks} ${n.tracks === 1 ? "recording" : "recordings"}`}
                   {colour === "genre" && n.genre ? ` · ${n.genre}` : ""}
                   {colour === "role" && n.role ? ` · mostly ${n.role}` : ""}
+                  {report.listening ? ` · ${n.plays ?? 0} ${n.plays === 1 ? "play" : "plays"}` : ""}
                   {n.managed ? "" : " · not one of your artists"}
                 </title>
                 {showLabel && (

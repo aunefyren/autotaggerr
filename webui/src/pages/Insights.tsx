@@ -6,7 +6,7 @@ import { useToast } from "../toast";
 import { useLibraries } from "../components/Libraries";
 import { formatBytes } from "../components/storage";
 import { EmptyState, ErrorNote, IdChip, Skeleton } from "../components/ui";
-import { ArtistLink, CollabGraph, CollaboratorRow, GraphColour } from "../components/CollabGraph";
+import { ArtistLink, CollabGraph, CollaboratorRow, GraphColour, GraphSize } from "../components/CollabGraph";
 import { StorageTab } from "./Storage";
 import { DuplicateFile, DuplicateGroup, DuplicateLevel, DuplicatesReport, GraphArtist, GraphNode, GraphReport, LibraryStats, ScanStatus, StatsBucket } from "../types";
 
@@ -611,10 +611,63 @@ const GRAPH_FILTERS: GraphFilter[] = [
   },
 ];
 
+/**
+ * The listening overlay's filters (docs/listening.md), drawn only once the user has
+ * linked a listening account. Same shape and plumbing as GRAPH_FILTERS.
+ */
+const LISTEN_FILTERS: GraphFilter[] = [
+  {
+    kind: "select",
+    key: "since",
+    label: "Period",
+    fallback: "all",
+    options: [
+      { value: "30d", label: "Last 30 days" },
+      { value: "90d", label: "Last 90 days" },
+      { value: "365d", label: "Last year" },
+      { value: "all", label: "All time" },
+    ],
+    help: (v) => (v === "all" ? "Every play read from your accounts" : `Only plays from the ${v === "365d" ? "last year" : `last ${v.replace("d", "")} days`}`),
+  },
+  {
+    kind: "select",
+    key: "edges",
+    label: "Connect by",
+    fallback: "credits",
+    options: [
+      { value: "credits", label: "Credits" },
+      { value: "listening", label: "Co-listening" },
+      { value: "both", label: "Both" },
+    ],
+    help: (v) =>
+      v === "listening"
+        ? "Linked when you played them close together, in the same session. Thicker for more sessions"
+        : v === "both"
+          ? "Credits place the artists; dashed lines join the ones you played close together"
+          : "Linked by shared recordings, as above",
+  },
+  {
+    kind: "check",
+    key: "listened",
+    label: "Plays",
+    box: "Only artists I play",
+    help: (on) => (on ? "Artists you have not played in the period are left out" : "Everyone is drawn, played or not"),
+  },
+  {
+    kind: "select",
+    key: "min_plays",
+    label: "Fewest plays",
+    fallback: "1",
+    options: ["1", "2", "5", "10", "25", "100"].map((v) => ({ value: v, label: `${v}+` })),
+    help: (v) => `With "Only artists I play", an artist needs at least ${v} ${plural(v, "play", "plays")}`,
+  },
+];
+
 /** What each colouring encodes, shown under the Colour select. */
 const COLOUR_HELP: Record<GraphColour, string> = {
   genre: "Each artist's most common genre on MusicBrainz. A hollow ring means no genre is known",
   role: "The role each artist holds on most of their recordings here",
+  plays: "Lighter for more of your plays in the period. A hollow ring means not played",
   none: "One colour for everyone. Size still shows how many recordings",
 };
 
@@ -632,14 +685,15 @@ function Graph({
   const hops = params.get("hops") === "2" ? "2" : "1";
   // Colour is drawn, not asked for: it never reaches the API, so changing it is instant.
   const colourParam = params.get("colour");
-  const colour: GraphColour = colourParam === "role" || colourParam === "none" ? colourParam : "genre";
+  const colour: GraphColour = colourParam === "role" || colourParam === "none" || colourParam === "plays" ? colourParam : "genre";
+  const size: GraphSize = params.get("size") === "plays" ? "plays" : "tracks";
   const [selected, setSelected] = useState<string | null>(null);
   const [reveal, setReveal] = useState<{ mbid: string; at: number } | null>(null);
 
   const query = new URLSearchParams();
   if (library) query.set("library", library);
   query.set("roles", roles.join(","));
-  for (const f of GRAPH_FILTERS) {
+  for (const f of [...GRAPH_FILTERS, ...LISTEN_FILTERS]) {
     const v = params.get(f.key);
     if (v) query.set(f.key, v);
   }
@@ -660,6 +714,42 @@ function Graph({
   const centre = (mbid: string | null) => set({ artist: mbid, hops: null });
 
   const data = graph.data;
+  const listening = data?.listening;
+  // One filter: label, control, and the line saying what its value does.
+  const renderFilter = (f: GraphFilter) => {
+    const id = `graph-${f.key}`;
+    if (f.kind === "select") {
+      const value = params.get(f.key) ?? f.fallback;
+      return (
+        <div key={f.key} className="field">
+          <label className="flabel" htmlFor={id}>{f.label}</label>
+          <select
+            id={id}
+            className="input"
+            value={value}
+            onChange={(e) => set({ [f.key]: e.target.value === f.fallback ? null : e.target.value })}
+          >
+            {f.options.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+          <span className="dim graph-help">{f.help(value)}</span>
+        </div>
+      );
+    }
+    const on = params.get(f.key) === "1";
+    return (
+      <div key={f.key} className="field">
+        <span className="flabel">{f.label}</span>
+        <label className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12, minHeight: 32 }}>
+          <input type="checkbox" checked={on} onChange={(e) => set({ [f.key]: e.target.checked ? "1" : null })} />
+          <span>{f.box}</span>
+        </label>
+        <span className="dim graph-help">{f.help(on)}</span>
+      </div>
+    );
+  };
+
   const nodes = useMemo(() => new Map((data?.nodes ?? []).map((n) => [n.mb_id, n])), [data]);
   const picked = selected ? nodes.get(selected) : undefined;
 
@@ -701,50 +791,50 @@ function Graph({
         </div>
 
         <div className="field-row">
-          {GRAPH_FILTERS.map((f) => {
-            const id = `graph-${f.key}`;
-            if (f.kind === "select") {
-              const value = params.get(f.key) ?? f.fallback;
-              return (
-                <div key={f.key} className="field">
-                  <label className="flabel" htmlFor={id}>{f.label}</label>
-                  <select
-                    id={id}
-                    className="input"
-                    value={value}
-                    onChange={(e) => set({ [f.key]: e.target.value === f.fallback ? null : e.target.value })}
-                  >
-                    {f.options.map((o) => (
-                      <option key={o.value} value={o.value}>{o.label}</option>
-                    ))}
-                  </select>
-                  <span className="dim graph-help">{f.help(value)}</span>
-                </div>
-              );
-            }
-            const on = params.get(f.key) === "1";
-            return (
-              <div key={f.key} className="field">
-                <span className="flabel">{f.label}</span>
-                <label className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12, minHeight: 32 }}>
-                  <input type="checkbox" checked={on} onChange={(e) => set({ [f.key]: e.target.checked ? "1" : null })} />
-                  <span>{f.box}</span>
-                </label>
-                <span className="dim graph-help">{f.help(on)}</span>
-              </div>
-            );
-          })}
+          {GRAPH_FILTERS.map((f) => renderFilter(f))}
           <div className="field">
             <label className="flabel" htmlFor="graph-colour">Colour</label>
             <select id="graph-colour" className="input" value={colour} onChange={(e) => set({ colour: e.target.value === "genre" ? null : e.target.value })}>
               <option value="genre">Genre</option>
               <option value="role">Role</option>
+              {listening && <option value="plays">Plays</option>}
               <option value="none">None</option>
             </select>
             <span className="dim graph-help">{COLOUR_HELP[colour]}</span>
           </div>
         </div>
+
+        {listening ? (
+          <div className="stack" style={{ gap: 6 }}>
+            <span className="flabel">Your listening</span>
+            <div className="field-row">
+              {LISTEN_FILTERS.map((f) => renderFilter(f))}
+              <div className="field">
+                <label className="flabel" htmlFor="graph-size">Size by</label>
+                <select id="graph-size" className="input" value={size} onChange={(e) => set({ size: e.target.value === "tracks" ? null : e.target.value })}>
+                  <option value="tracks">Recordings</option>
+                  <option value="plays">Plays</option>
+                </select>
+                <span className="dim graph-help">
+                  {size === "plays" ? "Larger for more of your plays in the period" : "Larger for more recordings in scope"}
+                </span>
+              </div>
+            </div>
+            <span className="dim graph-help">
+              {listening.plays.toLocaleString()} {listening.plays === 1 ? "play" : "plays"} in the period
+              {listening.unmatched > 0 ? `, ${listening.unmatched.toLocaleString()} of them not identified and left out` : ""}.
+              Plays reported by two sources a few minutes apart count once.
+            </span>
+          </div>
+        ) : (
+          data && (
+            <span className="dim graph-help">
+              <Link to="/account#listening">Link Plex or ListenBrainz</Link> on your account to overlay what you play.
+            </span>
+          )
+        )}
       </div>
+
 
       {data && (
         <div className="row" style={{ justifyContent: "flex-end" }}>
@@ -820,7 +910,14 @@ function Graph({
 
       {data && data.nodes.length > 0 && (
         <div className={`graph-split${graph.loading ? " is-updating" : ""}`}>
-          <CollabGraph report={data} selected={selected} onSelect={setSelected} colour={colour} reveal={reveal} />
+          <CollabGraph
+            report={data}
+            selected={selected}
+            onSelect={setSelected}
+            colour={colour === "plays" && !listening ? "genre" : colour}
+            size={size === "plays" && listening ? "plays" : "tracks"}
+            reveal={reveal}
+          />
           <div className="card stack" style={{ gap: 12, alignSelf: "start" }}>
             {picked ? (
               <SelectedArtist node={picked} report={data} nodes={nodes} onSelect={setSelected} onCentre={centre} centred={artist === picked.mb_id} />
@@ -840,6 +937,7 @@ function Graph({
                     )}
                   </div>
                 )}
+                {listening && <MostPlayed nodes={data.nodes} onFocus={setSelected} />}
                 <div className="dim" style={{ fontSize: 11 }}>Select an artist in the graph or the list; drag to pan, scroll to zoom.</div>
               </>
             )}
@@ -858,6 +956,28 @@ function Graph({
         </div>
       )}
     </div>
+  );
+}
+
+/** The artists drawn, by the listener's plays: the overlay as a list. */
+function MostPlayed({ nodes, onFocus }: { nodes: GraphNode[]; onFocus: (mbid: string) => void }) {
+  const top = nodes
+    .filter((n) => (n.plays ?? 0) > 0)
+    .sort((a, b) => (b.plays ?? 0) - (a.plays ?? 0) || a.name.localeCompare(b.name))
+    .slice(0, 10);
+  if (top.length === 0) return null;
+  return (
+    <>
+      <div className="eyebrow">Most played here</div>
+      <div className="stack" style={{ gap: 2 }}>
+        {top.map((n) => (
+          <div key={n.mb_id} className="collab-row">
+            <button type="button" className="collab-name" onClick={() => onFocus(n.mb_id)}>{n.name}</button>
+            <span className="mono tabnum dim">{n.plays}</span>
+          </div>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -901,6 +1021,7 @@ function SelectedArtist({
           <span style={{ fontWeight: 600 }}>{node.name}</span>
           <span className="dim mono" style={{ fontSize: 11 }}>
             {node.tracks} {node.tracks === 1 ? "recording" : "recordings"}
+            {report.listening ? ` · ${node.plays ?? 0} ${node.plays === 1 ? "play" : "plays"}` : ""}
           </span>
         </div>
         <button type="button" className="btn btn-ghost btn-sm" onClick={() => onSelect(null)} aria-label="Clear selection">✕</button>

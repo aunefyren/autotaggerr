@@ -45,6 +45,7 @@ func LoadAllCaches() {
 		"lidarr_tracks":        LidarrLoadTracksCache,
 		"lidarr_trackfiles":    LidarrLoadTrackFilesCache,
 		"plex_album_keys":      PlexLoadAlbumKeyCache,
+		"plex_track_files":     PlexLoadTrackFileCache,
 	}
 
 	for name, load := range loaders {

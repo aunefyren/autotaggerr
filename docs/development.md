@@ -386,4 +386,5 @@ Feature docs:
 - `mcp.md` — the MCP server for AI assistants: scoped API keys, the read and action tools, and how they share query methods and commands with the REST handlers.
 - `settings.md` — the /settings page: the config surface, which edits apply live, and the admin gate.
 - `storage.md` — the storage overview: music and Autotaggerr's own data measured apart, the disks, the actions that shrink config/, and log rotation.
+- `listening.md` — each user's Plex and ListenBrainz plays: linking (and proving a Plex account is yours), the cursor-based sync, cross-source dedupe, and how plays reach the graph.
 - `media-servers.md` — Plex servers as rows: linked per library, refreshed per server, and the upgrade from the config keys.

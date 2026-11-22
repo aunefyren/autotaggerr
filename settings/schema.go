@@ -279,6 +279,23 @@ func Sections() []Section {
 			},
 		},
 		{
+			// No on/off switch: accounts are linked per user on the Account page, and a
+			// pass with none linked does nothing.
+			ID:          "listening",
+			Page:        "jobs",
+			Title:       "Listening history",
+			Description: "Reading each user's plays from the Plex and ListenBrainz accounts they linked on the Account page, for the listening overlay on Insights → Graph.",
+			Fields: []Field{
+				{
+					Key: "autotaggerr_listening_cron_schedule", Label: "Read schedule", Type: TypeCron, Tier: TierLive,
+					Help:        "Default is every 30 minutes. Each account is read from where the last pass stopped, so a pass costs only what is new.",
+					Placeholder: models.DefaultListeningCronSchedule,
+					get:         func(c models.ConfigStruct) any { return c.AutotaggerrListeningCronSchedule },
+					set:         setString(func(c *models.ConfigStruct, v string) { c.AutotaggerrListeningCronSchedule = v }, validCron),
+				},
+			},
+		},
+		{
 			ID:          "follow",
 			Page:        "jobs",
 			Title:       "Following Lidarr",

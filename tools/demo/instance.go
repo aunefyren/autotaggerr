@@ -235,6 +235,11 @@ func Generate(opts GenerateOptions) (*Universe, error) {
 	if err := prefill(quiet, u, specs, dir); err != nil {
 		return nil, err
 	}
+	plays, err := seedListens(quiet, specs, opts.Seed)
+	if err != nil {
+		return nil, err
+	}
+	log("listening history: %d plays for admin", plays)
 	log("pre-filled in %s total", time.Since(started).Round(time.Millisecond))
 	return u, nil
 }

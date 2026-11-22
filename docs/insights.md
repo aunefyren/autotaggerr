@@ -1,7 +1,8 @@
 # Feature: insights
 
 The **Insights** page (Music → Insights) answers questions about the library as a whole, in four
-tabs: **Duplicates**, **Stats**, **Graph** and **Storage**. Storage has its own doc,
+tabs: **Duplicates**, **Stats**, **Graph** and **Storage**. The graph can carry the signed-in
+user's plays ([listening overlay](#listening-overlay)). Storage has its own doc,
 [storage.md](storage.md). It was a page of its own under System until it moved here; `/storage`
 redirects to the tab. The library select is hidden on that tab, because disks are not per library.
 
@@ -224,7 +225,8 @@ The cold cost is now mostly SQLite stepping through the credits. Counting pairs 
 instead of per request is the next step if a library outgrows it.
 
 **Adding a filter** is a field on `insights.GraphOptions`, a line in `routers/insights.go`, and an
-entry in `GRAPH_FILTERS` (`webui/src/pages/Insights.tsx`).
+entry in `GRAPH_FILTERS` (`webui/src/pages/Insights.tsx`), or `LISTEN_FILTERS` for one of the
+[listening overlay](#listening-overlay).
 
 ### Finding an artist
 
@@ -255,6 +257,42 @@ asked for, so changing it costs no request.
   genre). Any other genre shares a neutral as *Other genres*, and an artist with no genre known
   is drawn as a neutral ring. Past three, not every pair of colours stays apart; the style guide
   says why eight was chosen anyway and how naming carries it.
+
+### Listening overlay
+
+With a listening account linked on the Account page ([listening.md](listening.md)), the graph also
+shows what the signed-in user **plays**. The overlay is always the caller's own history
+(`GraphOptions.Listener` comes from the session, never a parameter), and `report.listening` is
+absent for a user with no account, which hides its controls.
+
+| Parameter | Default | Effect |
+|---|---|---|
+| `since` | all | the period plays are counted over: `30d`, `90d`, `365d` (any number of days) or `all` |
+| `listened` | off | keep an edge only between artists with at least `min_plays` plays; the centred artist is exempt |
+| `min_plays` | 1 | the floor for `listened` |
+| `edges` | `credits` | `listening` connects artists played close together in a session; `both` lays out by credits and adds co-listening between the artists drawn |
+
+- **Plays per artist** (`GraphNode.Plays`) are every play, not distinct recordings, attributed
+  through the credits in the roles asked for (see [listening.md](listening.md#counting-a-play)).
+  `Tracks` stays recordings.
+- **Listened-only is applied after the cached count**, where *only your artists* is, so toggling
+  it never recounts.
+- **Co-listening swaps the counted graph and nothing else.** It has the same shape as the credit
+  count (weights per pair, a count per artist, which is plays), so the floors, the managed filter,
+  centring, the node cap and naming run unchanged. Artists not on disk can appear, named from
+  ListenBrainz. Co-listening keeps each artist's three strongest partners
+  ([listening.md](listening.md#counting-a-play)). Under `both`, credits choose and place the artists, and co-listening edges
+  (`GraphEdge.Kind = "listening"`, drawn dashed) are added between those already drawn; they do not
+  pull the layout.
+- **Cached like the count:** one entry per (credit count, user, plays fingerprint, period to the
+  day, library, roles). The credit count keeps each recording's artists (`creditGraph.byRecording`)
+  so the overlay costs one scan of the user's plays, not a second scan of the credits.
+
+On the page, *Your listening* holds Period, Connect by, Only artists I play and Fewest plays, plus
+*Size by* (Recordings or Plays, drawn rather than asked for). *Colour: Plays* is a one-hue
+sequential ramp (`--seq-1`…`--seq-5`, five log-spaced bins relative to the most-played artist in
+view; on the dark surface fewer plays sit darker), with unplayed artists as a neutral ring. The side
+panel adds *Most played here*, and every tooltip names the plays.
 
 ### Drawing
 

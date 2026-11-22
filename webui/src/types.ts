@@ -1565,13 +1565,29 @@ export interface GraphNode {
   genre?: string;
   /** The role they hold on the most of those recordings (for colour). */
   role?: string;
+  /** The signed-in user's plays of recordings crediting them, in the period asked for. */
+  plays?: number;
 }
 
 export interface GraphEdge {
   source: string;
   target: string;
-  /** Recordings in scope crediting both. */
+  /** Recordings in scope crediting both; for a listening edge, sessions playing both. */
   weight: number;
+  /** "credit" (the default) or "listening": played close together in a session. */
+  kind?: "credit" | "listening";
+}
+
+/** The listening overlay's totals (insights.ListeningSummary). */
+export interface ListeningSummary {
+  /** Plays in the period, after cross-source duplicates are dropped. */
+  plays: number;
+  /** Of those, plays identified as a MusicBrainz recording. */
+  matched: number;
+  unmatched: number;
+  /** Start of the period (RFC 3339); absent for all time. */
+  since?: string;
+  accounts: number;
 }
 
 export interface Collaboration {
@@ -1591,6 +1607,26 @@ export interface GraphReport {
   unsynced: number;
   /** The library's top genres, most common first: the ones with a colour of their own. */
   genres: string[];
+  /** Present when the signed-in user has linked a listening account. */
+  listening?: ListeningSummary;
+}
+
+/** One of the signed-in user's listening accounts (GET /listening/accounts). */
+export interface ListeningAccount {
+  id: string;
+  source: "plex" | "listenbrainz";
+  enabled: boolean;
+  media_server_id?: string;
+  server_name?: string;
+  plex_account_id?: string;
+  plex_account_name?: string;
+  username?: string;
+  token_set: boolean;
+  cursor?: string;
+  last_synced_at?: string;
+  last_error?: string;
+  plays: number;
+  matched: number;
 }
 
 /** Why an artist is managed (collection.ManagedReason). */

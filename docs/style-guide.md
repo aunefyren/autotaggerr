@@ -852,6 +852,16 @@ A node-link picture beside a list of the same data (`.graph-split`, 300px panel,
   - **Always with a legend** (`.graph-legend`, top left inside the canvas): swatch, name, and how
     many artists in view have it. The node's tooltip names its genre or role too, so colour is
     never the only carrier.
+- **Plays are magnitude, so they take a sequential ramp, not series colours.** *Colour: Plays*
+  (listening overlay, [listening.md](listening.md)) uses `--seq-1`…`--seq-5`: one hue (the dataviz
+  reference blue, steps 600/500/400/300/150), five log-spaced ordinal bins relative to the
+  most-played artist in view. On this dark surface the anchor flips, so few plays sit dark near the
+  surface and many are light; the darkest step still clears 2:1 against `--surface-1`. Unplayed is a
+  neutral ring, like unknown genre, so "none" reads apart from "a few". The legend lists each bin's
+  range and count, and every tooltip names the plays.
+- **A second kind of edge is told apart by dash, not colour.** Co-listening edges drawn over credits
+  (*Connect by: Both*) are `--border-strong` with a 4/3 dash (`.g-edge.listening`); colour stays
+  the nodes' alone.
 - **Focus by contrast, not colour.** On hover or select, the artist's edges turn `--accent-text`,
   their neighbours keep full opacity, and everything else fades to about 0.3. A centred artist has an
   `--accent-text` ring.

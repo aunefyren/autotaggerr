@@ -752,6 +752,7 @@ const (
 	ProviderCacheLidarrTracks     = "lidarr_tracks"
 	ProviderCacheLidarrTrackFiles = "lidarr_trackfiles"
 	ProviderCachePlexAlbumKeys    = "plex_album_keys"
+	ProviderCachePlexTrackFiles   = "plex_track_files"
 )
 
 // ProviderCache is the persistent cache for lookups against the services a library
@@ -1912,6 +1913,9 @@ func AllDBModels() []any {
 		&TrackLoudness{},
 		&InsightCredit{},
 		&InsightCreditRelease{},
+		&ListeningAccount{},
+		&Listen{},
+		&ListenArtist{},
 	}
 }
 

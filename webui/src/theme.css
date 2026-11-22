@@ -63,6 +63,16 @@
   --series-7: #9085e9; /* violet */
   --series-8: #e66767; /* red */
   --series-other: #726c8c;
+
+  /* Sequential ramp for magnitude (plays on the collaboration graph): one hue, five
+     ordinal steps. On this dark surface the anchor flips: few plays sit dark, near the
+     surface (no darker than step 600, which still clears 2:1), many plays are light.
+     From the dataviz reference blue ramp, steps 600/500/400/300/150. */
+  --seq-1: #184f95;
+  --seq-2: #256abf;
+  --seq-3: #3987e5;
+  --seq-4: #6da7ec;
+  --seq-5: #b7d3f6;
 }
 
 * { box-sizing: border-box; }

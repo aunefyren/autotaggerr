@@ -73,6 +73,10 @@ const (
 	DefaultTempoConcurrency     = 2
 )
 
+// DefaultListeningCronSchedule reads listening history every 30 minutes: a few
+// requests per linked account, and the cursor means a pass reads only what is new.
+const DefaultListeningCronSchedule = "0 */30 * * * *"
+
 // What happens when a pinned file's audio is replaced underneath its pin (see
 // LibraryItem.PinHeld and docs/attach.md).
 const (
@@ -207,6 +211,11 @@ type ConfigStruct struct {
 	// like tempo, it has no on/off key — a library opts in (Library.AnalyseLoudness).
 	// See docs/replaygain.md.
 	AutotaggerrLoudnessCronSchedule string `json:"autotaggerr_loudness_cron_schedule"`
+
+	// Listening history (Plex, ListenBrainz) is read on its own schedule. No on/off
+	// key: accounts are linked per user, and a pass with none linked does nothing.
+	// See docs/listening.md.
+	AutotaggerrListeningCronSchedule string `json:"autotaggerr_listening_cron_schedule"`
 
 	// Health-check schedule for the configured Lidarr/Plex connections. Checks are
 	// cheap and only record an Activity event when a service's health changes, so a

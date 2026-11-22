@@ -333,6 +333,13 @@ func main() {
 			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrLoudnessCronSchedule },
 		},
 		settings.CronJob{
+			// Reads each user's linked Plex and ListenBrainz plays. Not queued — see
+			// process.Runner.SyncListening; with no account linked it does nothing.
+			Name:     "listening history",
+			Run:      scanRunner.SyncListening,
+			Schedule: func(c models.ConfigStruct) string { return c.AutotaggerrListeningCronSchedule },
+		},
+		settings.CronJob{
 			// Reads Lidarr's history and queues a Process per artist whose files Lidarr
 			// changed. Not queued itself — see process.Runner.FollowLidarr.
 			Name:     "Lidarr follow",
