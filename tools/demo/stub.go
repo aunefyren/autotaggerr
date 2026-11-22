@@ -135,6 +135,10 @@ func (s *Stub) musicbrainz(w http.ResponseWriter, r *http.Request, path string) 
 			}
 		}
 		writeJSON(w, http.StatusOK, obj{"count": len(page), "artists": page})
+	case entity == "release-group" && q.Get("query") != "":
+		writeJSON(w, http.StatusOK, s.searchGroups(q.Get("query"), limit))
+	case entity == "recording" && q.Get("query") != "":
+		writeJSON(w, http.StatusOK, s.searchRecordings(q.Get("query"), limit))
 	default:
 		writeJSON(w, http.StatusBadRequest, obj{"error": "the demo stand-in does not serve " + r.URL.RequestURI()})
 	}
@@ -184,4 +188,111 @@ func cover(id string) []byte {
 	var buf bytes.Buffer
 	_ = png.Encode(&buf, img)
 	return buf.Bytes()
+}
+
+// idClause reads a Lucene ID clause ("rgid:<mbid>"), the form a pasted link is
+// searched by, and returns the ID when the query is exactly that clause.
+func idClause(query, field string) (string, bool) {
+	query = strings.TrimSpace(query)
+	if !strings.HasPrefix(query, field+":") {
+		return "", false
+	}
+	return strings.Trim(strings.TrimPrefix(query, field+":"), `"`), true
+}
+
+// searchGroups answers /release-group?query= (Add → Album): words against the title
+// and credit, or an rgid / reid / arid clause.
+func (s *Stub) searchGroups(query string, limit int) obj {
+	var groups []*ReleaseGroup
+	switch {
+	case strings.HasPrefix(query, "rgid:"):
+		id, _ := idClause(query, "rgid")
+		if rg, ok := s.u.groupByID[id]; ok {
+			groups = append(groups, rg)
+		}
+	case strings.HasPrefix(query, "reid:"):
+		id, _ := idClause(query, "reid")
+		if rel, ok := s.u.releaseByID[id]; ok {
+			groups = append(groups, rel.Group)
+		}
+	case strings.HasPrefix(query, "arid:"):
+		id, _ := idClause(query, "arid")
+		groups = s.u.groupsByArtist[id]
+	default:
+		for _, rg := range s.u.Groups {
+			if matches(query, rg.Title+" "+CreditName(rg.Credit)) {
+				groups = append(groups, rg)
+			}
+		}
+	}
+	page := []obj{}
+	for _, rg := range groups {
+		if len(page) >= limit {
+			break
+		}
+		hit := releaseGroupJSON(rg)
+		hit["score"] = 100
+		hit["count"] = len(rg.Releases)
+		page = append(page, hit)
+	}
+	return obj{"count": len(groups), "release-groups": page}
+}
+
+// searchRecordings answers /recording?query= (Add → Track): words against the title
+// and credit, or an rid / arid clause. Each hit lists the releases it is on, with
+// their group, as MusicBrainz's search does.
+func (s *Stub) searchRecordings(query string, limit int) obj {
+	rid, byID := idClause(query, "rid")
+	arid, byArtist := idClause(query, "arid")
+	type hit struct {
+		rec      *Recording
+		releases []obj
+	}
+	var order []string
+	hits := map[string]*hit{}
+	for _, rel := range s.u.Releases {
+		for _, m := range rel.Media {
+			for _, t := range m.Tracks {
+				rec := t.Recording
+				h, seen := hits[rec.ID]
+				if !seen {
+					ok := false
+					switch {
+					case byID:
+						ok = rec.ID == rid
+					case byArtist:
+						for _, c := range rec.Credit {
+							ok = ok || c.Artist.ID == arid
+						}
+					default:
+						ok = matches(query, rec.Title+" "+CreditName(rec.Credit))
+					}
+					if !ok || len(order) >= limit {
+						continue
+					}
+					h = &hit{rec: rec}
+					hits[rec.ID] = h
+					order = append(order, rec.ID)
+				}
+				summary := releaseSummaryJSON(rel)
+				total := 0
+				for _, other := range rel.Media {
+					total += len(other.Tracks)
+				}
+				summary["track-count"] = total
+				summary["media"] = []obj{{"position": m.Position, "format": m.Format, "track-count": len(m.Tracks),
+					"track": []obj{{"number": itoa(t.Position)}}}}
+				h.releases = append(h.releases, summary)
+			}
+		}
+	}
+	page := []obj{}
+	for _, id := range order {
+		h := hits[id]
+		out := obj{"id": h.rec.ID, "score": 100, "title": h.rec.Title, "length": h.rec.LengthMS, "video": false,
+			"disambiguation": "", "first-release-date": h.rec.FirstDate, "artist-credit": creditJSON(h.rec.Credit),
+			"releases": h.releases}
+		page = append(page, out)
+	}
+	return obj{"count": len(page), "recordings": page}
 }

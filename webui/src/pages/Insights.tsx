@@ -540,12 +540,15 @@ function formatDuration(ms: number): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-/** The credits that can connect two artists (models.InsightRole*). */
-const GRAPH_ROLES: { key: string; label: string }[] = [
-  { key: "credit", label: "Credited artists" },
-  { key: "performer", label: "Performers" },
-  { key: "production", label: "Production" },
-  { key: "writing", label: "Writing" },
+/**
+ * The credits that can connect two artists (models.InsightRole*), each with the line
+ * under its checkbox saying which MusicBrainz credits it covers (modules.CreditGroup).
+ */
+const GRAPH_ROLES: { key: string; label: string; help: string }[] = [
+  { key: "credit", label: "Credited artists", help: "The names on the track, featured artists included" },
+  { key: "performer", label: "Performers", help: "Session players, vocalists, conductors and orchestras" },
+  { key: "production", label: "Production", help: "Producers, engineers, mixers and mastering" },
+  { key: "writing", label: "Writing", help: "Composers, lyricists, writers and arrangers" },
 ];
 
 /**
@@ -554,8 +557,10 @@ const GRAPH_ROLES: { key: string; label: string }[] = [
  * an entry here and a field on insights.GraphOptions — no plumbing in between.
  */
 type GraphFilter =
-  | { kind: "select"; key: string; label: string; options: { value: string; label: string }[]; fallback: string }
-  | { kind: "check"; key: string; label: string };
+  | { kind: "select"; key: string; label: string; options: { value: string; label: string }[]; fallback: string; help: (value: string) => string }
+  | { kind: "check"; key: string; label: string; box: string; help: (on: boolean) => string };
+
+const plural = (n: string, one: string, many: string) => (n === "1" ? one : many);
 
 const GRAPH_FILTERS: GraphFilter[] = [
   {
@@ -564,6 +569,7 @@ const GRAPH_FILTERS: GraphFilter[] = [
     label: "Shared recordings",
     fallback: "1",
     options: ["1", "2", "3", "5", "10"].map((v) => ({ value: v, label: `${v}+` })),
+    help: (v) => `Two artists are linked when they share at least ${v} ${plural(v, "recording", "recordings")}`,
   },
   {
     kind: "select",
@@ -571,6 +577,7 @@ const GRAPH_FILTERS: GraphFilter[] = [
     label: "Artist recordings",
     fallback: "1",
     options: ["1", "2", "5", "10", "25"].map((v) => ({ value: v, label: `${v}+` })),
+    help: (v) => (v === "1" ? "Every credited artist can appear" : `Leaves out artists credited on fewer than ${v} recordings`),
   },
   {
     kind: "select",
@@ -578,12 +585,38 @@ const GRAPH_FILTERS: GraphFilter[] = [
     label: "Artists shown",
     fallback: "150",
     options: ["50", "150", "300", "500"].map((v) => ({ value: v, label: v })),
+    help: (v) => `The ${v} most connected artists are drawn. More is slower to read`,
   },
-  { kind: "check", key: "special", label: "Include Various Artists" },
+  {
+    kind: "check",
+    key: "special",
+    label: "Various Artists",
+    box: "Include",
+    help: (on) =>
+      on
+        ? "Compilation credits and placeholders such as [unknown] are drawn too"
+        : "Left out: they would link everyone on every compilation",
+  },
   // Your artists only by default: the credits name every featured artist, producer
   // and writer, most of whom the owner has never heard of.
-  { kind: "check", key: "everyone", label: "Show everyone credited" },
+  {
+    kind: "check",
+    key: "everyone",
+    label: "Artists",
+    box: "Show everyone credited",
+    help: (on) =>
+      on
+        ? "Everyone credited is drawn. Artists who are not yours are paler"
+        : "Only your own artists are drawn",
+  },
 ];
+
+/** What each colouring encodes, shown under the Colour select. */
+const COLOUR_HELP: Record<GraphColour, string> = {
+  genre: "Each artist's most common genre on MusicBrainz. A hollow ring means no genre is known",
+  role: "The role each artist holds on most of their recordings here",
+  none: "One colour for everyone. Size still shows how many recordings",
+};
 
 function Graph({
   library,
@@ -638,52 +671,89 @@ function Graph({
         already cached. Only your artists are drawn unless <em>Show everyone credited</em> is on.
       </p>
 
-      <div className="table-toolbar">
-        {GRAPH_ROLES.map((r) => (
-          <label key={r.key} className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12 }}>
-            <input type="checkbox" checked={roles.includes(r.key)} onChange={(e) => toggleRole(r.key, e.target.checked)} />
-            <span>{r.label}</span>
-          </label>
-        ))}
+      {/* Each control carries one line under it saying what it does at its current
+          value (style guide: Input — a field shows one line under it). The line
+          follows the value, so changing a filter says what changed. */}
+      <div className="card stack graph-controls" style={{ gap: 14 }}>
+        <div className="stack" style={{ gap: 6 }}>
+          <span className="flabel">Connect artists through</span>
+          <div className="field-row">
+            {GRAPH_ROLES.map((r) => (
+              <div key={r.key} className="field">
+                <label
+                  className="row"
+                  style={{ gap: 6, cursor: "pointer", fontSize: 12 }}
+                  title={roles.length === 1 && roles.includes(r.key) ? "One kind of credit always stays ticked. With none, nobody would be connected" : undefined}
+                >
+                  <input
+                    type="checkbox"
+                    checked={roles.includes(r.key)}
+                    // The last role cannot be unticked: no role connects nobody.
+                    disabled={roles.length === 1 && roles.includes(r.key)}
+                    onChange={(e) => toggleRole(r.key, e.target.checked)}
+                  />
+                  <span>{r.label}</span>
+                </label>
+                <span className="dim graph-help">{r.help}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="field-row">
+          {GRAPH_FILTERS.map((f) => {
+            const id = `graph-${f.key}`;
+            if (f.kind === "select") {
+              const value = params.get(f.key) ?? f.fallback;
+              return (
+                <div key={f.key} className="field">
+                  <label className="flabel" htmlFor={id}>{f.label}</label>
+                  <select
+                    id={id}
+                    className="input"
+                    value={value}
+                    onChange={(e) => set({ [f.key]: e.target.value === f.fallback ? null : e.target.value })}
+                  >
+                    {f.options.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                  <span className="dim graph-help">{f.help(value)}</span>
+                </div>
+              );
+            }
+            const on = params.get(f.key) === "1";
+            return (
+              <div key={f.key} className="field">
+                <span className="flabel">{f.label}</span>
+                <label className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12, minHeight: 32 }}>
+                  <input type="checkbox" checked={on} onChange={(e) => set({ [f.key]: e.target.checked ? "1" : null })} />
+                  <span>{f.box}</span>
+                </label>
+                <span className="dim graph-help">{f.help(on)}</span>
+              </div>
+            );
+          })}
+          <div className="field">
+            <label className="flabel" htmlFor="graph-colour">Colour</label>
+            <select id="graph-colour" className="input" value={colour} onChange={(e) => set({ colour: e.target.value === "genre" ? null : e.target.value })}>
+              <option value="genre">Genre</option>
+              <option value="role">Role</option>
+              <option value="none">None</option>
+            </select>
+            <span className="dim graph-help">{COLOUR_HELP[colour]}</span>
+          </div>
+        </div>
       </div>
-      <div className="table-toolbar">
-        {GRAPH_FILTERS.map((f) =>
-          f.kind === "select" ? (
-            <label key={f.key} className="row" style={{ gap: 6, fontSize: 12 }}>
-              <span className="muted">{f.label}</span>
-              <select
-                className="input"
-                style={{ width: "auto" }}
-                value={params.get(f.key) ?? f.fallback}
-                onChange={(e) => set({ [f.key]: e.target.value === f.fallback ? null : e.target.value })}
-              >
-                {f.options.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </label>
-          ) : (
-            <label key={f.key} className="row" style={{ gap: 6, cursor: "pointer", fontSize: 12 }}>
-              <input type="checkbox" checked={params.get(f.key) === "1"} onChange={(e) => set({ [f.key]: e.target.checked ? "1" : null })} />
-              <span>{f.label}</span>
-            </label>
-          ),
-        )}
-        <label className="row" style={{ gap: 6, fontSize: 12 }}>
-          <span className="muted">Colour</span>
-          <select className="input" style={{ width: "auto" }} value={colour} onChange={(e) => set({ colour: e.target.value === "genre" ? null : e.target.value })}>
-            <option value="genre">Genre</option>
-            <option value="role">Role</option>
-            <option value="none">None</option>
-          </select>
-        </label>
-        {data && (
+
+      {data && (
+        <div className="row" style={{ justifyContent: "flex-end" }}>
           <span className="toolbar-count dim mono row" style={{ gap: 10 }}>
             <Updating active={graph.loading} />
             {data.nodes.length} of {data.connected} artists · {data.edges.length} connections
           </span>
-        )}
-      </div>
+        </div>
+      )}
 
       <GraphSearch
         nodes={data?.nodes ?? []}
@@ -703,6 +773,11 @@ function Graph({
             <button type="button" role="tab" className="tab" aria-selected={hops === "1"} onClick={() => set({ hops: null })}>Collaborators</button>
             <button type="button" role="tab" className="tab" aria-selected={hops === "2"} onClick={() => set({ hops: "2" })}>And theirs</button>
           </div>
+          <span className="dim" style={{ fontSize: 11 }}>
+            {hops === "2"
+              ? `Artists who share a recording with ${data.center.name}, and the artists they share recordings with`
+              : `Only the artists who share a recording with ${data.center.name}`}
+          </span>
           <button type="button" className="btn btn-secondary btn-sm" style={{ marginLeft: "auto" }} onClick={() => centre(null)}>
             Show everyone
           </button>

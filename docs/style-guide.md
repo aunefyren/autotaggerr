@@ -865,6 +865,15 @@ A node-link picture beside a list of the same data (`.graph-split`, 300px panel,
 - **Labels and strokes keep their screen size at any zoom**: labels are sized by graph units per
   pixel, and strokes use `vector-effect: non-scaling-stroke`. The fit magnifies at most 2×, so a
   small graph fills the canvas without its nodes becoming discs.
+- **Every control says what it does, under it** (`.graph-controls`, a card above the canvas). The
+  roles sit in one `.field-row` under *Connect artists through*, each checkbox with the MusicBrainz
+  credits it covers. The filters and Colour are a second `.field-row` of label / control / help, and
+  a checkbox there takes a label too (*Various Artists*: Include), so every help line sits on the
+  same track. The line describes the **current value** ("linked when they share at least 2
+  recordings", "Only your own artists are drawn"), so changing a filter also says what changed. It
+  is visible text, not a `title`: the controls are not self-explanatory, and a tooltip explains
+  nothing on a phone. The one `title` is on the last ticked role, which explains why it is disabled.
+  The centred bar says what *Collaborators* and *And theirs* draw, by the centred artist's name.
 - **Refetching keeps the old answer, dimmed** (`.is-updating`, 45% opacity, no pointer events),
   with *Updating…* and the striped indeterminate bar beside the artist count. The indicator is
   always laid out and only shown while loading, so its appearance never reflows the toolbar. The

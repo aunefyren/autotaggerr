@@ -448,6 +448,10 @@
 @media (max-width: 720px) { .insight-grid { grid-template-columns: 1fr; } }
 
 /* Insights — collaboration graph. Single hue: node identity is the label, not a colour. */
+/* Insights → Graph: each control with one line under it saying what it does at its
+   current value. In a .field-row subgrid the line is the third row for a select and the
+   second for a role checkbox, so the margin is set on the line, not by position. */
+.graph-controls .field > .graph-help { font-size: 11px; line-height: 1.4; margin-top: 5px; max-width: 34ch; }
 .graph-split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 12px; align-items: start; }
 .graph-canvas { position: relative; height: 560px; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
 .graph-canvas svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }

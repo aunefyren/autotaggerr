@@ -36,6 +36,10 @@ runs `gofmt` → `go build` → `go vet` → `go test -race` with coverage; it i
 so the audio fixture tests run there too (`ffmpeg` synthesizes the fixtures; only `metaflac` is a
 runtime dependency). Go 1.26 is the module target.
 
+**Demo instances are disposable** ([docs/demo.md](docs/demo.md)). Stop any demo you started once you
+are done with it. A demo found already running (`tools/demo`, the `autotaggerr` binary under the demo
+directory, ports 8090/8091) may be killed without asking, e.g. to restart it on the current code.
+
 **Git is owned by the human.** Do not stage, commit, push, branch, or otherwise touch git state
 — the maintainer handles all version control. Make and verify changes in the working tree only.
 
