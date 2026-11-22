@@ -26,6 +26,11 @@ func TestArtistListCountsInOneLibrary(t *testing.T) {
 		&models.CollectionReleaseGroup{MBID: "rg-c", ArtistMBID: "art-1", Title: "C"},
 		&models.CollectionRelease{MBID: "rel-a", ReleaseGroupMBID: "rg-a", ArtistMBID: "art-1", TotalTracks: 10},
 		&models.CollectionRelease{MBID: "rel-b", ReleaseGroupMBID: "rg-b", ArtistMBID: "art-1", TotalTracks: 8},
+		// Every album picked, in no particular library: missing counts wanted albums
+		// not owned, so without a want nothing would be missing anywhere.
+		&models.CollectionDesire{ArtistMBID: "art-1", ReleaseGroupMBID: "rg-a"},
+		&models.CollectionDesire{ArtistMBID: "art-1", ReleaseGroupMBID: "rg-b"},
+		&models.CollectionDesire{ArtistMBID: "art-1", ReleaseGroupMBID: "rg-c"},
 	} {
 		if err := api.DB.Create(row).Error; err != nil {
 			t.Fatalf("seed %T: %v", row, err)

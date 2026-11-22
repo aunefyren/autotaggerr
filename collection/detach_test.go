@@ -74,6 +74,17 @@ func managerWant(t *testing.T, db *gorm.DB) {
 	}
 }
 
+// managerListsArtist records that the manager lists the artist, the way the Lidarr
+// mirror links the artists it syncs.
+func managerListsArtist(t *testing.T, db *gorm.DB, manager models.Manager, mbID string) {
+	t.Helper()
+	if err := db.Create(&models.ManagerLink{
+		ManagerID: manager.ID, EntityType: models.ManagerLinkArtist, MBID: mbID, ExternalID: 1,
+	}).Error; err != nil {
+		t.Fatalf("manager link: %v", err)
+	}
+}
+
 func artistRow(t *testing.T, db *gorm.DB, mbID string) models.CollectionArtist {
 	t.Helper()
 	var a models.CollectionArtist
@@ -296,5 +307,61 @@ func TestDeletingAManagerLeavesOtherManagersArtistsAlone(t *testing.T) {
 	}
 	if artistRow(t, db, "art-1").ManagerDetached {
 		t.Error("an unrelated manager's deletion detached the artist")
+	}
+}
+
+// TestDeletingAManagerLeavesCoCreditsAlone: only an artist the manager had a say over
+// is detached — one it lists, or one holding a want it selected. A featured artist on
+// a collaboration in its library has nothing of the manager's to keep, and detaching
+// them made every co-credit read as an artist the user had taken in hand.
+func TestDeletingAManagerLeavesCoCreditsAlone(t *testing.T) {
+	db, manager := managedCollection(t)
+
+	collab := models.MusicBrainzReleaseResponse{
+		ID: "rel-collab", Title: "Cypher",
+		ArtistCredit: []models.ArtistCredit{
+			{Name: "Host", Artist: models.Artist{ID: "art-host", Name: "Host"}, Joinphrase: ", "},
+			{Name: "Guest", Artist: models.Artist{ID: "art-guest", Name: "Guest"}},
+		},
+		ReleaseGroup: models.ReleaseGroup{ID: "rg-collab", Title: "Cypher", PrimaryType: "Single"},
+		Media:        []models.MusicBrainzMedia{{Tracks: []models.Track{{ID: "t-c"}}}},
+	}
+	payload, _ := json.Marshal(collab)
+	if err := db.Create(&models.MusicbrainzReleaseCache{
+		MBID: "rel-collab", Payload: string(payload),
+		FetchedAt: time.Now(), ExpiresAt: time.Now().Add(time.Hour),
+	}).Error; err != nil {
+		t.Fatalf("seed cache: %v", err)
+	}
+	if err := modules.MusicbrainzLoadCache(); err != nil {
+		t.Fatalf("load cache: %v", err)
+	}
+	var lib models.Library
+	if err := db.Where("path = ?", "/m").First(&lib).Error; err != nil {
+		t.Fatalf("library: %v", err)
+	}
+	if err := db.Create(&models.LibraryItem{
+		LibraryID: lib.ID, Path: "/m/collab.flac", Status: models.LibraryItemStatusOK, MBReleaseID: "rel-collab",
+	}).Error; err != nil {
+		t.Fatalf("item: %v", err)
+	}
+	if _, err := Rebuild(db); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+
+	managerWant(t, db)                             // art-1: a want Lidarr selected
+	managerListsArtist(t, db, manager, "art-host") // the collaboration's host: listed
+
+	detached, err := DetachManagerArtists(db, manager.ID)
+	if err != nil {
+		t.Fatalf("DetachManagerArtists: %v", err)
+	}
+	if detached != 2 {
+		t.Errorf("detached = %d, want 2 (the selected and the listed artist)", detached)
+	}
+	for mbid, want := range map[string]bool{"art-1": true, "art-host": true, "art-guest": false} {
+		if got := artistRow(t, db, mbid).ManagerDetached; got != want {
+			t.Errorf("%s detached = %v, want %v", mbid, got, want)
+		}
 	}
 }

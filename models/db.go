@@ -165,6 +165,9 @@ const (
 	// new-artist policy had followed only because a collaboration credited them
 	// (collection.UnfollowPolicyCoCredits).
 	EventTypeFollowCleanup = "follow_cleanup"
+	// EventTypeDetachCleanup is the one-time pass that handed back the co-credited
+	// artists a manager deletion had detached (collection.ClearCoCreditDetaches).
+	EventTypeDetachCleanup = "detach_cleanup"
 
 	EventStatusRunning = "running"
 	EventStatusOK      = "ok"
@@ -1321,6 +1324,8 @@ const (
 	EventItemStatusRecredited = "recredited"
 	// EventItemStatusUnfollowed: an artist the follow cleanup stopped following.
 	EventItemStatusUnfollowed = "unfollowed"
+	// EventItemStatusUndetached: an artist the detach cleanup stopped marking detached.
+	EventItemStatusUndetached = "undetached"
 )
 
 // What an EventItem describes. Empty (EventItemKindFile) is the default and covers

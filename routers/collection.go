@@ -614,7 +614,11 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 
 	// Aggregated in Go rather than SQL so the complete/discrepancy rules have exactly
 	// one definition (the model) shared by this list, the artist detail, and the UI.
-	type agg struct{ total, owned, complete, mismatch, upgrade int }
+	// missing counts albums that are wanted and not owned — the artist page's rule
+	// (wanted && !owned) — not every stored row without files. Stored rows outlive the
+	// want that brought them: a detached Lidarr artist keeps its whole mirrored
+	// catalogue, and counting those made one picked album read as 29 missing.
+	type agg struct{ owned, complete, missing, mismatch, upgrade int }
 	byArtist := map[string]*agg{}
 
 	var groups []models.CollectionReleaseGroup
@@ -692,7 +696,6 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 				}
 				artistLibraries[artistMBID][lib] = true
 			}
-			g.total++
 			if inLibrary {
 				ar, known := artistByID[artistMBID]
 				if !known {
@@ -707,6 +710,9 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 				if view.Owned {
 					g.owned++
 				}
+				if view.Wanted && !view.Owned {
+					g.missing++
+				}
 				if view.Complete {
 					g.complete++
 				}
@@ -718,10 +724,15 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 				}
 				continue
 			}
-			// Only an owned album can want an upgrade, so only those pay for the view.
-			if ar, known := artistByID[artistMBID]; known && rg.Owned && qualityIdx != nil {
-				if newReleaseGroupViewIn(rg, catalogued[artistMBID], ar, groupDesires[rg.MBID], viewScope{quality: qualityIdx}).UpgradeWanted {
+			// Wanted needs the view in the overview too; an album credited to an artist
+			// the collection does not list has nothing deciding its wants.
+			if ar, known := artistByID[artistMBID]; known {
+				view := newReleaseGroupViewIn(rg, catalogued[artistMBID], ar, groupDesires[rg.MBID], viewScope{quality: qualityIdx})
+				if view.UpgradeWanted {
 					g.upgrade++
+				}
+				if view.Wanted && !rg.Owned {
+					g.missing++
 				}
 			}
 			if rg.Owned {
@@ -761,7 +772,7 @@ func (a *API) computeArtistList(library uuid.UUID) ([]artistSummary, error) {
 			OwnedCount:    g.owned,
 			CompleteCount: g.complete,
 			PartialCount:  g.owned - g.complete,
-			MissingCount:  g.total - g.owned,
+			MissingCount:  g.missing,
 			MismatchCount: g.mismatch,
 			UpgradeCount:  g.upgrade,
 			PickedCount:   len(picked[ar.MBID]),
@@ -1363,6 +1374,24 @@ func (a *API) setManaged(c *gin.Context, on bool) {
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"artist": a.artistViewFor(artist)})
+}
+
+// removeArtist deletes an artist with nothing on disk, with their wants and the
+// stored albums only they are credited on — see collection.RemoveArtist. An artist
+// files credit, or one Lidarr lists, is refused with a 409 saying what to do instead.
+func (a *API) removeArtist(c *gin.Context) {
+	result, err := collection.RemoveArtist(a.DB, c.Param("mbid"))
+	switch {
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		c.JSON(http.StatusNotFound, gin.H{"error": "artist not found"})
+	case errors.Is(err, collection.ErrArtistHasFiles), errors.Is(err, collection.ErrArtistGovernedByLidarr):
+		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+	case err != nil:
+		logger.Log.Warnf("failed to remove artist %s: %s", c.Param("mbid"), err.Error())
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to remove the artist"})
+	default:
+		c.JSON(http.StatusOK, result)
+	}
 }
 
 // reattachArtist hands an artist back to whatever manages its libraries. The wants

@@ -171,6 +171,13 @@ func ReattachArtist(db *gorm.DB, artistMBID string) (models.CollectionArtist, er
 // that manager is about to be deleted, and it is what keeps deletion from stranding the
 // manager's decisions.
 //
+// "Governs" means the manager had a say: it lists the artist, or it selected albums of
+// theirs. Being credited on an album in one of its libraries is not enough — every
+// featured artist on a collaboration is, and detaching those marked the whole cast of
+// a posse cut as artists the user had taken in hand (ManagedSettings), filling the
+// Managed view with names nobody chose. A co-credit has nothing of the manager's to
+// keep, so it is left to the ordinary derivation.
+//
 // Without it, deleting a manager leaves its libraries pointing at a row that is gone,
 // so the artists fall to ManagedByUnknown while their mirrored wants keep a `manager`
 // provenance naming an authority that no longer exists. Nothing reconciles those:
@@ -202,9 +209,16 @@ func DetachManagerArtists(db *gorm.DB, managerID uuid.UUID) (int, error) {
 	if err != nil {
 		return 0, err
 	}
+	governed, err := managerGovernedArtists(db, managerID, artists)
+	if err != nil {
+		return 0, err
+	}
 
 	detached := 0
 	for _, mbID := range artists {
+		if !governed[mbID] {
+			continue
+		}
 		var artist models.CollectionArtist
 		if err := db.Where("mb_id = ?", mbID).First(&artist).Error; err != nil {
 			continue
@@ -222,6 +236,31 @@ func DetachManagerArtists(db *gorm.DB, managerID uuid.UUID) (int, error) {
 		detached++
 	}
 	return detached, nil
+}
+
+// managerGovernedArtists reports which of the candidates the manager had a say over:
+// an artist it lists (a manager link) or one holding a want it selected.
+func managerGovernedArtists(db *gorm.DB, managerID uuid.UUID, candidates []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(candidates) == 0 {
+		return out, nil
+	}
+	var listed []string
+	if err := db.Model(&models.ManagerLink{}).
+		Where("manager_id = ? AND entity_type = ? AND mb_id IN ?", managerID, models.ManagerLinkArtist, candidates).
+		Distinct().Pluck("mb_id", &listed).Error; err != nil {
+		return nil, err
+	}
+	var selected []string
+	if err := db.Model(&models.CollectionDesire{}).
+		Where("source = ? AND artist_mb_id IN ?", models.DesireSourceManager, candidates).
+		Distinct().Pluck("artist_mb_id", &selected).Error; err != nil {
+		return nil, err
+	}
+	for _, id := range append(listed, selected...) {
+		out[id] = true
+	}
+	return out, nil
 }
 
 // artistsInLibraries lists the MusicBrainz artists credited on the albums whose files

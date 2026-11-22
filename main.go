@@ -140,6 +140,11 @@ func main() {
 	if err := collection.UnfollowPolicyCoCredits(db); err != nil {
 		logger.Log.Warnf("failed to unfollow co-credited artists: %s", err.Error())
 	}
+	// Once per install: hand back the co-credited artists a manager deletion detached,
+	// which made each of them read as managed.
+	if err := collection.ClearCoCreditDetaches(db); err != nil {
+		logger.Log.Warnf("failed to hand back co-credited artists: %s", err.Error())
+	}
 
 	// Set GIN mode
 	if files.ConfigFile.AutotaggerrEnvironment != "test" {

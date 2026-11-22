@@ -794,6 +794,11 @@ every row would carry the same word. Then:
   the same call the artist page's library tab makes, so the two cannot disagree. The library's
   holdings are read once for the whole list (`collection.AllLibraryHoldings`), not per artist. An
   artist with files in both kinds of library carries two pills, **Lidarr** and **Native**.
+  Unfiltered, *missing* is judged the same way — an album counts when its view is wanted and not
+  owned, the artist page's chip rule — not as every stored row without files. Stored rows outlive
+  the want that brought them (a detached Lidarr artist keeps its whole mirrored catalogue), and
+  counting those put an artist with one owned pick on the Missing filter with a number the artist
+  page contradicted.
 - The artist page and the album page open on **library tabs** (`LibraryTabs`, the style guide's
   *Library view*): *All libraries*, then each library the artist can be read in with its authority
   beside its name. The choice is `library` in the URL and carries from the artist page to the album
@@ -981,6 +986,19 @@ unmonitored this album" from "Lidarr is gone", and would delete the decisions ra
 So deletion is the last moment at which the information is still there to keep. Without this the
 artists fell to `ManagedByUnknown` while their wants kept a `manager` provenance naming an authority
 that no longer existed.
+
+**Only an artist the manager had a say over is detached**: one it lists (an artist `manager_links`
+row for that manager) or one holding a want it selected (`source = manager`). Every artist credited
+on an album in its libraries used to be detached, and since a detached artist is managed
+(`settings`, see [managed artists](#managed-and-present-only-artists)), deleting a Lidarr manager
+pulled every featured artist of every collaboration into the Managed view and left *Other artists
+in your files* empty. A co-credit has nothing of the manager's to keep, so it is left to the
+ordinary derivation. `ClearCoCreditDetaches` takes back the detaches made before this, once per
+install (`data_migrations` row `clear_cocredit_detaches`, called from `main` beside
+`UnfollowPolicyCoCredits`). It clears the flag only on the shape the old drain left: detached,
+found in files, not followed, no override, no album of their own, no want, no artist link from any
+manager (a deleted manager's lingering links count) and no other setting changed. Each artist it
+hands back is listed on a `detach_cleanup` activity.
 
 **What happens to a `Manager` row that ends up governing nothing: nothing.** A manager is
 configuration owned by *libraries* — a base URL and a credential — not a container of artists.
@@ -1201,6 +1219,20 @@ A **merge** takes the earlier of two cutoffs, and no cutoff on either side wins 
 (`migration.earlierCutoff`). Every other follow setting merges toward wanting more; this is the one
 where the inclusive value is the smaller number rather than the larger, so it needs saying.
 
+### Removing an artist
+
+`collection.RemoveArtist` (`DELETE /artists/:mbid`) deletes an artist outright, with every want of
+theirs and each stored release-group nobody else is linked to or wants. A collaboration credited to
+another artist only loses its link to them. Their artist `manager_links` go too.
+
+It is offered only for an artist with **nothing on disk**: one added by hand, or one that only ever
+held wants. A file credits the artist it belongs to, so `Rebuild` would recreate the row on the next
+scan; for those, **Stop managing** is the answer to "not one of mine". An owned release-group or a
+`collection_release_copies` row refuses it (`ErrArtistHasFiles`). So does an artist Lidarr governs
+or lists (`ErrArtistGovernedByLidarr`), because the mirror would re-add them. The artist page shows
+**Remove artist** beside Stop managing only in the *All libraries* view with nothing on disk, behind
+a confirm, and returns to the collection afterwards.
+
 ## Wanted sources
 
 `wanted_source` is derived server-side and names *what could change it*:
@@ -1361,6 +1393,7 @@ repeated here because they are about *this* data model.
 |----------|---------|
 | `GET /artists` | the collection list with owned/complete/partial/missing/mismatch counts and `managed`/`managed_reason` — [kept between writes](#the-collection-list-is-kept-between-writes); `?library=<id>` counts them in one library; `?scope=managed\|present` keeps [your artists or the others](#managed-and-present-only-artists) (default: every artist; anything else is a **400**) |
 | `GET /artists/:mbid` | artist detail: release-groups (with derived `complete`, `discrepancy`, `wanted*`) + desires |
+| `DELETE /artists/:mbid` | [remove an artist](#removing-an-artist) with nothing on disk, with their wants and the stored albums only they are credited on; returns `{name, picks, albums}`. **409** when files credit them (the next scan would bring them back — stop managing instead) or Lidarr governs or lists them; **404** for an unknown artist |
 | `GET /artists/:mbid/info` | who the artist is (kind, origin, active years, top genres) — a live MusicBrainz entity read for the page header, cached 24h. Its own endpoint so the page never waits on it; a failure means the header shows less, never an error. |
 | `GET /artists/:mbid/discography` | live MusicBrainz read of *all* release-group types, **not stored** — browsing a catalogue must never require committing to it, or inflate the missing count. Cached 6h; a stale copy beats an empty page when MB is down. |
 | `GET /artists/:mbid/release-groups/:rgid` | the group, every edition (annotated with owned state), and that group's desires, in one call |
@@ -1432,7 +1465,10 @@ toolbar, grouped sections).
   means owned in this view, held in any library, or wanted. The rest of the MusicBrainz discography
   follows under **More from MusicBrainz · N not in your collection**, closed unless `more=1`, in the
   same four sections keyed `more-<category>`, with no coverage meter since nothing there is owned.
-  An artist with nothing in the first tier shows the second open. The header says whether the
+  That tier is **its own card** below the first table (`.tier-card` / `.tier-head`), with the same
+  column header inside it: as peer sections in one table, its EPs and Singles read as siblings of
+  yours, and nothing showed they sat under the tier's header. An artist with nothing in the first
+  tier shows only the second, open. The header says whether the
   artist is yours (*Managed · followed*) or *Not one of your artists · credited on N albums you own*.
   It offers **Manage** for the latter, and the Settings disclosure holds **Stop managing**.
 - `/collection/:mbid/:rgid` — the release-group page: an entity header (cover, type/year/artist, track

@@ -319,3 +319,108 @@ func UnfollowPolicyCoCredits(db *gorm.DB) error {
 		map[string]any{"unfollowed": len(unfollowed)})
 	return nil
 }
+
+// detachCleanupMigration names the one-time ClearCoCreditDetaches pass in
+// data_migrations.
+const detachCleanupMigration = "clear_cocredit_detaches"
+
+// ClearCoCreditDetaches undoes the detaches a manager deletion gave artists it never
+// governed, once per install.
+//
+// DetachManagerArtists used to detach every artist credited on an album in the
+// deleted manager's libraries, and a detached artist is managed (ManagedSettings). So
+// deleting a Lidarr manager pulled every featured artist of every collaboration into
+// the Managed view. It now detaches only an artist the manager listed or selected
+// albums of; this pass takes back what it did before.
+//
+// Which detaches came from the deletion is not recorded, so the pass takes the shape
+// it left: detached, found in files, not followed, no override, no album of their own,
+// no want of any source, no manager link (a deleted manager's links included) and no
+// other setting changed. For those the flag is cleared and provenance re-derived, the
+// write ReattachArtist makes. Every artist changed is listed on a detach_cleanup
+// activity, so it can be undone with Manage.
+//
+// Called from main after the data migrations, beside UnfollowPolicyCoCredits.
+func ClearCoCreditDetaches(db *gorm.DB) error {
+	var done models.DataMigration
+	if err := db.Where("name = ?", detachCleanupMigration).Limit(1).Find(&done).Error; err != nil {
+		return err
+	}
+	if done.Name != "" {
+		return nil
+	}
+
+	var cleared []models.CollectionArtist
+	err := db.Transaction(func(tx *gorm.DB) error {
+		var detached []models.CollectionArtist
+		if err := tx.Where("manager_detached = ? AND monitored = ? AND origin = ? AND (manage_override = '' OR manage_override IS NULL)",
+			true, false, models.CollectionOriginLibrary).Find(&detached).Error; err != nil {
+			return err
+		}
+		if len(detached) > 0 {
+			ids := make([]string, len(detached))
+			for i, a := range detached {
+				ids[i] = a.MBID
+			}
+			in, err := readManagedInputs(tx, ids)
+			if err != nil {
+				return err
+			}
+			// Any manager's link, enabled or not and whether or not its row survives:
+			// a listing is what made the manager's say real.
+			var linked []string
+			if err := tx.Model(&models.ManagerLink{}).
+				Where("entity_type = ? AND mb_id IN ?", models.ManagerLinkArtist, ids).
+				Distinct().Pluck("mb_id", &linked).Error; err != nil {
+				return err
+			}
+			listed := map[string]bool{}
+			for _, id := range linked {
+				listed[id] = true
+			}
+			for _, a := range detached {
+				if in.albumArtist[a.MBID] || in.desire[a.MBID] || listed[a.MBID] || customisedBesidesDetach(a) {
+					continue
+				}
+				managedBy, err := deriveArtistManager(tx, a.MBID)
+				if err != nil {
+					return err
+				}
+				if err := tx.Model(&models.CollectionArtist{}).Where("mb_id = ?", a.MBID).
+					Updates(map[string]any{"manager_detached": false, "managed_by": managedBy}).Error; err != nil {
+					return err
+				}
+				cleared = append(cleared, a)
+			}
+		}
+		return tx.Create(&models.DataMigration{Name: detachCleanupMigration, AppliedAt: time.Now()}).Error
+	})
+	if err != nil {
+		return err
+	}
+	if len(cleared) == 0 {
+		return nil
+	}
+
+	logger.Log.Infof("handed back %d co-credited artist(s) a manager deletion had detached", len(cleared))
+	ev := events.Begin(db, models.EventTypeDetachCleanup, "Handed back co-credited artists")
+	items := make([]models.EventItem, len(cleared))
+	for i, a := range cleared {
+		items[i] = models.EventItem{
+			Path: a.MBID, Kind: models.EventItemKindEntity,
+			Status: models.EventItemStatusUndetached, Phase: models.EventItemPhaseArtists,
+		}
+	}
+	events.AddItems(db, ev, items)
+	events.Finish(db, ev, models.EventStatusOK,
+		fmt.Sprintf("%d artist(s) handed back", len(cleared)),
+		map[string]any{"undetached": len(cleared)})
+	return nil
+}
+
+// customisedBesidesDetach is customised without the detach itself: settings someone
+// changed, which a detach the user never asked for does not count as.
+func customisedBesidesDetach(a models.CollectionArtist) bool {
+	a.ManagerDetached = false
+	return customised(a)
+}

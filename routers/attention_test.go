@@ -128,7 +128,8 @@ func TestArtistListFollowsEveryWrite(t *testing.T) {
 		return out
 	}
 
-	artist := models.CollectionArtist{MBID: "a-1", Name: "Band"}
+	// Followed, so the album inserted below is wanted and counts as missing.
+	artist := models.CollectionArtist{MBID: "a-1", Name: "Band", ManagedBy: models.ManagedByAutotaggerr, Monitored: true}
 	if err := api.DB.Create(&artist).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +140,7 @@ func TestArtistListFollowsEveryWrite(t *testing.T) {
 		t.Fatal("the list was not kept")
 	}
 
-	rg := models.CollectionReleaseGroup{MBID: "rg-1", ArtistMBID: "a-1", Title: "One"}
+	rg := models.CollectionReleaseGroup{MBID: "rg-1", ArtistMBID: "a-1", Title: "One", PrimaryType: "Album"}
 	if err := api.DB.Create(&rg).Error; err != nil {
 		t.Fatal(err)
 	}

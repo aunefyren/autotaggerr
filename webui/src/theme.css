@@ -531,6 +531,22 @@ table.data tbody tr.group-row:hover td { background: var(--surface-2); }
 .group-head .group-cov { margin-left: auto; }
 .group-section + .group-section { margin-top: 0; }
 
+/* A second tier of sections — the artist page's *More from MusicBrainz* — is its own
+   card under the first, its header above its own table. Peer sections in one table
+   read as siblings of the first tier's, whatever the header between them says. */
+.tier-head {
+  display: flex; align-items: baseline; gap: 10px; width: 100%; flex-wrap: wrap;
+  padding: 10px 12px; background: var(--surface-2); border: none;
+  color: var(--text); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; text-align: left;
+}
+.tier-card .tier-head[aria-expanded="true"] { border-bottom: 1px solid var(--border); }
+.tier-head:hover:not(:disabled) { background: var(--surface-3); }
+.tier-head:disabled { cursor: default; }
+.tier-head:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--accent-ring); }
+.tier-head .twisty { font-size: 9px; color: var(--text-dim); width: 9px; flex: none; }
+.tier-head .group-n { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); font-weight: 400; }
+.tier-head .tier-note { font-size: 11px; font-weight: 400; color: var(--text-dim); }
+
 /* Row disclosure — the paragraph a row keeps folded away, opened underneath it.
    It is part of the row above rather than another row of the table, and it has to
    look it: its own surface, an accent gutter continuing down from the row it explains,

@@ -177,3 +177,62 @@ func TestUnfollowPolicyCoCredits(t *testing.T) {
 		t.Error("the cleanup ran a second time")
 	}
 }
+
+// TestClearCoCreditDetaches: the detaches a manager deletion gave co-credits are
+// taken back, once — and only for the shape it left. A detached album artist, one with
+// a want, one a manager listed (its manager row gone), one with a quality profile, one
+// followed and one the user chose to manage all keep the flag.
+func TestClearCoCreditDetaches(t *testing.T) {
+	db := testDB(t)
+	profile := uuid.New()
+	detached := func(mbid string) models.CollectionArtist {
+		return models.CollectionArtist{MBID: mbid, Name: mbid, Origin: models.CollectionOriginLibrary,
+			ManagedBy: models.ManagedByAutotaggerr, ManagerDetached: true}
+	}
+	artists := []models.CollectionArtist{
+		detached("cocredit"), detached("album"), detached("picked"), detached("listed"),
+		detached("profiled"), detached("followed"), detached("chosen"),
+	}
+	artists[4].QualityProfileID = &profile
+	artists[5].Monitored = true
+	artists[6].ManageOverride = models.ManageOn
+	for i := range artists {
+		if err := db.Create(&artists[i]).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	db.Create(&models.CollectionReleaseGroup{MBID: "rg-a", ArtistMBID: "album", Owned: true, PrimaryType: "Album"})
+	db.Create(&models.CollectionDesire{ArtistMBID: "picked", ReleaseGroupMBID: "rg-p", Source: models.DesireSourceManual})
+	// The manager that listed them was deleted; its link lingers.
+	db.Create(&models.ManagerLink{ManagerID: uuid.New(), EntityType: models.ManagerLinkArtist, MBID: "listed"})
+
+	if got, _ := ManagedArtists(db); got["cocredit"] != ManagedSettings {
+		t.Fatalf("before: cocredit reason = %q, want settings — the bug this repairs", got["cocredit"])
+	}
+	if err := ClearCoCreditDetaches(db); err != nil {
+		t.Fatal(err)
+	}
+	for _, a := range artists {
+		got := artistRow(t, db, a.MBID)
+		if want := a.MBID != "cocredit"; got.ManagerDetached != want {
+			t.Errorf("%s: detached = %v, want %v", a.MBID, got.ManagerDetached, want)
+		}
+	}
+	if got, _ := ManagedArtists(db); got["cocredit"] != "" {
+		t.Errorf("after: cocredit reason = %q, want present-only", got["cocredit"])
+	}
+	var items []models.EventItem
+	db.Where("status = ?", models.EventItemStatusUndetached).Find(&items)
+	if len(items) != 1 || items[0].Path != "cocredit" {
+		t.Errorf("activity rows = %+v, want one for cocredit", items)
+	}
+
+	// Once only: a detach made after the cleanup is the user's.
+	db.Model(&models.CollectionArtist{}).Where("mb_id = ?", "cocredit").Update("manager_detached", true)
+	if err := ClearCoCreditDetaches(db); err != nil {
+		t.Fatal(err)
+	}
+	if !artistRow(t, db, "cocredit").ManagerDetached {
+		t.Error("the cleanup ran a second time")
+	}
+}

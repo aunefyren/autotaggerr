@@ -423,6 +423,7 @@ func TestDetachManagerArtistsScope(t *testing.T) {
 		}
 	}
 
+	managerListsArtist(t, db, manager, "art-1")
 	if n, err := DetachManagerArtists(db, manager.ID); err != nil || n != 1 {
 		t.Fatalf("first drain = %d, %v; want 1", n, err)
 	}

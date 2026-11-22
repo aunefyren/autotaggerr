@@ -83,6 +83,47 @@ func decodeJSON[T any](t *testing.T, r *gin.Engine, method, path, token string, 
 	return out
 }
 
+// TestListArtistsMissingIsWantedOnly: missing counts albums that are wanted and not
+// owned, the artist page's rule — not every stored row without files. A detached
+// Lidarr artist keeps the mirrored catalogue, but with following off only the pick
+// carried over from Lidarr is wanted; the leftovers once read as missing on the list
+// while the artist page said nothing was.
+func TestListArtistsMissingIsWantedOnly(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	artist := artistFixture(t, api.DB, "artist-1", "Boy Band", models.ManagedByAutotaggerr, false)
+	releaseGroupFixture(t, api.DB, artist.MBID, rgFixture{
+		mbid: "rg-picked", title: "Picked", primary: "Album", date: "2000-03-21",
+		owned: true, ownedTracks: 12, totalTracks: 12, inCatalog: true,
+	})
+	releaseGroupFixture(t, api.DB, artist.MBID, rgFixture{
+		mbid: "rg-picked-missing", title: "Picked, not owned", primary: "Album", date: "2001-07-24",
+		inCatalog: true,
+	})
+	for _, mbid := range []string{"rg-leftover-1", "rg-leftover-2", "rg-leftover-3"} {
+		releaseGroupFixture(t, api.DB, artist.MBID, rgFixture{
+			mbid: mbid, title: mbid, primary: "Single", date: "1998-01-01", inCatalog: true,
+		})
+	}
+	for _, rg := range []string{"rg-picked", "rg-picked-missing"} {
+		if err := api.DB.Create(&models.CollectionDesire{ArtistMBID: artist.MBID, ReleaseGroupMBID: rg}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	list := decodeJSON[[]map[string]any](t, r, "GET", "/api/v1/artists", token, nil)
+	if len(list) != 1 {
+		t.Fatalf("artists = %d, want 1", len(list))
+	}
+	if got := list[0]["missing_count"]; got != float64(1) {
+		t.Errorf("missing_count = %v, want 1 (the unowned pick, not the unwanted leftovers)", got)
+	}
+	if got := list[0]["owned_count"]; got != float64(1) {
+		t.Errorf("owned_count = %v, want 1", got)
+	}
+}
+
 // TestListArtistsCounts: one artist holding one of each shape, so every count in the
 // summary is distinguishable from the others. Counts computed from the same row set
 // would pass a weaker fixture even when two of them were swapped.
@@ -644,5 +685,43 @@ func TestArtistPageShowsCollaborations(t *testing.T) {
 	}
 	if owned["art-1"] != 1 || owned["art-2"] != 1 {
 		t.Errorf("owned counts = art-1:%v art-2:%v, want 1 each", owned["art-1"], owned["art-2"])
+	}
+}
+
+// TestRemoveArtistEndpoint: an artist with nothing on disk is removed and gone from the
+// list on the very next read (the list is kept between writes); one files credit is a
+// 409, and an unknown one a 404.
+func TestRemoveArtistEndpoint(t *testing.T) {
+	r, api := setupAPI(t)
+	token := loginToken(t, r)
+
+	for _, row := range []any{
+		&models.CollectionArtist{MBID: "hand", Name: "By Hand", Origin: models.CollectionOriginManual, ManagedBy: models.ManagedByAutotaggerr},
+		&models.CollectionDesire{ArtistMBID: "hand", ReleaseGroupMBID: "rg-x"},
+		&models.CollectionArtist{MBID: "owner", Name: "Owner", ManagedBy: models.ManagedByAutotaggerr},
+		&models.CollectionReleaseGroup{MBID: "rg-owned", ArtistMBID: "owner", Owned: true},
+	} {
+		if err := api.DB.Create(row).Error; err != nil {
+			t.Fatalf("seed %T: %v", row, err)
+		}
+	}
+	if list := decodeJSON[[]map[string]any](t, r, "GET", "/api/v1/artists", token, nil); len(list) != 2 {
+		t.Fatalf("artists = %d, want 2", len(list))
+	}
+
+	got := decodeJSON[map[string]any](t, r, http.MethodDelete, "/api/v1/artists/hand", token, nil)
+	if got["name"] != "By Hand" || got["picks"] != float64(1) {
+		t.Errorf("remove = %v, want By Hand with 1 pick", got)
+	}
+	list := decodeJSON[[]map[string]any](t, r, "GET", "/api/v1/artists", token, nil)
+	if len(list) != 1 || list[0]["mb_id"] != "owner" {
+		t.Errorf("artists after removing = %v, want only owner", list)
+	}
+
+	if w := do(r, http.MethodDelete, "/api/v1/artists/owner", token, nil); w.Code != http.StatusConflict {
+		t.Errorf("removing an artist with files = %d, want 409", w.Code)
+	}
+	if w := do(r, http.MethodDelete, "/api/v1/artists/nobody", token, nil); w.Code != http.StatusNotFound {
+		t.Errorf("removing an unknown artist = %d, want 404", w.Code)
 	}
 }

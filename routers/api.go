@@ -274,6 +274,7 @@ func (a *API) Register(rg *gin.RouterGroup) {
 		// Collection (present vs wanted)
 		protected.GET("/artists", a.listArtists)
 		protected.GET("/artists/:mbid", a.getArtist)
+		protected.DELETE("/artists/:mbid", a.removeArtist)
 		protected.POST("/artists/:mbid/monitor", a.setArtistMonitored)
 		// Per-artist actions: the same four verbs as the collection-wide buttons,
 		// narrowed to one artist (see routers/scan_items.go).

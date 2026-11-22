@@ -45,6 +45,7 @@ const TYPE_LABELS: Record<string, string> = {
   organise: "Organise",
   duplicate_check: "Duplicate check",
   follow_cleanup: "Follow cleanup",
+  detach_cleanup: "Detach cleanup",
 };
 
 /**
@@ -93,6 +94,8 @@ const TYPE_NOTES: Record<string, string> = {
     "Reads the audio of files that share a recording, an album and a format, so Insights can say whether two copies are the same audio. Each file is read once with its tags left out and nothing decoded; a hash the tempo or loudness analysis already took of the file as it is now is reused instead. No file is written. Only failures are listed below.",
   follow_cleanup:
     "Once, on upgrade: artists the new-artist policy had followed only because they were credited beside someone else on an album you own were unfollowed, and their follow settings reset. The policy now follows only the artist whose album it is. Follow any of them again from their page if that was you; nothing on disk changed.",
+  detach_cleanup:
+    "Once, on upgrade: artists that deleting a manager had marked detached only because they were credited beside someone else on an album in its libraries were handed back. Detached counts as managed, so each of them had been listed among your artists. Deleting a manager now detaches only the artists it listed or chose albums of. Manage any of them again from their page if that was you; nothing on disk changed.",
   tag_files:
     "Everything this pass wrote to disk. The walk finds files whose tags no longer match what Autotaggerr knows; the drift half rewrites files whose release changed upstream, which the walk cannot see because the file itself has not moved.",
 };
@@ -973,6 +976,11 @@ const ENTITY_OUTCOMES: Record<string, { label: string; kind: string; note: strin
     label: "Unfollowed",
     kind: "off",
     note: "No longer followed: the new-artist policy followed them only because an album you own credits them beside its own artist. Their albums stay; nothing of theirs is wanted any more.",
+  },
+  undetached: {
+    label: "Handed back",
+    kind: "off",
+    note: "No longer marked detached: deleting a manager detached them only because an album in its libraries credits them beside its own artist. They move to Other artists in your files; their albums stay.",
   },
   recredited: {
     label: "Credit moved",

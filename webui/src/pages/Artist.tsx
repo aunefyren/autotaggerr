@@ -226,6 +226,8 @@ export default function Artist() {
   const [authorityAsk, setAuthorityAsk] = useState<"detach" | "reattach" | null>(null);
   const [recorrelateAsk, setRecorrelateAsk] = useState(false);
   const [organiseAsk, setOrganiseAsk] = useState(false);
+  const [removeAsk, setRemoveAsk] = useState(false);
+  const navigate = useNavigate();
 
   const artist = detail.data?.artist;
   const groups = disco.data ?? detail.data?.release_groups ?? [];
@@ -237,6 +239,8 @@ export default function Artist() {
   // Lidarr governs some of this artist's files: what the Lidarr sync, re-correlate
   // and the missing-from-manager note act on, whichever library the page is read in.
   const isLidarr = artist?.managed_by === "lidarr" || artist?.managed_by === "mixed";
+  // Albums picked for this artist, counted once each however many editions name them.
+  const wantedCount = new Set((detail.data?.desires ?? []).map((d) => d.release_group_mb_id)).size;
   // Lidarr decides what this view shows as wanted: its own library, or the overview
   // of an artist it governs. A native library's view of the same artist is not.
   const viewAuthority = artist?.libraries?.find((l) => l.library_id === artist.view_library_id)?.authority;
@@ -406,6 +410,22 @@ export default function Artist() {
     }
   };
 
+  // Removing deletes the artist with their wants and the stored albums only they are
+  // credited on. Offered only with nothing on disk — a file credits the artist, so the
+  // next scan would bring them back — and the server refuses that case regardless.
+  const removeArtist = async () => {
+    setBusy(true);
+    try {
+      await api.del(`/artists/${mbid}`);
+      toast("ok", `Removed ${artist?.name ?? "the artist"}`);
+      navigate("/collection");
+    } catch (e) {
+      toast("err", errMsg(e));
+      setBusy(false);
+      setRemoveAsk(false);
+    }
+  };
+
   const updateFollow = async (body: Record<string, unknown>) => {
     setBusy(true);
     try {
@@ -527,6 +547,22 @@ export default function Artist() {
         />
       );
     });
+
+  // Both tiers' tables carry the same header, so each can be sorted from where it is read.
+  const releaseHead = (
+    <thead>
+      <tr>
+        <th style={{ width: 38 }}></th>
+        <th style={{ width: 22 }}></th>
+        <SortHeader browse={browse} sortKey="title">Release</SortHeader>
+        <th>Type</th>
+        <SortHeader browse={browse} sortKey="year" align="right" defaultDir="desc">Year</SortHeader>
+        <SortHeader browse={browse} sortKey="tracks" align="right" defaultDir="desc">Tracks</SortHeader>
+        <th>Wanted</th>
+        <th style={{ textAlign: "right" }}>Actions</th>
+      </tr>
+    </thead>
+  );
 
   if (detail.err) return <ErrorNote message={detail.err} />;
 
@@ -712,7 +748,12 @@ export default function Artist() {
             onDetach={() => setAuthorityAsk("detach")}
             onReattach={() => setAuthorityAsk("reattach")}
           />
-          <ManagedSetting artist={artist} busy={busy} onSet={setManaged} />
+          <ManagedSetting
+            artist={artist}
+            busy={busy}
+            onSet={setManaged}
+            onRemove={!viewLibrary && onDisk.length === 0 && !isLidarr ? () => setRemoveAsk(true) : undefined}
+          />
         </>
       )}
 
@@ -873,6 +914,27 @@ export default function Artist() {
         />
       )}
 
+      {removeAsk && artist && (
+        <ConfirmDialog
+          title={`Remove ${artist.name}?`}
+          confirmLabel="Remove"
+          danger
+          busy={busy}
+          onCancel={() => setRemoveAsk(false)}
+          onConfirm={removeArtist}
+          body={
+            <>
+              <p>
+                Removes {artist.name} from the collection
+                {wantedCount > 0 ? `, with ${wantedCount} pick${wantedCount === 1 ? "" : "s"}` : ""} and the albums
+                stored for them. An album also credited to another artist stays with that artist.
+              </p>
+              <p className="dim">Nothing on disk is touched — there is nothing of theirs on disk. Add them again from search at any time.</p>
+            </>
+          }
+        />
+      )}
+
       {organiseAsk && (
         <OrganiseDialog
           scope={viewLibrary ? { artist_mb_id: mbid, library_id: viewLibrary } : { artist_mb_id: mbid }}
@@ -930,49 +992,46 @@ export default function Artist() {
           </div>
         </div>
       ) : (
-        <div className="tablewrap">
-          {/* One table, one header, a tbody per section. Separate tables per section
-              would each size their own columns, so Year and Tracks would not line up
-              between Albums and Singles — and a column you cannot read down is not
-              worth having. */}
-          <table className="data">
-            <thead>
-              <tr>
-                <th style={{ width: 38 }}></th>
-                <th style={{ width: 22 }}></th>
-                <SortHeader browse={browse} sortKey="title">Release</SortHeader>
-                <th>Type</th>
-                <SortHeader browse={browse} sortKey="year" align="right" defaultDir="desc">Year</SortHeader>
-                <SortHeader browse={browse} sortKey="tracks" align="right" defaultDir="desc">Tracks</SortHeader>
-                <th>Wanted</th>
-                <th style={{ textAlign: "right" }}>Actions</th>
-              </tr>
-            </thead>
-            {trackedRows.length > 0 && renderSections(trackedRows, "")}
-            {moreRows.length > 0 && (
-              <tbody>
-                <tr className="group-row">
-                  <td colSpan={8}>
-                    <button
-                      type="button"
-                      className="group-head"
-                      aria-expanded={moreOpen}
-                      disabled={moreForced}
-                      title="The rest of what MusicBrainz lists for this artist: nothing of it is owned or wanted. Browse it, and pick what you want."
-                      onClick={() => browse.setFlag("more", moreOpen ? null : "1")}
-                    >
-                      <span className="twisty">{moreOpen ? "▼" : "▶"}</span>
-                      More from MusicBrainz
-                      <span className="group-n">{moreRows.length}</span>
-                      <span className="dim" style={{ fontSize: 11, fontWeight: 400 }}>not in your collection</span>
-                    </button>
-                  </td>
-                </tr>
-              </tbody>
-            )}
-            {moreRows.length > 0 && moreOpen && renderSections(moreRows, "more-")}
-          </table>
-        </div>
+        <>
+          {trackedRows.length > 0 && (
+            <div className="tablewrap">
+              {/* One table, one header, a tbody per section. Separate tables per section
+                  would each size their own columns, so Year and Tracks would not line up
+                  between Albums and Singles — and a column you cannot read down is not
+                  worth having. */}
+              <table className="data">
+                {releaseHead}
+                {renderSections(trackedRows, "")}
+              </table>
+            </div>
+          )}
+          {/* The second tier is its own card, not more sections in the table above.
+              As peer tbodies its EPs and Singles read as siblings of yours, with
+              nothing to say they sat under *More from MusicBrainz*; a container you
+              can see the edges of says it. */}
+          {moreRows.length > 0 && (
+            <div className="tablewrap tier-card">
+              <button
+                type="button"
+                className="tier-head"
+                aria-expanded={moreOpen}
+                disabled={moreForced}
+                onClick={() => browse.setFlag("more", moreOpen ? null : "1")}
+              >
+                <span className="twisty">{moreOpen ? "▼" : "▶"}</span>
+                <span className="tier-title">More from MusicBrainz</span>
+                <span className="group-n">{moreRows.length}</span>
+                <span className="tier-note">not in your collection — nothing here is owned or wanted. Browse it, and pick what you want.</span>
+              </button>
+              {moreOpen && (
+                <table className="data">
+                  {releaseHead}
+                  {renderSections(moreRows, "more-")}
+                </table>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -1396,10 +1455,13 @@ function ManagedSetting({
   artist,
   busy,
   onSet,
+  onRemove,
 }: {
   artist: CollectionArtist;
   busy: boolean;
   onSet: (on: boolean) => void;
+  /** Set only when the artist can be removed: nothing of theirs on disk. */
+  onRemove?: () => void;
 }) {
   return (
     <div className="card">
@@ -1412,15 +1474,28 @@ function ManagedSetting({
             ? `Managed: ${MANAGED_REASON[artist.managed_reason ?? ""] ?? "yours"}. Listed under Managed in the collection and drawn in the Insights graph. Stopping moves them to Other artists in your files; their files are not touched.`
             : "Not one of your artists: here because a file credits them. Nothing of theirs is wanted and their discography is not read."}
         </div>
-        {artist.managed ? (
-          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onSet(false)}>
-            Stop managing
-          </button>
-        ) : (
-          <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onSet(true)}>
-            Manage
-          </button>
-        )}
+        <div className="row" style={{ gap: 8, flex: "none" }}>
+          {artist.managed ? (
+            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onSet(false)}>
+              Stop managing
+            </button>
+          ) : (
+            <button className="btn btn-secondary btn-sm" disabled={busy} onClick={() => onSet(true)}>
+              Manage
+            </button>
+          )}
+          {onRemove && (
+            <button
+              className="btn btn-secondary btn-sm"
+              style={{ color: "var(--danger)" }}
+              disabled={busy}
+              title="Nothing of theirs is on disk, so they can be removed from the collection entirely"
+              onClick={onRemove}
+            >
+              Remove artist
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

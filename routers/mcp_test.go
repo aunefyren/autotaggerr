@@ -237,7 +237,7 @@ func TestMCPCollectionTools(t *testing.T) {
 			t.Fatalf("list_artists = %+v, want both artists on one page", all)
 		}
 		kate := all.Artists[0]
-		if kate.Name != "Kate Bush" || kate.Owned != 2 || kate.Complete != 1 || kate.Partial != 1 || kate.Missing != 2 {
+		if kate.Name != "Kate Bush" || kate.Owned != 2 || kate.Complete != 1 || kate.Partial != 1 || kate.Missing != 1 { // Aerial; Director's Cut is not wanted
 			t.Errorf("Kate Bush row = %+v", kate)
 		}
 

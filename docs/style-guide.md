@@ -411,7 +411,10 @@ Concise specs; the SPA implements each as one reusable component. States listed 
   count stays the section's, never the page's: the pager below states what is on screen, and a count
   that followed the slice would disagree with the coverage meter beside it. The header's
   caret is `.twisty`; a *list* is never collapsed this way — the Activity feed tried it and the rows
-  it hid were the ones worth reading (see *Run rail*).
+  it hid were the ones worth reading (see *Run rail*). A **second tier** of the same sections (the
+  artist page's *More from MusicBrainz*) is its own card (`.tier-card` / `.tier-head`) below the
+  first table, never more sections in the same table — there its sections read as peers of the
+  first tier's, whatever header sits between them.
 - **Row disclosure** (`.detail-row` / `.detail-body`) — the paragraph a table row keeps folded away,
   opened underneath it as a `colSpan` row. It is *part of the row above*, not another row of the
   table, and has to look it: `--surface-2`, a 2px `--accent` inset gutter continuing down from the
