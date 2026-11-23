@@ -1,20 +1,21 @@
-import { PointerEvent, useEffect, useMemo, useRef, useState } from "react";
+import { memo, PointerEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router-dom";
-import { forceCollide, forceLink, forceManyBody, forceRadial, forceSimulation, forceX, forceY, SimulationLinkDatum, SimulationNodeDatum } from "d3-force";
 import { GraphEdge, GraphNode, GraphReport } from "../types";
+import { computeLayout, LayoutInput } from "./graphLayout";
 
 /**
  * The collaboration graph: artists as nodes sized by how many recordings in scope
  * credit them, edges weighted by how many they share. Laid out once per answer with
  * d3-force (layout only — the drawing is plain SVG on the theme's tokens), so the
- * picture does not jiggle and a re-render costs nothing.
+ * picture does not jiggle. Past a few hundred artists the layout runs in a Web Worker
+ * (graphLayout.ts), and the edge and node layers are memoised on the layout and the
+ * focus, so panning and zooming redraw only the labels.
  *
  * The side panel is the same data as a list, and is the non-visual way in: every
  * artist and pair the picture shows can be reached and acted on from there.
  */
 
-type SimNode = GraphNode & SimulationNodeDatum;
-type SimLink = SimulationLinkDatum<SimNode> & { weight: number; kind?: string };
+type SimNode = GraphNode & { x: number; y: number };
 
 interface Laid {
   nodes: SimNode[];
@@ -51,53 +52,99 @@ const MAX_ZOOM = 2;
 /** How many of the largest nodes carry a permanent label; the rest label on hover. */
 const LABELLED = 24;
 
-function layout(report: GraphReport, size: GraphSize): Laid {
+/** At or below this many artists the layout runs inline: it settles in a few hundred ms. */
+const INLINE_LAYOUT = 150;
+
+function layoutInput(report: GraphReport, size: GraphSize): LayoutInput {
   const radius = radiusScale(report.nodes, size);
-  const nodes: SimNode[] = report.nodes.map((n) => ({ ...n }));
-  const links: SimLink[] = report.edges.map((e: GraphEdge) => ({ source: e.source, target: e.target, weight: e.weight, kind: e.kind }));
-  const centred = report.center != null;
-  const sim = forceSimulation(nodes)
-    .force(
-      "link",
-      forceLink<SimNode, SimLink>(links)
-        .id((d) => d.mb_id)
-        .distance((l) => 40 + 60 / Math.sqrt(l.weight))
-        // Co-listening drawn over credits (Edges: Both) does not pull the layout:
-        // the credits chose and placed the artists.
-        .strength((l) => (l.kind === "listening" && report.edges.some((e) => e.kind !== "listening") ? 0 : Math.min(1, 0.15 + l.weight / 20))),
-    )
-    .force("charge", forceManyBody().strength(-90))
-    .force("collide", forceCollide<SimNode>((d) => radius(d) + 3))
-    .stop();
-  if (centred) {
-    // The centred artist pinned in the middle, each hop on its own ring.
-    for (const n of nodes) if (n.hop === 0) (n.fx = 0), (n.fy = 0);
-    sim.force("radial", forceRadial<SimNode>((d) => d.hop * 150, 0, 0).strength(0.6));
-  } else {
-    // Gentle gravity rather than a centring force: forceCenter only moves the average,
-    // so a cluster with no edge to the rest drifted off and the frame spread to hold
-    // it, shrinking everything else.
-    sim.force("x", forceX<SimNode>(0).strength(0.08)).force("y", forceY<SimNode>(0).strength(0.08));
+  // Co-listening drawn over credits (Edges: Both) does not pull the layout: the credits
+  // chose and placed the artists. Asked once, not per edge.
+  const mixed = report.edges.some((e) => e.kind !== "listening");
+  return {
+    nodes: report.nodes.map((n) => ({ id: n.mb_id, hop: n.hop, r: radius(n) })),
+    links: report.edges.map((e: GraphEdge) => ({
+      source: e.source,
+      target: e.target,
+      weight: e.weight,
+      strength: e.kind === "listening" && mixed ? 0 : Math.min(1, 0.15 + e.weight / 20),
+    })),
+    centred: report.center != null,
+  };
+}
+
+/** The drawable graph from the layout's positions (input order, see computeLayout). */
+function assemble(report: GraphReport, size: GraphSize, positions: Float64Array): Laid {
+  const radius = radiusScale(report.nodes, size);
+  const nodes: SimNode[] = report.nodes.map((n, i) => ({ ...n, x: positions[2 * i], y: positions[2 * i + 1] }));
+  const byId = new Map(nodes.map((n) => [n.mb_id, n]));
+  const links: Laid["links"] = [];
+  for (const e of report.edges) {
+    const source = byId.get(e.source), target = byId.get(e.target);
+    if (source && target) links.push({ source, target, weight: e.weight, kind: e.kind });
   }
-  // Deterministic tick count rather than an animated settle: the same answer always
-  // draws the same picture.
-  sim.tick(Math.min(400, 120 + nodes.length * 2));
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const n of nodes) {
     const r = radius(n) + 40; // room for the label beside the node
-    minX = Math.min(minX, (n.x ?? 0) - r);
-    minY = Math.min(minY, (n.y ?? 0) - r);
-    maxX = Math.max(maxX, (n.x ?? 0) + r);
-    maxY = Math.max(maxY, (n.y ?? 0) + r);
+    minX = Math.min(minX, n.x - r);
+    minY = Math.min(minY, n.y - r);
+    maxX = Math.max(maxX, n.x + r);
+    maxY = Math.max(maxY, n.y + r);
   }
   if (!isFinite(minX)) (minX = -100), (minY = -100), (maxX = 100), (maxY = 100);
-  return {
-    nodes,
-    radius,
-    links: links as unknown as Laid["links"],
-    box: { x: minX, y: minY, w: maxX - minX, h: maxY - minY },
-  };
+  return { nodes, radius, links, box: { x: minX, y: minY, w: maxX - minX, h: maxY - minY } };
+}
+
+/**
+ * One worker, made on first need; null where there are none. A job still running when a
+ * newer one arrives is cancelled by ending the worker: a superseded 2,000-artist layout
+ * would otherwise hold the queue for seconds.
+ */
+let worker: Worker | null | undefined;
+let jobs = 0;
+let running = 0;
+function layoutWorker(): Worker | null {
+  if (worker === undefined) {
+    try {
+      worker = new Worker(new URL("./graphLayout.worker.ts", import.meta.url), { type: "module" });
+    } catch {
+      worker = null;
+    }
+  }
+  return worker;
+}
+
+/**
+ * The laid-out graph for an answer. Small graphs are laid out inline; large ones in the
+ * worker, and until it answers the previous picture stays up (pending says so) — or
+ * nothing, on the first. A newer answer supersedes a job still running.
+ */
+function useLayout(report: GraphReport, size: GraphSize): { laid: Laid | null; pending: boolean } {
+  const inline = report.nodes.length <= INLINE_LAYOUT || layoutWorker() === null;
+  const sync = useMemo(() => (inline ? assemble(report, size, computeLayout(layoutInput(report, size))) : null), [inline, report, size]);
+  const [async, setAsync] = useState<{ report: GraphReport; size: GraphSize; laid: Laid } | null>(null);
+  useEffect(() => {
+    if (inline) return;
+    if (running !== 0 && worker) {
+      worker.terminate();
+      worker = undefined;
+    }
+    const w = layoutWorker();
+    if (!w) return;
+    const job = ++jobs;
+    running = job;
+    const onMessage = (e: MessageEvent<{ job: number; positions: Float64Array }>) => {
+      if (e.data.job !== job) return;
+      running = 0;
+      setAsync({ report, size, laid: assemble(report, size, e.data.positions) });
+    };
+    w.addEventListener("message", onMessage);
+    w.postMessage({ job, input: layoutInput(report, size) });
+    return () => w.removeEventListener("message", onMessage);
+  }, [inline, report, size]);
+  if (sync) return { laid: sync, pending: false };
+  const current = async?.report === report && async.size === size;
+  return { laid: async?.laid ?? null, pending: !current };
 }
 
 /** What nodes are coloured by. */
@@ -133,12 +180,12 @@ export interface LegendEntry {
 }
 
 /** How many genres get a colour of their own (insights.ColouredGenres). */
-const GENRE_SLOTS = 8;
+const GENRE_SLOTS = 11;
 
 /**
  * The colour of each node, and the legend for it. A category keeps its colour
  * whatever the filters show: genres are slotted by the library's own ranking
- * (report.genres), roles by a fixed order. Genres take all eight series, then the
+ * (report.genres), roles by a fixed order. Genres take all eleven series, then the
  * neutral for any other genre; an artist with no genre at all is a hollow ring, so
  * missing data reads apart from "some other genre". Roles take three.
  */
@@ -213,14 +260,7 @@ export function graphColours(report: GraphReport, by: GraphColour): {
   };
 }
 
-export function CollabGraph({
-  report,
-  selected,
-  onSelect,
-  colour = "none",
-  size = "tracks",
-  reveal = null,
-}: {
+interface GraphProps {
   report: GraphReport;
   selected: string | null;
   onSelect: (mbid: string | null) => void;
@@ -229,9 +269,31 @@ export function CollabGraph({
   size?: GraphSize;
   /** Bring an artist into view: pan to them and zoom in. A new `at` repeats it. */
   reveal?: { mbid: string; at: number } | null;
-}) {
+}
+
+export function CollabGraph(props: GraphProps) {
+  const { laid, pending } = useLayout(props.report, props.size ?? "tracks");
+  if (!laid) {
+    return (
+      <div className="graph-canvas graph-pending">
+        <span className="dim">Laying out {props.report.nodes.length.toLocaleString()} artists…</span>
+      </div>
+    );
+  }
+  return <GraphCanvas {...props} laid={laid} pending={pending} />;
+}
+
+function GraphCanvas({
+  report,
+  selected,
+  onSelect,
+  colour = "none",
+  size = "tracks",
+  reveal = null,
+  laid,
+  pending,
+}: GraphProps & { laid: Laid; pending: boolean }) {
   const colours = useMemo(() => graphColours(report, colour), [report, colour]);
-  const laid = useMemo(() => layout(report, size), [report, size]);
   const [hover, setHover] = useState<string | null>(null);
   const [view, setView] = useState<Laid["box"] | null>(null);
 
@@ -347,7 +409,12 @@ export function CollabGraph({
   };
 
   return (
-    <div className="graph-canvas" ref={wrap}>
+    <div className={`graph-canvas${pending ? " is-laying-out" : ""}`} ref={wrap}>
+      {pending && (
+        <span className="graph-note dim" role="status">
+          Laying out {report.nodes.length.toLocaleString()} artists…
+        </span>
+      )}
       <svg
         ref={svg}
         viewBox={`${box.x} ${box.y} ${box.w} ${box.h}`}
@@ -358,69 +425,32 @@ export function CollabGraph({
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
       >
-        <g>
-          {laid.links.map((l) => {
-            const lit = focus != null && (l.source.mb_id === focus || l.target.mb_id === focus);
-            return (
-              <line
-                key={`${l.kind ?? "credit"}-${l.source.mb_id}-${l.target.mb_id}`}
-                className={`g-edge${lit ? " lit" : focus ? " faded" : ""}${l.kind === "listening" ? " listening" : ""}`}
-                x1={l.source.x}
-                y1={l.source.y}
-                x2={l.target.x}
-                y2={l.target.y}
-                strokeWidth={edgeWidth(l.weight)}
-              >
-                <title>
-                  {l.kind === "listening"
-                    ? `${l.source.name} × ${l.target.name}: played close together in ${l.weight} ${l.weight === 1 ? "session" : "sessions"}`
-                    : `${l.source.name} × ${l.target.name}: ${l.weight} shared ${l.weight === 1 ? "recording" : "recordings"}`}
-                </title>
-              </line>
-            );
-          })}
-        </g>
-        <g>
+        <EdgeLayer laid={laid} focus={focus} />
+        <NodeLayer
+          laid={laid}
+          focus={focus}
+          selected={selected}
+          neighbours={neighbours}
+          colours={colours}
+          colour={colour}
+          centred={report.center != null}
+          playsShown={!!report.listening && !report.listening.off}
+          onHover={setHover}
+          onSelect={onSelect}
+        />
+        <g className="g-labels">
           {laid.nodes.map((n) => {
-            const r = laid.radius(n);
             const isFocus = n.mb_id === focus;
-            const dim = focus != null && !neighbours.has(n.mb_id);
             // hop is 0 for every node of an uncentred graph, so it only names the
             // centre when there is one.
             const isCentre = report.center != null && n.hop === 0;
             const showLabel = isFocus || (focus ? neighbours.has(n.mb_id) : labelled.has(n.mb_id) || isCentre);
+            if (!showLabel) return null;
             return (
-              <g
-                key={n.mb_id}
-                // Not one of your artists: drawn quieter, so with everyone shown your own
-                // still stand out. The tooltip says it in words too.
-                className={`g-node${isFocus || n.mb_id === selected ? " focus" : ""}${n.hop === 0 && report.center ? " center" : ""}${dim ? " faded" : ""}${n.managed ? "" : " unmanaged"}`}
-                transform={`translate(${n.x},${n.y})`}
-                onPointerEnter={() => setHover(n.mb_id)}
-                onPointerLeave={() => setHover(null)}
-                onPointerDown={(e) => e.stopPropagation()}
-                onPointerUp={(e) => e.stopPropagation()}
-                onClick={() => onSelect(n.mb_id === selected ? null : n.mb_id)}
-              >
-                {/* A hit target larger than the mark, so small nodes are clickable. */}
-                <circle className="hit" r={Math.max(r, 8)} />
-                {colours.hollow(n) ? (
-                  <circle className="unknown" r={r} style={{ stroke: colours.of(n) }} />
-                ) : (
-                  <circle r={r} style={colours.of(n) ? { fill: colours.of(n) } : undefined} />
-                )}
-                <title>
-                  {`${n.name}: ${n.tracks} ${n.tracks === 1 ? "recording" : "recordings"}`}
-                  {colour === "genre" && n.genre ? ` · ${n.genre}` : ""}
-                  {colour === "role" && n.role ? ` · mostly ${n.role}` : ""}
-                  {report.listening && !report.listening.off ? ` · ${n.plays ?? 0} ${n.plays === 1 ? "play" : "plays"}` : ""}
-                  {n.managed ? "" : " · not one of your artists"}
-                </title>
-                {showLabel && (
-                  <text x={r + 4 * unit} y={3.5 * unit} style={{ fontSize: 10 * unit, strokeWidth: 3 * unit }}>
-                    {n.name}
-                  </text>
-                )}
+              <g key={n.mb_id} className={`g-node${isFocus || n.mb_id === selected ? " focus" : ""}`} transform={`translate(${n.x},${n.y})`}>
+                <text x={laid.radius(n) + 4 * unit} y={3.5 * unit} style={{ fontSize: 10 * unit, strokeWidth: 3 * unit }}>
+                  {n.name}
+                </text>
               </g>
             );
           })}
@@ -445,6 +475,101 @@ export function CollabGraph({
     </div>
   );
 }
+
+/**
+ * The edges. Memoised on the layout and the focus alone, so panning and zooming —
+ * which change only the viewBox and the label size — do not redraw thousands of lines.
+ */
+const EdgeLayer = memo(function EdgeLayer({ laid, focus }: { laid: Laid; focus: string | null }) {
+  return (
+    <g>
+      {laid.links.map((l) => {
+        const lit = focus != null && (l.source.mb_id === focus || l.target.mb_id === focus);
+        return (
+          <line
+            key={`${l.kind ?? "credit"}-${l.source.mb_id}-${l.target.mb_id}`}
+            className={`g-edge${lit ? " lit" : focus ? " faded" : ""}${l.kind === "listening" ? " listening" : ""}`}
+            x1={l.source.x}
+            y1={l.source.y}
+            x2={l.target.x}
+            y2={l.target.y}
+            strokeWidth={edgeWidth(l.weight)}
+          >
+            <title>
+              {l.kind === "listening"
+                ? `${l.source.name} × ${l.target.name}: played close together in ${l.weight} ${l.weight === 1 ? "session" : "sessions"}`
+                : `${l.source.name} × ${l.target.name}: ${l.weight} shared ${l.weight === 1 ? "recording" : "recordings"}`}
+            </title>
+          </line>
+        );
+      })}
+    </g>
+  );
+});
+
+/** The nodes, without labels (those follow the zoom, in their own layer). Memoised like EdgeLayer. */
+const NodeLayer = memo(function NodeLayer({
+  laid,
+  focus,
+  selected,
+  neighbours,
+  colours,
+  colour,
+  centred,
+  playsShown,
+  onHover,
+  onSelect,
+}: {
+  laid: Laid;
+  focus: string | null;
+  selected: string | null;
+  neighbours: Set<string>;
+  colours: ReturnType<typeof graphColours>;
+  colour: GraphColour;
+  centred: boolean;
+  playsShown: boolean;
+  onHover: (mbid: string | null) => void;
+  onSelect: (mbid: string | null) => void;
+}) {
+  return (
+    <g>
+      {laid.nodes.map((n) => {
+        const r = laid.radius(n);
+        const isFocus = n.mb_id === focus;
+        const dim = focus != null && !neighbours.has(n.mb_id);
+        return (
+          <g
+            key={n.mb_id}
+            // Not one of your artists: drawn quieter, so with everyone shown your own
+            // still stand out. The tooltip says it in words too.
+            className={`g-node${isFocus || n.mb_id === selected ? " focus" : ""}${n.hop === 0 && centred ? " center" : ""}${dim ? " faded" : ""}${n.managed ? "" : " unmanaged"}`}
+            transform={`translate(${n.x},${n.y})`}
+            onPointerEnter={() => onHover(n.mb_id)}
+            onPointerLeave={() => onHover(null)}
+            onPointerDown={(e) => e.stopPropagation()}
+            onPointerUp={(e) => e.stopPropagation()}
+            onClick={() => onSelect(n.mb_id === selected ? null : n.mb_id)}
+          >
+            {/* A hit target larger than the mark, so small nodes are clickable. */}
+            <circle className="hit" r={Math.max(r, 8)} />
+            {colours.hollow(n) ? (
+              <circle className="unknown" r={r} style={{ stroke: colours.of(n) }} />
+            ) : (
+              <circle r={r} style={colours.of(n) ? { fill: colours.of(n) } : undefined} />
+            )}
+            <title>
+              {`${n.name}: ${n.tracks} ${n.tracks === 1 ? "recording" : "recordings"}`}
+              {colour === "genre" && n.genre ? ` · ${n.genre}` : ""}
+              {colour === "role" && n.role ? ` · mostly ${n.role}` : ""}
+              {playsShown ? ` · ${n.plays ?? 0} ${n.plays === 1 ? "play" : "plays"}` : ""}
+              {n.managed ? "" : " · not one of your artists"}
+            </title>
+          </g>
+        );
+      })}
+    </g>
+  );
+});
 
 /** One collaborator row: the other artist, the shared count, and where it leads. */
 export function CollaboratorRow({

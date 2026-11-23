@@ -182,7 +182,7 @@ two releases, or in two libraries, or crediting one artist in two roles, counts 
 | `min_tracks` | 1 | fewest recordings per artist |
 | `special` | off | let Various Artists and placeholders (`[unknown]`, `[traditional]`, …) in |
 | `artist`, `hops` | — | centre on one artist: their collaborators (1) or theirs too (2) |
-| `limit` | 150 (max 500) | node cap |
+| `limit` | 150 (max 2000) | node cap |
 | `everyone` | off | every artist credited, not only [managed](collection.md#managed-and-present-only-artists) ones |
 
 - **Various Artists is out by default.** It is credited on every compilation track and would
@@ -201,7 +201,12 @@ two releases, or in two libraries, or crediting one artist in two roles, counts 
   and an edge is never split. Picking the strongest artists one by one chose artists that did not
   connect to each other (150 nodes with 71 edges on the 110k demo). Centred, it keeps the nearest
   ring first and the strongest within each ring.
-  `truncated` says the cap cut some artists.
+  `truncated` says the cap cut some artists. The page offers 50 to 2,000. Past 150 artists the
+  browser lays the graph out in a Web Worker (`webui/src/components/graphLayout.ts`): 2,000
+  artists take a few seconds to settle, and on the main thread that froze the tab. The previous
+  picture stays up, dimmed, under a "Laying out…" note, and a newer answer cancels a layout still
+  running. The edge and node layers are memoised on the layout and the focus, so panning and
+  zooming redraw only the labels.
 - **Only connected artists are drawn.** An artist sharing no recording with anyone is not part of a
   graph of who works with whom.
 
@@ -252,11 +257,11 @@ asked for, so changing it costs no request.
   `insight_credit_releases.genre` at sync time. Rows synced before the column existed carry an older
   `version`, and `SyncCredits` reads them again.
 - **Role:** the role they hold on the most recordings in view.
-- **Eight colours:** the library's eight most common genres get colours of their own
+- **Eleven colours:** the library's eleven most common genres get colours of their own
   (`report.genres`, `insights.ColouredGenres`, ranked library-wide so a filter never repaints a
   genre). Any other genre shares a neutral as *Other genres*, and an artist with no genre known
   is drawn as a neutral ring. Past three, not every pair of colours stays apart; the style guide
-  says why eight was chosen anyway and how naming carries it.
+  says why eleven was chosen anyway and how naming carries it.
 
 ### Listening overlay
 

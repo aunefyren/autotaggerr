@@ -51,9 +51,13 @@
   /* Categorical series for charts that colour by category (the collaboration graph),
      in fixed order. Where any two marks can touch, only the first three stay apart
      for colour-blind viewers (validated on --surface-1 with the dataviz validator);
-     the graph uses all eight anyway, so fewer genres fold into Other, and names every
-     category in its legend and tooltips. Everything past them is --series-other, a
-     neutral that says "not one of these". */
+     the graph uses all eleven anyway, so fewer genres fold into Other, and names every
+     category in its legend and tooltips. 9-11 are a lighter tier, outside the
+     validator's lightness band on purpose: a twelfth hue at the same lightness would
+     sit on top of one already there, so they buy their distance with lightness. Each
+     is at least ΔE 20 (OKLab ×100, normal vision) from every other slot and from
+     --series-other, still >= 3:1 on the surface. Everything past them is
+     --series-other, a neutral that says "not one of these". */
   --series-1: #3987e5; /* blue */
   --series-2: #d95926; /* orange */
   --series-3: #199e70; /* aqua */
@@ -62,6 +66,9 @@
   --series-6: #0ca30c; /* green */
   --series-7: #9085e9; /* violet */
   --series-8: #e66767; /* red */
+  --series-9: #27e3fd; /* cyan */
+  --series-10: #b0de49; /* lime */
+  --series-11: #fbacea; /* pink */
   --series-other: #726c8c;
 
   /* Sequential ramp for magnitude (plays on the collaboration graph): one hue, five

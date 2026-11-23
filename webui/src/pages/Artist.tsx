@@ -196,7 +196,7 @@ const SORT: Record<string, (g: CollectionReleaseGroup) => string | number> = {
   tracks: (g) => (g.total_tracks > 0 ? g.owned_tracks / g.total_tracks : -1),
 };
 
-type Filter = "all" | "disk" | "partial" | "wanted" | "missing" | "upgrade" | "mismatch";
+type Filter = "all" | "disk" | "partial" | "wanted" | "missing" | "unwanted" | "upgrade" | "mismatch";
 
 export default function Artist() {
   const { mbid = "" } = useParams();
@@ -483,6 +483,7 @@ export default function Artist() {
     partial: scoped.filter((g) => g.owned && !g.complete).length,
     wanted: scoped.filter((g) => g.wanted).length,
     missing: scoped.filter((g) => g.wanted && !g.owned).length,
+    unwanted: scoped.filter((g) => g.owned && !g.wanted).length,
     upgrade: scoped.filter((g) => g.upgrade_wanted).length,
     mismatch: scoped.filter((g) => g.discrepancy !== "").length,
   };
@@ -494,6 +495,7 @@ export default function Artist() {
       case "partial": return g.owned && !g.complete;
       case "wanted": return g.wanted;
       case "missing": return g.wanted && !g.owned;
+      case "unwanted": return g.owned && !g.wanted;
       case "upgrade": return g.upgrade_wanted;
       case "mismatch": return g.discrepancy !== "";
       default: return true;
@@ -974,6 +976,9 @@ export default function Artist() {
         <FilterChip on={filter === "missing"} count={chipCounts.missing} label="Missing"
           title="Wanted, and nothing on disk yet"
           onClick={() => setFilter(filter === "missing" ? "all" : "missing")} />
+        <FilterChip on={filter === "unwanted"} count={chipCounts.unwanted} label="Unwanted"
+          title="On disk, but not wanted — nothing will upgrade or complete these"
+          onClick={() => setFilter(filter === "unwanted" ? "all" : "unwanted")} />
         <FilterChip on={filter === "upgrade"} count={chipCounts.upgrade} label="Upgrade"
           title="Wanted, and held below the quality profile's cutoff"
           onClick={() => setFilter(filter === "upgrade" ? "all" : "upgrade")} />

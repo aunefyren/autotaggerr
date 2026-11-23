@@ -456,6 +456,10 @@
 .graph-canvas { position: relative; height: 560px; background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-lg); overflow: hidden; }
 .graph-canvas svg { width: 100%; height: 100%; display: block; cursor: grab; touch-action: none; }
 .graph-canvas svg:active { cursor: grabbing; }
+/* A large graph lays out in a worker: the old picture stays, dimmed, under a note. */
+.graph-pending { display: flex; align-items: center; justify-content: center; font-size: 13px; }
+.graph-canvas.is-laying-out svg { opacity: 0.45; transition: opacity 150ms ease; pointer-events: none; }
+.graph-note { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 1; font-size: 11px; background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius); padding: 2px 8px; }
 .graph-reset { position: absolute; top: 8px; right: 8px; }
 .g-edge { stroke: var(--border-strong); stroke-linecap: round; vector-effect: non-scaling-stroke; }
 .g-edge.lit { stroke: var(--accent-text); }

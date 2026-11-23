@@ -584,7 +584,7 @@ const GRAPH_FILTERS: GraphFilter[] = [
     key: "limit",
     label: "Artists shown",
     fallback: "150",
-    options: ["50", "150", "300", "500"].map((v) => ({ value: v, label: v })),
+    options: ["50", "150", "300", "500", "1000", "2000"].map((v) => ({ value: v, label: v })),
     help: (v) => `The ${v} most connected artists are drawn. More is slower to read`,
   },
   {
@@ -727,6 +727,9 @@ function Graph({
   const playsShown = !!listening && !listening.off;
   // Colour by plays falls back to genre while there are no plays to colour by.
   const shownColour: GraphColour = colour === "plays" && !playsShown ? "genre" : colour;
+  // Size by plays likewise falls back to recordings; the choice stays in the URL, so turning
+  // the overlay back on restores it.
+  const shownSize: GraphSize = size === "plays" && playsShown ? "plays" : "tracks";
   // One filter: label, control, and the line saying what its value does.
   const renderFilter = (f: GraphFilter, disabled = false) => {
     const id = `graph-${f.key}`;
@@ -826,12 +829,12 @@ function Graph({
               {LISTEN_FILTERS.map((f) => renderFilter(f, !playsShown && f.key !== "since"))}
               <div className="field">
                 <label className="flabel" htmlFor="graph-size">Size by</label>
-                <select id="graph-size" className="input" value={size} disabled={!playsShown} onChange={(e) => set({ size: e.target.value === "tracks" ? null : e.target.value })}>
+                <select id="graph-size" className="input" value={shownSize} disabled={!playsShown} onChange={(e) => set({ size: e.target.value === "tracks" ? null : e.target.value })}>
                   <option value="tracks">Recordings</option>
                   <option value="plays">Plays</option>
                 </select>
                 <span className="dim graph-help">
-                  {size === "plays" ? "Larger for more of your plays in the period" : "Larger for more recordings in scope"}
+                  {shownSize === "plays" ? "Larger for more of your plays in the period" : "Larger for more recordings in scope"}
                 </span>
               </div>
             </div>
@@ -934,7 +937,7 @@ function Graph({
             selected={selected}
             onSelect={setSelected}
             colour={shownColour}
-            size={size === "plays" && playsShown ? "plays" : "tracks"}
+            size={shownSize}
             reveal={reveal}
           />
           <div className="card stack" style={{ gap: 12, alignSelf: "start" }}>

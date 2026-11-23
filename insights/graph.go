@@ -32,7 +32,7 @@ var specialArtists = map[string]bool{
 // of thousands of artists drawn at once is a hairball.
 const (
 	DefaultGraphNodes = 150
-	MaxGraphNodes     = 500
+	MaxGraphNodes     = 2000
 	topCollaborators  = 25
 )
 
@@ -633,13 +633,13 @@ func strongest(pairs []weightedPair, k int) []weightedPair {
 	return pairs
 }
 
-// ColouredGenres is how many genres get a colour of their own: the eight categorical
+// ColouredGenres is how many genres get a colour of their own: the eleven categorical
 // slots. A node graph puts any two colours side by side, and past the first three not
 // every pair stays apart (for colour-blind viewers, and violet beside blue even for
-// full colour vision) — eight was chosen over that so fewer artists read as "Other",
+// full colour vision) — eleven was chosen over that so fewer artists read as "Other",
 // with the genre named in the legend and every node's tooltip (docs/style-guide.md,
 // Collaboration graph). The rest share a neutral "Other".
-const ColouredGenres = 8
+const ColouredGenres = 11
 
 // artistColours finds, for each artist, their strongest genre and their main role
 // across the recordings in the asked roles that credit them: what the node is
