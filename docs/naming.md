@@ -194,7 +194,10 @@ Lidarr-named library is not renamed by them:
 - each segment is capped at 255 bytes, cut on a rune boundary, with the extension kept whole.
 
 Empty brackets and dangling separators are removed **only when a token rendered empty**, because
-`()` or a trailing dash in a real title is the title. A segment that renders empty altogether is an
+`()` or a trailing dash in a real title is the title. Empty brackets are `()`, `[]` and `{}` with
+only whitespace inside; a dangling separator is any run of spaces, `-` and `_` at the start or end
+of the segment, so `… (CD FLAC 16) - {Release Group}` with no release group ends at `(CD FLAC 16)`.
+Only the ends are trimmed: an empty token mid-segment leaves its separators (`A -  - B`). A segment that renders empty altogether is an
 error (`NamingEmptyError`), never an empty path segment; validation renders every template against
 the built-in samples to catch a template made only of tokens a release may lack.
 
